@@ -55,10 +55,12 @@ RPC mode with a model registry) rotates only through models the rule leaves;
 ### A resumed session keeps its model
 
 Opening a session that already has a conversation — `--continue`, `--resume`,
-`--session`, `--fork`, and inside a session `/resume`, `/fork`, `/clone`,
-`/import` and `/reload` (RPC: `switch_session`, `fork`, `clone`) — puts you back
+`--session`, `--fork`, and inside a session `/resume`, `/fork`, `/clone` and
+`/import` (RPC: `switch_session`, `fork`, `clone`) — puts you back
 on the model it last ran on: whichever the session recorded last, a `/model`
-pick or the model that wrote an answer. A pick is recorded when you make it, so
+pick or the model that wrote an answer. `/reload` (RPC: `resources/reload`)
+keeps the model and the thinking level the session is on, as pi's does, also
+when `--model` named another one at launch. A pick is recorded when you make it, so
 `/model` then quitting comes back on that model. The same goes for RPC's `set_model`
 and `cycle_model`, which also fire `model_select` for your extensions. A new session records the model
 it starts on as well, as pi does — at launch, on `/new`, and on a `/fork` before
@@ -467,10 +469,19 @@ The TUI's countdown rounds up to whole seconds, as pi's does: a 500 ms wait
 shows `in 1s`. Esc in that countdown, or an rpc `abort`, also takes the message back:
 the model never answered it (see `Esc` in [getting started](getting-started.md)), and rpc
 tells the host on an `input_withdrawn` event (`messages`, `prompt_withdrawn`). `messages`
-also holds the queued steer and follow-up lines the abort cleared, last, so a host can give
-those back too; when no prompt is running it holds only them and `prompt_withdrawn` is
+also holds the queued steer and follow-up lines the abort cleared, last, for a host to give
+back too; when no prompt is running it holds only them and `prompt_withdrawn` is
 false. `get_fork_messages` still lists a withdrawn message: forking there returns its text
 and the context stays without it. An rpc `abort_retry` keeps it and only stops retrying.
+A `new_session`, `switch_session`, `fork` or `clone` sends the same event, `prompt_withdrawn`
+false, for what is still queued — steer and follow-up lines (after a failed turn, say)
+and user messages for the next turn, such as a prompt cancelled before it was sent; an
+extension's custom message is dropped, as in pi — before it leaves the session, and again
+for a line queued during its teardown. `resources/reload` keeps them queued
+(`pendingMessageCount` stays), as pi's reload does. A swap sent right after an `abort`
+waits for the aborted turn to give its input back, so the event comes and the old session
+does not keep the cancelled prompt (a `clone` does not copy it); an `abort` sent after
+the `prompt`'s response, before its turn starts, sends nothing.
 
 rpc `set_auto_retry` sets `retry.enabled` in the global `settings.json`, as pi
 does, so it outlasts the session: `set_auto_retry false` sent for one rpc
@@ -604,7 +615,7 @@ fitted), so a `-p`, `--mode json` or `--mode rpc` session takes the default of
 its next launch. A `session_start` extension handler sees the level: one it sets
 is recorded only if it changes it, and a model it switches to keeps it, as
 `/model` does. `/new` keeps the level and records it unless `off`; `/reload`
-goes back to `--thinking`'s level or `off`.
+keeps the level and records nothing.
 
 Compaction (`/compact` and the automatic one) and the summary `/tree` writes
 when you leave a branch ask the model at the session's level too, fitted to the

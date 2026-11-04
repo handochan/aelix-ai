@@ -1521,6 +1521,10 @@ class AgentHarness:
         self._idle_event.clear()
         claim = self._claim = object()
         self._turn_refusal = _refused_by
+        # #684 — from here an abort is this prompt's own: one made while an
+        # ``input`` or ``before_agent_start`` handler still runs ends the turn as
+        # it starts (:meth:`_run`) instead of being cleared there (#336).
+        self._abort_requested = self._withdraw_requested = False
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
@@ -5616,11 +5620,14 @@ class AgentHarness:
         # defensive ``self._phase = "turn"`` either — it would mask a nested
         # compaction that failed to hand "turn" back.
         #
-        # The abort flag is still cleared here (#336 owns what an abort made
-        # before this point should do); an abort made after it survives this
-        # run, which is what the tail's checks in ``prompt()`` read.
-        self._abort_requested = False
-        self._withdraw_requested = False
+        # The abort flag is still cleared here for a re-run (the tail read it just
+        # before); an abort made after it survives this run, which is what the
+        # tail's checks in ``prompt()`` read. #684 — not for the first run when
+        # one was made since the prompt began (``prompt()`` cleared any older
+        # one): see ``aborted_before`` below.
+        if pending_inputs is None or not self._abort_requested:
+            self._abort_requested = False
+            self._withdraw_requested = False
         uncommitted_inputs = list(pending_inputs or [])
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
@@ -5812,6 +5819,11 @@ class AgentHarness:
                             _log.debug("listener raised", exc_info=True)
                     # 4) Close recovery before tools or later responses (#197).
                     await self._close_recovered_retry(final_message)
+                    # #684 — an abort made before this run's task existed ends it
+                    # here, once the last of its inputs is in: the cancel
+                    # ``abort()`` would have sent, before anything is asked of the model.
+                    if aborted_before and not uncommitted_inputs:
+                        raise asyncio.CancelledError
                     # 5) Return the replacement for the loop's identity swap
                     #    into context/new/state messages. The hook reduction
                     #    already ran in step 1; do not fan out a second time.
@@ -5897,6 +5909,15 @@ class AgentHarness:
                             model=self._state.model,
                         )
                     )
+                # #684 — an abort made since the prompt began and before this
+                # task exists (an ``input`` or ``before_agent_start`` handler, the
+                # context read above: #336's window) has no task to cancel. The
+                # first run then commits its inputs and ends there (``emit``), as
+                # a turn ``abort()`` cancelled before its first request does — an
+                # Esc takes them back out, any other abort keeps them — and
+                # nothing is sent. Cleared, the turn went to the model, and a swap
+                # waiting for the Esc's withdraw waited for its whole answer.
+                aborted_before = pending_inputs is not None and self._abort_requested
                 # Sprint 3c §C.2 — wrap the loop in a task so abort() can
                 # cancel it. We await the task (not the coroutine directly)
                 # and surface CancelledError as the expected abort path.
@@ -6211,6 +6232,78 @@ class AgentHarness:
         attempt = self._retry_attempt
         self._retry_attempt = 0
         await self._emit_to_subscribers(AutoRetryEndEvent(success=True, attempt=attempt))
+
+    def take_queued_messages(
+        self,
+    ) -> tuple[list[AgentMessage], list[AgentMessage], list[AgentMessage]]:
+        """Aelix-additive (#681): the steer, follow-up and next-turn queues, taken out.
+
+        What :meth:`AgentSessionRuntime.reload` carries from the harness it tore
+        down to the one it built (:meth:`adopt_queued_messages`): pi's
+        ``reload`` keeps its ``AgentSession`` and with it every queue. No event:
+        the lines are not leaving the session, only the harness.
+        """
+
+        steer, self._steering_queue._messages = self._steering_queue._messages, []
+        follow_up, self._follow_up_queue._messages = self._follow_up_queue._messages, []
+        next_turn, self._next_turn_queue = self._next_turn_queue, []
+        return steer, follow_up, next_turn
+
+    def adopt_queued_messages(
+        self,
+        steer: list[AgentMessage],
+        follow_up: list[AgentMessage],
+        next_turn: list[AgentMessage],
+    ) -> None:
+        """Aelix-additive (#681): queue what :meth:`take_queued_messages` took, ahead of anything here."""
+
+        self._steering_queue._messages = [*steer, *self._steering_queue._messages]
+        self._follow_up_queue._messages = [*follow_up, *self._follow_up_queue._messages]
+        self._next_turn_queue = [*next_turn, *self._next_turn_queue]
+
+    async def give_back_queued(self) -> None:
+        """Aelix-additive (#681): the queued steer and follow-up lines come back, as an Esc gives them.
+
+        A session swap (``/new``, ``/resume``, ``/fork``, ``/clone``, ``/import``)
+        replaces this harness, and the lines queued on it would never reach a
+        model — though ``steer`` and ``follow_up`` answered success, and a
+        torn-down idle harness is not aborted, so nothing said so. They leave the
+        queues and come back on ``input_withdrawn`` with ``prompt_withdrawn``
+        false (ADR-0286): the TUI puts them in the input box, RPC sends the
+        event. Nothing happens when nothing is queued.
+
+        The user messages on the next-turn queue come first, in the order the
+        next prompt would have sent them: a prompt a cancelled turn put back
+        there before it committed (#320), a ``next_turn`` text, a text an
+        extension queued there (as its steer and follow-up lines come back). An
+        extension's custom message (role ``custom``) is no line anyone could
+        type and is left to the teardown, as pi's new ``AgentSession`` starts
+        without the old one's ``_pendingNextTurnMessages``.
+        """
+
+        users = [m for m in self._next_turn_queue if isinstance(m, UserMessage)]
+        queued = [*users, *self._steering_queue._messages, *self._follow_up_queue._messages]
+        if not queued:
+            return
+        self._next_turn_queue = [m for m in self._next_turn_queue if not isinstance(m, UserMessage)]
+        self._steering_queue._messages, self._follow_up_queue._messages = [], []
+        self._withdrawn_queued.extend(queued)
+        await self._emit_input_withdrawn([], prompt_withdrawn=False)
+        with contextlib.suppress(AgentHarnessError):
+            await self._emit_queue_update()
+
+    @property
+    def withdraw_pending(self) -> bool:
+        """Aelix-additive (#684): a turn is still ending that an Esc asked to give its input back.
+
+        ``abort(withdraw_unanswered=True)`` (or ``abort_retry``'s) has been made
+        and the turn it cancels has not unwound yet. A session swap waits for it
+        (:meth:`wait_for_idle`) before it reads or tears down this session: its
+        ``dispose`` would abort again with the default, and the last abort wins
+        (ADR-0286 §2), so the input stayed and no ``input_withdrawn`` went out.
+        """
+
+        return self._phase != "idle" and self._withdraw_requested
 
 
 # === AgentEvent → HookEvent mapping ===
@@ -6611,7 +6704,7 @@ class _SummaryRetry:
     while a compaction or a branch summary holds the harness. Under a
     prompt's claim (the threshold and overflow compactions) an abort of that
     prompt made earlier counts too: ``_abort_requested`` is the prompt's own
-    there (``_run`` clears it), unlike in a public ``compact()`` or
+    there (``prompt()`` and ``_run`` clear it), unlike in a public ``compact()`` or
     ``navigate_tree()``, where it may still describe a prompt that already
     returned. Once a request fails and is not retried, its own failure
     propagates unchanged, exactly as before #409.

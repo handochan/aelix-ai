@@ -1236,11 +1236,14 @@ async def test_a_provider_a_reloaded_extension_registers_in_setup_is_not_late(
     (``test_launch_route_344``'s row stops before the after-``session_start``
     seam). The extension registers nothing at launch (``--model extprov/m1`` is
     guard 2); it is rewritten to register ``extprov`` in ``setup()`` and
-    ``/reload`` rebuilds onto it. ``extprov`` arrived in a build, before that
-    build's ``session_start``, so it is not late. Without the end-of-build
-    snapshot (``late_rule.before_session_start()``) it counted as
-    ``session_start``'s and the reload was HELD (g2-reload-setup: "hi: NO
-    REQUEST", "✖ The launch model "extprov/m1" names provider 'extprov'")."""
+    ``/reload`` loads it. ``extprov`` arrived in a build, before that build's
+    ``session_start``, so it is not late. Without the end-of-build snapshot
+    (``late_rule.before_session_start()``) it counted as ``session_start``'s and
+    the rebuild was HELD (g2-reload-setup: "hi: NO REQUEST", "✖ The launch model
+    "extprov/m1" names provider 'extprov'"). Since #679 the reload itself keeps
+    the model the session runs on, so the rebuild that re-resolves the launch
+    inputs onto ``extprov`` is the ``/new`` after it (sabotaging the snapshot
+    holds that ``/new``: ``('extprov', 'm1', 'unknown')``)."""
 
     import aelix_coding_agent.tui as tui_pkg
 
@@ -1256,15 +1259,21 @@ async def test_a_provider_a_reloaded_extension_registers_in_setup_is_not_late(
         ext.write_text(_EXTENSION, encoding="utf-8")
         await runtime.reload()
         seen.append(_route(runtime.harness.current_model))
+        await runtime.new_session()
+        seen.append(_route(runtime.harness.current_model))
         return 0
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
     monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
     code = await entry_mod._async_main(
-        ["--no-session", "-e", str(ext), "--approve", "--model", "extprov/m1"]
+        ["-e", str(ext), "--approve", "--model", "extprov/m1"]
     )
     assert code == 0
+    # #679 (2026-11-04): the reload keeps the model the session runs on, as pi's
+    # does; the extension's provider is registered by it, and the next build that
+    # resolves the launch inputs — ``/new`` here — lands on it, not held.
     assert seen == [
+        ("openrouter", "extprov/m1", "openai-completions"),
         ("openrouter", "extprov/m1", "openai-completions"),
         ("extprov", "m1", "openai-completions"),
     ]

@@ -965,20 +965,120 @@ async def test_a_raising_abort_hook_does_not_lose_the_lines(tmp_path: Path) -> N
     assert _said(run) == [(["STEER"], False)]
 
 
-async def test_an_abort_before_the_run_still_says_its_lines_at_the_release(tmp_path: Path) -> None:
-    """The #336 window: ``_run`` clears the flag and the turn runs, the input stays."""
+async def test_an_esc_before_the_run_withdraws_the_prompt_with_its_lines(tmp_path: Path) -> None:
+    """The #336 window (#684): an Esc while ``before_agent_start`` runs ends the turn as it starts.
 
-    run = await _start(tmp_path, _Provider("answer"), True)
+    ``_run`` used to clear the flag, and the turn went to the model with the
+    input kept; a swap waiting for the Esc's withdraw then waited for the answer.
+    """
+
+    provider = _Provider("answer")
+    run = await _start(tmp_path, provider, True)
 
     async def before(_event: Any, _ctx: Any) -> None:
         await run.harness.steer("STEER")
         await run.harness.abort(withdraw_unanswered=True)
 
     run.harness.hooks.on("before_agent_start", before)
+    await run.harness.prompt("WITHDRAWN")
+
+    assert _said(run) == [(["WITHDRAWN", "STEER"], True)]
+    assert provider.seen == []
+    assert await run.disk() == []
+    assert run.harness.withdraw_pending is False
+
+
+async def test_a_plain_abort_before_the_run_keeps_the_prompt_and_sends_nothing(
+    tmp_path: Path,
+) -> None:
+    """#684 — what a teardown's ``dispose`` does in that window: the input stays (§2), unanswered."""
+
+    provider = _Provider("answer")
+    run = await _start(tmp_path, provider, True)
+
+    async def before(_event: Any, _ctx: Any) -> None:
+        await run.harness.abort()
+
+    run.harness.hooks.on("before_agent_start", before)
     await run.harness.prompt("KEPT")
 
-    assert _said(run) == [(["STEER"], False)]
-    assert await run.disk() == ["KEPT", "answer"]
+    assert _said(run) == []
+    assert provider.seen == []
+    assert await run.disk() == ["KEPT"]
+
+
+@pytest.mark.parametrize("esc", [True, False], ids=["esc", "plain"])
+async def test_an_abort_before_the_run_ends_it_after_the_last_of_its_inputs(
+    tmp_path: Path, esc: bool
+) -> None:
+    """#684 — the turn ends once every input is in, not at the first.
+
+    ``before_agent_start`` injects a message ahead of a ``next_turn`` text and the
+    prompt. Ended at the first commit, a plain abort kept only ``INJECTED`` and
+    put the text and the prompt back on the next-turn queue.
+    """
+
+    provider = _Provider("answer")
+    run = await _start(tmp_path, provider, True)
+    await run.harness.next_turn("NT")
+
+    async def before(_event: Any, _ctx: Any) -> BeforeAgentStartResult:
+        await run.harness.abort(withdraw_unanswered=esc)
+        return BeforeAgentStartResult(messages=[UserMessage(content=[TextContent(text="INJECTED")])])
+
+    run.harness.hooks.on("before_agent_start", before)
+    await run.harness.prompt("WITH-NT")
+
+    assert provider.seen == []
+    if esc:
+        assert _said(run) == [(["WITH-NT"], True)]
+        assert run.state() == []
+        assert await run.disk() == []
+        assert _shape(run.harness._next_turn_queue) == ["NT"]
+    else:
+        assert _said(run) == []
+        assert run.state() == ["INJECTED", "NT", "WITH-NT"]
+        assert await run.disk() == ["INJECTED", "NT", "WITH-NT"]
+        assert run.harness._next_turn_queue == []
+
+
+async def test_an_esc_during_the_runs_context_read_withdraws_the_prompt(tmp_path: Path) -> None:
+    """#684 — Limits 2's other half: ``_run`` reads the context before its turn task exists."""
+
+    provider = _Provider("answer")
+    run = await _start(tmp_path, provider, True)
+    session: Any = run.harness._session
+    reading, release = asyncio.Event(), asyncio.Event()
+    read = session.build_context
+
+    async def held() -> Any:
+        reading.set()
+        await release.wait()
+        return await read()
+
+    session.build_context = held
+    turn = asyncio.create_task(run.harness.prompt("WITHDRAWN"))
+    await asyncio.wait_for(reading.wait(), 5)
+    await run.harness.abort(withdraw_unanswered=True)
+    release.set()
+    await asyncio.wait_for(turn, 5)
+
+    assert _said(run) == [(["WITHDRAWN"], True)]
+    assert provider.seen == []
+    assert await run.disk() == []
+
+
+async def test_an_abort_made_while_idle_does_not_end_the_next_prompt(tmp_path: Path) -> None:
+    """#684 — the flag ``_run`` no longer clears for a first run is cleared when the prompt begins."""
+
+    provider = _Provider("answer")
+    run = await _start(tmp_path, provider, True)
+    await run.harness.abort(withdraw_unanswered=True)
+
+    await run.harness.prompt("ASKED")
+
+    assert len(provider.seen) == 1
+    assert await run.disk() == ["ASKED", "answer"]
 
 
 async def test_lines_cleared_while_the_event_goes_out_are_said_once_more(tmp_path: Path) -> None:

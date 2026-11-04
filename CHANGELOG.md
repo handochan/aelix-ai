@@ -1306,8 +1306,7 @@ unwritten. Add them with the next release.
   - A command's own `setsid` child outlives the stop, as it did.
   - The tool's card ends and `tool_execution_end` goes out, which it never did on a stop.
   - An extension's tool can say what it got done by raising `aelix_ai.tools.ToolCancelled`
-    in place of the cancel. See "When the turn is stopped while your tool runs" in the
-    extension guide.
+    in place of the cancel. See "Writing a tool that can be stopped" in the tools guide.
   - `tool_result` handlers run on a stopped call, with `is_error` true, so redaction still
     applies. If one raises, the model gets the plain text and none of the output, unless it was
     registered with `error_mode="continue"`, which leaves the output as it is, as for a finished
@@ -1334,6 +1333,74 @@ unwritten. Add them with the next release.
     seconds, at the cost of the result it held. A tool's async cleanup gets those two seconds
     as well, and a longer one is cut.
   - A process that is killed outright still writes nothing.
+
+- **An RPC `abort` sent together with `new_session`, `switch_session`, `fork`
+  or `clone` gives the cancelled prompt back (#684, ADR-0286).** RPC runs each
+  command at once, so the session change started while the aborted turn was
+  still ending and took it apart with an abort of its own, which keeps the
+  input: no `input_withdrawn` came, the session left behind ended with the
+  cancelled prompt, and a `clone` copied it. The session change now waits for
+  that turn to give its input back first. Sent after the `abort` response, or
+  in the TUI, where `/new` is read only once the prompt is back, it already
+  worked. An `abort` (or Esc) that lands while the prompt is accepted but its
+  turn has not started yet — an extension's `input` or `before_agent_start`
+  handler still running — was dropped when the turn started, so the prompt went
+  to the model anyway and a session change waited for the whole answer; that
+  turn now ends as it starts, gives the prompt back and sends nothing. An
+  extension's `ctx.abort()` or `ctx.shutdown()` made there, and a quit or a
+  SIGTERM at that moment, now end it before any request too, but keep the
+  prompt on the session, unanswered. A session change with no `abort` at that
+  moment no longer waits for an answer either: the prompt stays on the session
+  left behind, unanswered.
+
+- **A steering or follow-up message waiting in the queue is no longer lost on
+  `/reload` or a session change (#681, ADR-0286, ADR-0289).** Lines you queue
+  stay queued when the turn they waited for ends in an error, and RPC
+  `steer`/`follow_up` queue while nothing runs. A `/reload` (RPC
+  `resources/reload`, an extension's `ctx.reload()`) dropped them —
+  `pendingMessageCount` went from 1 to 0 and they never reached the model — and
+  so did `/new`, `/resume`, `/fork`, `/clone`, `/import` and their RPC commands,
+  though each line had been answered `success: true`, with no word to the host.
+  A `/reload` now keeps them queued, as pi's does, and the next turn takes them;
+  so does a failed `/reload` that kept the session. A session change gives them
+  back as Esc does: in the TUI they return to the input box, and RPC sends
+  `input_withdrawn` with the lines and `prompt_withdrawn: false` — with them a
+  prompt whose turn was cancelled before it was sent, and a line an extension
+  queued while the old session was taken apart. A custom message an extension
+  queued for the next turn goes with the session left behind, as in pi. When
+  one change gives back twice — lines you queued, then a line a
+  `session_shutdown` handler queued — the TUI input box shows the handler's
+  line first; RPC sends them in order, as two events.
+
+- **`/reload` keeps the model and thinking level you are on (#679, ADR-0239,
+  ADR-0289).** A `/reload` that succeeded put the thinking level back to `off`
+  (or `--thinking`'s level), dropping a `/thinking` choice and the settings
+  `defaultThinkingLevel`, and in a run launched with `--model` (or `--provider`,
+  `--api-key`, an agent profile's model) it put the model back to that one,
+  dropping a `/model` choice. The TUI footer kept showing your choice until the
+  next answer ended, so the change showed only in the request. `/reload` now
+  keeps both, as pi's does, and writes no model or level entry, and the footer
+  is repainted as the reload ends; RPC `resources/reload` and an extension's
+  `ctx.reload()` do the same. A session held on a placeholder because its launch model's
+  provider was registered late (ADR-0250) is the exception: there the reload
+  resolves the launch model again, as before. A provider a reloaded extension
+  now registers is used once you pick it with `/model`, or by the next `/new`.
+
+- **A `/new`, `/fork`, `/clone` or `/import` that fails no longer leaves a new
+  session file behind (#680, ADR-0289).** Each one made its session file before
+  building the session for it. When that build failed and aelix said "stayed on
+  this session", the file stayed — the newest in the folder, so `aelix -c`
+  opened it (an empty conversation after `/new`, a copy after `/clone`) instead
+  of the session you were still on, and `/resume` listed it. The file a failed
+  swap made is now removed, whether aelix kept the session or stopped, and
+  before its lock is let go; an `/import` over a session that was already there
+  leaves that session. So is the file of a swap that could not take its lock at
+  all (an unusable `.jsonl.lock` beside it); one another terminal opened first
+  stays theirs. On Windows a delete refused because something holds the new
+  file for a moment is retried for about a second; one that still fails is
+  logged and the file stays. A `/resume` that forked a session open in another
+  terminal, RPC `new_session`, `fork` and `clone`, and an extension's
+  `ctx.new_session()` and `ctx.fork()` do the same.
 
 - **An extension that calls `sys.exit()` no longer ends aelix (#664).** A
   `setup()` (or the import of an extension's module) that raised `SystemExit`

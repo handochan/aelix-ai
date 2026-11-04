@@ -68,34 +68,8 @@ This is the worked example shipped at
 
 ### When the turn is stopped while your tool runs
 
-Esc, Ctrl+C, RPC `abort`, a signal and quitting cancel the turn, and the cancel lands in your
-`execute` as `asyncio.CancelledError`. Let it through and the model reads an error result saying
-the user stopped the turn and the tool may have partly run. If your tool can say what it got done,
-raise `aelix_ai.tools.ToolCancelled` instead, as `bash` does with what it printed:
-
-```python
-try:
-    for row in rows:
-        await write_row(row)
-        done += 1
-except asyncio.CancelledError as cancel:
-    text = f"Wrote {done} of {len(rows)} rows."
-    raise ToolCancelled(ToolResult(content=[TextContent(text=text)])) from cancel
-```
-
-It is still a cancellation, so the turn ends, and it is always recorded as an error. Build it
-without awaiting: a second Esc can land in an await. `tool_result` handlers run on it with
-`is_error` true; if one raises, or a second cancel lands in it, the model gets the default text
-and none of your output. A handler with `error_mode="continue"` is the exception: its raise is
-swallowed and the output stays, so do not register a redactor that way.
-
-Do not catch the cancel and return, and do not call `uncancel()`. The task's cancel count is what
-says a stop came: `uncancel()` takes it back, and in a sequential batch the next call starts. A
-tool that ignores the cancel holds the turn until the next Esc; in a parallel batch that Esc stops
-waiting for it.
-
-On a signal the process aborts, waits 2 seconds and aborts again, so async cleanup in your
-`finally` gets those 2 seconds.
+The cancel lands in your `execute` as `asyncio.CancelledError`: let it through, or raise
+`aelix_ai.tools.ToolCancelled` to say what got done. See [When you stop a tool](tools.md#when-you-stop-a-tool).
 
 ### Your tool goes through the approval prompt
 
@@ -232,7 +206,18 @@ is not in it, because the next prompt asks you again. It is observational. On a 
 abort it comes before that turn's `turn_end` and `agent_end`; on an abort between runs, such
 as in the retry countdown, it comes after them; with no prompt running it comes from the
 abort itself, for those lines alone. An `abort` handler does not tell you this: it fires
-for every abort, and clears the queues.
+for every abort, and clears the queues. A session swap (`/new`, `/resume`, `/fork`,
+`/clone`, `/import`, and their RPC commands) sends it too, with `prompt_withdrawn` false,
+for the steer and follow-up lines still queued and the user messages queued for the next
+turn (a text you queued with `send_message(..., deliver_as="next_turn")` among them),
+before `session_shutdown`; a `/reload` carries them to the rebuilt session instead. A
+custom message you queued for the next turn is not given back: a swap drops it with the
+old session, as pi does. A line queued from a `session_shutdown` handler goes back to the
+TUI or the RPC host after the teardown, on an event your handlers no longer receive.
+
+A `ctx.abort()` or `ctx.shutdown()` made in an `input` or `before_agent_start` handler,
+like a quit or a SIGTERM while one runs, ends the turn before any request is sent: the
+prompt stays on the session, unanswered. An Esc there withdraws it, as above.
 
 A `model_select` or `thinking_level_select` handler runs after the change: the
 model or level is already in force. Raising there does not undo it. The command

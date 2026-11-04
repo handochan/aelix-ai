@@ -825,7 +825,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:189-205``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:4303-4310``) and never re-scans the extension dirs.
+    # (``harness/core.py:4307-4314``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

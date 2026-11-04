@@ -2045,12 +2045,12 @@ async def _build_harness_options(
     # #376 — a holder the resolve below fills: ``"route"`` is the restored
     # :class:`ResolvedRoute`, or ``None`` when ``parsed`` decided the model.
     restore_report: dict[str, Any] | None = None,
-    # #434 — ``/reload``'s current model (``ReloadSeed.model``): kept when a hold
-    # removed its id, where the restore below would fall back (ADR-0264 §4.4).
+    # #434 — ``/reload``'s current model (``ReloadSeed.model``). Without
+    # ``keep_exactly``, kept only when a hold removed its id (ADR-0264 §4.4).
     keep_model: Model | None = None,
-    # #663 (ADR-0289 D3, Codex R06) — the build that puts a session back after a
-    # failed rebuild (``ReloadSeed.restore``): ``keep_model`` is then the model
-    # the session ran on, kept as it is, whatever the launch inputs say.
+    # #663 (ADR-0289 D3), #679 — a reload, and the build that puts a session back
+    # after a failed one, run on ``keep_model`` as it is, whatever the launch
+    # inputs or the session's record say (``_reload_keeps_its_model``).
     keep_exactly: bool = False,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
@@ -2294,8 +2294,8 @@ async def _build_harness_options(
         else None
     )
     if keep_exactly and keep_model is not None:
-        # #663 (Codex R06) — a ``set_model`` choice is no session record and no
-        # launch input: without this the restore came back on ``--model``. A
+        # #663 (Codex R06), #679 — a ``set_model`` choice is no session record and
+        # no launch input: without this a reload came back on ``--model``. A
         # restored route, so no late-provider hold is applied after it either.
         route = ResolvedRoute(keep_model, "session")
     if (
@@ -4066,10 +4066,10 @@ async def _async_main(argv: list[str]) -> int:
     ) -> AgentHarness:
         # #376 — the session's own model, when it has history and the user named
         # none: startup ``--continue``/``--resume``/``--session``/``--fork``,
-        # ``/resume``, ``/fork``, ``/import``, RPC ``switch_session`` and
-        # ``/reload`` all build here. pi's ``hasExistingSession`` is
-        # ``messages.length > 0`` (``core/sdk.ts:210-211``), so ``/new`` (an empty
-        # session) keeps the launch inputs.
+        # ``/resume``, ``/fork``, ``/import`` and RPC ``switch_session`` build here.
+        # pi's ``hasExistingSession`` is ``messages.length > 0``
+        # (``core/sdk.ts:210-211``), so ``/new`` (an empty session) keeps the
+        # launch inputs. A ``/reload`` keeps the live model instead (#679).
         restore_selection: tuple[str, str] | None = None
         if not _user_named_a_model():
             from aelix_agent_core.session.context import (
@@ -4113,7 +4113,7 @@ async def _async_main(argv: list[str]) -> int:
             restore_selection=restore_selection,
             restore_report=restore_report,
             keep_model=getattr(reload_seed, "model", None),
-            keep_exactly=bool(getattr(reload_seed, "restore", False)),
+            keep_exactly=_reload_keeps_its_model(reload_seed),
             mcp_tools=mcp_launch_record.visible(mcp_tools, mcp_hidden),
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
@@ -5725,6 +5725,23 @@ def _provider_requires_model(parsed: Args, registry: Any) -> str | None:
             f"{parsed.provider} --model <id>)"
         )
     return None
+
+
+def _reload_keeps_its_model(seed: ReloadSeed | None) -> bool:
+    """#679 — does this build run on ``seed.model`` as it is?
+
+    Every ``/reload`` does, as pi's keeps its ``AgentSession`` and model (a
+    ``set_model`` choice over ``--model``, the level put back by the runtime),
+    and so does the build that puts a session back after a failed one (#663,
+    ADR-0289 D3). A reload whose model is a placeholder (``api='unknown'``) does
+    not: the session is held (ADR-0250 §2.11) or its launch is pending, and a
+    placeholder is no model to keep — that reload resolves the launch inputs
+    again, as before #679, and is held where they land late.
+    """
+
+    if seed is None or seed.model is None:
+        return False
+    return seed.restore or getattr(seed.model, "api", "") != "unknown"
 
 
 __all__ = [

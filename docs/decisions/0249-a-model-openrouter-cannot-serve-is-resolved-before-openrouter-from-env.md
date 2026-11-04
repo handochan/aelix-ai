@@ -1,6 +1,6 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
-Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7); noted 2026-10-27 (#172's fold-back): `fireworks` became an OpenRouter namespace, 10 of 35 overlap
+Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7); noted 2026-10-27 (#172's fold-back): `fireworks` became an OpenRouter namespace, 10 of 35 overlap; §2.3 amended 2026-11-04 (#679): `/reload` keeps the model the session is on, as pi's does, and re-resolves the launch inputs — and is held — only from a placeholder
 Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand); [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) (2026-10-06, #363: §2.4's bearer paragraph and its "only the host moves" paragraph); [ADR-0262](0262-explicit-provider-registrations-own-model-routes.md) (2026-10-11, #365: explicit registration scope in sections 2.1/2.2, and the provider-name-only delegated pin)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
@@ -393,6 +393,11 @@ runtime's `session_start` made. Measured with real turns against local listeners
 listener (the same on `62ec77d2`).
 `test_rebuilds_after_a_late_switch_stay_on_the_session_start_provider` pins it; a registry
 that forgot extension registrations between builds turns it red.
+*(2026-11-04, #679: `/reload` no longer re-resolves `--model`; it keeps the model the session
+is on, as pi's does, unless that is a placeholder (`api='unknown'`, a pending or held launch).
+A provider a `/reload`-ed extension registers is then picked by `/model`, or by the next
+rebuild that resolves the launch inputs — `/new`;
+`test_a_provider_a_reloaded_extension_registers_in_setup_is_not_late` now goes through both.)*
 
 That reuse is also why **a failed `/reload` keeps an extension's earlier registration**
 (Codex C4, `/tmp/344-work/codex/probe_reload_stale.py`: an extension replaced by one that

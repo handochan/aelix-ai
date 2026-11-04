@@ -1,6 +1,6 @@
 # 0286. Esc withdraws the input the model never answered
 
-Status: Accepted (2026-11-03, #654)
+Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)` — amended 2026-11-04 (#684): a swap waits for the turn an Esc is ending (§2 note), and an abort made before a prompt's turn task exists ends that turn as it starts, nothing sent (Limits 2)
 Date: 2026-11-03
 Issue: #654. Design and the owner's four decisions (2026-11-03):
 `.omc/specs/654-design-2026-11-03.md`. Batch B6, P1.
@@ -57,6 +57,7 @@ end is not what they are taking back.
 | Esc moment | Result |
 |---|---|
 | before any output, mid-stream, during an in-flight retry attempt | whole prompt withdrawn |
+| accepted, before its turn starts (an `input` or `before_agent_start` handler running, the context read) | whole prompt withdrawn, nothing sent (#684, Limits 2) |
 | TUI Esc in the retry countdown | whole prompt withdrawn, the failed answer off the path with it |
 | tool running, or tool done and next response pending | nothing withdrawn |
 | a batch with a call still running, others finished (ADR-0290) | nothing withdrawn; the finished results stay, and the cut call gets a result saying so |
@@ -86,6 +87,23 @@ that path), as does an extension's `ctx.abort()` (#545).
 The last `abort()` wins: it assigns the flag, so a plain abort after a stale request (an
 `abort_retry` made with no wait running) keeps the input. `abort_retry()` left False changes
 nothing, since `abort()` calls it too and "stop retrying" does not undo an earlier Esc.
+
+*(2026-11-04, #684)* A session swap's teardown is such a plain abort: `dispose()` aborts a
+running turn. RPC runs each command in a task of its own, so a `new_session`,
+`switch_session`, `fork` or `clone` sent with an `abort` began while the cancelled turn
+unwound, and its dispose overwrote the Esc — no `input_withdrawn`, and the session it
+left ended with the cancelled prompt (`.omc/specs/663-followups-evidence/out/p7_*`). The
+client is still there after a swap, so the reason above does not hold for it. A swap now
+waits for a turn an Esc is ending (`AgentHarness.withdraw_pending`,
+`AgentSessionRuntime._settle_withdraw`) before it reads the session it leaves or takes it
+apart, and RPC `clone` before it reads the leaf it clones at; the withdraw then runs, its
+event reaching the surfaces that still listen to that harness. A turn nobody asked to
+withdraw is not waited for: the teardown aborts it and keeps its input, as before.
+`reload` waits for idle anyway. The same holds for an `abort` that lands while the prompt
+is accepted but its turn has not started (Limits 2): the turn ends as it starts, so the swap
+waits for no answer and nothing is sent — and with no Esc, the teardown's own abort ends it
+the same way, keeping the input on the session left behind. Tests:
+`tests/runtime/test_abort_then_swap_684.py`, `tests/rpc/test_abort_then_swap_rpc_684.py`.
 
 ### 3. A leaf move, not a new entry type
 
@@ -194,12 +212,18 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
 
 1. **The compaction barrier.** After a compaction committed inside the prompt the summary
    may hold the input and the kept tail cannot be moved behind it, so nothing is withdrawn.
-2. **The #336 window.** An abort made before `_run` (in a hook) is still discarded with
-   its flag and the turn runs, as a plain abort is today. The window includes `_run`'s own
-   `build_context` await, before the turn task exists (`harness/core.py:5473`, Codex finding
-   1): the request still goes out, and the input stays. Queued lines an Esc gives back in
-   that window can come back with no sentence if the previous run already said it, because
-   the notice's latch resets on `agent_start`.
+2. **The #336 window — closed for a prompt's first run (2026-11-04, #684).** An abort
+   made after the prompt began and before its turn task exists — in an `input` or
+   `before_agent_start` handler, or during `_run`'s own `build_context` await (Codex
+   finding 1) — has no task to cancel, and `_run` cleared it: the request went out and the
+   input stayed, and a swap waiting for that Esc waited for the whole answer (Codex review
+   of #684; the verify lane's `p684_stale_rpc-slowext`, where a model that holds kept a
+   `new_session` waiting for ever). `prompt()` now clears the flags when it takes its claim,
+   and the first run keeps one made since: it commits its inputs and is cancelled before it
+   builds a request, so an Esc withdraws them as above, a plain abort (the teardown's, a
+   quit's) keeps them on the session, and nothing is sent. What remains is a retry's or an
+   overflow recovery's re-run: an abort during its `build_context` is still cleared, the
+   re-run is sent, and the tail stops after it.
 3. **A steer between drain and commit.** Pre-existing: a steer the loop has drained and
    not yet committed is lost on cancel. It is neither in the queue nor in the event.
 4. **The file keeps the text.** The withdrawn entry stays on the branch left behind and on
@@ -301,3 +325,57 @@ Review round 2, the same way, under `.omc/probes/654/fix-r2/`:
 - Against a local server: an overflow, the summary held, a steer and a follow-up queued, Esc, the
   summary released. The sentence printed once, with no compaction entry, and the next run's Esc
   printed it again for that run.
+
+## Amendment (2026-11-04, #681) — a swap gives the queued lines back; a reload keeps them
+
+`steer` and `follow_up` queue while the harness is idle too (pi parity), and a turn that
+ends in an error leaves the lines queued for the next prompt (#345). A swap — `/new`,
+`/resume`, `/fork`, `/clone`, `/import`, RPC `new_session`, `switch_session`, `fork`,
+`clone`, an extension's `ctx.new_session()` and the rest — and `/reload` build a new
+harness, and the queues stayed on the torn-down one: RPC had answered `success: true`,
+`pendingMessageCount` went from 1 to 0, and nothing said where the line went
+(`.omc/specs/663-followups-evidence/out/p4_*`). A torn-down idle harness is not aborted
+(`dispose` aborts only a running turn), so this ADR's event never fired for them.
+
+- **A swap gives them back** (`AgentSessionRuntime._give_back_queued` →
+  `AgentHarness.give_back_queued`): `input_withdrawn` with the queued steer and
+  follow-up lines and `prompt_withdrawn` false — what §5 already sends for an idle abort
+  — at the start of `_finish_session_replacement`, while the surfaces still listen to
+  the harness being replaced: the TUI puts them in the input box (§6), RPC sends the
+  event. Before the teardown, so a swap whose build then fails (ADR-0289 "kept") has
+  given them back as well; a swap an extension cancels never gets there and leaves them
+  queued. Moving them into the new session was the other choice the issue left open; it
+  was not taken, because the new session is another conversation the lines were not
+  written for — given back, the user decides, as after an Esc. pi drops them with the
+  disposed `AgentSession`.
+- **A reload carries them** (`take_queued_messages` / `adopt_queued_messages`, the first
+  step of `_settle_rebuilt`): steer, follow-up and the next-turn queue go to the rebuilt
+  harness — and to the one a failed reload builds on the previous settings — as pi's
+  `reload` keeps its `AgentSession` and its queues. A stopped runtime keeps them on the
+  harness it holds (ADR-0289 D4), where Alt+Up or an RPC `abort` gives them back.
+
+The next-turn queue (Codex review): its user messages come back on the same event, first,
+in the order the next prompt would have sent them — a prompt a cancelled turn requeued
+there before it committed (§1's uncommitted remainder), a `next_turn` text, and a text an
+extension queued with `send_message(..., deliver_as="next_turn")`, as its steer and
+follow-up lines already come back. An extension's custom message there (role `custom`) is
+no line anyone could type into the input box: it goes with the old harness, as pi's new
+`AgentSession` starts without the old one's `_pendingNextTurnMessages`. A reload carries it.
+
+What the teardown itself queues comes back too: the swap gives back once more after
+`_teardown_current`, for a line a `session_shutdown` handler queued (Codex review: lost
+after the first give-back) and for a prompt the teardown's abort cancelled before it
+committed. The TUI and RPC still listen to that harness until the rebind and get the
+second event; an extension's `input_withdrawn` handler does not, since the teardown
+disposed its hook bus.
+
+Limit, left as it is: the TUI puts each event's text ahead of what the box holds (§6), so
+when one swap gives back twice — lines queued before the teardown, then a line a
+`session_shutdown` handler queued — the box reads `SHUTDOWN-LINE` above `QUEUED-LINE`, the
+reverse of queue order, and Enter sends them that way. Nothing is lost or repeated; RPC gets
+them in order, as two events (`.omc/specs/b6-session-verify-r2-probes/out/tui-g3both-head.txt`).
+
+Tests: `tests/runtime/test_queued_lines_across_rebuilds_681.py`,
+`tests/rpc/test_queued_lines_rpc_681.py`, `tests/tui/test_queued_line_after_an_error_681.py`
+(the #345 path: a line steered into a turn that ends in a `400` survives `/reload` and comes
+back to the input box on `/new`).
