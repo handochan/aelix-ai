@@ -300,6 +300,13 @@ each measured in zsh, bash 3.2 / 5.2, ksh and dash.
   it drifts. `HOME` / `XDG_CONFIG_HOME` are deliberately NOT matched this way
   (git's global config lives under them, but the mention is far too common);
   they are caught only in an assignment position.
+- **Windows 8.3 short names are not folded (review round 2, nit).** `GIT~1`,
+  `NODE_M~1` and `__PYCA~1` are the 8.3 aliases of `.git` / `node_modules` /
+  `__pycache__` only on a specific NTFS volume, and which index `~<n>` a name
+  gets depends on the other entries and their creation order — a mapping this
+  code cannot reconstruct without the filesystem. Folding them would either
+  miss the real alias or refuse legitimate files, so #675's guard leaves them;
+  8.3 creation is off by default on modern Windows.
 
 ### Review round 1 (2026-11-04)
 

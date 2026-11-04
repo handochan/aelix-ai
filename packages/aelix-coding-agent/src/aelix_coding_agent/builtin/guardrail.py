@@ -180,12 +180,24 @@ def _write_dotenv(event: ToolCallHookEvent) -> str | None:
     return None
 
 
+def _has_component(path: str, name: str) -> bool:
+    """Whether any component of ``path``, folded by :func:`_guard_key`, IS ``name``.
+
+    The directory rules below compared raw components, so ``.GIT/config`` —
+    the same file as ``.git/config`` on macOS's APFS and on NTFS — was not
+    refused, and the write landed in the real ``.git`` (#675, measured: a
+    planted ``core.fsmonitor`` then ran on the next ``git status``). The
+    ``.git `` / ``.git.`` / ``.git::$DATA`` spellings fold the same way.
+    """
+
+    return any(_guard_key(part) == name for part in path.replace("\\", "/").split("/"))
+
+
 def _write_into_git(event: ToolCallHookEvent) -> str | None:
     path = _path_from_event(event)
     if not path:
         return None
-    parts = path.replace("\\", "/").split("/")
-    if ".git" in parts:
+    if _has_component(path, ".git"):
         return f"[guardrail] refusing write inside .git/: {path}"
     return None
 
@@ -194,8 +206,7 @@ def _write_into_node_modules(event: ToolCallHookEvent) -> str | None:
     path = _path_from_event(event)
     if not path:
         return None
-    parts = path.replace("\\", "/").split("/")
-    if "node_modules" in parts:
+    if _has_component(path, "node_modules"):
         return f"[guardrail] refusing write inside node_modules/: {path}"
     return None
 
@@ -204,8 +215,7 @@ def _write_into_pycache(event: ToolCallHookEvent) -> str | None:
     path = _path_from_event(event)
     if not path:
         return None
-    parts = path.replace("\\", "/").split("/")
-    if "__pycache__" in parts:
+    if _has_component(path, "__pycache__"):
         return f"[guardrail] refusing write inside __pycache__/: {path}"
     return None
 
