@@ -1283,6 +1283,20 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A steering or follow-up line shows up in the transcript where the model read
+  it (#668, ADR-0287, ADR-0119).** A line sent with Enter (steer) or `Alt+Enter`
+  (follow-up) while the model was answering was echoed at once, so it landed in
+  the middle of the answer still streaming — or above a short answer — although
+  the model only read it after the answer, and the session recorded it there.
+  It now waits under the answer as `Steering: …` / `Follow-up: …` (with the
+  `!` commands run during the turn) and moves into the transcript when the model
+  takes it: after the answer, or after a tool's result. Steering lines are listed
+  first, the order the model takes them, with a blank row above them and
+  `↳ Alt+Up to edit all queued messages` under them while the screen has a row
+  to spare for each: on a terminal too short for the whole answer still
+  streaming, its newest lines keep those rows. `Alt+Up` and `Esc` take queued
+  lines back out of that list along with the queue.
+
 - **While aelix is stopped, a `!` line says it will be refused, and a refused one
   shows its command (#682, ADR-0289).** After a `/reload` whose rebuild and
   restore both failed, every `!` line is refused, but the row under a `!` line

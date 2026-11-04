@@ -357,28 +357,29 @@ class ShellLane:
     # === drawing ============================================================
 
     def _redraw(self) -> None:
-        self._show(self._rows())
+        self._show(self.rows())
 
-    def _rows(self) -> list[str]:
-        drawn = [b for b in self._blocks if b.pending and not b.committed]
-        shown = [b for b in drawn if b.state != "queued"]
-        shown += [b for b in drawn if b.state == "queued"]
-        if not shown:
+    def rows_wanted(self) -> int:
+        """The rows the blocks would take, none dropped (#668: the queued lines
+        drawn above them get the rest of the eight, and at least three)."""
+
+        return sum(len(group) for group in self._groups())
+
+    def rows(self, limit: int = _PENDING_MAX_ROWS) -> list[str]:
+        """The blocks' rows in the pending area, at most *limit* of them (#668:
+        the eight less the rows the queued lines above take)."""
+
+        groups = self._groups()
+        if not groups:
             return []
-        theme = self._theme_now()
-        stopped = _is_stopped(self._current_harness())
-        groups = [
-            [_command_line(block, _pending_note(block, stopped), theme, first_line_only=True)]
-            + self._preview(block)
-            for block in shown
-        ]
         rows = [row for group in groups for row in group]
-        if len(rows) > _PENDING_MAX_ROWS:
+        if len(rows) > limit:
             # Whole blocks, the oldest first, so no output is shown without its
             # command line (verify R1V5). The newest block always fits: it is at
-            # most its command line and ``_PENDING_OUTPUT_ROWS`` rows.
+            # most its command line and ``_PENDING_OUTPUT_ROWS`` rows, and the
+            # rows above leave at least five (``queued_messages._QUEUED_MIN_ROWS``).
             kept: list[list[Text]] = []
-            room = _PENDING_MAX_ROWS - 1
+            room = limit - 1
             for group in reversed(groups):
                 if len(group) > room:
                     break
@@ -390,6 +391,22 @@ class ShellLane:
             rows += [row for group in kept for row in group]
         width = self._width_now()
         return [_ansi_row(row, width) for row in rows]
+
+    def _groups(self) -> list[list[Text]]:
+        """Each block drawn in the pending area: its command line, then its output."""
+
+        drawn = [b for b in self._blocks if b.pending and not b.committed]
+        shown = [b for b in drawn if b.state != "queued"]
+        shown += [b for b in drawn if b.state == "queued"]
+        if not shown:
+            return []
+        theme = self._theme_now()
+        stopped = _is_stopped(self._current_harness())
+        return [
+            [_command_line(block, _pending_note(block, stopped), theme, first_line_only=True)]
+            + self._preview(block)
+            for block in shown
+        ]
 
     def _preview(self, block: ShellBlock) -> list[Text]:
         if block.failure is not None:
