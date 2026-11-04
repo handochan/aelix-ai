@@ -1283,6 +1283,25 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An RPC `abort` sent together with `new_session`, `switch_session`, `fork`
+  or `clone` gives the cancelled prompt back (#684, ADR-0286).** RPC runs each
+  command at once, so the session change started while the aborted turn was
+  still ending and took it apart with an abort of its own, which keeps the
+  input: no `input_withdrawn` came, the session left behind ended with the
+  cancelled prompt, and a `clone` copied it. The session change now waits for
+  that turn to give its input back first. Sent after the `abort` response, or
+  in the TUI, where `/new` is read only once the prompt is back, it already
+  worked. An `abort` (or Esc) that lands while the prompt is accepted but its
+  turn has not started yet — an extension's `input` or `before_agent_start`
+  handler still running — was dropped when the turn started, so the prompt went
+  to the model anyway and a session change waited for the whole answer; that
+  turn now ends as it starts, gives the prompt back and sends nothing. An
+  extension's `ctx.abort()` or `ctx.shutdown()` made there, and a quit or a
+  SIGTERM at that moment, now end it before any request too, but keep the
+  prompt on the session, unanswered. A session change with no `abort` at that
+  moment no longer waits for an answer either: the prompt stays on the session
+  left behind, unanswered.
+
 - **A steering or follow-up message waiting in the queue is no longer lost on
   `/reload` or a session change (#681, ADR-0286, ADR-0289).** Lines you queue
   stay queued when the turn they waited for ends in an error, and RPC

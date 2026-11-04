@@ -210,6 +210,10 @@ custom message you queued for the next turn is not given back: a swap drops it w
 old session, as pi does. A line queued from a `session_shutdown` handler goes back to the
 TUI or the RPC host after the teardown, on an event your handlers no longer receive.
 
+A `ctx.abort()` or `ctx.shutdown()` made in an `input` or `before_agent_start` handler,
+like a quit or a SIGTERM while one runs, ends the turn before any request is sent: the
+prompt stays on the session, unanswered. An Esc there withdraws it, as above.
+
 A `model_select` or `thinking_level_select` handler runs after the change: the
 model or level is already in force. Raising there does not undo it. The command
 that made the switch (`/model`, `/thinking`, `/settings`, the pick after

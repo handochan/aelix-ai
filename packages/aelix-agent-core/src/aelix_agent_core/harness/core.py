@@ -1512,6 +1512,10 @@ class AgentHarness:
         self._idle_event.clear()
         claim = self._claim = object()
         self._turn_refusal = _refused_by
+        # #684 — from here an abort is this prompt's own: one made while an
+        # ``input`` or ``before_agent_start`` handler still runs ends the turn as
+        # it starts (:meth:`_run`) instead of being cleared there (#336).
+        self._abort_requested = self._withdraw_requested = False
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
@@ -5579,11 +5583,14 @@ class AgentHarness:
         # defensive ``self._phase = "turn"`` either — it would mask a nested
         # compaction that failed to hand "turn" back.
         #
-        # The abort flag is still cleared here (#336 owns what an abort made
-        # before this point should do); an abort made after it survives this
-        # run, which is what the tail's checks in ``prompt()`` read.
-        self._abort_requested = False
-        self._withdraw_requested = False
+        # The abort flag is still cleared here for a re-run (the tail read it just
+        # before); an abort made after it survives this run, which is what the
+        # tail's checks in ``prompt()`` read. #684 — not for the first run when
+        # one was made since the prompt began (``prompt()`` cleared any older
+        # one): see ``aborted_before`` below.
+        if pending_inputs is None or not self._abort_requested:
+            self._abort_requested = False
+            self._withdraw_requested = False
         uncommitted_inputs = list(pending_inputs or [])
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
@@ -5775,6 +5782,11 @@ class AgentHarness:
                             _log.debug("listener raised", exc_info=True)
                     # 4) Close recovery before tools or later responses (#197).
                     await self._close_recovered_retry(final_message)
+                    # #684 — an abort made before this run's task existed ends it
+                    # here, once the last of its inputs is in: the cancel
+                    # ``abort()`` would have sent, before anything is asked of the model.
+                    if aborted_before and not uncommitted_inputs:
+                        raise asyncio.CancelledError
                     # 5) Return the replacement for the loop's identity swap
                     #    into context/new/state messages. The hook reduction
                     #    already ran in step 1; do not fan out a second time.
@@ -5860,6 +5872,15 @@ class AgentHarness:
                             model=self._state.model,
                         )
                     )
+                # #684 — an abort made since the prompt began and before this
+                # task exists (an ``input`` or ``before_agent_start`` handler, the
+                # context read above: #336's window) has no task to cancel. The
+                # first run then commits its inputs and ends there (``emit``), as
+                # a turn ``abort()`` cancelled before its first request does — an
+                # Esc takes them back out, any other abort keeps them — and
+                # nothing is sent. Cleared, the turn went to the model, and a swap
+                # waiting for the Esc's withdraw waited for its whole answer.
+                aborted_before = pending_inputs is not None and self._abort_requested
                 # Sprint 3c §C.2 — wrap the loop in a task so abort() can
                 # cancel it. We await the task (not the coroutine directly)
                 # and surface CancelledError as the expected abort path.
@@ -6208,6 +6229,19 @@ class AgentHarness:
         await self._emit_input_withdrawn([], prompt_withdrawn=False)
         with contextlib.suppress(AgentHarnessError):
             await self._emit_queue_update()
+
+    @property
+    def withdraw_pending(self) -> bool:
+        """Aelix-additive (#684): a turn is still ending that an Esc asked to give its input back.
+
+        ``abort(withdraw_unanswered=True)`` (or ``abort_retry``'s) has been made
+        and the turn it cancels has not unwound yet. A session swap waits for it
+        (:meth:`wait_for_idle`) before it reads or tears down this session: its
+        ``dispose`` would abort again with the default, and the last abort wins
+        (ADR-0286 §2), so the input stayed and no ``input_withdrawn`` went out.
+        """
+
+        return self._phase != "idle" and self._withdraw_requested
 
 
 # === AgentEvent → HookEvent mapping ===
@@ -6608,7 +6642,7 @@ class _SummaryRetry:
     while a compaction or a branch summary holds the harness. Under a
     prompt's claim (the threshold and overflow compactions) an abort of that
     prompt made earlier counts too: ``_abort_requested`` is the prompt's own
-    there (``_run`` clears it), unlike in a public ``compact()`` or
+    there (``prompt()`` and ``_run`` clear it), unlike in a public ``compact()`` or
     ``navigate_tree()``, where it may still describe a prompt that already
     returned. Once a request fails and is not retried, its own failure
     propagates unchanged, exactly as before #409.
