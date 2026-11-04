@@ -1693,7 +1693,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:411-411": [
    "self.parsed.__dict__.update(copy.deepcopy(self.baseline).__dict__)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py:86-98": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py:89-101": [
    "# The reason, CORRECTED — the example this comment carried for a long time is",
    "# false, and it was copied into #204, ``permission.py``, two test docstrings",
    "# and two specs. ``Remove-Item -Recurse -Force C:\\`` and ``del /s /q C:\\Windows``",
@@ -2745,24 +2745,27 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:41-41": [
    "last_line_partial: bool = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1149-1151": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1016-1016": [
+   "def _format_truncation_notice("
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1245-1247": [
    "operations: BashOperations = opts.get(",
    "\"operations\"",
    ") or create_local_bash_operations(opts.get(\"shell_path\"))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:151-151": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:155-155": [
    "def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:221-221": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:225-225": [
    "class BashOperations(Protocol):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:232-232": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:236-236": [
    "async def exec("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:346-346": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:350-350": [
    "**containment_spawn_kwargs(new_session=True),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:560-575": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:564-579": [
    "async def _watch_signal() -> None:",
    "\"\"\"End the tree when the abort signal fires.",
    "",
@@ -2772,11 +2775,8 @@
    "loop thread before ``_wait``'s ``to_thread`` callback can resume the",
    "coroutine below — including ``_end_the_tree``'s blocking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:64-64": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:68-68": [
    "# Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB."
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:920-920": [
-   "def _format_truncation_notice("
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:312-312": [
    "cmd.extend([pattern, base])"

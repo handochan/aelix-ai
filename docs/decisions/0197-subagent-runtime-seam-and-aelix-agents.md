@@ -397,6 +397,20 @@ is unchanged in effect: the bundled `agent` object carries `delegation` provenan
 the ladder still returns `None` for it in every posture. A tool that is merely *named*
 `agent` no longer gets that pass.
 
+#### Note (2026-11-03, ADR-0288, #657)
+
+The AUTO row above (`bash` tree-sitter classification) now reads a command's
+ARGUMENTS, not just its name, so more `bash` forms resolve to ASK: every `git
+-c`/`-C`/`--git-dir`/`GIT_DIR`, a `VAR=value` prefix, `git config` writes,
+`ls-remote`, `env <cmd>`, `rg --pre`, `uniq in out`, `tree -o`, `yq -i`, `file
+-C`. In a headless child an ASK reaches the headless row and is **blocked**
+(`headless_default="block"`), exactly as the §(e) clamp intends — measured in
+`tests/builtin/test_classifier_arguments_657.py`. Nothing in the ladder changes;
+only the AUTO verdict the row computes is tighter. Review round 1 (2026-11-04)
+tightened it again (statement assignments, `git --bare`, abbreviated and
+escaped options) and also loosened it for reads the first commit over-asked
+(`git branch -av`, `git config user.name`, `git remote get-url`); ADR-0288.
+
 ### (f) Project-scoped identity consent — the model door is fail-closed
 
 `SubagentRuntime.resolve_profile(name_or_path, *, allow_project: bool = False)`
