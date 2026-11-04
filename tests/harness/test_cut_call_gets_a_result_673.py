@@ -1035,14 +1035,14 @@ async def test_a_flood_that_fills_the_disk_keeps_the_result(
     threads: list[threading.Thread] = []
     wrote = asyncio.Event()
     loop = asyncio.get_running_loop()
-    real_debug = bash_module._log.debug
+    real_debug = bash_module._LOG.debug
 
     def debug(message: str, *args: Any, **kwargs: Any) -> None:
         real_debug(message, *args, **kwargs)
         if "full output failed" in message:
             loop.call_soon_threadsafe(wrote.set)
 
-    monkeypatch.setattr(bash_module._log, "debug", debug)
+    monkeypatch.setattr(bash_module._LOG, "debug", debug)
     monkeypatch.setattr(bash_module.Path, "open", lambda *_a, **_k: _Full())
     cut, text = await _cut_flood(tmp_path, [b"y\n" * 10_000])
     await asyncio.wait_for(wrote.wait(), timeout=5)
