@@ -62,6 +62,8 @@ from aelix_ai.utils._process_tree import run_contained
 from aelix_ai.utils.terminal_text import contains_steering_chars
 from prompt_toolkit.completion import Completer, Completion
 
+from aelix_coding_agent.tui.input_marks import shell_sigil
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 
@@ -172,15 +174,30 @@ def _extract_mention(text_before_cursor: str) -> _Mention | None:
     return _Mention(prefix=prefix, quoted=quoted, replace_len=n - start)
 
 
+def _file_mention(text_before_cursor: str) -> _Mention | None:
+    """The ``@`` mention the file menu completes, or ``None``.
+
+    None on a line the input draws in shell mode (#670, ADR-0287): the shell gets
+    ``@path`` as literal text, so a completed reference names no file there, and
+    the input draws no reference in that mode either. Shell mode is a property of
+    the line's start (:func:`~.input_marks.shell_sigil`), which the text before
+    the cursor always holds once there is a mention to complete.
+    """
+
+    if shell_sigil(text_before_cursor):
+        return None
+    return _extract_mention(text_before_cursor)
+
+
 def wants_completion(text_before_cursor: str) -> bool:
     """True when the cursor is in a completable context: a ``/`` slash command
     (line start) or an ``@file`` mention token (including a quoted ``@"…`` token
-    that contains spaces). Drives ``complete_while_typing`` so ordinary prose
-    types uninterrupted."""
+    that contains spaces) outside shell mode. Drives ``complete_while_typing`` so
+    ordinary prose types uninterrupted."""
 
     if text_before_cursor.startswith("/"):
         return True
-    return _extract_mention(text_before_cursor) is not None
+    return _file_mention(text_before_cursor) is not None
 
 
 def _fuzzy_score(pattern: str, candidate: str) -> int | None:
@@ -904,7 +921,8 @@ class FileMentionCompleter(Completer):
 
     Triggered when an ``@`` mention is under the cursor (anywhere in the line — pi
     completes the token under the cursor, not just at line start), including a
-    quoted ``@"path with spaces"`` token. The inserted value is the path text; a
+    quoted ``@"path with spaces"`` token — but not on a ``!`` / ``!!`` line, which
+    the shell reads literally (#670). The inserted value is the path text; a
     directory gets a trailing ``/`` so the user can drill in, and a path with a
     space is inserted quoted. NO file content is read or expanded — that matches
     pi interactive-mode behavior (the model reads the file via its own tools).
@@ -947,7 +965,7 @@ class FileMentionCompleter(Completer):
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
     ) -> Iterable[Completion]:
-        mention = _extract_mention(document.text_before_cursor)
+        mention = _file_mention(document.text_before_cursor)
         if mention is None:
             return
         try:
@@ -1082,7 +1100,7 @@ class OffLoopFileMentionCompleter(Completer):
     async def get_completions_async(
         self, document: Document, complete_event: CompleteEvent
     ) -> AsyncGenerator[Completion, None]:
-        if _extract_mention(document.text_before_cursor) is None:
+        if _file_mention(document.text_before_cursor) is None:
             return
         completions = await asyncio.to_thread(
             lambda: list(self.completer.get_completions(document, complete_event))

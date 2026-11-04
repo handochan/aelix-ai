@@ -9,7 +9,8 @@ with three more owner decisions: a `!` block run during a turn waits in a
 pending area under the stream (D6), Alt+Enter on a `!` line during a turn queues
 a shell command that runs after it (D6), and the default theme's footer keeps
 `grey70`, a light terminal being the `light` theme's (D8).
-Amended 2026-11-04 by dated notes: #667 (D2, a paste beginning with `/`).
+Amended 2026-11-04 by dated notes: #667 (D2, a paste beginning with `/`), #670
+(D4 and Limits, no `@` menu in shell mode).
 Date: 2026-11-03
 Issue: #596. The prototype hand-back, with what pi and Claude Code do and the
 three options: `.omc/specs/596-proto-report.md`; the grids the owner compared:
@@ -26,7 +27,8 @@ ADR-0023 (an outside writer takes the drain lock: `AgentHarness.idle_write`)
 pi: `earendil-works/pi@9c9ce8547` (2026-11-03). Claude Code: the shipped 2.1.314
 binary's embedded JS, read by the prototype (nothing recalled).
 Tests: `tests/tui/test_input_marks_596.py`, `tests/tui/test_shell_mid_turn_596.py`,
-`tests/harness/test_idle_write_596.py`, `tests/tui/test_paste_is_not_a_command_667.py`;
+`tests/harness/test_idle_write_596.py`, `tests/tui/test_paste_is_not_a_command_667.py`,
+`tests/tui/test_no_at_menu_in_shell_mode_670.py`;
 the rows the frame moves in `tests/tui/test_bottom_pin_632.py`,
 `tests/tui/test_input_box_height.py` and `tests/tui/test_input_hidden_on_modal.py`.
 
@@ -112,6 +114,12 @@ prompt has a line above and below it.
    whitespace, or a quoted `@"…"`; `foo@bar` is not one, a bare `@` is left alone).
    Nothing is looked up while drawing. References are not coloured in shell mode:
    the shell gets `@path` as literal text. Under `NO_COLOR` they are underlined.
+   *2026-11-04 note (#670, the owner's decision (a)):* nor does the `@` menu open
+   in shell mode, as it is typed or on Tab (`completion._file_mention` reads
+   shell mode through `shell_sigil`, as the lexer does): `!cat @READ` + Tab put
+   `@README.md` into the command, which ran `cat @README.md` ("No such file or
+   directory") and sent the failure to the model. Tab completing a path in a
+   shell line, as pi's does without an `@`, is not part of this.
 
 5. **A line above and below the input.** The theme's `dim` normally, its `shell`
    colour in shell mode; under `NO_COLOR`, where that colour is dropped, the lines
@@ -303,7 +311,8 @@ prompt has a line above and below it.
 - Resizing the terminal while the completion menu is open can leave rows of it on
   the screen until the next repaint of those rows (verify V8; worse on the base).
 - `@` completion still runs in shell mode and inserts a literal `@path` into the
-  command. A follow-up.
+  command. A follow-up. *2026-11-04 note (#670):* no longer — the `@` menu does
+  not open in shell mode (D4). A shell line has no path completion at all.
 - Opening the completion menu on a pinned screen scrolls the last rows of the transcript
   into the scrollback, and closing it leaves a blank band above the input until the next
   print, as a modal does. Its `(n/N)` counter still shows only once the list fits or is

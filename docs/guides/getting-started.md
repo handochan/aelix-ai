@@ -493,6 +493,8 @@ paste as its argument.
 
 A file reference such as `@src/main.py` or `@"my notes.md"` is drawn in the
 theme's `accent` colour as you type it. Under `NO_COLOR` it is underlined instead.
+In shell mode an `@` is plain text for the shell, so it is neither coloured nor
+completed: the `@` file menu does not open on a `!` line.
 The status line under the input is drawn a little dimmer than your text, so it
 reads as a layer under the input. Your theme sets both colours (the `accent` and
 `statusline` roles, and `shell` for shell mode; see

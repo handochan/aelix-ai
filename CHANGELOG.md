@@ -1283,6 +1283,14 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The `@` file menu no longer opens on a `!` line (#670, ADR-0287).** On a line
+  the input draws in shell mode, `!cat @READ` + Tab put `@README.md` into the
+  command, which then ran `cat @README.md` and failed with "No such file or
+  directory" — and that failure reached the model. The shell gets `@path` as
+  literal text, which is why shell mode already left it uncoloured; the menu now
+  stays closed there too, as you type and on Tab. A prompt line completes as
+  before.
+
 - **A long paste whose first line is a slash command is sent to the model, not run
   (#667, ADR-0287).** A paste of 6 or more lines (or 1000 or more characters) is
   shown as `[Pasted text #1 +N lines]`, but Enter read the pasted text as a
