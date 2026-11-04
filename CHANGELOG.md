@@ -3249,6 +3249,15 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` no longer refuses a command only because it discards output to
+  `/dev/null` (#678).** `/dev` is a protected write prefix, so a write redirect
+  anywhere under it was DENY — which caught `/dev/sda` as intended but also
+  `rg foo src 2>/dev/null`, `git log … 2>/dev/null | head` and `ls >/dev/null`,
+  blocking common reads outright under `auto`. A write redirect to exactly
+  `/dev/null`, `/dev/stdout` or `/dev/stderr` is now ALLOW as a redirect (it
+  changes no file); the command's own verdict still applies, so `rm -rf /
+  >/dev/null` stays DENY, and any other `/dev` target (`/dev/sda`, …) stays
+  DENY.
 - **`auto` now refuses `echo … &>> ~/.ssh/authorized_keys` like the `>>` form
   (#677).** The classifier's write-redirect set listed `>`, `>>`, `&>`, `>&`
   and `>|` but not `&>>` (append stdout and stderr, bash 4+/zsh), so a `&>>`
