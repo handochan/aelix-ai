@@ -96,7 +96,7 @@ from aelix_coding_agent.tui.descriptors import (
 )
 from aelix_coding_agent.tui.ext_widgets import apply_manifest_widgets
 from aelix_coding_agent.tui.footer_data import AelixFooterData
-from aelix_coding_agent.tui.input import ParsedInput, parse_input_line
+from aelix_coding_agent.tui.input import ParsedInput
 from aelix_coding_agent.tui.input_marks import SubmittedLine, classify_submitted
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
@@ -3290,8 +3290,9 @@ async def run_tui(
     # tasks alive until they finish (same pattern as context_usage_tasks).
     queue_tasks: set[asyncio.Task[None]] = set()
 
-    def _enqueue(kind: str, text: str) -> None:
+    def _enqueue(kind: str, line: str) -> None:
         label = "Steering" if kind == "steer" else "Follow-up"
+        text = str(line)  # the harness and the echo take the text alone
 
         async def _run() -> None:
             # Late-steer race (W4 code-review): the chrome fired this only while
@@ -3308,7 +3309,9 @@ async def run_tui(
             if not out_chrome.running or running_command["cancel"] is not None:
                 # #596 — a line steered is not a shell line, whatever its text
                 # starts with (a collapsed paste can begin with ``!``, verify V1).
-                parsed = parse_input_line(text)
+                # #667 — and it keeps what the input drew: a collapsed paste
+                # beginning with ``/quit`` stays a prompt, a typed ``/quit`` a quit.
+                parsed = classify_submitted(line)
                 if parsed.kind in ("bash", "bash_transient"):
                     parsed = ParsedInput("prompt", text.strip())
                 out_chrome.submit_line(SubmittedLine(text, parsed))
@@ -4629,7 +4632,9 @@ async def _input_loop(
         # (a bare /x is NOT sent to the model). quit/exit/reload are already
         # handled above via parse_input_line (which stays PURE for cli/repl.py);
         # their metadata-only registry entries never reach this branch.
-        if parsed.kind == "prompt" and parsed.text.startswith("/"):
+        # #667 — a line that began with a collapsed paste is not a command,
+        # whatever the paste begins with (``literal``): no name was on screen.
+        if parsed.kind == "prompt" and parsed.text.startswith("/") and not parsed.literal:
             command = match_command(parsed.text, command_ctx.commands)
             if command is not None and command.handler is not None:
                 # args = the text after the command word (Sprint 6h₁₂d). The

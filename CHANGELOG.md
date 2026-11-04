@@ -1283,6 +1283,18 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A long paste whose first line is a slash command is sent to the model, not run
+  (#667, ADR-0287).** A paste of 6 or more lines (or 1000 or more characters) is
+  shown as `[Pasted text #1 +N lines]`, but Enter read the pasted text as a
+  command: a paste whose first line was `/quit` closed aelix, `/new` started a new
+  session, `/clear` wiped the transcript, `/export` wrote a file named after the
+  pasted lines, `/name` named the session after them, an extension command or a
+  template ran with the pasted lines as its argument, and a stack trace beginning
+  `/Users/…` was dropped as "Unknown command". A line that begins with a long
+  paste is now a prompt whatever the paste begins with, as it is drawn — the
+  rule a paste beginning with `!` already followed. A command you type before a
+  paste (`/name [Pasted text #1 +7 lines]`) still takes the paste as its
+  argument, and a short paste is still inserted as typed text.
 - **A tool's result now carries the tool's name (#686).** Google's `functionResponse.name` went
   out empty for every result a tool produced, and a Gemini model gets no id on it either, so
   nothing said which call a response answered. An OpenAI-compatible provider marked

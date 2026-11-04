@@ -25,6 +25,9 @@ class ParsedInput:
 
     kind: InputKind
     text: str = ""
+    #: A ``prompt`` whose text begins with ``/`` but is not a command: the ``/``
+    #: came from a collapsed paste, so no command name was on screen (#667).
+    literal: bool = False
 
 
 def parse_input_line(line: str) -> ParsedInput:
