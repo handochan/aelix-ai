@@ -94,7 +94,7 @@ async def test_the_next_request_carries_the_real_results(tmp_path: Path, way: st
 async def test_real_read_and_ls_stay_while_a_third_call_runs(tmp_path: Path) -> None:
     """The batch the issue measured, with a fake in place of the grep held on a FIFO."""
 
-    (tmp_path / "notes.txt").write_text("NOTES-CONTENT\n")
+    (tmp_path / "notes.txt").write_bytes(b"NOTES-CONTENT\n")
     reached = asyncio.Event()
     tools = [
         create_read_tool(str(tmp_path)),
@@ -390,11 +390,13 @@ async def test_every_result_a_hook_holds_needs_its_own_cancel_and_the_turn_still
     task = run.begin()
     await asyncio.wait_for(reached.wait(), timeout=5)
     await until(lambda: run.ended() == ["c1", "c2"])
-    for _ in range(4):
+    # Each cancel has to reach the next hold before the next one lands: two inside one step of
+    # the task are one cancel, and on Windows up to 3.12 ``sleep(0.01)`` can be that short.
+    for _ in range(100):
         if task.done():
             break
         await run.harness.abort()
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.02)
     await settle(task)
     assert parked[:2] == ["c1", "c2"]
 

@@ -143,7 +143,15 @@ async def settle(task: asyncio.Task[Any]) -> None:
     """The prompt's end: an abort returns, an outer cancel raises. Neither hangs."""
 
     await asyncio.wait([task], timeout=10)
-    assert task.done(), "the turn did not end"
+    ended = task.done()
+    # A turn left held would hold the loop's teardown too, which cancels once and waits: the
+    # failure below would become the CI job's whole time limit, on the next test's name.
+    for _ in range(1000):
+        if task.done():
+            break
+        task.cancel()
+        await asyncio.sleep(0)
+    assert ended, "the turn did not end"
     if not task.cancelled():
         task.result()
 
