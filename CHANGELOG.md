@@ -1283,6 +1283,22 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/new`, `/fork`, `/clone` or `/import` that fails no longer leaves a new
+  session file behind (#680, ADR-0289).** Each one made its session file before
+  building the session for it. When that build failed and aelix said "stayed on
+  this session", the file stayed — the newest in the folder, so `aelix -c`
+  opened it (an empty conversation after `/new`, a copy after `/clone`) instead
+  of the session you were still on, and `/resume` listed it. The file a failed
+  swap made is now removed, whether aelix kept the session or stopped, and
+  before its lock is let go; an `/import` over a session that was already there
+  leaves that session. So is the file of a swap that could not take its lock at
+  all (an unusable `.jsonl.lock` beside it); one another terminal opened first
+  stays theirs. On Windows a delete refused because something holds the new
+  file for a moment is retried for about a second; one that still fails is
+  logged and the file stays. A `/resume` that forked a session open in another
+  terminal, RPC `new_session`, `fork` and `clone`, and an extension's
+  `ctx.new_session()` and `ctx.fork()` do the same.
+
 - **An extension that calls `sys.exit()` no longer ends aelix (#664).** A
   `setup()` (or the import of an extension's module) that raised `SystemExit`
   went past the loader: `aelix -p` ended with no output at all and exit 1, the

@@ -79,6 +79,7 @@ import contextvars
 import inspect
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
@@ -128,6 +129,11 @@ if TYPE_CHECKING:
 SessionContendedChoice = Literal["fork", "read_only", "cancel"]
 
 _log = logging.getLogger(__name__)
+
+#: #680 — seconds to wait before each retry of a Windows delete refused with
+#: ``PermissionError``, about one second in all: ``session/fs.py``'s
+#: ``_REPLACE_RETRY_DELAYS`` for a rename, for the same reason.
+_DISCARD_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.3, 0.35)
 
 #: #663 (ADR-0289 D7) — the transition (``AgentSessionRuntime._transition``) the
 #: running code is inside, if any. A context variable, so the tasks a transition
@@ -526,7 +532,7 @@ class AgentSessionRuntime:
             return None
         return candidate
 
-    def _writer_lock_for_new_file(self, session: Session) -> SessionWriterLock | None:
+    async def _writer_lock_for_new_file(self, session: Session) -> SessionWriterLock | None:
         """The lock for a session file this process has just created.
 
         Brand-new files cannot be contended, so this is a move of ownership
@@ -541,6 +547,12 @@ class AgentSessionRuntime:
         lock, installed nothing, and carried on writing: fail-open, silent,
         into a file someone else owns. It raises now. Nothing has been torn
         down at this point, so the caller keeps the session it already owns.
+
+        #680 — that file is then theirs and stays. A lock that cannot be taken
+        at all (a directory where the sidecar goes, no permission: the raise
+        :meth:`_acquire_writer_lock` makes) leaves it nobody's, so it goes, as
+        the file of a swap whose build failed does: no other terminal can have
+        opened it through that sidecar either.
         """
 
         if not self._manages_writer_lock:
@@ -548,7 +560,11 @@ class AgentSessionRuntime:
         path = session.session_file
         if path is None:
             return None
-        lock = self._acquire_writer_lock(path)
+        try:
+            lock = self._acquire_writer_lock(path)
+        except BaseException:
+            await self._discard_unadopted_file(path)
+            raise
         if lock is None:
             raise SessionError(
                 "storage",
@@ -575,6 +591,47 @@ class AgentSessionRuntime:
         if lock is None or lock is self._writer_lock:
             return
         lock.release()
+
+    async def _discard_unadopted_file(self, path: str | None) -> None:
+        """#680 — the file a failed swap made goes with it.
+
+        ``/new``, ``/fork``, ``/clone``, an ``/import`` copy and a contended
+        ``/resume``'s fork each make their target file before the build; a build
+        that ends "kept" or "stopped" left it behind — the newest file in the
+        folder, so ``aelix -c`` opened it instead of the session the user was told
+        they were still on. Removed only while this process is not running on it
+        (the swap failed before its harness went live), and by the caller before
+        it releases the lock it took (:meth:`_release_unadopted`), so no other
+        terminal can have opened it in between. pi writes no file until the
+        conversation has something in it (``session-manager.ts`` ``_persist``).
+
+        On Windows a file just written can be held for a moment (a scanner, the
+        indexer), and the delete is refused with ``PermissionError``: retried
+        for about a second, as ``session/fs.py``'s ``_replace`` retries a rename.
+        A delete that still fails is logged and the file stays.
+        """
+
+        if path is None:
+            return
+        live = self.session
+        if live is not None and live.session_file == path:
+            return
+        delays = iter(_DISCARD_RETRY_DELAYS)
+        while True:
+            try:
+                await self._fs.remove(path, force=True)
+                return
+            except Exception as exc:
+                held = isinstance(exc, PermissionError) and sys.platform == "win32"
+                delay = next(delays, None) if held else None
+                if delay is None:
+                    _log.warning(
+                        "removing the session file a failed swap made raised: %s",
+                        path,
+                        exc_info=True,
+                    )
+                    return
+            await asyncio.sleep(delay)
 
     def _install_writer_lock(self, lock: SessionWriterLock | None) -> None:
         """Adopt ``lock`` and let go of the previous one.
@@ -630,7 +687,7 @@ class AgentSessionRuntime:
             # brand-new file that somehow IS owned must fail closed rather
             # than hand back a ``None`` the caller cannot tell from "no
             # ownership to move".
-            return forked, self._writer_lock_for_new_file(forked)
+            return forked, await self._writer_lock_for_new_file(forked)
         # read_only — no lock at all. A shared-reader lock would exclude the
         # legitimate owner, which is the one situation this option exists for.
         return _Session(ReadOnlySessionStorage(opened.get_storage())), None
@@ -1220,6 +1277,7 @@ class AgentSessionRuntime:
             # a user an extension was about to overrule is not.
             target_lock: SessionWriterLock | None = None
             contended = False
+            forked: str | None = None
             if self._manages_writer_lock:
                 target_lock = self._acquire_writer_lock(path)
                 contended = target_lock is None
@@ -1258,6 +1316,10 @@ class AgentSessionRuntime:
                         return RuntimeReplaceResult(cancelled=True)
                     new_session = resolved
                     target_session_file = new_session.session_file or path
+                    # #680 — "fork and continue" made this file; the read-only
+                    # answer opened the other terminal's, which is not ours.
+                    if target_session_file != path:
+                        forked = target_session_file
 
                 await self._finish_session_replacement(
                     new_session,
@@ -1269,7 +1331,10 @@ class AgentSessionRuntime:
             except BaseException:
                 # The swap never adopted the lock, so this process is still on the
                 # old session and the target's kernel lock has no owner left.
-                self._release_unadopted(target_lock)
+                try:
+                    await self._discard_unadopted_file(forked)
+                finally:
+                    self._release_unadopted(target_lock)
                 raise
         await self._run_with_session(with_session)
         return RuntimeReplaceResult(cancelled=False)
@@ -1333,7 +1398,7 @@ class AgentSessionRuntime:
             # this never prompts; what it DOES do is move ownership, so the
             # session this terminal just walked away from becomes openable by
             # another one.
-            new_lock = self._writer_lock_for_new_file(new_session)
+            new_lock = await self._writer_lock_for_new_file(new_session)
             try:
                 await self._finish_session_replacement(
                     new_session,
@@ -1344,7 +1409,10 @@ class AgentSessionRuntime:
                     writer_lock=new_lock,
                 )
             except BaseException:
-                self._release_unadopted(new_lock)
+                try:
+                    await self._discard_unadopted_file(new_session.session_file)
+                finally:
+                    self._release_unadopted(new_lock)
                 raise
         await self._run_with_session(with_session)
         return RuntimeReplaceResult(cancelled=False)
@@ -1694,7 +1762,7 @@ class AgentSessionRuntime:
             # #137 — same as ``new_session``: the fork is a fresh file, so this
             # cannot contend, but the lock must follow us onto it and off the
             # file we forked away from.
-            new_lock = self._writer_lock_for_new_file(new_session)
+            new_lock = await self._writer_lock_for_new_file(new_session)
             try:
                 await self._finish_session_replacement(
                     new_session,
@@ -1704,7 +1772,10 @@ class AgentSessionRuntime:
                     writer_lock=new_lock,
                 )
             except BaseException:
-                self._release_unadopted(new_lock)
+                try:
+                    await self._discard_unadopted_file(new_session.session_file)
+                finally:
+                    self._release_unadopted(new_lock)
                 raise
         await self._run_with_session(with_session)
         return RuntimeReplaceResult(
@@ -1805,10 +1876,15 @@ class AgentSessionRuntime:
             # stored, so the kernel held it for the life of the process with no
             # object left to let go. A retried ``/import`` then hit its own
             # orphan and was told the destination was "open in another terminal".
+            copied: str | None = None
             try:
-                # Step 6 — copy when paths differ.
+                # Step 6 — copy when paths differ. #680: a copy that made the
+                # destination is this import's file, removed when it fails; one
+                # that replaced a session already there is not.
                 if resolved_path != destination_path:
+                    existed = await self._fs.exists(destination_path)
                     await self._fs.copy_file(resolved_path, destination_path)
+                    copied = None if existed else destination_path
 
                 # Step 7 — load metadata + cwd override.
                 metadata = await load_jsonl_session_metadata(
@@ -1841,7 +1917,10 @@ class AgentSessionRuntime:
                     writer_lock=import_lock,
                 )
             except BaseException:
-                self._release_unadopted(import_lock)
+                try:
+                    await self._discard_unadopted_file(copied)
+                finally:
+                    self._release_unadopted(import_lock)
                 raise
         return RuntimeReplaceResult(cancelled=False)
 
