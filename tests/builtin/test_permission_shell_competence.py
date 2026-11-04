@@ -172,7 +172,7 @@ async def test_powershell_removal_is_not_silently_allowed(resolved_shell) -> Non
     The name stays true and the body had to change. Its old claim —
     ``Remove-Item -Recurse -Force C:\\`` "matches no classifier table" — was a
     fact about this repo when only the bash grammar existed (the corrected
-    comment at bash_classifier.py:86-98 records that it really did fall to the
+    comment at bash_classifier.py:89-101 records that it really did fall to the
     unknown-command ASK, and that the mis-permissioning was elsewhere). Since
     slice 2 of #204 there IS a table that matches it: a recursive-force delete
     whose target is a drive root is DENY under the PowerShell dialect, so the
@@ -212,7 +212,7 @@ async def test_cmd_recursive_delete_is_not_silently_allowed(resolved_shell) -> N
     The counterpart of ``test_powershell_removal_is_not_silently_allowed``, and
     it corrects the same false premise: this command never DID auto-allow — it
     matched no table and fell to the unknown-command ASK (the corrected comment
-    at ``bash_classifier.py:86-98``). What changed is that there is now a table
+    at ``bash_classifier.py:89-101``). What changed is that there is now a table
     that matches it, so the user is never asked to approve it. ``del x`` without
     ``/s`` stays a prompt, deliberately (#204 F13).
     """

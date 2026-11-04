@@ -3249,6 +3249,78 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` now reads a command's arguments before running it, so a read-only
+  name whose arguments write or execute asks first (#657, ADR-0288).** The
+  AUTO-mode classifier allowed `git` by its subcommand name and the other
+  read-only commands by name alone, without looking at what followed. So under
+  `auto` — and for a delegated `auto`/`auto-accept-edits` child, which has no
+  one to ask — these ran or wrote with no prompt: `git config core.fsmonitor
+  ./x` (and `--global`, `core.hooksPath`, `core.sshCommand`, `alias.*`,
+  `include.path`), which sets a key that then executes a program on the next
+  `git status`; `git -c core.fsmonitor=./x status` and every other `git -c
+  <key>=<value>`, which does the same in one call; `git -C dir`, `--git-dir`,
+  `--work-tree` and a `GIT_DIR=` prefix, which point git at a folder someone
+  may have planted; `git ls-remote`, which starts an ssh / transport helper;
+  `git diff|log|show --output=` / `--ext-diff`; `git branch|tag` create /
+  delete / move, `git remote add|set-url|show`, `git reflog expire|delete`;
+  `env <cmd>` (so `env rm x` ran past the `rm` block); `rg --pre`, `uniq in
+  out`, `tree -o`, `yq -i`, `file -C`; and any `VAR=value` prefix such as
+  `LD_PRELOAD=…` or `PATH=.:$PATH`. Now each of these asks in the TUI and is
+  refused to a headless delegated child, while an ordinary read still runs
+  without a prompt: `git status`, `git log`, `git diff`, `git show`, `git
+  config --get`, `git branch`, `git tag`, `git remote -v`, `git reflog`, `git
+  --no-pager log`, `ls`, `cat`, `rg foo`, `env` (bare), `uniq in`, `tree`,
+  `file x`. Every `git -c` asks — there is no safe-key list, so `git -c
+  user.name=x log` asks too. Separately, the bash tool now exports
+  `safe.bareRepository=explicit` (git 2.38+) to the model's own `git`, so a
+  plain-named folder holding a planted `HEAD`/`config`/`objects`/`refs` is no
+  longer auto-discovered as a repository; an ordinary repo, a worktree, a
+  submodule and an explicitly named bare repo are unaffected, and the `!`
+  escape in the REPL and the TUI does not get it. `yolo`, and a plain `-p` run,
+  still run every command. RPC `permissions/evaluate` returns the same
+  verdicts. A review of the change then found ways past it, and closed them:
+  - a dangerous option written with a backslash, quotes or a line break inside
+    it (`git diff --out\put=x`), shortened (`--ext-dif`, `file --comp`), or
+    inside a group of short flags (`yq -Pi`, `tree -R`) now asks, and so does
+    any argument the shell fills in at run time (`$X`, `$(…)`), a `{a,b}`
+    list, or a `*` that a planted file name could turn into an option;
+  - `git --bare`, `uniq - out`, `uniq in -c` (macOS writes a file named `-c`),
+    `rg --hostname-bin`, `yq -s`, and `--output` on `git blame`, `rev-list`,
+    `shortlog` and `reflog` now ask;
+  - setting or clearing a variable as its own statement (`GIT_CONFIG_COUNT=0;
+    git status`, `export GIT_DIR=…`, `unset …`, `export -n …`) or inside an
+    expansion (`echo $((GIT_CONFIG_COUNT=0))`) now asks — each could switch
+    off the bare-repository protection above;
+  - `env rm -rf /` is now refused like `rm -rf /`, instead of asking;
+  - three older gaps the same review found are closed too: `find . -de\lete`
+    and `find -fprint0 out` ran unasked (the first deleted the folder), and a
+    command inside a here-document (`cat <<EOF` with `$(rm -rf ~)` in it), a
+    `<<<` string or a `<` file name ran unasked;
+  - reads the first change asked about run without a prompt again: `git config
+    user.name`, `git config -lz`, `git branch -av`, `git branch --contains HEAD
+    main`, `git tag -n`, `git tag -ln2`, `git remote get-url origin`, `git log
+    --grep --output` (a search for the text `--output`), `rg -e --pre`,
+    `uniq -cf 2 a`, `env -0`.
+  - a second review of the change closed four more ways past it: a shell that
+    assigns to a guard variable while it EXPANDS a word — a zsh `$path[GIT_DIR=x]`
+    subscript, a `test`/`[[` operand git evaluates (`test -v 'a[GIT_DIR=x]'`,
+    `[[ 1 -eq GIT_DIR=x ]]`), a `${GIT_DIR:=x}`, a `{GIT_DIR}<file` descriptor
+    name, or a `GIT_*` name anywhere — now asks; a here-document body tree-sitter
+    left unparsed (a tab-indented `<<-` or a space-indented line) and a
+    here-document whose first line continues into a pipe, a redirect or `&&`
+    (`cat <<EOF | sh`, `cat <<EOF > ~/.bashrc`) are read, as is a redirect
+    written before the command name (`> /etc/passwd echo`); a value-taking
+    option can no longer hide a dangerous one behind `--` (`git log
+    --decorate-refs -- --output=x`, `git blame -- f --output=x`, `tree -aI -- -o
+    V`, `file --mag -- -C`); and `env --ch dir rm -rf /` is refused like
+    `env -C`;
+  - and it stopped some over-asking: a print-only `declare -p` / `export -p` /
+    bare `export` / `declare -x` / `typeset -f`, `fd -tx`, `git ls-files *.md`
+    and the `${x%%=*}` / `[[ $1 == --help ]]` family run without a prompt
+    again, and `echo $(( i < 10 ))` still does. `$((X=0))` and `git diff *.py`
+    (a glob that could expand into a planted `--output=…`) still ask, and
+    `[[ $x -eq 1 ]]` now asks: the shell evaluates the value of `$x` as
+    arithmetic, so a value such as `GIT_DIR=x` assigns.
 - **`auto-accept-edits` and `auto` now ask before writing into a folder aelix
   loads from when a link, an `@` or a `..` hides it, and a delegated agent is
   refused it (#646, ADR-0281 D10).** The rule that keeps `.aelix/` and
