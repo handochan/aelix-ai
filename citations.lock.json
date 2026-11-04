@@ -3184,15 +3184,15 @@
   "tests/cli/test_pipe_robustness.py:500-500": [
    "proc = subprocess.run("
   ],
-  "tests/conftest.py:133-142": [
+  "tests/conftest.py:161-177": [
    "@pytest.fixture(autouse=True)",
-   "def _no_real_tool_downloads(tmp_path_factory, monkeypatch):",
-   "bin_dir = tmp_path_factory.mktemp(\"aelix_bin\")",
-   "monkeypatch.setattr(_tm, \"_bin_dir\", lambda: str(bin_dir))",
+   "def _no_real_tool_downloads(_per_test_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:",
+   "# Created on the first call, so the many tests that never resolve a tool",
+   "# create nothing; one that does gets a fresh, empty dir, as before.",
+   "bin_dir = _per_test_dir / \"bin\"",
    "",
-   "def _blocked(*_args, **_kwargs):",
-   "raise RuntimeError(\"network disabled in tests\")",
-   ""
+   "def _bin_dir() -> str:",
+   "bin_dir.mkdir(parents=True, exist_ok=True)"
   ],
   "tests/extensions/test_ep_manifest.py:1117-1117": [
    "assert \"sk-super-secret-value\" not in repr(res)"

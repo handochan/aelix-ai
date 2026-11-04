@@ -14,6 +14,13 @@ This autouse fixture points the agent dir at a fresh per-test tmp dir, so every
 TUI test gets an isolated, DEFAULT config — no pollution of the user's real
 config, and no dependence on it. Scoped to ``tests/tui`` (not global) so it does
 not perturb the CLI config tests that assert ``get_agent_dir``'s real default.
+
+A test that names ``tmp_path`` (as an argument, through a fixture or
+``usefixtures``) finds the dir at ``tmp_path / "agent"``, and several build
+paths under it. Any other test gets ``_per_test_dir / "agent"``
+(``tests/conftest.py``), including one that only calls
+``request.getfixturevalue("tmp_path")`` while it runs: asking for ``tmp_path``
+for each of them made each one list the whole basetemp (#459).
 """
 
 from __future__ import annotations
@@ -22,5 +29,10 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "agent"))
+def _isolate_agent_dir(request, _per_test_dir, monkeypatch):
+    if "tmp_path" in request.fixturenames:
+        base = request.getfixturevalue("tmp_path")
+    else:
+        base = _per_test_dir
+        base.mkdir(parents=True, exist_ok=True)  # the parent exists, as tmp_path did
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(base / "agent"))

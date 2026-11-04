@@ -2478,6 +2478,25 @@ unwritten. Add them with the next release.
   `--confcutdir` now stops the child at its own directory, and the gate runs in
   1.7-2.1 s in the full Windows suite. A new test checks that the child collects
   nothing above that directory. Users see no change.
+- **Tests: a test no longer pays for every test that ran before it (#459).**
+  Four autouse fixtures had pytest make a numbered directory for each test: the
+  tool bin dir for every test, the agent dir in `tests/model_registry`, and in
+  `tests/tui` and `tests/builtin` a `tmp_path` that about nine in ten of their
+  tests did not otherwise use. pytest finds the next number by listing the
+  whole basetemp, which keeps every such directory until the run ends, so each
+  test cost more than the one before. In the Windows junit of run 38433042416
+  the fastest tenth of the tests took 0.003 s at the start of the run and 0.07
+  to 0.1 s in its last fifth. These fixtures now name a directory of the test's
+  own with a counter under one directory made once per run, and create it only
+  where it is needed (the bin dir on its first use). A test that names
+  `tmp_path` (as an argument, through a fixture or `usefixtures`) still finds
+  its `tests/tui` or `tests/builtin` agent dir at `tmp_path / "agent"`. On CI's
+  Windows legs the pytest step took 25.8 to 33.8 minutes on this change,
+  against 41.4 to 53.2 on its parent, whose py3.11 leg ran into the step's
+  55-minute limit. On macOS, 4,558 tests (`tests/builtin`,
+  `model_registry`, `util`, `tools`, `settings_manager`, `session`, `core`)
+  spent 23.5 s in setup before and 2.1 s after, and the basetemp ended with
+  2,167 entries instead of 10,223. Users see no change.
 - **Quitting during file completion no longer leaves aelix running (#428).**
   The `@file` menu is collected in one background job, so repeated cancellation
   during shutdown cannot leave a second worker waiting forever on a queue.
