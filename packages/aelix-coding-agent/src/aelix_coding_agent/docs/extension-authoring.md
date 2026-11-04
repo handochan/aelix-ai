@@ -68,55 +68,34 @@ This is the worked example shipped at
 
 ### When the turn is stopped while your tool runs
 
-Esc, Ctrl+C, RPC `abort`, a signal and quitting all cancel the turn, and the cancel lands in
-your `execute` as `asyncio.CancelledError`. Let it through and the model reads an error result:
-`Cancelled: the user stopped the turn while this tool ran, so it may have partly run.` If your
-tool can say what it got done, catch the cancel and raise `ToolCancelled` with that instead, as
-the built-in `bash` does with what it printed:
+Esc, Ctrl+C, RPC `abort`, a signal and quitting cancel the turn, and the cancel lands in your
+`execute` as `asyncio.CancelledError`. Let it through and the model reads an error result saying
+the user stopped the turn and the tool may have partly run. If your tool can say what it got done,
+raise `aelix_ai.tools.ToolCancelled` instead, as `bash` does with what it printed:
 
 ```python
-import asyncio
-
-from aelix_ai.messages import TextContent
-from aelix_ai.tools import ToolCancelled, ToolResult
-
-
-async def _sync_execute(args, ctx) -> ToolResult:
-    done = 0
-    try:
-        for row in rows:
-            await write_row(row)
-            done += 1
-    except asyncio.CancelledError as cancel:
-        text = f"Wrote {done} of {len(rows)} rows before the turn was stopped."
-        raise ToolCancelled(ToolResult(content=[TextContent(text=text)])) from cancel
-    return ToolResult(content=[TextContent(text=f"Wrote {done} rows.")])
+try:
+    for row in rows:
+        await write_row(row)
+        done += 1
+except asyncio.CancelledError as cancel:
+    text = f"Wrote {done} of {len(rows)} rows."
+    raise ToolCancelled(ToolResult(content=[TextContent(text=text)])) from cancel
 ```
 
-`ToolCancelled` is still a cancellation: nothing swallows it and the turn ends. The result is
-always recorded as an error, even if you left `is_error` false. Build it without awaiting, because
-a second Esc can land in an await. `tool_result` handlers run on it with `is_error` true, so a
-handler that redacts output sees it before the context does; if a handler raises, or a second
-cancel lands in it, the model gets the default text and none of your output. The exception is a
-handler registered with `error_mode="continue"`: a raise there is swallowed before anything hears
-of it, and the output stays as it is, as for a finished call. Do not register a redactor that way.
+It is still a cancellation, so the turn ends, and it is always recorded as an error. Build it
+without awaiting: a second Esc can land in an await. `tool_result` handlers run on it with
+`is_error` true; if one raises, or a second cancel lands in it, the model gets the default text
+and none of your output. A handler with `error_mode="continue"` is the exception: its raise is
+swallowed and the output stays, so do not register a redactor that way.
 
-Do not catch the cancel and return. The turn still stops and what you returned is kept, but a
-tool that ignores the cancel holds the turn for the user's next Esc. In a parallel batch the Esc
-after that stops waiting for it: the model reads that it was stopped, and whatever it does from
-then on goes nowhere. In a sequential batch each Esc lands in it again.
+Do not catch the cancel and return, and do not call `uncancel()`. The task's cancel count is what
+says a stop came: `uncancel()` takes it back, and in a sequential batch the next call starts. A
+tool that ignores the cancel holds the turn until the next Esc; in a parallel batch that Esc stops
+waiting for it.
 
-Do not call `uncancel()` in a tool. The task's own cancel count is what says a stop came, so
-this takes the stop back: in a sequential batch the next call starts and the next request goes
-out.
-
-On a signal nobody is there to press Esc again, so the process aborts the turn, waits 2 seconds
-and aborts again. Async cleanup in your `finally` gets those 2 seconds, and a longer one is cut
-where it stands.
-
-A `CancelledError` your tool raises when nothing cancelled it, say by awaiting a future something
-else cancelled, is not a stop. It reads as any other exception does, `Tool 'x' raised
-CancelledError`, and the turn goes on.
+On a signal the process aborts, waits 2 seconds and aborts again, so async cleanup in your
+`finally` gets those 2 seconds.
 
 ### Your tool goes through the approval prompt
 

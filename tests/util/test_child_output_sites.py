@@ -105,7 +105,7 @@ async def test_the_tail_of_a_flood_the_bash_tool_cut_reads_as_ragged_too(
 ) -> None:
     """#673 (ADR-0290): over the cap the cut path reads only the tail, under the same claim."""
 
-    monkeypatch.setattr("aelix_coding_agent.tools.bash._CUT_WHOLE_READ_BYTES", 1000)
+    monkeypatch.setitem(create_bash_tool.__globals__, "_CUT_WHOLE_READ_BYTES", 1000)
     reached = asyncio.Event()
 
     class _Ops:

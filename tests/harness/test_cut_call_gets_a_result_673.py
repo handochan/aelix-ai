@@ -848,7 +848,7 @@ async def test_a_cut_commands_output_is_truncated_like_the_exit_path(tmp_path: P
 async def test_a_cut_at_the_cap_is_still_read_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("aelix_coding_agent.tools.bash._CUT_WHOLE_READ_BYTES", 400)
+    monkeypatch.setitem(create_bash_tool.__globals__, "_CUT_WHOLE_READ_BYTES", 400)
     printed = b"".join(b"%07d\n" % n for n in range(50))
     assert len(printed) == 400
     cut = await _cut_through_operations(tmp_path, _CutOps(printed), max_lines=3, max_bytes=90)
@@ -1060,7 +1060,7 @@ async def test_output_that_can_not_be_assembled_does_not_replace_the_cancel(
     def no_disk(_raw: str) -> str:
         raise OSError("no space left on device")
 
-    monkeypatch.setattr("aelix_coding_agent.tools.bash._write_full_output", no_disk)
+    monkeypatch.setitem(create_bash_tool.__globals__, "_write_full_output", no_disk)
     ops = _CutOps(b"".join(b"line %d\n" % n for n in range(1, 21)))
     tool = create_bash_tool(str(tmp_path), {"operations": ops, "max_lines": 3})
     task = asyncio.create_task(tool.execute({"command": "x"}, _no_ctx()))
