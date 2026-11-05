@@ -314,3 +314,134 @@ async def test_a_search_counts_the_mcp_row_it_shows(home: Path) -> None:
     assert any("demo-srv" in line for line in frame[2:])
     await _press(chrome, "escape")
     await asyncio.wait_for(task, timeout=2)
+
+
+# --- #683: a locked row that failed to load ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ("raise RuntimeError('cli boom')", "RuntimeError: cli boom"),
+        ("import sys; sys.exit(1)", "SystemExit: sys.exit(1)"),
+    ],
+)
+async def test_a_failed_e_extension_says_failed_and_its_load_error(
+    home: Path, body: str, error: str
+) -> None:
+    """#683: the ``-e`` lock's tag and line hid the load error a global row shows."""
+
+    from aelix_coding_agent.tui.selection_panel import _RED
+
+    ext = home / "agent" / "extensions"
+    ext.mkdir(parents=True)
+    (ext / "globalbroken.py").write_text(
+        "def setup(aelix):\n    raise RuntimeError('global boom')\n"
+    )
+    cli = home / "cli"
+    cli.mkdir()
+    (cli / "clibroken.py").write_text(f"def setup(aelix):\n    {body}\n")
+    (cli / "cliok.py").write_text("def setup(aelix):\n    pass\n")
+    loaded = await discover_and_load_extensions(
+        [str(cli / "clibroken.py"), str(cli / "cliok.py")], cwd=home, agent_dir=home / "agent"
+    )
+    chrome, task, _storage, _c = await _open(home, inventory=build_inventory(loaded))
+    seen: dict[str, tuple[str, str]] = {}
+    for _ in range(12):
+        frame = _frame(chrome)
+        cursor = next(line for line in frame if line.lstrip().startswith("▸"))
+        label = next(
+            (n for n in ("clibroken.py", "cliok.py", "globalbroken.py") if n in cursor), None
+        )
+        if label is not None and label not in seen:
+            raw = chrome.content.content.text().value.split("\n")
+            [state] = [r for r in raw if _SGR.sub("", r).strip().startswith(("Locked", "Saved"))]
+            seen[label] = (cursor.rstrip(), state)
+        if len(seen) == 3:
+            break
+        await _press(chrome, "down")
+    await _press(chrome, "escape")
+    await asyncio.wait_for(task, timeout=2)
+
+    row, state = seen["clibroken.py"]
+    assert row.endswith(" failed"), row
+    assert _SGR.sub("", state).strip() == (
+        f"Locked on: loaded by -e for this run · failed to load: {error}"
+    )
+    assert _RED in state
+    # The -e extension that loaded, and the failed global one, are as before.
+    row, state = seen["cliok.py"]
+    assert row.endswith(" -e"), row
+    assert _SGR.sub("", state).strip() == "Locked on: loaded by -e for this run"
+    assert _RED not in state
+    row, state = seen["globalbroken.py"]
+    assert row.endswith(" failed"), row
+    assert _SGR.sub("", state).strip() == "Saved on · failed to load: RuntimeError: global boom"
+
+
+def test_every_lock_kind_shows_a_load_error_it_carries() -> None:
+    """#683, the other run locks: a built-in that failed reads ``failed`` too."""
+
+    from aelix_coding_agent.core.resource_selection import (
+        ItemState,
+        Lock,
+        ResourceItem,
+        ScopeStatus,
+        Snapshot,
+    )
+    from aelix_coding_agent.tui.selection_panel import SelectionModel, plan_layout, render_panel
+
+    def item(key: str) -> ResourceItem:
+        return ResourceItem(
+            kind="extension", key=key, label=key, identities=(key,), group="g", group_label="G"
+        )
+
+    states = [
+        ItemState(
+            item("guardrail"),
+            True,
+            True,
+            None,
+            Lock(True, "always on (Guardrail gate)", tag="always on", kind="always_on"),
+            problem="RuntimeError: gate",
+        ),
+        ItemState(
+            item("agents"),
+            True,
+            False,
+            None,
+            Lock(False, "follows [features] agents (/settings)", tag="/settings", kind="always_on"),
+            problem="ImportError: agents",
+        ),
+        ItemState(
+            item("status"),
+            True,
+            True,
+            None,
+            Lock(True, "always on (aelix_status)", tag="always on", kind="always_on"),
+        ),
+    ]
+    scopes = {
+        "global": ScopeStatus("global", "/g/settings.json", True),
+        "project": ScopeStatus("project", "/p/.aelix/settings.json", True),
+    }
+    model = SelectionModel(
+        Snapshot("extension", tuple(states), scopes), "Extensions", ("extension", "extensions")
+    )
+    expected = {
+        "guardrail": (
+            "failed",
+            "Locked on: always on (Guardrail gate) · failed to load: RuntimeError: gate",
+        ),
+        "agents": (
+            "failed",
+            "Locked off: follows [features] agents (/settings) · failed to load: ImportError: agents",
+        ),
+        "status": ("always on", "Locked on: always on (aelix_status)"),
+    }
+    for index, (key, (tag, line)) in enumerate(expected.items()):
+        model.cursor = index
+        frame = [_SGR.sub("", r) for r in render_panel(model, plan_layout(model, 110, 20))]
+        [row] = [r for r in frame if f" {key} " in r and r.lstrip().startswith(("▸", "("))]
+        assert row.rstrip().endswith(f" {tag}"), row
+        assert any(r.strip() == line for r in frame), "\n".join(frame)

@@ -175,6 +175,14 @@ until its first command, and a deferred pack whose activation raised is failed
 too (`_ExtensionRuntime.activation_failures`; Codex F09: before, the failure
 reached only the dispatch layer, and the pack read as loaded).
 
+*2026-11-05 note (#683):* a locked row can be failed too, and the lock hid it:
+an `-e` extension whose `setup()` raised (or called `sys.exit`) read `-e` and
+"Locked on: loaded by -e for this run", with its load error nowhere in the
+panel, since the lock's tag and line came before the failure. A row that
+carries a load error now reads `failed` whatever locks it, and its line keeps
+the lock and adds the error, in red: "Locked on: loaded by -e for this run ·
+failed to load: RuntimeError: boom". The same holds for the D4 built-in locks.
+
 ### D6. What `/reload` says (M3; Codex F08)
 
 Under the TUI the factory no longer prints load errors; `/reload` commits ONE

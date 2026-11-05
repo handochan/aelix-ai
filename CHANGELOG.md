@@ -1283,6 +1283,14 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An `-e` extension that failed to load says so in `/extension` (#683,
+  ADR-0284).** Its row read `-e` and "Locked on: loaded by -e for this run", and
+  its load error was nowhere in the panel, while a failed global extension read
+  `failed` with the error under the list. A failed `-e` row now reads `failed`,
+  and its line says "Locked on: loaded by -e for this run · failed to load:
+  RuntimeError: …" (or `SystemExit: …`), in red; so does any other locked row
+  that failed to load.
+
 - **An extension's management modal takes the keys (#671, ADR-0108).** The modal
   `/<command>` opens for an extension's `management-modal` descriptor received
   no key at all: Esc and Ctrl+C did not close it, its number keys never sent the
