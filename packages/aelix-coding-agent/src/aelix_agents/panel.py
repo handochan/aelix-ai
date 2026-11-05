@@ -102,7 +102,7 @@ and it was the character count that let a row through at twice its promised
 width.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
-row (``chrome.py:1658-1681`` joins them with two spaces), so the last two
+row (``chrome.py:1687-1710`` joins them with two spaces), so the last two
 columns are the join, not content. It is not lower than that because S10's own
 worked example —
 ``agent scout ×4 · 2 running · 1 done · 1 queued · 33s · 12.3k tok · $0.0093``
@@ -145,10 +145,10 @@ one row each (:func:`panel_height`). Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
 bound: ``chrome._render_widget_lines`` joins the list with ``\\n`` and ANSI-parses
-it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1912``/``:1147-1149``),
+it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1941``/``:1147-1149``),
 which is multi-row and uncapped, so an over-long list pushes the transcript and
 the input line off screen. Contrast ``chrome._render_status``, which strips
-newlines because "this is a fixed height=1 chrome row" (``chrome.py:1658-1660``) —
+newlines because "this is a fixed height=1 chrome row" (``chrome.py:1687-1689``) —
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
@@ -515,7 +515,7 @@ def _short_profile(name: str) -> str:
 
     :func:`format_aggregate_status` was ALSO the panel's header line until
     ADR-0278, and the panel is not newline-stripped downstream the way the
-    statusline is (``chrome.py:1658-1660``). A profile name of 16 characters
+    statusline is (``chrome.py:1687-1689``). A profile name of 16 characters
     containing newlines would pass the length cap and still add rows to the
     widget, so the same helper that bounds every panel row bounds this too.
     """
@@ -628,7 +628,7 @@ def format_aggregate_status(
     has published yet — the profile name is only knowable from a snapshot, and a
     row that cannot name the agent is noise on a shared row). The caller must
     treat ``""`` as "write no row", NOT as "write an empty row": an empty
-    segment still costs the two-space join at ``chrome.py:1682``.
+    segment still costs the two-space join at ``chrome.py:1711``.
 
     NUMBERS. ``elapsed`` is the MAX over live members — they start together, so
     the oldest one is the batch's age; the executor's own measured wall clock is

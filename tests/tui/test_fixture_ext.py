@@ -209,6 +209,11 @@ async def test_fixture_ext_management_modal_command_opens_not_prompts() -> None:
             # "/panel" matches the stored management-modal → open_modal, NOT prompt.
             pipe.send_text("/panel\n")
             await _wait(lambda: len(opened) == 1)
+            # #671 — the modal holds the keys: a /quit typed now would not reach
+            # the input (before, it did, under the modal). Esc closes it first.
+            await _wait(lambda: chrome.is_modal_open())
+            pipe.send_text("\x1b")
+            await _wait(lambda: not chrome.is_modal_open())
             pipe.send_text("/quit\n")
             await _quit_within(task)
         finally:

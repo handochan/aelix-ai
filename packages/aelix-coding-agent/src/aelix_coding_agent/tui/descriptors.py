@@ -396,14 +396,15 @@ class DescriptorRenderer:
         if float_ is not None:
             self._chrome.remove_float(float_)
 
-    def _float_content(self, renderable: object) -> AnyContainer:
+    def _float_content(self, renderable: object, *, focusable: bool = False) -> AnyContainer:
         from prompt_toolkit.formatted_text import ANSI
         from prompt_toolkit.layout import Window
         from prompt_toolkit.layout.controls import FormattedTextControl
 
         lines = RichComponent(renderable).render(self._width)
         return Window(
-            FormattedTextControl(ANSI("\n".join(lines))), dont_extend_height=True
+            FormattedTextControl(ANSI("\n".join(lines)), focusable=focusable),
+            dont_extend_height=True,
         )
 
     # --- tool-renderer-desc (FULL renderer) -------------------------------
@@ -541,13 +542,20 @@ class DescriptorRenderer:
         return
 
     def open_modal(self, envelope: DescriptorEnvelope) -> None:
-        """Open the management-modal for ``envelope`` as a focusable Float.
+        """Open the management-modal for ``envelope`` in the in-flow modal slot.
 
         The modal's ``actions`` (``ManagementModalPayload.actions``) are bound to
         number keys ``1``–``9`` and an actions hint line is rendered; pressing a
-        key dispatches that :class:`ActionDescriptor` back to its plugin via
-        :meth:`dispatch_action` (§A reverse-channel) and closes the modal.
+        key closes the modal and then dispatches that :class:`ActionDescriptor`
+        back to its plugin via :meth:`dispatch_action` (§A reverse-channel).
         ``Esc`` / ``Ctrl-C`` close without dispatching.
+
+        #671 — the content window is focusable. It was not, so ``show_modal``'s
+        focus failed, the keys stayed with the hidden input and none of these
+        bindings ever ran: the modal could not be closed, and what was typed
+        under it went to the model. The action is dispatched after the modal is
+        unmounted, because an action with ``confirm`` opens a dialog in the same
+        single slot, and the closing modal's unmount would take it down.
         """
         renderable = self.build_tool_renderable(envelope)
         actions = list(getattr(envelope.payload, "actions", None) or [])
@@ -555,44 +563,88 @@ class DescriptorRenderer:
         def build(_result: asyncio.Future[Any]) -> AnyContainer:
             from prompt_toolkit.layout import HSplit
 
-            def _close() -> None:
-                _resolve(_result, None)
+            def _choose(action: ActionDescriptor | None) -> None:
+                _resolve(_result, action)
 
-            kb = self._build_modal_keybindings(actions, _close)
-            parts: list[AnyContainer] = [self._float_content(renderable)]
-            if actions:
-                parts.append(self._float_content(self._render_action_hints(actions)))
+            kb = self._build_modal_keybindings(actions, _choose)
+            parts: list[AnyContainer] = [
+                self._float_content(renderable, focusable=True),
+                self._hint_row(actions),
+            ]
             return HSplit(parts, key_bindings=kb)
 
-        self._spawn(show_modal(self._chrome, build))
+        async def _run() -> None:
+            chosen = await show_modal(self._chrome, build)
+            if isinstance(chosen, ActionDescriptor):
+                self.dispatch_action(chosen)
+
+        self._spawn(_run())
 
     def _build_modal_keybindings(
-        self, actions: list[ActionDescriptor], close: Callable[[], None]
+        self,
+        actions: list[ActionDescriptor],
+        choose: Callable[[ActionDescriptor | None], None],
     ) -> Any:
-        """Esc/Ctrl-C close; number keys 1–9 dispatch the matching action + close."""
+        """Esc/Ctrl-C close (``None``); number keys 1–9 choose the matching action.
+
+        Enter is taken and does nothing: the chrome's Enter would submit the
+        input line the modal hides (as the confirm dialog's, ADR-0121).
+        """
         from prompt_toolkit.key_binding import KeyBindings
 
         kb = KeyBindings()
-        kb.add("escape")(lambda _e: close())
-        kb.add("c-c")(lambda _e: close())
+        kb.add("escape")(lambda _e: choose(None))
+        kb.add("c-c")(lambda _e: choose(None))
+        kb.add("enter")(lambda _e: None)
+        kb.add("c-j")(lambda _e: None)
         for index, action in enumerate(actions[:9], start=1):
 
             def _handler(_e: Any, _action: ActionDescriptor = action) -> None:
-                self.dispatch_action(_action)
-                close()
+                choose(_action)
 
             kb.add(str(index))(_handler)
         return kb
 
     @staticmethod
-    def _render_action_hints(actions: list[ActionDescriptor]) -> Text:
-        """A one-line ``[1] action  [2] action`` hint for the bound action keys."""
-        hint = Text()
-        for index, action in enumerate(actions[:9], start=1):
-            if index > 1:
-                hint.append("  ")
-            hint.append(f"[{index}] {action.action}")
-        return hint
+    def _render_action_hints(actions: list[ActionDescriptor], width: int = _RENDER_WIDTH) -> Text:
+        """``[1] action  [2] action  [Esc] close``: the modal's keys, cut to ``width``.
+
+        #671 — the owner's call: the cancel key is shown, as every pi dialog
+        does, with or without actions. The line breaks between hints only, so a
+        hint is never split or cut off.
+        """
+        from rich.cells import cell_len
+
+        items = [f"[{i}] {action.action}" for i, action in enumerate(actions[:9], start=1)]
+        items.append("[Esc] close")
+        lines: list[str] = []
+        for item in items:
+            if lines and cell_len(f"{lines[-1]}  {item}") <= width:
+                lines[-1] = f"{lines[-1]}  {item}"
+            else:
+                lines.append(item)
+        return Text("\n".join(lines))
+
+    def _hint_row(self, actions: list[ActionDescriptor]) -> AnyContainer:
+        """The hint line(s), laid out again at the terminal's width on each render."""
+        from prompt_toolkit.formatted_text import ANSI
+        from prompt_toolkit.layout import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+
+        def _text() -> ANSI:
+            width = self._live_width()
+            hint = self._render_action_hints(actions, width=width)
+            return ANSI("\n".join(RichComponent(hint).render(width)))
+
+        return Window(FormattedTextControl(_text), dont_extend_height=True)
+
+    def _live_width(self) -> int:
+        """The terminal's columns, at most the render width (that, when unknown)."""
+        try:
+            columns = int(self._chrome.app.output.get_size().columns)
+        except Exception:  # noqa: BLE001 — no app yet / a duck-typed chrome
+            return self._width
+        return max(1, min(self._width, columns))
 
     # --- ActionDescriptor reverse-channel (§A) ----------------------------
 
