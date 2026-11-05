@@ -1283,6 +1283,25 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Ctrl+C while an extension's `setup()` runs at launch ends aelix with one line
+  (#685, ADR-0284).** It ended with a traceback in `-p`, `--mode json`, `--mode
+  rpc` and the TUI: #664's "aelix: interrupted while the extension … was
+  running its setup()" came only when the extension raised `KeyboardInterrupt`
+  itself. A Ctrl+C during an extension's import or `setup()` — one that waits
+  (`await`) or one that blocks (`time.sleep`), also one that fails after it —
+  now prints that line and exits 130, and the extensions after it are not
+  loaded. One that lands between two extensions says "aelix: interrupted while
+  loading extensions". A `setup()` that blocks forever is not stopped by the
+  first Ctrl+C; the second ends it the same way. aelix goes by the cancel itself
+  — one still pending after the step, or one the step's error was raised
+  over — not by Python's count of cancel requests, which a `TaskGroup` on 3.11
+  and 3.12 leaves raised when one of its tasks fails after its body finished,
+  and a timeout in aiohttp <= 3.10.5 or async-timeout <= 4.0.2 leaves raised on
+  any Python; such an extension loads, or records its load error, as it did. So
+  a `setup()` that catches the Ctrl+C (`except asyncio.CancelledError`) and
+  returns, or raises a `TimeoutError`, is not seen: the load and the run go on,
+  as before.
+
 - **An `-e` extension that failed to load says so in `/extension` (#683,
   ADR-0284).** Its row read `-e` and "Locked on: loaded by -e for this run", and
   its load error was nowhere in the panel, while a failed global extension read

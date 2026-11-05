@@ -240,6 +240,69 @@ subclass — passes through unchanged, as `CancelledError` does: such an
 exception is a control-flow signal the loader cannot interpret, and the
 owner's decision named `SystemExit` and `KeyboardInterrupt` only.
 
+*2026-11-05 note (#685):* "a Ctrl+C during a slow `setup()` looks the same" was
+not true. `asyncio.run` turns the first SIGINT into a cancel of the main task,
+so the loader saw a `CancelledError` (an async `setup()`) or nothing (a sync
+one holds the loop, and the cancel waited for the next suspension: in `-p`, the
+first await of the model turn), and the run ended in `asyncio.run`'s own
+`KeyboardInterrupt` — a traceback in `-p`, `--mode json`, `--mode rpc` and the
+TUI's launch. The one line came only when the extension raised
+`KeyboardInterrupt` itself. Now the loader marks the `CancelledError` passing
+through an import or `setup()` with the extension and the step (the innermost
+extension keeps it), and takes a cancel requested while a sync import or
+`setup()` held the loop right after it, so it is marked too and the next
+extension does not load. That holds when the step then failed as well (a sync
+`setup()` that raised after the Ctrl+C). An async `setup()` that raised over
+the cancel it got (a `finally` or an `except` that raised, also through a
+`TaskGroup`) leaves the `CancelledError` in its error's `__cause__` /
+`__context__` chain; the loader raises a new, marked `CancelledError` in place
+of that error: the failure is not recorded and the load ends. A cancel
+requested in the loader's own code, between two extensions' steps, is taken
+before the next step and names neither: "aelix: interrupted while loading
+extensions" (the one before had finished, the next had not started); one
+pending when the loader began is not the first extension's either. `main_sync`
+finds the mark under `asyncio.run`'s `KeyboardInterrupt` and prints the one
+line, exit 130. The `CancelledError` that ends the load is the one the step
+passed on, the pending one the loader's own `asyncio.sleep(0)` delivers, or —
+for an error raised over the cancel — the loader's new one; the mark matters
+only when the run ends in a Ctrl+C. A deferred pack's first
+command marks it the same way, without the take (a cancel there is the
+command's to deliver; measured in-process only — no mode was found where such a
+cancel ends the run). A second Ctrl+C is raised by `asyncio.run` where the code
+is, as `KeyboardInterrupt`, and is #664's case. **Stated limit:** a sync
+`setup()` that never returns (`while True: time.sleep(...)`) is not stopped by
+the first Ctrl+C — the cancel waits for a suspension that never comes — and
+the second one ends it with the one line, exit 130; no thread or signal trick
+forces it (Codex, fix round 1). A Ctrl+C at launch outside the loader is
+unchanged.
+*Fix round 2 (verify B1):* the loader ends a load only on evidence of a cancel —
+one its own `asyncio.sleep(0)` delivers, or one in the failed step's error
+chain — never on `Task.cancelling()` alone. Round 1 read any rise in that count
+as a cancel the step had not passed on, and on 3.11 and 3.12 a stdlib
+`TaskGroup` whose child fails after its body finished leaves the count one up
+with no cancel behind it (a CPython bug, fixed in 3.13): with no Ctrl+C at all,
+such a `setup()` ended the launch in a `CancelledError` traceback (exit 1, in
+every mode), closed the TUI on `/reload` and stopped aelix on RPC
+`resources/reload`. A rise with no evidence becomes the baseline the next check
+compares against, so a later extension is not judged by it. A `TimeoutError`
+raised from a `CancelledError` (`asyncio.timeout`, `wait_for`), or while
+handling one, ends the chain walk: that cancel was the timeout's own. aiohttp
+<= 3.10.5 and async-timeout <= 4.0.2 time out by cancelling the task without
+undoing it and raise `TimeoutError` `from None` or with no `from`; walking
+past it read their timeout in `setup()` as a Ctrl+C on every Python — a
+traceback at launch, the TUI closed on `/reload` (last delta verify, S-A).
+**Stated limit:** an async `setup()` that catches the Ctrl+C's
+`CancelledError` and returns leaves what that `TaskGroup` leaves — the count,
+nothing else — so the load and the run go on, as before #685 (in `-p` the
+model is asked and the exit is 0); so does one that raises a `TimeoutError`
+in its handler, which reads as an old library's timeout. Telling the two
+apart would take knowing that SIGINT fired: `asyncio.Runner` keeps that in a
+private counter, and wrapping the process's SIGINT handler around each load
+(main thread only, process-wide) was not taken. On 3.11 and 3.12, a single
+`setup()` whose `TaskGroup` leaves the count up and which then fails with a
+cancel of its own in the error's chain (a second `TaskGroup` failing while its
+body waits) reads as interrupted.
+
 ### D7. What waits for a restart (owner decision 10; Codex F10, F11)
 
 - **MCP servers a pack declares** are dialled once, at launch. Which plugin
