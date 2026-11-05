@@ -1283,6 +1283,22 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An extension's management modal takes the keys (#671, ADR-0108).** The modal
+  `/<command>` opens for an extension's `management-modal` descriptor received
+  no key at all: Esc and Ctrl+C did not close it, its number keys never sent the
+  action to the extension (`plugin_action`), and what you typed went into the
+  input line the modal hides — Enter sent it to the model, and the modal stayed
+  on screen until another dialog replaced it. Esc and Ctrl+C now close it and the
+  input comes back, `1`–`9` close it and send that action (asking first when the
+  action has a `confirm`), Enter and other typing do nothing while it is open,
+  and its hint line ends in `[Esc] close`. Under this modal and every other
+  dialog, the keys that act on the input line — Alt+Enter, Ctrl+D, Tab,
+  Ctrl+Space, Alt+Up, Ctrl+G, Ctrl+V, a paste — no longer reach the hidden one
+  (Alt+Enter queued it for the model, Ctrl+D quit aelix), and a large paste into
+  an editor dialog arrives as pasted instead of as "[Pasted text #1 …]". Ctrl+C
+  twice still quits from under a dialog that does not take Ctrl+C itself (an
+  extension's `custom()` overlay), and leaves the hidden line as it was.
+
 - **A steering or follow-up line shows up in the transcript where the model read
   it (#668, ADR-0287, ADR-0119).** A line sent with Enter (steer) or `Alt+Enter`
   (follow-up) while the model was answering was echoed at once, so it landed in

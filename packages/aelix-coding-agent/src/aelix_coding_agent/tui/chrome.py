@@ -1229,6 +1229,19 @@ class AelixChrome:
     def _build_key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
+        # #671 — these are the Application's bindings, so they apply under any
+        # capturing modal for every key the modal does not bind itself, and they
+        # beat a modal's ``<any>`` (prompt_toolkit runs the specific binding).
+        # Those that read or edit the input line, submit or queue it, or quit
+        # acted on the one the modal hides: Alt+Enter queued it for the model,
+        # Ctrl+D quit, Tab completed in it, Ctrl+G opened it in ``$EDITOR``. They
+        # are off while a modal is open: the key goes to the modal's bindings or
+        # to prompt_toolkit's defaults, on the modal's own buffer when it has one
+        # (pi routes keys to the focused component only). Esc and Ctrl+C stay,
+        # and a modal that takes them wins: Esc touches no input, and under a
+        # modal Ctrl+C leaves the input alone (fix round 2, below).
+        input_keys = Condition(lambda: not self.is_modal_open())
+
         # Sprint 6h₁₂e — Enter is NO LONGER gated on ``not self._running``: the
         # input editor stays live during a turn so Enter mid-turn steers (pi
         # interactive-mode parity). The idle path is unchanged (feeds the queue).
@@ -1242,8 +1255,8 @@ class AelixChrome:
         # uses Shift+Enter, but prompt-toolkit 3.0.52 collapses the Shift+Enter
         # CSI-u sequence to c-m (== Enter), so a distinct newline key isn't
         # available (ADR-0121).
-        @kb.add("enter")
-        @kb.add("c-j")
+        @kb.add("enter", filter=input_keys)
+        @kb.add("c-j", filter=input_keys)
         def _accept(event: object) -> None:
             # When the completions menu has a highlighted entry, Enter confirms it
             # (applies + closes the menu) rather than submitting the line — the
@@ -1328,6 +1341,11 @@ class AelixChrome:
             # queues the line for AFTER the turn (harness.follow_up). It is only
             # meaningful mid-turn — idle Alt+Enter is a no-op (does NOT submit; the
             # input editor is single-line so there is no newline-insert to shadow).
+            # #671 — and under a modal. Taken and dropped rather than filtered:
+            # with no binding for the pair, the key processor runs it as Esc then
+            # Enter, and the Esc closes the modal.
+            if self.is_modal_open():
+                return
             # Issue #81 — expand collapsed-paste placeholders (see _accept).
             submit_text = self._expand_pastes(self.buffer.text)
             # #596 (ADR-0287) — on a line the input draws in shell mode, Alt+Enter
@@ -1355,15 +1373,19 @@ class AelixChrome:
 
         @kb.add("escape", "up")  # Alt+Up: restore queued messages to the editor.
         def _dequeue(event: object) -> None:
+            if self.is_modal_open():  # #671 — taken and dropped, as Alt+Enter
+                return
             if self.on_dequeue is not None:
                 self.on_dequeue()
 
-        @kb.add("c-v")  # Ctrl+V: paste clipboard image (pi parity).
+        @kb.add("c-v", filter=input_keys)  # Ctrl+V: paste clipboard image (pi parity).
         def _paste_image(event: object) -> None:
             if self.on_image_paste is not None:
                 self.on_image_paste()
 
-        @kb.add(Keys.BracketedPaste)  # Issue #81: collapse large text pastes.
+        # #671 — not under a modal: the placeholder only the input's submit
+        # expands went into a dialog's buffer ("[Pasted text #1 …]" came back).
+        @kb.add(Keys.BracketedPaste, filter=input_keys)  # Issue #81: collapse large text pastes.
         def _bracketed_paste(event: Any) -> None:
             # Overrides prompt-toolkit's default bracketed-paste handler (which
             # inserts the raw data). Normalize line endings the same way the
@@ -1403,12 +1425,12 @@ class AelixChrome:
             self._last_pasted_raw = data
             self._last_placeholder = placeholder
 
-        @kb.add("c-g")  # Ctrl+G: open the current input in $EDITOR (pi parity).
+        @kb.add("c-g", filter=input_keys)  # Ctrl+G: open the current input in $EDITOR (pi parity).
         def _external_editor(event: object) -> None:
             if self.on_external_editor is not None:
                 self.on_external_editor()
 
-        @kb.add("c-i")  # Tab: start completion, then cycle through entries.
+        @kb.add("c-i", filter=input_keys)  # Tab: start completion, then cycle through entries.
         def _complete(event: object) -> None:
             buf = self.buffer
             if buf.complete_state is not None:
@@ -1416,11 +1438,14 @@ class AelixChrome:
             else:
                 buf.start_completion(select_first=False)
 
-        @kb.add("c-space")  # Explicitly open the completions menu.
+        @kb.add("c-space", filter=input_keys)  # Explicitly open the completions menu.
         def _start_complete(event: object) -> None:
             self.buffer.start_completion(select_first=False)
 
-        @kb.add("c-d", filter=Condition(lambda: not self._running and not self.buffer.text))
+        @kb.add(
+            "c-d",
+            filter=input_keys & Condition(lambda: not self._running and not self.buffer.text),
+        )
         def _eof(event: object) -> None:
             self._input_queue.put_nowait(_EOF)
 
@@ -1434,11 +1459,15 @@ class AelixChrome:
             #  · idle, EMPTY buffer → first press arms a short window + shows a
             #    transient status hint; a second press within the window requests
             #    EOF (the exact Ctrl+D teardown), never exit() directly.
+            #  · #671 — idle under a modal that does not take Ctrl+C itself → as an
+            #    empty buffer, whatever the hidden input holds: it is neither read
+            #    nor cleared. A ``custom()`` overlay binds no key, so this is the
+            #    way out from under one (fix round 2: gating it off left none).
             if self._running or self.interrupt_armed:  # #409: a retry countdown, running or not
                 if self.on_interrupt is not None:
                     self.on_interrupt()
                 return
-            if self.buffer.text:
+            if not self.is_modal_open() and self.buffer.text:
                 if self._gave_back_just_now():
                     return
                 self.buffer.reset()
@@ -2433,9 +2462,21 @@ class AelixChrome:
             self._floats.remove(float_)
         self.invalidate()
 
-    def focus(self, target: AnyContainer) -> None:
-        with contextlib.suppress(Exception):
+    def focus(self, target: AnyContainer) -> bool:
+        """Focus ``target``; whether it took. A failure is logged, never raised.
+
+        #671 — it used to be suppressed without a word: a modal built with no
+        focusable window left the keys with the input it hides, and nothing
+        said so. Logged at debug: nothing configures logging, so a warning is
+        written to stderr, over the TUI's own drawing.
+        """
+
+        try:
             self.app.layout.focus(target)
+        except Exception as exc:  # noqa: BLE001 — a torn-down layout must not crash the TUI
+            logger.debug("could not focus %r: %s", target, exc)
+            return False
+        return True
 
     def focus_input(self) -> None:
         if self._input_window is not None:

@@ -38,6 +38,36 @@ hint line — so the §A reverse-channel is reachable from the live modal. Built
 reload) short-circuit first; an unknown `/foo` (no matching modal) falls through to the model
 unchanged (qa-verified — no prompt regression).
 
+*2026-11-05 note (#671):* "reachable from the live modal" was not true. None of the modal's
+windows could take focus, so `show_modal`'s focus raised, `AelixChrome.focus` swallowed it, and
+the keys stayed with the input line the modal hides: no binding above ever ran, the modal could
+not be closed, and what was typed under it went to the model on Enter (the tests called the
+handlers directly). The content window is focusable now, and Enter is taken and does nothing, as
+in the confirm dialog. A number key closes the modal with its action, and `open_modal` dispatches
+it once the modal is down: an action with `confirm` opens its dialog in the same single slot
+(ADR-0159), and the closing modal's unmount would take that dialog down with it. `AelixChrome.focus`
+logs a failure (at debug: nothing configures logging, and a warning was written over the TUI's
+own drawing) and says whether it took, and `show_modal` refuses (`ValueError`) a capturing
+modal whose content has no window that can take focus, instead of waiting on a result no key
+can set — checked before it is mounted, so the modal already open in the slot stays as it was
+(it was replaced first, and a confirm under it was left with nothing to answer it). The hint
+line ends in `[Esc] close`, with or without actions (the owner's call: every pi dialog shows its
+cancel key), and breaks between hints at the terminal's width. The chrome's own bindings are
+the Application's, so they reached the input under any capturing modal for a key the modal did
+not take (and beat a modal's `<any>`): Alt+Enter queued the hidden line for the model, Ctrl+D
+quit, Tab and Ctrl+Space completed in it, Alt+Up, Ctrl+G and Ctrl+V filled it, a paste went in
+as the input's placeholder, and under a modal without its own Enter or Ctrl+C those submitted,
+cleared or quit. Every one that reads or edits the input, submits, queues or quits is off while
+a capturing modal is open (Alt+Enter and Alt+Up are taken and dropped: unbound, the pair would
+run as an Esc that closes the modal), except Ctrl+C. Esc, Ctrl+T and Ctrl+C stay, and a modal
+that takes the key wins: Esc and Ctrl+T touch no input, a running turn's Ctrl+C stops it, and an
+idle one arms and then quits as over an empty input, whatever the hidden input holds — it is
+neither read nor cleared (fix round 2, verify S1: gated off, a `custom()` overlay opened while
+idle, which takes no key, left no way out; Ctrl+C twice, Ctrl+D, Esc and typing did nothing, and
+aelix had to be killed, where 6aed3863 quit on Ctrl+C twice). pi goes further — every key goes
+to the focused component — but a `custom()` overlay here takes no key at all, and Esc or Ctrl+C
+is how a turn under it is stopped, Ctrl+C twice how aelix is left.
+
 ### §B live tool-result interception
 `EventRenderer` gains a late-bound `get_tool_renderer_desc` lookup (reads the live registry by
 reference, mirroring the command-routes pattern). On `tool_execution_end`, a stored

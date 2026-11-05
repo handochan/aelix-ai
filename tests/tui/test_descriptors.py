@@ -561,9 +561,12 @@ def _binding_for(kb: Any, key: str) -> Any:
     raise AssertionError(f"no key binding for {key!r}")
 
 
-def test_modal_action_key_dispatches_via_reverse_channel() -> None:
-    # §C↔§A integration: a modal action bound to a number key fires
-    # dispatch_action (→ plugin_action) and closes the modal.
+def test_modal_action_key_chooses_the_action_and_esc_chooses_none() -> None:
+    # §C↔§A: a number key closes the modal with its action, which open_modal
+    # dispatches once the modal is down (#671 — a confirm dialog opened while
+    # the modal was still mounted was taken down with it). Esc and Ctrl+C close
+    # with nothing; Enter does nothing, so it cannot submit the hidden input.
+    # The keys reaching a live modal: tests/tui/test_management_modal_keys_671.py.
     bus = EventBus()
     captured: list[Any] = []
     bus.on("plugin_action", captured.append)
@@ -571,12 +574,19 @@ def test_modal_action_key_dispatches_via_reverse_channel() -> None:
     renderer = DescriptorRenderer(
         chrome, footer, registry, event_bus=bus  # type: ignore[arg-type]
     )
-    closed: list[bool] = []
-    kb = renderer._build_modal_keybindings([_action()], lambda: closed.append(True))
+    chosen: list[Any] = []
+    kb = renderer._build_modal_keybindings([_action()], chosen.append)
 
     _binding_for(kb, "1").handler(None)  # press "1"
-    assert captured == [_action().model_dump(mode="json")]  # dispatched to plugin
-    assert closed == [True]  # modal closed after dispatch
+    assert chosen == [_action()]
+    assert captured == []  # not dispatched from inside the modal
+    by_key = {tuple(getattr(k, "value", k) for k in b.keys): b.handler for b in kb.bindings}
+    for key in ("escape", "c-c"):
+        by_key[(key,)](None)
+    assert chosen == [_action(), None, None]
+    for key in ("c-m", "c-j"):  # Enter (CR and LF)
+        by_key[(key,)](None)
+    assert chosen == [_action(), None, None]
 
 
 def test_render_action_hints_lists_numbered_actions() -> None:

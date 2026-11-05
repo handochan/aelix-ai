@@ -11,7 +11,7 @@ WHAT MAKES THIS FILE DIFFERENT FROM ``test_spawn_consent.py``: a batch dialog ca
 be TOO TALL, and the failure is silent. ``ctx.ui.select`` composes title and
 options into ONE non-wrapping, non-scrolling ``Window``
 (``tui/context.py:150-228``, ``:1000-1003``) and ``tui/overlay.py``'s
-``_CappedContainer`` clamps its height (``overlay.py:221-231``), so the overflow
+``_CappedContainer`` clamps its height (``overlay.py:225-235``), so the overflow
 is BOTTOM TRUNCATION — and ``build_options`` appends ``Cancel`` LAST. A naive
 8-task dialog at 80x24 composes to 23 rows against a cap of 19: the hint, the
 closing divider, the counter and ``Cancel`` are simply not drawn, and a
@@ -66,14 +66,14 @@ from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
-# The SHIPPED reserve, read off ``tui/overlay.py:56`` (``_MODAL_RESERVE_ROWS``)
+# The SHIPPED reserve, read off ``tui/overlay.py:60`` (``_MODAL_RESERVE_ROWS``)
 # and NOT imported from ``consent.py``. ``consent._RESERVE_ESTIMATE`` is this
 # plus one row of slack for the multi-row footer ``_reserve_rows`` can grow to
-# (``overlay.py:159-194``); spelling the shipped floor here independently is what
+# (``overlay.py:163-198``); spelling the shipped floor here independently is what
 # makes "the height the code admits fits the height the TUI will draw" a check
 # rather than a tautology.
 _SHIPPED_RESERVE_ROWS = 5
-_MODAL_MIN_HEIGHT = 3  # ``overlay.py:60``
+_MODAL_MIN_HEIGHT = 3  # ``overlay.py:64``
 
 # Rows ``ctx.ui.select`` adds around a picker body: one divider under the title,
 # one counter row, one closing divider, one hint row (``tui/context.py:150-228``,

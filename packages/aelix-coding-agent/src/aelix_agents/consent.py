@@ -66,7 +66,7 @@ covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
 (``tui/context.py:150-228``, ``:1000-1003``) and ``tui/overlay.py``'s
-``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
+``_CappedContainer`` bottom-truncates it (``overlay.py:225-235``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
@@ -205,15 +205,15 @@ _RESERVE_ESTIMATE = 6
 """Rows ``tui/overlay.py`` reserves BELOW the modal, as estimated from here.
 
 ``_modal_cap`` is ``max(_MODAL_MIN_HEIGHT, rows - _reserve_rows(chrome))``
-(``overlay.py:135-151``) and ``_reserve_rows`` returns at least
-``_MODAL_RESERVE_ROWS = 5`` (``overlay.py:56``), growing with a multi-line input
-buffer and a multi-row footer (``overlay.py:159-194``). The chrome is not
+(``overlay.py:139-155``) and ``_reserve_rows`` returns at least
+``_MODAL_RESERVE_ROWS = 5`` (``overlay.py:60``), growing with a multi-line input
+buffer and a multi-row footer (``overlay.py:163-198``). The chrome is not
 reachable from an extension, so this is the shipped floor of 5 plus one row of
 slack for the grown footer. Erring HIGH is the safe direction: it admits one
 member fewer than the live cap would, never one more."""
 
 _MIN_CAP = 3
-"""``tui/overlay.py``'s ``_MODAL_MIN_HEIGHT`` (``overlay.py:60``).
+"""``tui/overlay.py``'s ``_MODAL_MIN_HEIGHT`` (``overlay.py:64``).
 
 The floor ``_modal_cap`` never goes below, so the arithmetic here has to have it
 too. It matters only on an absurdly short terminal, where every batch is refused
@@ -1122,7 +1122,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #     scrolls the OPTIONS list and does nothing for a tall title.
 #   * ``body`` is the option rows plus one counter row (``tui/context.py:909``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
-#     (``tui/overlay.py:221-231``).
+#     (``tui/overlay.py:225-235``).
 #
 # so   composed = title + 1 divider + options + 1 counter + 1 divider + 1 hint
 #               = title_rows + option_rows + 4

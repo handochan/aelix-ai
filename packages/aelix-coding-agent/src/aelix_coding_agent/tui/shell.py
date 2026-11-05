@@ -2201,9 +2201,9 @@ async def run_tui(
         stop the REPL from starting.
         """
 
-        # 1. The readiness wait. ``chrome.focus()`` swallows Exception, so a
-        #    focus attempt before the app runs fails SILENTLY: the modal would
-        #    paint and keystrokes would go nowhere. Bounded (never an unbounded
+        # 1. The readiness wait. ``chrome.focus()`` swallowed Exception, so a
+        #    focus that failed did so SILENTLY: the modal painted and keystrokes
+        #    went nowhere (#671: it logs now; ``show_modal`` refuses). Bounded (never an unbounded
         #    spin on a chrome that failed to start) and it falls through to a
         #    committed hint rather than hanging the launch.
         loop_ref = asyncio.get_running_loop()

@@ -27,13 +27,15 @@ the modal and restore focus to the editor.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.layout import ConditionalContainer, Float
+from prompt_toolkit.layout import ConditionalContainer, Float, Window
 from prompt_toolkit.layout.containers import AnyContainer, Container, to_container
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.layout import walk
 
 from aelix_coding_agent.extensions.widget_protocols import OverlayOptions
 
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
     from prompt_toolkit.layout.screen import Screen, WritePosition
 
     from aelix_coding_agent.tui.chrome import AelixChrome
+
+_log = logging.getLogger(__name__)
 
 # Rows reserved BELOW the modal for the input editor + status + footer so a
 # pathologically tall modal never pushes the prompt off the terminal. The cap is
@@ -252,6 +256,26 @@ class _CappedContainer(Container):
         return [self._child]
 
 
+def _takes_focus(content: AnyContainer) -> bool:
+    """Whether ``Layout.focus(content)`` will take once ``content`` is mounted (#671).
+
+    prompt_toolkit's own rule: a :class:`Window` always (whatever its control
+    says), any other container when a visible window in it has a focusable
+    control. Read before the modal is mounted, so refusing one never touches the
+    modal already in the single slot. Not a prompt_toolkit container: trusted.
+    """
+
+    try:
+        container = to_container(content)
+    except Exception:  # noqa: BLE001 — a duck-typed content: leave it to the focus
+        return True
+    if isinstance(container, Window):
+        return True
+    return any(
+        isinstance(c, Window) and c.content.is_focusable() for c in walk(container, skip_hidden=True)
+    )
+
+
 def _wrap_modal(
     content: AnyContainer, hidden: dict[str, bool], chrome: AelixChrome,
     options: OverlayOptions | None,
@@ -323,13 +347,24 @@ async def show_modal(
         # NOTE: a non-capturing overlay deliberately does NOT steal focus or
         # restore it, so the input editor keeps focus the whole time.
 
+    if not _takes_focus(content):
+        # #671 — no key could reach it, so nothing would ever resolve it, and the
+        # input it hides would keep the keys. Refused before it is mounted: it
+        # replaced the modal already open (a confirm left with nothing on screen
+        # to answer it) when the focus failed after. Debug: nothing configures
+        # logging, so a warning went to stderr, over the TUI (fix round 1, live).
+        _log.debug("refused a capturing modal with no window that can take focus: %r", content)
+        raise ValueError("a capturing modal needs a focusable window")
     slot_content = _wrap_modal(content, hidden, chrome, options)
     if on_handle is not None:
         on_handle(AelixOverlayHandle(chrome, content, hidden))
 
     chrome.mount_modal(slot_content)
-    chrome.focus(content)
+    focused = chrome.focus(content)
     try:
+        if focused is False:
+            # #671 — the focus failed for another reason (a torn-down layout).
+            raise ValueError("a capturing modal needs a focusable window")
         return await result
     finally:
         chrome.unmount_modal()

@@ -164,7 +164,7 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     scroll, it BOTTOM-TRUNCATES: ``build()`` returns one ``Window`` with
     ``wrap_lines`` False and no ``get_cursor_position``, so prompt-toolkit has
     nothing to scroll to, and ``_CappedContainer`` clamps the height
-    (``tui/overlay.py:221-231``). ADR-0199 measured that at eight members the
+    (``tui/overlay.py:225-235``). ADR-0199 measured that at eight members the
     hint, the closing rule, the counter and the last option — which
     ``consent.build_options`` guarantees is ``Cancel`` — are simply not drawn.
 
