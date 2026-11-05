@@ -955,6 +955,9 @@ class AgentHarness:
         # can signal an in-flight ``asyncio.sleep`` to cancel mid-backoff.
         self._retry_attempt: int = 0
         self._retry_abort_event: asyncio.Event | None = None
+        # #347 — the summary request a compaction or a branch summary is waiting for,
+        # held so that :meth:`abort` can cancel it.
+        self._summary_task: asyncio.Future[Any] | None = None
         # #379 review round 3: the setup failure that ended the latest attempt,
         # as the harness itself recorded it (see ``_SetupFailure``).
         self._setup_failure: _SetupFailure | None = None
@@ -2001,6 +2004,11 @@ class AgentHarness:
         tool that ignores the first, which reads as stopped. A sequential tool that
         ignores every cancel still holds the turn.
 
+        #347 — it stops a running compaction or branch summary too, and nothing of it is
+        written: the summary request it waits for takes the same cancel
+        (:func:`_stopped_by_abort`). A ``session_before_compact`` hook is not cut: the abort
+        counts when it returns. An entry already written stands.
+
         Race-safety: read of ``self._current_turn_task`` → local copy →
         ``cancel()`` on a done-or-already-cancelled Task is a no-op in
         asyncio. Single-threaded event loop guarantees no torn reads.
@@ -2027,6 +2035,12 @@ class AgentHarness:
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        # #347 — and the summary request a compaction or a branch summary is waiting for
+        # (:func:`_stopped_by_abort`): pi's ``abort()`` calls ``abortCompaction()`` and
+        # ``abortBranchSummary()`` (``agent-session.ts:2565-2566`` @ 469d8651b).
+        summary_task = self._summary_task
+        if summary_task is not None and not summary_task.done():
+            summary_task.cancel()
         # #147 / ADR-0225 — an auto-retry BACKOFF sits BETWEEN turn tasks, so the
         # branch above has nothing to cancel there, and the next attempt's
         # :meth:`_run` clears ``_abort_requested`` on entry. The abort was
@@ -2113,7 +2127,9 @@ class AgentHarness:
            ``options.get_api_key_and_headers`` (or ``_summarizer_override``
            for tests).
         8. Persist via :meth:`Session.append_compaction` and emit
-           :class:`SessionCompactHookEvent`.
+           :class:`SessionCompactHookEvent`. #347: an :meth:`abort` before this
+           step cuts the request of 7 where it stands, counts when the hook of 4
+           returns, and writes nothing. Once the write is entered the entry stands.
         9. ``finally``: restore ``self._phase = "idle"`` + set idle event —
            or, nested under a prompt's claim, hand ``"turn"`` back and leave
            the idle event clear: the prompt is still running, and only its
@@ -2155,8 +2171,13 @@ class AgentHarness:
                 "invalid_state",
                 "compact() requires options.session to be attached",
             )
+        if not nested:
+            # #347 — from here an abort is this compaction's, as from a prompt's claim:
+            # one made while idle does not cancel it. A nested one keeps its prompt's.
+            self._abort_requested = self._withdraw_requested = False
         self._phase = "compaction"
         self._idle_event.clear()
+        written = False  # #347 — from here an abort no longer rewrites how this ends
         try:
             # Issue #4 (FU3) — compaction_start to subscribers (listener-only, pi
             # parity) on the manual / threshold / overflow paths; the matched
@@ -2179,6 +2200,7 @@ class AgentHarness:
                 raise AgentHarnessError(
                     "invalid_state", "Nothing to compact"
                 )
+            _stop_compaction_if_aborted(self)
             try:
                 hook_result = await self._hooks.emit(
                     SessionBeforeCompactHookEvent(
@@ -2191,6 +2213,7 @@ class AgentHarness:
                     )
                 )
             except Exception as exc:
+                _stop_compaction_if_aborted(self)  # #347: a raise after an abort is that abort's
                 raise AgentHarnessError(
                     "hook",
                     f"session_before_compact hook handler raised: {exc}",
@@ -2207,23 +2230,23 @@ class AgentHarness:
                 result = provided
                 from_hook = True
             else:
-                result = await _with_summary_retry(  # #409: retried as the turn is
+                _stop_compaction_if_aborted(self)
+                result = await _stopped_by_abort(
                     self,
-                    compaction_compact,
-                    preparation,
-                    custom_instructions,
-                    _summarizer_override=self._options._summarizer_override,
+                    _with_summary_retry(  # #409: retried as the turn is
+                        self,
+                        compaction_compact,
+                        preparation,
+                        custom_instructions,
+                        _summarizer_override=self._options._summarizer_override,
+                    ),
                 )
                 from_hook = False
-            # #654 (ADR-0286) — an Esc while the summary ran came before the barrier
-            # below. Ends as a cancelled compaction does, and the prompt's tail withdraws.
-            if (
-                nested
-                and self._withdraw_requested
-                and self._unanswered is not None
-                and self._unanswered.committed
-            ):
-                raise _CompactionCancelled("compaction", "Compaction cancelled by a withdrawing abort")
+            # #654 (ADR-0286), #347 — an abort that came while the summary returned, that the
+            # summary swallowed, or during a hook that provided it comes before the barrier below.
+            # It ends as a cancelled compaction does, and on a withdrawing abort the prompt's tail
+            # withdraws.
+            _stop_compaction_if_aborted(self)
             entry_id = await self._session.append_compaction(
                 summary=result.summary,
                 first_kept_entry_id=result.first_kept_entry_id,
@@ -2231,6 +2254,7 @@ class AgentHarness:
                 details=result.details,
                 from_hook=from_hook,
             )
+            written = True
             # #654 (ADR-0286) — the barrier: an input this summary may hold, on a
             # path whose kept tail starts behind it, cannot be withdrawn any more.
             self._unanswered = None
@@ -2279,7 +2303,7 @@ class AgentHarness:
             # compact" included (pi emits none for it: it checks before its
             # compaction_start). #546: an automatic compaction's end reads as
             # pi's does (:func:`_compaction_end_failure`). BaseException bypasses.
-            aborted, error_message = _compaction_end_failure(self, reason, exc, nested)
+            aborted, error_message = _compaction_end_failure(self, reason, exc, written)
             await self._emit_to_subscribers(
                 CompactionEndEvent(
                     reason=reason,
@@ -2811,6 +2835,8 @@ class AgentHarness:
             )
         if target_id is None:
             return NavigateTreeResult(cancelled=False)
+        # #347 — from here an abort is this navigation's, as in a public :meth:`compact`.
+        self._abort_requested = self._withdraw_requested = False
         self._phase = "branch_summary"
         self._idle_event.clear()
         try:
@@ -2871,16 +2897,24 @@ class AgentHarness:
                 and opts.summarize
                 and len(entries) > 0
             ):
-                summary_text = await _with_summary_retry(  # #409: retried as the turn is
-                    self,
-                    generate_branch_summary,
-                    entries,
-                    opts.custom_instructions,
-                    replace_instructions=opts.replace_instructions,
-                    _summarizer_override=(
-                        self._options._branch_summarizer_override
-                    ),
-                )
+                try:
+                    _stop_compaction_if_aborted(self)
+                    summary_text = await _stopped_by_abort(
+                        self,
+                        _with_summary_retry(  # #409: retried as the turn is
+                            self,
+                            generate_branch_summary,
+                            entries,
+                            opts.custom_instructions,
+                            replace_instructions=opts.replace_instructions,
+                            _summarizer_override=(
+                                self._options._branch_summarizer_override
+                            ),
+                        ),
+                    )
+                    _stop_compaction_if_aborted(self)  # returned as the abort landed, or swallowed it
+                except _CompactionCancelled:  # #347: the leaf stays, as pi's ``aborted``
+                    return NavigateTreeResult(cancelled=True)
             # Editor-branch extraction (Pi `:760-780`): user_message /
             # custom_message → resolve new_leaf_id to parent_id + extract text.
             editor_text: str | None = None
@@ -6701,19 +6735,20 @@ class _SummaryRetry:
     ``abort_retry()`` and an extension's ``ctx.abort()`` made while a summary
     request is in flight or waiting set it - a wait in progress ends at once,
     and no request is sent again after it. Nothing else runs a retry wait
-    while a compaction or a branch summary holds the harness. Under a
-    prompt's claim (the threshold and overflow compactions) an abort of that
-    prompt made earlier counts too: ``_abort_requested`` is the prompt's own
-    there (``prompt()`` and ``_run`` clear it), unlike in a public ``compact()`` or
-    ``navigate_tree()``, where it may still describe a prompt that already
-    returned. Once a request fails and is not retried, its own failure
-    propagates unchanged, exactly as before #409.
+    while a compaction or a branch summary holds the harness. An abort made
+    earlier counts too: ``_abort_requested`` is this compaction's or branch
+    summary's, or under a prompt's claim that prompt's (#347: a public ``compact()``
+    and ``navigate_tree()`` clear it on entry, and each reads it before the request;
+    an abort landing after that read still reaches this). Once a request fails and
+    is not retried, its own failure propagates unchanged, exactly as before #409,
+    unless an abort stopped it (:func:`_stopped_by_abort`, which also cuts a
+    request in flight, #347).
     """
 
     def __init__(self, harness: AgentHarness) -> None:
         self._harness = harness
         self.abort = asyncio.Event()
-        if harness._claim is not None and harness._abort_requested:
+        if harness._abort_requested:
             self.abort.set()
         harness._retry_abort_event = self.abort
 
@@ -6730,6 +6765,12 @@ class _SummaryRetry:
             await self._harness._emit_to_subscribers(
                 AutoRetryEndEvent(success=success, attempt=retries, final_error=final_error)
             )
+
+    def _stopped_text(self, stop: BaseException) -> str:
+        """What ``auto_retry_end`` says for a sequence a raise ended: an abort's cancel
+        (#347) reads as an aborted wait does, and anything else as its own words."""
+
+        return "Retry cancelled" if self.abort.is_set() else str(stop) or type(stop).__name__
 
     async def __call__(self, request: Callable[[SummaryAttempt], Awaitable[str]]) -> str:
         from aelix_agent_core.session.compaction import SummaryAttempt
@@ -6768,17 +6809,17 @@ class _SummaryRetry:
                     )
                     aborted = await _summary_backoff_aborted(self.abort, delay_ms)
                 except BaseException as stop:
-                    await self._end(retries, False, str(stop) or type(stop).__name__)
+                    await self._end(retries, False, self._stopped_text(stop))
                     raise
                 if aborted:
                     await self._end(retries, False, "Retry cancelled")
                     raise
                 continue
             except BaseException as stop:
-                # A cancel (a sibling summary failed, or the caller was cancelled):
-                # close the sequence so the TUI's countdown and interrupt handler
-                # are restored, as #379 review round 2 closes the turn's.
-                await self._end(retries, False, str(stop) or type(stop).__name__)
+                # A cancel (a sibling summary failed, the caller was cancelled, or an
+                # abort, #347): close the sequence so the TUI's countdown and interrupt
+                # handler are restored, as #379 review round 2 closes the turn's.
+                await self._end(retries, False, self._stopped_text(stop))
                 raise
             await self._end(retries, True, None)
             return summary
@@ -6837,11 +6878,10 @@ def _summary_failure_retryable(harness: AgentHarness, attempt: SummaryAttempt) -
 async def _summary_backoff_aborted(event: asyncio.Event, delay_ms: float) -> bool:
     """Wait ``delay_ms`` for the summary retry's abort event; True when aborted.
 
-    :func:`_retry_backoff_aborted` without its read of ``_abort_requested``: a
-    public ``compact()`` or ``navigate_tree()`` runs while that flag may still
-    say a FINISHED prompt was aborted (only ``_run`` clears it), and every
-    abort made during the compaction sets this event. A 0 ms wait still
-    yields once (#408 review round 2).
+    :func:`_retry_backoff_aborted` without its read of ``_abort_requested``: every
+    abort made during a compaction or a branch summary sets this event, and
+    :class:`_SummaryRetry` sets it for one made earlier. A 0 ms wait still yields
+    once (#408 review round 2).
     """
 
     if event.is_set():
@@ -6979,7 +7019,7 @@ def _set_compaction_enabled(
 
 
 class _CompactionCancelled(AgentHarnessError):
-    """A ``session_before_compact`` handler cancelled the compaction (#546).
+    """A ``session_before_compact`` handler cancelled the compaction (#546), or an abort did (#347).
 
     Raised where ``AgentHarnessError("compaction", …)`` was, and still one, so a caller
     that catches the base class or reads ``code`` sees what it saw before. Only
@@ -6987,26 +7027,79 @@ class _CompactionCancelled(AgentHarnessError):
     """
 
 
+def _stop_compaction_if_aborted(harness: AgentHarness) -> None:
+    """#347 — an abort made since this compaction began writes nothing and asks for nothing.
+
+    ``_abort_requested`` is this compaction's: a public ``compact()`` or ``navigate_tree()``
+    clears it on entry, and a nested one runs under the prompt that does. Pi's check before
+    its write is ``agent-session.ts:2969-2971`` @ 469d8651b.
+    """
+
+    if harness._abort_requested:
+        raise _CompactionCancelled("compaction", "Compaction cancelled")
+
+
+async def _stopped_by_abort(harness: AgentHarness, work: Awaitable[Any]) -> Any:
+    """``await work`` in a task :meth:`AgentHarness.abort` cancels, read as a cancelled compaction (#347).
+
+    pi hands its summary request an abort signal (``agent-session.ts:2959`` @ 469d8651b).
+    Here the request takes the cancel a turn's request takes, so its connection drops on the way out
+    (``tests/harness/test_abort_stops_a_compaction_347.py``), and the caller, not being the
+    task cancelled, lives on to end the compaction: ``compaction_end``, the phase, on an
+    overflow the prompt's tail. A cancel of the caller is the caller's: asyncio hands it on
+    to this task, and the count on the caller's own task, read against what it was, tells
+    the two apart (ADR-0290 §1), so it goes on up as the cancel it is. So does one that
+    lands after the task ended, whose raise the count alone can explain.
+
+    Any other raise after an abort is that abort's too. The way out is not always the cancel:
+    a retry wait the abort also woke raises the failed request's error, which on 3.11 alone
+    (``wait_for`` returns a wait that ended and eats the cancel), and an adapter may turn the
+    cancel into something else. The caller reads one thing on every version.
+    """
+
+    current = asyncio.current_task()
+    cancels = current.cancelling() if current is not None else 0
+    task = asyncio.ensure_future(work)
+    harness._summary_task = task
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if current is None or current.cancelling() <= cancels:
+            raise _CompactionCancelled("compaction", "Compaction cancelled") from None
+        raise
+    except Exception:
+        _stop_compaction_if_aborted(harness)
+        raise
+    finally:
+        harness._summary_task = None
+
+
 def _compaction_end_failure(
-    harness: AgentHarness, reason: str, exc: Exception, nested: bool
+    harness: AgentHarness, reason: str, exc: Exception, written: bool
 ) -> tuple[bool, str | None]:
     """``(aborted, error_message)`` for the ``compaction_end`` of a compaction that raised.
 
-    A manual compaction's end is as before #546, ``(False, str(exc))``: its caller raises
-    the error itself (``/compact``, rpc ``compact``). "Nothing to compact" is a no-op on
-    every path and keeps its own words. An automatic compaction (``threshold``,
+    "Nothing to compact" is a no-op on every path and keeps its own words. One an abort
+    stopped before its entry was written reads as pi's, ``aborted`` with no message, whatever
+    its reason (:func:`_stop_compaction_if_aborted` says whose the flag is); once ``written``,
+    an abort says nothing about what raised and the failure reports as itself. Else a
+    manual compaction's end is as before #546, ``(False, str(exc))``: its caller raises the
+    error itself (``/compact``, rpc ``compact``). An automatic compaction (``threshold``,
     ``overflow``) reads as pi's: ``aborted`` with no message when an extension cancelled
-    it or the prompt that runs it was aborted (``_abort_requested`` is that prompt's own
-    under its claim), else pi's prefix and the failure's words.
+    it, else pi's prefix and the failure's words.
     """
 
-    if reason == "manual" or (
+    if (
         isinstance(exc, AgentHarnessError)
         and exc.code == "invalid_state"
         and "Nothing to compact" in str(exc)
     ):
         return False, str(exc)
-    if isinstance(exc, _CompactionCancelled) or (nested and harness._abort_requested):
+    if harness._abort_requested and not written:
+        return True, None
+    if reason == "manual":
+        return False, str(exc)
+    if isinstance(exc, _CompactionCancelled):
         return True, None
     prefix = "Context overflow recovery failed" if reason == "overflow" else "Auto-compaction failed"
     return False, f"{prefix}: {str(exc) or type(exc).__name__}"

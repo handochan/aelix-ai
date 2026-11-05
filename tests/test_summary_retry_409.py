@@ -380,7 +380,8 @@ async def test_an_abort_during_the_wait_ends_it_at_once_and_nothing_is_sent_agai
     harness, events = _rig(await _compactable(), settings=_MINUTE)
     _abort_on_start(harness, how)
     started = time.monotonic()
-    with pytest.raises(AgentHarnessError, match="502"):
+    # #347: an abort stops the compaction; ``abort_retry`` only stops the retrying.
+    with pytest.raises(AgentHarnessError, match="502" if how == "abort_retry" else "Compaction cancelled"):
         await asyncio.wait_for(harness.compact(), timeout=10)
     assert time.monotonic() - started < 5  # a minute's wait was not slept through
     assert provider.calls == 1
@@ -394,12 +395,12 @@ async def test_an_abort_during_the_wait_ends_it_at_once_and_nothing_is_sent_agai
 
 async def test_an_abort_made_while_the_request_was_failing_stops_the_retry() -> None:
     """An abort that lands before the retry is decided is not lost (the turn reads
-    ``_abort_requested`` there): the failure propagates, nothing is sent again."""
+    ``_abort_requested`` there): nothing is sent again, and it reads as what it is (#347)."""
 
     session = await _compactable()
     harness, events = _rig(session, settings=_MINUTE)
     provider = _Provider(harness.abort, "502")
-    with pytest.raises(AgentHarnessError, match="502"):
+    with pytest.raises(AgentHarnessError, match="Compaction cancelled"):
         await asyncio.wait_for(harness.compact(), timeout=10)
     assert provider.calls == 1 and _retry_events(events) == []
 
@@ -407,7 +408,7 @@ async def test_an_abort_made_while_the_request_was_failing_stops_the_retry() -> 
 async def test_under_a_prompts_claim_an_earlier_abort_of_that_prompt_stops_the_retry() -> None:
     """A threshold compaction runs inside the prompt: an abort of THAT prompt made
     before the summary request (here an extension's ``ctx.abort()`` from a
-    ``compaction_start`` subscriber) counts, as the turn's retry reads it."""
+    ``compaction_start`` subscriber) counts, and since #347 no request goes out."""
 
     provider = _TurnAndSummary(["big"], ["502"])
     harness, events = _rig(await _compactable(), model=_SMALL_WINDOW)
@@ -419,15 +420,30 @@ async def test_under_a_prompts_claim_an_earlier_abort_of_that_prompt_stops_the_r
     harness.subscribe(on_compaction_start)
     # #546: the 502 is no longer raised out of the prompt; the compaction ends aborted.
     await asyncio.wait_for(harness.prompt("go"), timeout=10)
-    assert provider.calls == {"turn": 1, "summary": 1}
+    assert provider.calls == {"turn": 1, "summary": 0}
     assert _retry_events(events) == []
     end = [e for e in events if getattr(e, "type", None) == "compaction_end"]
     assert [(e.aborted, e.error_message) for e in end] == [(True, None)]
 
 
+async def test_a_summary_retry_starts_out_aborted_by_an_earlier_abort() -> None:
+    """The window #347's check before the request cannot see: a ``ctx.abort()`` made after
+    it, before the summary's task takes its first step, still stops the retry."""
+
+    harness, _ = _rig(await _compactable())
+    harness._abort_requested = True
+    retry = core_mod._SummaryRetry(harness)
+    assert retry.abort.is_set()
+    retry.close()
+    harness._abort_requested = False
+    retry = core_mod._SummaryRetry(harness)
+    assert not retry.abort.is_set()
+    retry.close()
+
+
 async def test_a_finished_prompts_abort_does_not_cancel_a_later_compactions_retry() -> None:
-    """``_abort_requested`` is cleared only by the next ``_run``: an abort of a prompt
-    that already returned must not read as aborting this compaction's wait."""
+    """A public ``compact()`` clears ``_abort_requested`` on entry (#347): an abort of a
+    prompt that already returned must not read as aborting this compaction's wait."""
 
     provider = _Provider("502")
     harness, events = _rig(await _compactable())
@@ -671,8 +687,12 @@ async def test_an_abort_during_a_branch_summarys_wait_ends_it_at_once(how: str) 
     harness, events = _rig(session, settings=_MINUTE)
     _abort_on_start(harness, how)
     started = time.monotonic()
-    with pytest.raises(AgentHarnessError, match="502"):
-        await asyncio.wait_for(harness.navigate_tree(root, NavigateTreeOptions(summarize=True)), timeout=10)
+    navigating = harness.navigate_tree(root, NavigateTreeOptions(summarize=True))
+    if how == "abort":  # #347: an abort stops the branch summary
+        assert (await asyncio.wait_for(navigating, timeout=10)).cancelled
+    else:
+        with pytest.raises(AgentHarnessError, match="502"):
+            await asyncio.wait_for(navigating, timeout=10)
     assert time.monotonic() - started < 5
     assert provider.calls == 1
     assert _retry_events(events)[-1] == ("end", False, 1, "Retry cancelled")
@@ -812,7 +832,7 @@ async def test_a_zero_ms_wait_still_yields_so_an_abort_from_the_start_subscriber
     provider = _Provider("502")
     harness, events = _rig(await _compactable(), settings={"retry": {"maxRetries": 3, "baseDelayMs": 0}})
     _abort_on_start(harness, how)
-    with pytest.raises(AgentHarnessError, match="502"):
+    with pytest.raises(AgentHarnessError, match="502" if how == "abort_retry" else "Compaction cancelled"):
         await asyncio.wait_for(harness.compact(), timeout=10)
     assert provider.calls == 1
     assert _retry_events(events) == [("start", 1, 3, 0, _502), ("end", False, 1, "Retry cancelled")]

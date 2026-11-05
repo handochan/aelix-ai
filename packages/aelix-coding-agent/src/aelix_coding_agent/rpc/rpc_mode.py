@@ -361,7 +361,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1506-1511``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1509-1514``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -369,7 +369,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1488-1490``).
+        # enqueue-only regardless of phase (``core.py:1491-1493``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -2555,6 +2555,15 @@ async def run_rpc_mode(
             # as cancelled, and a running lifecycle transition finishes — all
             # before waiting for the command tasks.
             control.begin_shutdown()
+            # #347 — a ``compact`` is one of the commands waited for below, and it waits
+            # for its summary: stop it first, or a signal or an EOF waits for that too.
+            # A task, since an ``abort`` handler that parks must not hold the shutdown.
+            shutdown_abort: asyncio.Future[None] | None = None
+            if capture.harness.phase in ("compaction", "branch_summary"):
+                shutdown_abort = asyncio.ensure_future(capture.harness.abort())
+                shutdown_abort.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
             # Drain any in-flight command dispatches before tearing down.
             if pending_command_tasks:
                 await asyncio.gather(*pending_command_tasks, return_exceptions=True)

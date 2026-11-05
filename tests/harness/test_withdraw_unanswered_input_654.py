@@ -925,8 +925,8 @@ async def test_abort_during_a_public_compaction_says_the_queued_lines(tmp_path: 
     await run.harness.steer("STEER")
     await run.harness.abort(withdraw_unanswered=True)
     assert _said(run) == [(["STEER"], False)]
-    release.set()
-    await asyncio.wait_for(task, timeout=5)
+    with pytest.raises(AgentHarnessError, match="Compaction cancelled"):  # #347
+        await asyncio.wait_for(task, timeout=5)
     assert len(run.withdrawn) == 1
 
 
@@ -1171,27 +1171,25 @@ async def test_esc_during_the_overflow_summary_stops_before_the_barrier(
     assert "CANCELLED" not in await run.next_request()
 
 
-async def test_a_plain_abort_during_the_overflow_summary_still_compacts_and_keeps_the_input(
+async def test_a_plain_abort_during_the_overflow_summary_stops_it_and_keeps_the_input(
     tmp_path: Path,
 ) -> None:
-    entered = asyncio.Event()
-    release = asyncio.Event()
+    """#347 — any abort stops the summary; only a withdrawing one takes the input."""
 
-    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+    entered = asyncio.Event()
+
+    async def summarise(_model: Any, _prep: CompactionPreparation, _ci: Any) -> CompactResult:
         entered.set()
-        await release.wait()
-        return CompactResult(
-            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
-        )
+        await asyncio.Event().wait()
+        raise AssertionError("the abort cancels this")
 
     run = await _overflow_run(tmp_path, _Provider("overflow"), summarise)
     task = asyncio.create_task(run.harness.prompt("KEPT"))
     await asyncio.wait_for(entered.wait(), timeout=5)
     await run.harness.abort()
-    release.set()
     await asyncio.wait_for(task, timeout=5)
 
-    assert await _compactions(run) == 1
+    assert await _compactions(run) == 0
     assert run.withdrawn == []
     assert "KEPT" in await run.disk()
 
@@ -1223,29 +1221,27 @@ async def test_esc_after_the_overflow_compaction_committed_stays_a_barrier(tmp_p
     assert "KEPT" in await run.disk()
 
 
-async def test_esc_during_a_threshold_summary_after_an_answer_leaves_the_compaction_alone(
+async def test_esc_during_a_threshold_summary_after_an_answer_stops_it_and_keeps_the_answer(
     tmp_path: Path,
 ) -> None:
-    entered = asyncio.Event()
-    release = asyncio.Event()
+    """#347 — the summary goes, and the answer stays: it answered the input."""
 
-    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+    entered = asyncio.Event()
+
+    async def summarise(_model: Any, _prep: CompactionPreparation, _ci: Any) -> CompactResult:
         entered.set()
-        await release.wait()
-        return CompactResult(
-            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
-        )
+        await asyncio.Event().wait()
+        raise AssertionError("the abort cancels this")
 
     run = await _overflow_run(tmp_path, _Provider("big_answer"), summarise)
     task = asyncio.create_task(run.harness.prompt("ANSWERED"))
     await asyncio.wait_for(entered.wait(), timeout=5)
     await run.harness.abort(withdraw_unanswered=True)
-    release.set()
     await asyncio.wait_for(task, timeout=5)
 
-    assert await _compactions(run) == 1
+    assert await _compactions(run) == 0
     assert run.withdrawn == []
-    assert "ANSWERED" in await run.disk()
+    assert (await run.disk())[-2:] == ["ANSWERED", "answer"]
 
 
 # === Review round 1: the last caller wins =====================================

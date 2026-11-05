@@ -262,13 +262,14 @@ class CommandContext:
     to the CLI baseline. Returns the status line the handler commits; raises
     ``ProfileError`` for anything it refuses. ``None`` in headless tests / when
     entry.py built no service (ADR-0196)."""
-    run_cancellable: Callable[[Awaitable[Any]], Awaitable[Any]] | None = None
+    run_cancellable: Callable[..., Awaitable[Any]] | None = None
     """``run_tui`` wires this so a handler's LONG work can be interrupted
     (#604, ADR-0276 D15). It runs the awaitable as a task, marks the TUI running
     (spinner on, Esc and Ctrl+C live) and sends the interrupt to THAT task
     instead of to the harness — there is no turn to abort — then restores both.
     An interrupt surfaces as :class:`CommandInterrupted`; the result is returned
-    otherwise.
+    otherwise. With ``abort=True`` (#347) the interrupt is the harness's abort
+    instead, for work that abort reaches, and the work's own raise says what it did.
 
     It exists because a handler is awaited INSIDE the REPL loop and outside the
     turn wrapper, so Esc is inert there and Ctrl+C only arms the exit window: a
@@ -445,21 +446,35 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2424``) and render it
+    the harness's own auto-compaction guard at ``core.py:2448``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
+
+    #347 — through ``run_cancellable``, so Esc and Ctrl+C reach it and the row's
+    hint is true. The compaction an abort stopped reads as calmly as "Nothing to
+    compact" does, and so does one a hook cancelled without saying why.
     """
 
     if not hasattr(ctx.harness, "compact"):
         ctx.commit(Text("Compaction is unavailable.", style="yellow"))
         return
     try:
-        result = await ctx.harness.compact(args or None)
+        work = ctx.harness.compact(args or None)
+        if ctx.run_cancellable is not None:
+            result = await ctx.run_cancellable(work, abort=True)
+        else:
+            result = await work
+    except CommandInterrupted:
+        ctx.commit(Text("Compaction cancelled.", style="yellow"))
+        return
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         if (
             getattr(exc, "code", None) == "invalid_state"
             and "Nothing to compact" in str(exc)
         ):
             ctx.commit(Text("Nothing to compact.", style="yellow"))
+            return
+        if getattr(exc, "code", None) == "compaction" and str(exc) == "Compaction cancelled":
+            ctx.commit(Text("Compaction cancelled.", style="yellow"))
             return
         ctx.commit(Text(f"✖ compact failed: {exc}", style="bold red"))
         return
@@ -516,7 +531,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5699-5705`` intersects ``_state.tools`` with
+    (``harness/core.py:5733-5739`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -903,7 +918,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:4244-4261`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:4256-4273`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1034,7 +1049,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3664`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3676`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3019``), so the
     modal here is the same surface the permission dialog uses.
 

@@ -98,6 +98,42 @@ it: `-p` and `--mode json` printed nothing and exited 0, and rpc
 `get_last_assistant_text` answered the previous turn's text (#391). pi drops it
 too.
 
+## Stopping a compaction
+
+`Esc` or `Ctrl+C` stops a compaction, `/compact` and both automatic ones alike, while
+the row says `Compacting context… (Ns · esc to cancel)`; so do rpc `abort`, a signal
+and quitting. The summary request's connection is dropped, so nothing keeps spending,
+and no entry is written: the conversation stays as it was. (`Esc` takes about a second
+to register, as everywhere in the TUI. `Ctrl+C` is immediate.)
+
+- `/compact` says `Compaction cancelled.` and rpc `compact` answers an error with that
+  text. An automatic one says `Auto-compaction cancelled`. Each `compaction_end` says
+  `aborted: true` with no message.
+- After a threshold compaction the answer stays, and the next turn past the threshold
+  compacts again. After a request refused as too long, your message comes back to the
+  input box, as for any turn the model never answered
+  ([`Esc`](getting-started.md#inside-the-interactive-tui)); a plain abort keeps it in the
+  context, with the failed answer.
+- A summary already back when the key lands writes nothing either, and what it cost is
+  spent. Once the write has begun the entry stands, even if the key lands while it waits
+  for its lock, and `compaction_end` says how it ended: a success, or a later failure in
+  its own words.
+- An extension's `session_before_compact` handler is not cut: an abort during it takes
+  effect when it returns, and no request is sent. One that parks holds the compaction
+  until it returns, as does a `compaction_start` or `compaction_end` subscriber that holds
+  its event. So does a `session_compact` handler parked after the write: the entry stands,
+  the row still says `esc to cancel`, and no key helps. A handler's `ctx.abort()` sends no
+  request and writes nothing, but cuts no request already in flight (#545). A `compact`
+  or `navigate_tree` an extension starts runs outside the keys, so only rpc `abort`, a
+  signal or quitting reach it.
+- `Esc` in a failed summary's retry countdown ends the wait, as before, and the
+  compaction fails with that failure's words.
+- A line you enter during `/compact` stays the next input, so after `Esc` it goes to the
+  model. `Ctrl+D` does nothing while it runs, as in a turn.
+
+Until this release the request ran to its end: `/compact` ignored both keys and saved
+the summary, and the row of an automatic one promised what it did not do (#347).
+
 ## How much a request asks the model to write
 
 A model's `maxTokens` (the catalog's, or yours in `models.json`) is the most

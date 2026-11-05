@@ -392,7 +392,7 @@ class SubagentProgressBridge:
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
-        ``invalidate()`` unconditionally (``chrome.py:2269-2275``), so an
+        ``invalidate()`` unconditionally (``chrome.py:2276-2282``), so an
         unchanged panel re-written on every redraw would be a full repaint for
         nothing."""
 

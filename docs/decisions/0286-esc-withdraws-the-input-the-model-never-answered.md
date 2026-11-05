@@ -1,6 +1,6 @@
 # 0286. Esc withdraws the input the model never answered
 
-Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)` — amended 2026-11-04 (#684): a swap waits for the turn an Esc is ending (§2 note), and an abort made before a prompt's turn task exists ends that turn as it starts, nothing sent (Limits 2)
+Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)` — amended 2026-11-04 (#684): a swap waits for the turn an Esc is ending (§2 note), and an abort made before a prompt's turn task exists ends that turn as it starts, nothing sent (Limits 2) — amended 2026-11-05 (#347): any abort cuts a compaction's summary at once, so §4's check reads any abort and limit 13 is closed; the rule is in ADR-0023's `## Amendment (2026-11-05, #347)`
 Date: 2026-11-03
 Issue: #654. Design and the owner's four decisions (2026-11-03):
 `.omc/specs/654-design-2026-11-03.md`. Batch B6, P1.
@@ -14,7 +14,8 @@ ADR-0277 (its resume), #320, #336, #545, #571, #123.
 pi: `earendil-works/pi@9c9ce8547`, deliberately not followed on the context (below).
 Tests: `tests/harness/test_withdraw_unanswered_input_654.py`,
 `tests/tui/test_esc_gives_input_back_654.py`, `tests/rpc/test_rpc_mode_handlers.py`,
-`tests/cli/test_session_start_model_413.py`.
+`tests/cli/test_session_start_model_413.py`; #347: `tests/harness/test_abort_stops_a_compaction_347.py`,
+`tests/tui/test_esc_stops_a_compaction_347.py`.
 
 ## Context
 
@@ -64,7 +65,7 @@ end is not what they are taking back.
 | `[.., tool result, STEER]` pending | STEER withdrawn, the rest stays |
 | `[.., answer, FOLLOW_UP]` pending | FOLLOW_UP withdrawn, the rest stays |
 | after a compaction inside this prompt committed (overflow recovery) | nothing withdrawn (limit 1) |
-| during that compaction's summary, before it commits | whole prompt withdrawn, no compaction |
+| during that compaction's `session_before_compact` hook or summary, before it commits | whole prompt withdrawn, no compaction: the request is cut at once, and a hook is left to return first (#347) |
 
 *Amended 2026-11-04 (ADR-0290, #672, #673): results committed on the way out of a cancelled batch
 run before `_run`'s close-out, so each is an answer, input before them stays, and no steer can commit
@@ -141,12 +142,15 @@ countdown, one that stopped overflow recovery). The tail's check sits before the
 compaction, which must not summarise it, and again at the release, for a raise or an abort
 during that check. The empty in-memory aborted marker stays: `print_mode` reads it.
 
-An Esc during the summary of a compaction inside the prompt comes before the barrier.
-`compact()` checks once the summary is back, before `append_compaction`: under the prompt's
-claim, with a withdraw requested and input still in the tracker, it raises
-`_CompactionCancelled` and commits nothing. `compaction_end` reads aborted, overflow recovery
-ends as it does for a cancelled compaction, and the tail withdraws. A threshold compaction
-after an answer has nothing in the tracker and goes on.
+An Esc during the summary of a compaction inside the prompt comes before the barrier. Since
+#347 it cuts the request at once, as any abort does (ADR-0023, `## Amendment (2026-11-05, #347)`),
+and `compact()` checks again before `append_compaction`, for a summary that was back as the abort
+landed: it raises `_CompactionCancelled` and commits nothing. `compaction_end` reads aborted,
+overflow recovery ends as it does for a cancelled compaction, and the tail withdraws. A threshold
+compaction after an answer stops too, with nothing in the tracker: the answer stays and the next
+turn's check compacts again. A plain abort stops either and keeps the input. *Before #347 the check
+read only a withdrawing abort with input in the tracker, once the summary was back: the row waited
+for the summary, and a threshold compaction or a plain abort went on and committed.*
 
 ### 5. An event, because no context change goes unobserved
 
@@ -254,8 +258,9 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
     synchronous `append_file` and cannot reach it (`session/session.py:330`).
 12. **The aborted marker counts in stats.** `/session` and RPC stats count the empty in-memory
     marker until the session is reopened, so `messages` can read one more than the path holds.
-13. **An Esc during an overflow summary does not interrupt it (#347).** The spinner stays and
-    the text returns when the summary does; an Esc in a hook before it still spends the call.
+13. *Closed 2026-11-05 (#347).* An Esc during an overflow summary now interrupts it, and the text
+    returns at once; in a `session_before_compact` hook before it, the text returns when the hook does
+    (ADR-0023's limit 1). The number stays so that the others keep theirs.
 14. **The countdown with nothing withdrawn says nothing.** Queued lines given back there print
     no sentence; they just appear in the box.
 15. **A Ctrl+C on text typed within the 2 s window does nothing,** and shows nothing.

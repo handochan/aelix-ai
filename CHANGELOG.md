@@ -1283,6 +1283,34 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Esc and Ctrl+C stop a compaction (#347, ADR-0023, ADR-0286).** During a context
+  compaction the row said `esc to cancel` and the key did nothing until the summary came
+  back; `/compact` had no hint, ignored both keys and saved the summary. Now any abort stops
+  a running compaction at once, the threshold and overflow ones and `/compact` alike: Esc,
+  Ctrl+C, RPC `abort`, a signal and quitting. The summary request's connection is dropped, so
+  nothing keeps spending, and no compaction is written.
+  - `/compact` shows the row's `esc to cancel` and ends with a calm `Compaction cancelled.`
+    An automatic one ends with `Auto-compaction cancelled`, and what follows it is as
+    before: after an overflow your message comes back to the input box, and after a
+    threshold compaction the answer stays and the next turn's check compacts again.
+  - RPC `compact` answers an error, `Compaction cancelled`, and `compaction_end` says
+    `aborted: true` with no message, for a manual compaction too. Sent to an idle harness,
+    `abort` does not cancel the `compact` after it. A signal or stdin closing stops it too,
+    so a script that pipes one `compact` in has to keep stdin open until the response.
+  - A `session_before_compact` handler is not cut: the abort takes effect when it returns,
+    and no request follows it, so one that parks holds the compaction, as it did. So does a
+    `session_compact` handler parked after the write, whose row still says `esc to cancel`. A
+    summary already back when the abort lands writes nothing, and its cost is spent. Once
+    its write has begun an entry stands, and `compaction_end` says how it ended: a success,
+    or a later failure in its own words. A line entered during `/compact` goes to the model
+    after the key, and `Ctrl+D` is inert while it runs, as in a turn. A summary request re-sent after a failure says `Esc to
+    interrupt` under a turn or a `/compact`, and a branch summary's request is cut the same
+    way, which `navigate_tree` reports as `cancelled`.
+  - An abort during a summary's retry wait, or landing as its request fails, ends as
+    `Compaction cancelled` where it raised the request's failure. `abort_retry()` still only
+    stops retrying, and an extension's `ctx.abort()` still cuts no request in flight (#545),
+    though no request follows it now and nothing is written.
+
 - **Ctrl+C while an extension's `setup()` runs at launch ends aelix with one line
   (#685, ADR-0284).** It ended with a traceback in `-p`, `--mode json`, `--mode
   rpc` and the TUI: #664's "aelix: interrupted while the extension … was

@@ -579,14 +579,11 @@ async def test_a_cancelled_turn_restores_only_the_entries_its_line_names() -> No
 
 async def test_esc_during_the_overflow_summary_says_the_input_is_back_once_per_run() -> None:
     entered = asyncio.Event()
-    release = asyncio.Event()
 
-    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+    async def summarise(_model: Any, _prep: CompactionPreparation, _ci: Any) -> CompactResult:
         entered.set()
-        await release.wait()
-        return CompactResult(
-            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
-        )
+        await asyncio.Event().wait()  # #347: the Esc cancels this
+        raise AssertionError("cancelled")
 
     provider = _Provider("overflow", "hang")
     async with _Tui(provider, _summarizer_override=summarise) as tui:
@@ -604,10 +601,7 @@ async def test_esc_during_the_overflow_summary_says_the_input_is_back_once_per_r
         tui.pipe.send_text("a queued steer\n")
         await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
         tui.pipe.send_text(_CTRL_C)
-        await tui.editor_reads("a queued steer")
         await _wait(lambda: tui.commits.count(INPUT_RETURNED_NOTICE) == 1)
-
-        release.set()
         await tui.editor_reads("the prompt\n\na queued steer")
         await _wait(tui.idle)
         assert tui.commits.count(INPUT_RETURNED_NOTICE) == 1, "the prompt is the same fact"
