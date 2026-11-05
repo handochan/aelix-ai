@@ -247,6 +247,10 @@ class SelectionModel:
 
         lock = state.lock
         if lock is not None:
+            if state.problem is not None:
+                # #683 — a locked row can fail to load too (an ``-e`` extension
+                # whose setup raised): the lock's tag hid it.
+                return "failed", _RED
             if lock.tag:
                 return lock.tag, _DIM
             shadowed = lock.kind == "shadowed" or lock.reason.startswith("shadowed")
@@ -713,6 +717,11 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
             if lock.value and state.live is False:
                 # A run lock lets an extension narrow, never widen (ADR-0283).
                 text += " · off now (turned off this run)"
+        if state.problem is not None:
+            # #683 — the load error, after what locks the row (an ``-e`` row
+            # said only "Locked on: loaded by -e for this run").
+            text += f" · failed to load: {state.problem}"
+            return f"{_RED} {fit(flat(text), width - 1)}{_RST}"
         return f"{_DIM} {fit(flat(text), width - 1)}{_RST}"
     if state.problem is not None and state.item.key not in model.edits:
         text = f"Saved {_word(state.saved)} · failed to load: {state.problem}"
