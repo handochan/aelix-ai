@@ -1324,7 +1324,9 @@ unwritten. Add them with the next release.
   (Alt+Enter queued it for the model, Ctrl+D quit aelix), and a large paste into
   an editor dialog arrives as pasted instead of as "[Pasted text #1 …]". Ctrl+C
   twice still quits from under a dialog that does not take Ctrl+C itself (an
-  extension's `custom()` overlay), and leaves the hidden line as it was.
+  extension's `custom()` overlay), and leaves the hidden line as it was. A key
+  handled in the moment a dialog opens, before it is first drawn, no longer
+  leaves that dialog deaf to its own keys until it closes.
 
 - **A steering or follow-up line shows up in the transcript where the model read
   it (#668, ADR-0287, ADR-0119).** A line sent with Enter (steer) or `Alt+Enter`

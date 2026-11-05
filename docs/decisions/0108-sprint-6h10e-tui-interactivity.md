@@ -66,7 +66,11 @@ neither read nor cleared (fix round 2, verify S1: gated off, a `custom()` overla
 idle, which takes no key, left no way out; Ctrl+C twice, Ctrl+D, Esc and typing did nothing, and
 aelix had to be killed, where 6aed3863 quit on Ctrl+C twice). pi goes further — every key goes
 to the focused component — but a `custom()` overlay here takes no key at all, and Esc or Ctrl+C
-is how a turn under it is stopped, Ctrl+C twice how aelix is left.
+is how a turn under it is stopped, Ctrl+C twice how aelix is left. `mount_modal` rebuilds the
+layout's parent map at once (PR CI): prompt_toolkit caches the merged key bindings per focused
+window and set of controls and finds parents in a map it rebuilds at each render, so a key
+handled after the modal took focus but before that render cached the modal's window with no
+parent, and the modal's own Esc, Ctrl+C and number keys stayed out until it closed.
 
 ### §B live tool-result interception
 `EventRenderer` gains a late-bound `get_tool_renderer_desc` lookup (reads the live registry by

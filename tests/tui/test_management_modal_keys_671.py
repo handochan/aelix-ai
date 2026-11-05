@@ -176,6 +176,37 @@ async def test_esc_and_ctrl_c_close_the_modal_and_the_input_comes_back(
     assert actions == []
 
 
+async def test_a_key_before_the_modal_is_first_drawn_still_reaches_it() -> None:
+    """prompt_toolkit caches the merged key bindings per focused window and set
+    of controls; one built before the first render after the mount had no parent
+    for the modal's window, and left the modal's own keys out while it was open.
+    The key goes to the key processor in the loop turn the modal mounts in,
+    before any render (CI ran into it with an Esc sent at once)."""
+
+    from prompt_toolkit.key_binding.key_processor import KeyPress
+    from prompt_toolkit.keys import Keys
+
+    bus = EventBus()
+    async with _live() as live:
+        chrome = live.chrome
+        _renderer(chrome, bus).open_modal(_modal(_ACT1))
+        for _ in range(20):
+            if chrome.is_modal_open():
+                break
+            await asyncio.sleep(0)
+        assert chrome.is_modal_open()
+        drawn = chrome.app.render_counter
+
+        def _press() -> None:
+            chrome.app.key_processor.feed(KeyPress(Keys.ControlC, _CTRL_C))
+            chrome.app.key_processor.process_keys()
+
+        chrome.app.context.copy().run(_press)
+        assert chrome.app.render_counter == drawn, "a render ran first: this did not test the race"
+        await wait_until(lambda: not chrome.is_modal_open(), what="the modal to close", detail=live.dump)
+        assert chrome._last_ctrl_c is None, "the chrome's Ctrl+C took it: the modal's bindings were left out"
+
+
 async def test_the_action_key_reaches_the_extension_and_closes_the_modal() -> None:
     bus = EventBus()
     actions: list[Any] = []
