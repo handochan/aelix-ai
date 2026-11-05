@@ -155,6 +155,10 @@ class ModelCatalogRefresher:
             return None
         run = self._start(registry, trigger=trigger, force=force)
         run.waiters += 1
+        # #698 (ADR-0290) — a rise across the wait, as the caller's count can already be up
+        # with no cancel behind it (a tool on a turn's task that caught a failed TaskGroup).
+        current = asyncio.current_task()
+        cancels = current.cancelling() if current is not None else 0
         try:
             return await asyncio.wait_for(asyncio.shield(run.task), timeout)
         except TimeoutError:
@@ -162,8 +166,7 @@ class ModelCatalogRefresher:
         except asyncio.CancelledError:
             # The shared run was cancelled (superseded, or torn down), not this
             # caller: the caller gets no result rather than a cancellation.
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
+            if current is not None and current.cancelling() > cancels:
                 raise
             return None
         finally:

@@ -191,13 +191,34 @@ async def _run_loop(
     emit: AgentEventSink,
     stream_fn: StreamFn | None,
 ) -> None:
+    # The record of a caught cancel belongs to one run (#698, ADR-0290). ``Agent`` runs the
+    # loop in its caller's task, so a run can follow another on that task or sit inside one:
+    # a tool, a hook or a listener of the outer run. Neither sees the other's.
+    current = asyncio.current_task()
+    outer_caught = current in _CANCEL_REACHED if current is not None else False
+    if current is not None:
+        _CANCEL_REACHED.discard(current)
+    try:
+        await _run_turns(initial_context, new_messages, initial_config, signal, emit, stream_fn)
+    finally:
+        if current is not None:
+            if outer_caught:
+                _CANCEL_REACHED.add(current)
+            else:
+                _CANCEL_REACHED.discard(current)
+
+
+async def _run_turns(
+    initial_context: AgentContext,
+    new_messages: list[AgentMessage],
+    initial_config: AgentLoopConfig,
+    signal: Any,
+    emit: AgentEventSink,
+    stream_fn: StreamFn | None,
+) -> None:
     current_context = initial_context
     config = initial_config
     first_turn = True
-    # ``Agent`` runs the loop in its caller's task, so one run's cancel must not outlive it.
-    current = asyncio.current_task()
-    if current is not None:
-        _CANCEL_REACHED.discard(current)
     pending_messages: list[AgentMessage] = await _drain_queue(config.get_steering_messages)
 
     while True:  # outer: follow-up drain loop

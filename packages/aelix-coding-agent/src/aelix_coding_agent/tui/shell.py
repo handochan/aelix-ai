@@ -233,7 +233,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
     """#249 — the meter's MID-TURN figure, read straight off a finished message.
 
     The fresh number is in the ``message_end`` payload, and reading it avoids
-    a stats walk for every provider round-trip (``loop.py:262``). Before #320,
+    a stats walk for every provider round-trip (``loop.py:283``). Before #320,
     state was appended only after the whole loop returned, so those walks also
     repainted the pre-turn number. State now commits at each message_end, while
     reading this payload remains O(1): measured
@@ -2397,17 +2397,21 @@ async def run_tui(
         running_command["cancel"] = interrupt
         out_chrome.on_interrupt = interrupt
         out_chrome.set_running(True)
+        # #698 (ADR-0290) — read as a rise across this wait. The count can already be up
+        # with no cancel behind it, from an extension's hook or a command, on this task
+        # that the whole session runs on.
+        current = asyncio.current_task()
+        cancels = current.cancelling() if current is not None else 0
         try:
             return await task
         except asyncio.CancelledError:
             # OURS only when the interrupt fired, the work really ended
             # cancelled, and nobody is cancelling THIS coroutine (a teardown
             # cancelling the input loop must keep propagating as a cancel).
-            current = asyncio.current_task()
             if (
                 interrupted["hit"]
                 and task.cancelled()
-                and (current is None or not current.cancelling())
+                and (current is None or current.cancelling() <= cancels)
             ):
                 raise CommandInterrupted from None
             raise
@@ -2527,7 +2531,7 @@ async def run_tui(
     # figure directly, avoiding a repeated stats walk at every tool iteration.
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
-    # ``agent_end`` (one per PROMPT — ``loop.py:240``, ``:282``, ``:293``, plus
+    # ``agent_end`` (one per PROMPT — ``loop.py:261``, ``:303``, ``:314``, plus
     # the abort close-out ``core.py:6056`` and the hook-fail one ``:6107``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
@@ -3065,7 +3069,7 @@ async def run_tui(
             # unconditional and opens with its own ``get_session_stats``, so a
             # thirty-tool turn still performs thirty of them for the ``/stats``
             # history row. ``turn_end`` is per provider round-trip
-            # (``loop.py:262``, inside the ``loop.py:206`` tool-call loop), so
+            # (``loop.py:283``, inside the ``loop.py:227`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks formerly estimated over a message list the harness
             # only extended when the loop returned (fixed by #320). Each

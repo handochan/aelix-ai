@@ -1653,7 +1653,7 @@ async def test_message_end_replacement_does_not_double_print() -> None:
     """A message_end-replacing extension must not defeat the dedupe guard.
 
     Regression test for the review's LOW on the ORIGINAL object-identity guard.
-    loop.py:422-436 identity-swaps the assistant message when a message_end
+    loop.py:443-457 identity-swaps the assistant message when a message_end
     handler returns a replacement, so ``_render_message_error`` sees the ORIGINAL
     object while the ``turn_end`` that follows carries the REPLACEMENT. An
     ``is`` comparison misses and BOTH outcome lines print for one abort.

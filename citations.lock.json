@@ -452,10 +452,20 @@
    "skills: list[Skill] = field(default_factory=list)",
    "diagnostics: list[SkillDiagnostic] = field(default_factory=list)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1024-1024": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1012-1049": [
+   "# Phase 1 — sequential preparation (Pi agent-loop.ts:456-489).",
+   "for tc in tool_calls:",
+   "# A cancel a hook or listener swallowed: the rest of the batch stays",
+   "# unstarted, as it does for one that got through.",
+   "_raise_if_cancel_pending(requested)",
+   "await emit(",
+   "ToolExecutionStartEvent(",
+   "tool_call_id=tc.tool_call_id,"
+  ],
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1045-1045": [
    "is_error=prepared.result.is_error,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1034-1037": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1055-1058": [
    "tasks = [",
    "asyncio.ensure_future(_run(entry)) if isinstance(entry, _Prepared) else None",
    "for entry in pending",
@@ -464,28 +474,28 @@
   "packages/aelix-agent-core/src/aelix_agent_core/loop.py:117-117": [
    "signal: Any | None = None,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:206-206": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:227-227": [
    "while has_more_tool_calls or pending_messages:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:240-240": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:261-261": [
    "await emit(AgentEndEvent(messages=new_messages))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:262-262": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:283-283": [
    "await emit(TurnEndEvent(message=message, tool_results=tool_results))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:282-282": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:303-303": [
    "await emit(AgentEndEvent(messages=new_messages))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:293-293": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:314-314": [
    "await emit(AgentEndEvent(messages=new_messages))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:347-350": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:368-371": [
    "# Terminal success: ``\"done\"`` (Pi) OR legacy ``\"end\"`` (deprecated alias).",
    "# Terminal failure: ``\"error\"`` (Pi `AssistantErrorEvent`) — the",
    "# adapter has already set ``output.stop_reason in {\"aborted\",\"error\"}``",
    "# plus ``error_message`` on the message before emitting."
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:411-436": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:432-457": [
    "elif event.type == \"error\":",
    "# Sprint 6a (ADR-0037): Pi ``AssistantErrorEvent`` carries the",
    "# in-flight assistant message in ``error`` with ``stop_reason``",
@@ -495,7 +505,7 @@
    "final = replace(final, timestamp=time.time())",
    "if partial_index is not None:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:422-436": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:443-457": [
    "# P0 #7 Wave 3 (ADR-0145): identity-swap the replacement (if any)",
    "# — same as the ``done`` branch. An error/abort message has no",
    "# extension to replace it in practice, but the path must tolerate",
@@ -505,7 +515,7 @@
    "if (",
    "isinstance(replacement, AssistantMessage)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:427-436": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:448-457": [
    "replacement = await emit(MessageEndEvent(message=final))",
    "if (",
    "isinstance(replacement, AssistantMessage)",
@@ -515,7 +525,7 @@
    "context.messages[partial_index] = replacement",
    "elif context.messages and context.messages[-1] is final:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:575-596": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:596-617": [
    "if config.before_tool_call is not None:",
    "before_ctx = BeforeToolCallContext(",
    "assistant_message=assistant_message,",
@@ -525,7 +535,7 @@
    ")",
    "decision = await _maybe_await(config.before_tool_call(before_ctx))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:583-596": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:604-617": [
    "if isinstance(decision, BeforeToolCallResult) and decision.block:",
    "return _Immediate(",
    "tool_call=tc,",
@@ -535,18 +545,18 @@
    "TextContent(",
    "text=decision.reason"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:668-668": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:689-689": [
    "update_events: list[asyncio.Future[AgentMessage | None]] = []"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:703-703": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:724-724": [
    "update_events.append(asyncio.ensure_future(coro, loop=loop_ref))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:705-707": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:726-728": [
    "exec_ctx = ToolExecutionContext(",
    "tool_call_id=prepared.tool_call.tool_call_id,",
    "signal=signal,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:827-837": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:848-858": [
    "has_sequential = any(",
    "(",
    "tool_map.get(tc.tool_name) is not None",
@@ -556,7 +566,7 @@
    ")",
    "if config.tool_execution == \"sequential\" or has_sequential:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:868-876": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:889-897": [
    "for tc in tool_calls:",
    "await emit(",
    "ToolExecutionStartEvent(",
@@ -575,16 +585,6 @@
   "packages/aelix-agent-core/src/aelix_agent_core/loop.py:99-100": [
    "EVERY persisting ``message_end`` site (prompt, follow-up, tool-result, and",
    "the two assistant sites) so a replacement is never silently dropped — pi's"
-  ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:991-1028": [
-   "# Phase 1 — sequential preparation (Pi agent-loop.ts:456-489).",
-   "for tc in tool_calls:",
-   "# A cancel a hook or listener swallowed: the rest of the batch stays",
-   "# unstarted, as it does for one that got through.",
-   "_raise_if_cancel_pending(requested)",
-   "await emit(",
-   "ToolExecutionStartEvent(",
-   "tool_call_id=tc.tool_call_id,"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1166-1166": [
    "await self._teardown_current(reason, target_session_file)"
@@ -1576,7 +1576,7 @@
    "one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The",
    "kernel's ``_execute_tool_calls``",
    "downgrades the WHOLE BATCH to sequential when any tool in it declares this",
-   "(kernel ``types.py:47-56``; ``loop.py:827-837``), which closes the",
+   "(kernel ``types.py:47-56``; ``loop.py:848-858``), which closes the",
    "concurrent-modal hazard described in the module docstring at zero",
    "product-core cost. It is belt-and-braces with the hook location and with",
    "``consent.py``'s process-wide lock — and because the description is"
@@ -3073,33 +3073,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3185-3187": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3189-3191": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3446-3446": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3450-3450": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3591-3591": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3595-3595": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3676-3676": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3680-3680": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4096-4096": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4100-4100": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4205-4205": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4209-4209": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4205-4208": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4209-4212": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1977``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4256-4273": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4260-4277": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",

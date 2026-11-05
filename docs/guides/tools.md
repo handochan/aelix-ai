@@ -84,7 +84,8 @@ swallowed and the output stays, so do not register a redactor that way.
 
 Do not catch the cancel and return: the turn stops all the same, and the model reads what you
 returned as a call that finished. `uncancel()` takes no stop back. A tool that ignores the cancel
-holds the turn until the next Esc; in a parallel batch that Esc stops waiting for it.
+holds the turn until it ends, however many times Esc is pressed; in a parallel batch a second Esc
+stops waiting for it.
 
 On a signal the process aborts, waits 2 seconds and aborts again, so async cleanup in your
 `finally` gets those 2 seconds.

@@ -1291,14 +1291,22 @@ unwritten. Add them with the next release.
   (#685) did the same, simulated here and not run against them. These leave Python's cancel count
   up with no cancel behind it, and #672 read that count as "this turn was cancelled". Now the count
   alone stops nothing: the turn goes on and the model answers, in the TUI and in `-p`.
-  - Esc, Ctrl+C, RPC `abort`, `dispose()`, a signal and a cancel of `prompt()` still stop the turn,
-    also when a tool, a hook or a listener swallows the cancel, and also after such a stale count.
+  - Esc, Ctrl+C, RPC `abort`, `dispose()`, a signal and a cancel of `prompt()` still stop a turn that
+    has begun, also when a tool, a hook or a listener swallows the cancel, and also after such a stale
+    count. A cancel of `prompt()` that an `input` or `before_agent_start` hook swallows before the turn
+    begins goes on, as it did.
+  - Esc on `/agents run` no longer ends the TUI with a traceback when an extension's `input` or
+    `before_agent_start` hook, or a command, left that count up earlier in the session, which lasted
+    to the end of it: the delegation stops and the next line works. A tool waiting on a shared model
+    catalog refresh that ends cancelled no longer stops its turn on such a count.
   - A tool that calls `uncancel()` no longer takes a stop back: the batch stops after it. Under
     `aelix_agent_core.Agent` or a direct `agent_loop` it still does.
-  - `Agent` and a direct `agent_loop` caller stop on a cancel the loop sees. A sequential tool that
-    swallows one goes undetected there, as before #672; a direct caller that wants otherwise passes
-    the new `AgentLoopConfig.cancel_requested`. A stale count or an old swallowed cancel on the
-    caller's task no longer costs its next prompt.
+  - `Agent` and a direct `agent_loop` caller stop on a cancel the loop sees. One swallowed on the
+    caller's task goes undetected there, as before #672: by any tool, hook or listener on the
+    sequential path, and on the parallel path by a `before_tool_call` hook, a `tool_execution_start`
+    listener or a result's `message_end` listener. A direct caller that wants otherwise passes the new
+    `AgentLoopConfig.cancel_requested`. A stale count or an old swallowed cancel on the caller's task
+    no longer costs its next prompt.
 - **Esc and Ctrl+C stop a compaction (#347, ADR-0023, ADR-0286).** During a context
   compaction the row said `esc to cancel` and the key did nothing until the summary came
   back; `/compact` had no hint, ignored both keys and saved the summary. Now any abort stops

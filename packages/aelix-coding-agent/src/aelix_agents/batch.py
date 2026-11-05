@@ -33,7 +33,7 @@ CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
 argument (``harness/core.py:5983-5989``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:117``) and is threaded unchanged into
-``ToolExecutionContext(signal=signal)`` (``loop.py:705-707``). Abort is
+``ToolExecutionContext(signal=signal)`` (``loop.py:726-728``). Abort is
 ``turn_task.cancel()`` (``core.py:2039-2042``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.

@@ -373,8 +373,10 @@ class AgentLoopConfig:
     # #698 (ADR-0290): whether whoever runs the loop has cancelled this turn, read
     # where a cancel somebody caught and went on from must still stop the batch.
     # Pure and synchronous. ``None`` (``Agent``, a direct ``agent_loop`` caller): the
-    # loop stops on what is delivered to it, and a tool that swallows a cancel on the
-    # sequential path goes undetected. Appended for positional ABI.
+    # loop stops on what is delivered to it, and a cancel swallowed on the caller's task
+    # goes undetected: by any tool, hook or listener on the sequential path, and on the
+    # parallel path by a ``before_tool_call`` hook, a ``tool_execution_start`` listener or
+    # a ``message_end`` listener of a result. Appended for positional ABI.
     cancel_requested: Callable[[], bool] | None = None
 
 

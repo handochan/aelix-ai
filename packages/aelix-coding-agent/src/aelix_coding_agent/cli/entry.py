@@ -4209,7 +4209,7 @@ async def _async_main(argv: list[str]) -> int:
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
         # ``AgentHarness.__init__`` validates the seed at ``core.py:862``, AFTER
-        # the registry merge at ``:564``, so the CHECK is already correct —
+        # the registry merge at ``:755``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What
         # is wrong is WHERE it raises. From inside the constructor there is no

@@ -87,7 +87,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
 declares ``execution_mode="sequential"`` (``tool.py:894``), which makes the
-kernel run the whole tool batch sequentially (``loop.py:827-837``), so two
+kernel run the whole tool batch sequentially (``loop.py:848-858``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
 not own it cannot blank someone else's panel."""
@@ -254,7 +254,7 @@ def _flatten(value: str, *, limit: int) -> str:
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
     (``stream.py:1175-1177``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
-    (``loop.py:868-876``), so it is not constrained to a real tool name. A child
+    (``loop.py:889-897``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
     controlled content (``consent._may_widen`` constraint 6). Demonstrated: 40
     newlines in ``current_tool`` turned a 3-entry panel into 43 screen rows with

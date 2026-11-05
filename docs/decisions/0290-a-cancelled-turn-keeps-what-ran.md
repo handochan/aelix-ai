@@ -1,7 +1,7 @@
 # 0290. A cancelled turn keeps what ran
 
 Status: Accepted (2026-11-04, #672, #673). **Corrected 2026-11-06 by #698:** a raised cancel count alone stops
-nothing (§1, §3, limits 14, 15, 17, 19).
+nothing (§1, §3, limits 14, 15, 17, 19, 20, 21).
 Date: 2026-11-04
 Issue: #672, #673, one site. Design and the owner's decision (2026-11-04):
 `.omc/specs/672-673-design-2026-11-04.md`. Batch B6, P1.
@@ -16,8 +16,8 @@ its tools honour, `packages/coding-agent/src/core/tools/bash.ts:370-375` throws 
 with the output so far and `packages/agent/src/agent-loop.ts:855-863` makes that a result.
 Tests: `tests/harness/test_finished_tools_keep_results_672.py`,
 `tests/harness/test_cut_call_gets_a_result_673.py`,
-`tests/harness/test_the_way_out_of_a_cancel_672_673.py`, `tests/harness/test_stale_cancel_count_698.py`, with
-`tests/harness/_cancelled_turn.py`.
+`tests/harness/test_the_way_out_of_a_cancel_672_673.py`, `tests/harness/test_stale_cancel_count_698.py`,
+`tests/tui/test_interrupt_with_a_stale_count_698.py`, with `tests/harness/_cancelled_turn.py`.
 
 ## Context
 
@@ -61,13 +61,22 @@ traceback. A rise cannot tell a stale value from a swallowed cancel; #685 measur
    that `abort()` cancelled the turn's task, or that the count of the `prompt()` task rose since the turn's
    task was made. That task is parked at `await turn_task` for the whole turn, so nothing can leave a stale
    value on it, and a cancel of it reaches the turn's task through asyncio's own hand-over. What an `input` or
-   `before_agent_start` hook left on it comes before the read. An extension's `ctx.abort()` cancels nothing and
-   is not part of this, as it was not (#545): every call runs and the next request goes out.
+   `before_agent_start` hook left on it comes before the read, and so does a cancel one of them swallowed
+   (limit 20). An extension's `ctx.abort()` cancels nothing and is not part of this, as it was not (#545): every
+   call runs and the next request goes out.
 3. The loop caught a delivered cancel where it goes on for the records (§3, §5), or cancelled a call itself,
-   and remembers the task. A `CancelledError` it catches counts as a cancel if the task's count rose across
-   the await it came out of. Every read of a count that is left (this one, a call's first step and the wait's
-   second cancel in §3 and §5, the harness's in 2, the close-out, `_stopped_by_abort`) is a rise across one
-   wait, on a task parked in it or with the `CancelledError` in hand.
+   and remembers the task, for that run of the loop: a run nested on the same task, under a tool, a hook or a
+   listener, starts with no record and leaves the outer run's as it found it. A `CancelledError` it catches
+   counts as a cancel if the task's count rose across the await it came out of.
+
+Every read of a count that is left compares with a value read before the wait it asks about, and none compares
+with zero. In `loop.py`, 3's own, a call's first step and the wait's second cancel (§3, §5). In `harness/core.py`,
+the one in 2, the close-out and `_stopped_by_abort`. In the coding agent, `_run_cancellable` in `tui/shell.py` and
+`ModelCatalogRefresher.refresh` in `model_refresh.py`, with the `CancelledError` in hand, both absolute until #698:
+what an extension's hook left on the TUI's input task made Esc on `/agents run` end the TUI with a traceback, and a
+tool waiting on a shared refresh that ended cancelled stopped its turn. `McpServerConnection.connect` in
+`mcp/client.py`, across the connect. `_end_if_cancelled_since` in `extensions/loader.py`, across a load step, where a
+rise alone ends nothing (#685).
 
 So:
 
@@ -77,8 +86,8 @@ So:
   A `ToolCancelled` raised that way keeps its result, as an error. Before this a tool raising it by
   itself ended the turn with `prompt()` raising it, which exited the TUI with a traceback, and on the
   parallel path it left a sibling waiting for a cancel nobody had sent.
-- A cancel a tool, a hook or a listener catches and swallows still stops a harness's turn (limit 19 for
-  anything else). A sequential call that returns out of a cancel keeps the result it returned, and no later
+- A cancel a tool, a hook or a listener catches and swallows still stops a harness's turn once it has begun
+  (limit 19 for anything but a harness, limit 20 for before it begins). A sequential call that returns out of a cancel keeps the result it returned, and no later
   call starts: a write after Esc used to run. `loop.py` reads 2 and 3 above before each model request, after
   each update of a stream, before a batch starts, after each prepare and at each call's commit on the
   sequential path, at each call of Phase 1 and at each call's first step on the parallel path, and at the end
@@ -144,7 +153,9 @@ could have ended a wait for a tool that ignores them. Here each lands in the wai
 A cancel that comes ahead of a task's first step is read there, so that call never begins: the wait hands a
 cancel on one loop turn after it lands, which `gather` did not. What it reads is a rise in the turn's count since
 the line that makes the tasks, with no await from there to the wait the turn then parks in, or `cancel_requested`
-for one swallowed in Phase 1 (#698). The wait notes each call it cancels and each cancel that lands in it. Children
+for one swallowed in Phase 1 (#698). The exception is a cancel a Phase 1 hook sends its own task with no await after
+it: that is under the line's read, so the calls begin and take it at their first await (limit 14). The wait notes each
+call it cancels and each cancel that lands in it. Children
 do not raise for a cut: `_run` emits `tool_execution_end` and returns `_Finalized`. Phase 3 then runs as
 ever, every entry known to be finalized in source order, through `message_end`, which is how a result
 reaches state and session and how a replacement applies. Then the cancel goes on. An immediate joins the
@@ -285,10 +296,19 @@ result, `No result provided` on its resume (ADR-0277 D14), which is why `RESUME_
     too, though no user stopped it (limit 6). *2026-11-06 (#698):* the same holds for a tool that leaves a stale count
     and raises `CancelledError` itself in that one call, since the rise is across that call
     (`test_a_tool_leaving_a_stale_count_and_raising_the_error_itself_reads_as_cut`). With the stale count from anything
-    before the call, it is a tool error and the turn goes on. A hook that cancels its own task ahead of a tool, not
-    through `abort()`, is requested before the read at the tool and delivered at its first await, so the call reads
-    `Tool 'x' raised CancelledError` and the turn goes on, where it used to end with a traceback
-    (`test_a_hook_cancelling_its_own_task_ahead_of_a_tool_reads_as_the_tools_error`).
+    before the call, it is a tool error and the turn goes on. **A hook that cancels its own task ahead of a tool** is a
+    limit too, and no longer ends the turn before the tool begins. Everything in the tree stops a turn through `abort()`
+    or a cancel of `prompt()`'s task, as `asyncio.run` sends on SIGINT, and a task cancelling itself from a hook is
+    neither: neither the harness nor the record knows of it until it is delivered, and the count it raised is under
+    every read after it. So it depends on the next await. If the hook
+    awaits, it lands there, no call begins and `prompt()` raises. If not, on the sequential path a tool that awaits
+    reads `Tool 'x' raised CancelledError`, the later calls run and the next request goes out, and a tool that does not
+    keeps its result, with the cancel landing at the next await, which is the next request's first. On the parallel path
+    every prepared call begins, those ahead of the hook's too (§3): one that awaits reads the default text, one that does
+    not keeps its result, and `prompt()` raises with no further request. On the base `prompt()` raised and no call began,
+    in all of these (`test_a_hook_cancelling_its_own_task_ahead_of_a_tool_reads_as_the_tools_error`,
+    `test_a_hook_cancelling_its_own_task_ends_the_turn_where_it_is_next_delivered`,
+    `test_a_hook_cancelling_its_own_task_lets_the_batch_begin`).
 15. **A tool that calls `uncancel()` takes a cancel back only from a host that does not say it sent one.** *Corrected
     2026-11-06 (#698).* Under the harness it takes nothing back, since `abort()` and a cancel of `prompt()` are not read
     off the turn's count: a sequential batch stops after the call, `uncancel(); return` keeps what it returned and
@@ -308,15 +328,29 @@ result, `No result provided` on its resume (ADR-0277 D14), which is why `RESUME_
     `agent_end`. The print, TUI and RPC subscribers are plain functions, so only an SDK embedder with two
     subscribers meets this. An outer cancel inside the close-out propagates with 0, 1 or 2 terminators out;
     nothing in the repository sends one in that window.
-19. **`Agent` and a direct `agent_loop` caller stop on what is delivered, and on nothing else** (#698). They pass no
-    `cancel_requested`, so a sequential tool, hook or listener that swallows a cancel of the caller's task goes
-    undetected and the batch goes on, as before #672: the count is all that is left of it, and it stops nothing
-    (`test_agent_a_tool_swallowing_a_cancel_on_the_sequential_path_goes_undetected`). A cancel landing in the loop's own
-    wait or on its way out (an update drain, `after_tool_call`, `tool_execution_end`, `message_start`, `message_end`) is
-    remembered and stops the batch, so a parallel batch stops all the same
-    (`test_agent_a_cancel_the_loop_caught_on_its_way_is_remembered`). A direct `agent_loop` caller that wants what the
+19. **`Agent` and a direct `agent_loop` caller stop on what is delivered to the loop, and on nothing else** (#698). They
+    pass no `cancel_requested`, so a cancel swallowed on the caller's task goes undetected, the batch goes on and the next
+    request goes out: the count is all that is left of it, and it stops nothing. On the sequential path that is any tool,
+    hook or listener. On the parallel path it is a `before_tool_call` hook, a `tool_execution_start` listener or a
+    `message_end` listener of a result. A parallel tool, its `after_tool_call` hook or its `tool_execution_end` listener
+    runs on the call's own task, so there the cancel has landed in the loop's wait and the batch stops. All twelve of
+    those rows read as they did before #672 (`3290c330`), where the base stopped each
+    (`test_agent_a_swallowed_cancel_stops_only_where_the_loop_saw_it`,
+    `test_agent_a_tool_swallowing_a_cancel_on_the_sequential_path_goes_undetected`). A cancel that reaches the loop's own
+    catch (the wait, an update drain, `after_tool_call`, `tool_execution_end`, `message_start`, `message_end`) with nobody
+    swallowing it is remembered and stops the batch, also when something on the way out runs a nested `Agent`
+    (`test_agent_a_cancel_the_loop_caught_on_its_way_is_remembered`,
+    `test_a_nested_run_does_not_erase_a_cancel_the_outer_run_caught`). A direct `agent_loop` caller that wants what the
     harness has passes its own `cancel_requested`; `Agent` has no option for it. Under the harness the same goes for a
     `.cancel()` of its private turn task instead of `abort()`, which nothing in the tree does, tests aside.
+20. **A cancel of `prompt()` that an `input` or `before_agent_start` hook swallows before the turn begins goes on,** as on
+    the base. Those hooks run on `prompt()`'s task, ahead of §1's read in 2, which has to come after them or a stale count
+    they left would read as a cancel. So the request goes out and `prompt()` returns, on a plain cancel and on an
+    `asyncio.timeout` around it (`test_a_cancel_of_prompt_a_hook_swallows_before_the_turn_begins_goes_on`).
+21. **`-p` with a stale count on its main task ends a SIGINT with rc=1 and a `CancelledError` traceback,** not
+    `KeyboardInterrupt`'s rc=-2, as on the base. An extension's `input` or `before_agent_start` hook can leave the count
+    there, and `asyncio.Runner.run` raises `KeyboardInterrupt` only when `uncancel()` comes to 0. SIGTERM is not affected:
+    rc=143 and `Request aborted`.
 
 ## Verification
 
@@ -347,11 +381,20 @@ exit 1 with a traceback (`.omc/probes/stale-count-product/`). After it, on 3.11 
 parallel path answer in both, and the next line in the TUI answers too. The real TUI on 3.11 and 3.12 against a scripted
 server, and on 3.12 against OpenRouter `openai/gpt-4o-mini`, with the count at 1 after that tool: Esc in a sequential tool
 that swallows it stops the turn with one abort line, the tool's log reads count 2, no call or request follows, and on the
-next line the model says the tool returned `cleanup-done`. `test_stale_cancel_count_698.py` runs each row with a real
-`TaskGroup` (stale below 3.13), a simulation stale on every version, and aiohttp's shape, on 3.11, 3.12, 3.14 and under the
-coarse clock; the three test files named above and the `tests/pi_parity` suite pass with no test changed, a real swallowed
-Esc included. 45 mutations of the lines this changed all failed a test, three of them after a row was added for a sink's
-failure with a cancel on its way up, and for one on an update, which had none.
+next line the model says the tool returned `cleanup-done`. In `test_stale_cancel_count_698.py` the rows on the `stale` fixture
+run with a real `TaskGroup` (stale below 3.13), a simulation stale on every version, and aiohttp's shape; those on
+`stale_or_not` with no stale count, the real `TaskGroup` and the simulation; and the limit rows with the one shape they name.
+The file and `test_interrupt_with_a_stale_count_698.py` pass on 3.11, 3.12, 3.14 and under the coarse clock; the three test
+files named above and the `tests/pi_parity` suite pass with no test changed, a real swallowed Esc included.
+
+A verify pass and a cross-review of that found what the fix round then closed, on 3.11, 3.12 and 3.14. The real TUI on 3.12
+against a scripted server: an extension's sequential tool or `tool_call` hook running a nested `Agent` under `asyncio.timeout`
+gave a traceback and exit 1 where the base answered, and answers now; Esc on `/agents run` after an `input` hook left the count
+at 1 on `Task-1` gave a traceback and exit 1, on the base too, and now reads `Delegation to 'explorer' stopped`, and the next
+line answers. 69 mutations of the lines #698 changed, run against those files, the three older ones and the #604 interrupt
+tests: 68 failed a test. The one left passes no `requested` to the `tool_execution_end` of an abandoned call, and it changes nothing: a call is abandoned
+only on the wait's second cancel, whose first act is to record the turn, and that branch, instrumented, read the record set on
+all 7 hits across `tests/harness`.
 
 Live on OpenRouter `openai/gpt-4o-mini`, the real TUI in a pty, a scratch cwd and an isolated agent dir:
 

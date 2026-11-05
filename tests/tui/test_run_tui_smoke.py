@@ -3576,7 +3576,7 @@ async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> Non
 #
 # The refresh above is the turn-BOUNDARY story. It cannot serve a mid-turn read
 # at all: ``turn_end`` already fires once per provider round-trip
-# (``loop.py:262``, inside the ``loop.py:206`` tool-call loop),
+# (``loop.py:283``, inside the ``loop.py:227`` tool-call loop),
 # yet before #320 the harness only extended state after the loop returned,
 # so a thirty-tool turn ran thirty stats walks
 # that every time estimated over the SAME unchanged list and repainted the
@@ -4057,7 +4057,7 @@ async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
     skipping the stats walk, and on a provider that stopped reporting usage the
     meter would freeze on the last figure it ever saw. ``agent_end`` is the
     right boundary because it is emitted on EVERY exit — including the abort
-    (``core.py:6056``) and hook-failure (``core.py:6056``) close-outs, neither
+    (``core.py:6056``) and hook-failure (``core.py:6107``) close-outs, neither
     of which reaches ``settled`` at all.
 
     Asserted on the PAINTS rather than on ``get_session_stats`` calls: the

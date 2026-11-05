@@ -1019,7 +1019,7 @@ class EventRenderer:
             self._on_stream_event(event.assistant_message_event)
         elif event.type == "message_end":
             # Terminal failures arrive here as a MessageEndEvent whose message
-            # carries stop_reason ∈ {"error","aborted"} (loop.py:411-436).
+            # carries stop_reason ∈ {"error","aborted"} (loop.py:432-457).
             self._finalize_text()
             self._close_thinking()
             self._render_message_error(event.message)
@@ -1361,7 +1361,7 @@ class EventRenderer:
         that "cannot go stale"; that was wrong in both directions, and both
         failures are measured, not theoretical:
 
-        * Identity goes stale on REPLACEMENT. loop.py:427-436 identity-swaps the
+        * Identity goes stale on REPLACEMENT. loop.py:448-457 identity-swaps the
           message when a message_end handler returns a replacement, so
           ``_render_message_error`` sees the ORIGINAL while turn_end carries the
           REPLACEMENT — ``is`` misses and the notice prints twice.
@@ -1463,7 +1463,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:4096). A provider
+            # write the same last-writer-wins sink (shell.py:4100). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

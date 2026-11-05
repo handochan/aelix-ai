@@ -875,7 +875,7 @@ class AgentsExtension:
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
         ``before_agent_start`` (``harness/core.py:1651``) runs BEFORE the
-        per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
+        per-turn ``AgentContext`` is assembled (``:5750-5754``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
 
@@ -926,7 +926,7 @@ class AgentsExtension:
 
         Everything that can refuse a delegation refuses HERE, where the kernel
         renders the refusal as a model-readable blocked tool call
-        (``loop.py:583-596``) and where no process has been created yet. On
+        (``loop.py:604-617``) and where no process has been created yet. On
         success the approval is filed under ``event.tool_call_id`` and the hook
         returns ``None`` — observationally identical to not having run.
         """

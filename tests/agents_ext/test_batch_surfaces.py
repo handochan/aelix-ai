@@ -327,7 +327,7 @@ def test_a_hostile_model_cannot_break_a_panel_row() -> None:
 
 def test_the_throttle_drops_mid_stream_frames_but_never_a_state_change() -> None:
     """H10: the kernel appends an ``asyncio.Task`` per ``on_partial`` into a list
-    it never prunes (``loop.py:668``, ``:703``) and ``loop.py`` may not be
+    it never prunes (``loop.py:689``, ``:724``) and ``loop.py`` may not be
     edited, so dropping frames here is the only legal mitigation. What may never
     be dropped is the frame that carries a state change — the last thing the
     user sees must not be stale."""
@@ -1531,7 +1531,7 @@ def test_a_raising_set_widget_costs_the_panel_and_never_the_delegation() -> None
 # JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
 # (``stream.py:1175-1177``) — and the kernel emits that event with the raw
 # model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
-# (``loop.py:868-876``), so it is not constrained to a real tool name. A child is
+# (``loop.py:889-897``), so it is not constrained to a real tool name. A child is
 # exactly the process this phase's threat model assumes has read attacker
 # controlled content (``consent._may_widen`` constraint 6).
 #
