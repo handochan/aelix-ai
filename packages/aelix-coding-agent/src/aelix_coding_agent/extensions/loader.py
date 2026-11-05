@@ -33,6 +33,7 @@ reversal of the original Draft ADR-0028).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import importlib.metadata
@@ -105,16 +106,138 @@ class ExtensionLoadError:
 class ExtensionInterrupted(KeyboardInterrupt):
     """A ``KeyboardInterrupt`` raised while an extension's import or ``setup()`` ran (#664).
 
-    Still a ``KeyboardInterrupt`` — the loader cannot tell a Ctrl+C during a slow
-    ``setup()`` from an extension raising one, so it ends the run as before —
-    but it names the extension, and ``main_sync`` prints this one line instead
-    of a traceback.
+    Still a ``KeyboardInterrupt`` — it ends the run as before — but it names the
+    extension, and ``main_sync`` prints this one line instead of a traceback.
+
+    #685 — only an extension raising ``KeyboardInterrupt`` (or a second Ctrl+C,
+    which ``asyncio.run`` raises where the code is) arrives as one. The first
+    Ctrl+C reaches the loader as the main task's cancel; the loader marks that
+    ``CancelledError`` with the extension and the step, and
+    :func:`interrupted_extension` finds them under the ``KeyboardInterrupt``
+    ``asyncio.run`` raises at the end. One that lands in the loader's own code,
+    between two extensions' steps, names none (``extension`` is ``None``): the
+    one before it had finished, the next had not started.
     """
 
-    def __init__(self, extension: str, during: str) -> None:
+    def __init__(self, extension: str | None, during: str | None) -> None:
         self.extension = extension
         self.during = during
-        super().__init__(f"interrupted while the extension {extension} was running its {during}")
+        if extension is None:
+            super().__init__("interrupted while loading extensions")
+        else:
+            super().__init__(
+                f"interrupted while the extension {extension} was running its {during}"
+            )
+
+
+#: Set on a ``CancelledError`` that passed through an extension's import or
+#: ``setup()``: ``(extension, during)`` (#685).
+_INTERRUPTED_ATTR = "_aelix_extension_interrupted"
+
+
+def _cancel_requests() -> int:
+    """The current task's pending cancel requests (``0`` outside a task)."""
+
+    task = asyncio.current_task()
+    return task.cancelling() if task is not None else 0
+
+
+async def _end_if_cancelled_since(
+    before: int,
+    extension: str | None,
+    during: str | None,
+    failure: BaseException | None = None,
+) -> int:
+    """End the load here, marked, if a cancel was requested since *before* (#685).
+
+    A sync import or ``setup()`` holds the loop, so the cancel a Ctrl+C makes
+    (``asyncio.run``'s SIGINT handler) waits for the task's next suspension,
+    wherever that is: measured, the first await of the model turn in ``-p``.
+    One loop turn here takes it while the step it interrupted is known. A cancel
+    already delivered to an async ``setup()`` whose ``finally`` (or ``except``)
+    raised over it left a ``CancelledError`` in *failure*'s chain; that ends the
+    load with a new ``CancelledError``: the run was asked to stop, and it stops.
+
+    A higher count alone ends nothing (fix round 2): on 3.11 and 3.12 a stdlib
+    ``TaskGroup`` whose child fails after its body finished leaves the count one
+    up with no cancel behind it (fixed in 3.13). A rise the loop turn did not
+    deliver and *failure* does not carry is taken as the new baseline, which is
+    returned; it is also why a ``setup()`` that caught the cancel and returned
+    goes on loading — the count is all that is left of it. (``uncancel`` undoes
+    a request, so ``asyncio.timeout`` inside a step does not count.)
+    """
+
+    if _cancel_requests() <= before:
+        return before
+    try:
+        await asyncio.sleep(0)
+    except asyncio.CancelledError as exc:
+        _note_interrupted(exc, extension, during)
+        raise
+    if failure is not None and _carries_a_cancel(failure):
+        cancelled = asyncio.CancelledError()
+        _note_interrupted(cancelled, extension, during)
+        raise cancelled
+    return _cancel_requests()
+
+
+def _carries_a_cancel(exc: BaseException) -> bool:
+    """Whether a ``CancelledError`` is in *exc*'s ``__cause__`` / ``__context__`` chain.
+
+    A ``TimeoutError`` raised from one, or while handling one, ends the walk:
+    that cancel was the timeout's own (``asyncio.timeout``, ``wait_for``;
+    aiohttp <= 3.10.5 and async-timeout <= 4.0.2 raise it ``from None`` or with
+    no ``from``, and leave the count up). A group's members are not walked: a
+    ``TaskGroup`` cancels its other children when one fails.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, asyncio.CancelledError):
+            return True
+        if isinstance(current, TimeoutError) and isinstance(
+            current.__cause__ or current.__context__, asyncio.CancelledError
+        ):
+            return False
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _note_interrupted(exc: BaseException, extension: str | None, during: str | None) -> None:
+    # The innermost extension keeps its name, as an ``ExtensionInterrupted`` does
+    # (Codex R10): one whose setup() loads another passes the same error on. A
+    # mark naming no extension (the inner loader's own code) gives way to the
+    # extension whose step that loader ran in.
+    note = getattr(exc, _INTERRUPTED_ATTR, None)
+    if note is None or (extension is not None and note[0] is None):
+        with contextlib.suppress(Exception):
+            setattr(exc, _INTERRUPTED_ATTR, (extension, during))
+
+
+def interrupted_extension(exc: BaseException) -> ExtensionInterrupted | None:
+    """The extension a Ctrl+C interrupted, when *exc* is how that ended the run (#685).
+
+    *exc* itself when it is an :class:`ExtensionInterrupted`; else the one a
+    marked ``CancelledError`` in its ``__cause__`` / ``__context__`` chain names
+    (``asyncio.run`` raises its ``KeyboardInterrupt`` while handling the main
+    task's ``CancelledError``); else ``None``.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ExtensionInterrupted):
+            return current
+        note = getattr(current, _INTERRUPTED_ATTR, None)
+        if isinstance(note, tuple) and len(note) == 2:
+            if note[0] is None:
+                return ExtensionInterrupted(None, None)
+            return ExtensionInterrupted(str(note[0]), str(note[1]))
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _load_error_text(exc: BaseException) -> str:
@@ -285,6 +408,14 @@ async def load_extensions(
     # ``_buildRuntime`` seeding ``runtime.flagValues`` before the runner is built.
     runtime = _ExtensionRuntime(flag_values=flag_values)
     result = LoadExtensionsResult(runtime=runtime)
+    # #685 — a cancel requested before the loader began is not the first
+    # extension's: delivered here, unmarked, it ends the run as it always did
+    # (an async first ``setup()`` would have received it and been named). From
+    # here on, a cancel that reaches the loader ends the load, marked with where
+    # it landed.
+    if _cancel_requests():
+        await asyncio.sleep(0)
+    before = _cancel_requests()
     for entry in paths:
         # Issue #21 descriptors (ADR-0184) — warn REGARDLESS of lazy/eager: the
         # [[contributes.descriptors]] slot is reserved/inert (a descriptor's
@@ -371,30 +502,52 @@ async def load_extensions(
         # unchanged. An ``ExtensionInterrupted`` already names the extension it
         # interrupted — one this one loads in turn (Codex R10) — and stays as it is,
         # as in :func:`activate_pending_extension`.
+        #
+        # #685 — a real Ctrl+C is not a ``KeyboardInterrupt`` here: ``asyncio.run``
+        # turns it into a cancel of the main task, so it arrives as the
+        # ``CancelledError``, which passes through carrying the extension and the
+        # step (``main_sync`` reads them), or — while a sync import or ``setup()``
+        # held the loop — as a cancel request, taken right after it, also when
+        # the step then failed. One requested in the loader's own code since the
+        # last step (fix round 1, Codex M) is taken before the next step, so that
+        # extension is not blamed for it; it names none. Each check ends the load
+        # only on a cancel it delivers or one the step's error carries, never on
+        # the count alone (fix round 2), and returns the baseline for the next.
+        before = await _end_if_cancelled_since(before, None, None)
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
+            before = await _end_if_cancelled_since(before, label, "import")
         except ExtensionInterrupted:
             raise
         except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
+            before = await _end_if_cancelled_since(before, label, "import")
             failure = ExtensionLoadError(path=label, error=_load_error_text(exc))
             result.errors.append(failure)
             result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         except KeyboardInterrupt as exc:
             raise ExtensionInterrupted(label, "import") from exc
+        except asyncio.CancelledError as exc:
+            _note_interrupted(exc, label, "import")
+            raise
         try:
             extension = await _invoke_factory(
                 factory, runtime, name=name, manifest=manifest
             )
+            before = await _end_if_cancelled_since(before, name, "setup()")
         except ExtensionInterrupted:
             raise
         except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
+            before = await _end_if_cancelled_since(before, name, "setup()", exc)
             failure = ExtensionLoadError(path=name, error=_load_error_text(exc))
             result.errors.append(failure)
             result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         except KeyboardInterrupt as exc:
             raise ExtensionInterrupted(name, "setup()") from exc
+        except asyncio.CancelledError as exc:
+            _note_interrupted(exc, name, "setup()")
+            raise
         # Issue #21 themes (ADR-0184) — record the plugin directory so the
         # manifest theme adapter can resolve a ``ThemeContrib.path`` (a
         # plugin-root-relative file) against it. ``resolved_path`` was a
@@ -411,6 +564,7 @@ async def load_extensions(
         # the lazy continue, so pure-on_command plugins are covered too.)
         result.extensions.append(extension)
         result.outcomes.append(EntryOutcome(extension=extension))
+    await _end_if_cancelled_since(before, None, None)
     return result
 
 
@@ -531,6 +685,9 @@ async def activate_pending_extension(
             raise RuntimeError(f"SystemExit: {_load_error_text(exc)}") from exc
         if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, ExtensionInterrupted):
             raise ExtensionInterrupted(shell.name, during) from exc
+        if isinstance(exc, asyncio.CancelledError):
+            # #685 — a Ctrl+C ending the run names the plugin, as at load time.
+            _note_interrupted(exc, shell.name, during)
         raise
     # Late registrations reach the constructed harness through the two
     # refresh actions (no-ops when no harness is bound yet — tests/embedders).
@@ -2892,6 +3049,7 @@ __all__ = [
     "ExtensionLoadError",
     "LoadExtensionsResult",
     "discover_and_load_extensions",
+    "interrupted_extension",
     "load_extension_from_factory",
     "load_extensions",
 ]

@@ -2509,12 +2509,12 @@
    "@overload",
    "def set_widget("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1027-1029": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1184-1186": [
    "home_aelix = Path.home() / \".aelix\" if agent_dir is None else agent_dir",
    "global_dir = (home_aelix / \"extensions\").resolve(strict=False)",
    "for discovered in _discover_in_dir(global_dir, errors=errors, packages=packages):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1032-1126": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1189-1283": [
    "# 3. Explicit configured paths.",
    "seen_modules: set[str] = set()",
    "refused_shadowed: set[str] = set()",
@@ -2524,7 +2524,7 @@
    "if callable(entry) and not isinstance(entry, (str, Path)):",
    "_add(entry, \"cli\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1035-1126": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1192-1283": [
    "for entry in configured_paths:",
    "# Callables/factories pass through (P-21 — explicit takes precedence",
    "# over entry_points but loses to local/global directories).",
@@ -2534,32 +2534,32 @@
    "# Issue #114: a dotted module reference (\"pkg.mod\", \"pkg.mod:factory\")",
    "# passes through AS A STRING so _resolve_factory reaches"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1129-1132": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1286-1289": [
    "# 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).",
    "# Issue #91: this tier no longer imports anything — endpoints are resolved",
    "# from installed metadata, so it is safe for the metadata-only scan too.",
    "if not no_discovery:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1529-1533": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1686-1690": [
    "def __repr__(self) -> str:",
    "return (",
    "f\"_ManifestEntry(plugin={self.manifest.plugin.id!r}, \"",
    "f\"pkg_dir={str(self.pkg_dir)!r})\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1807-1807": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1964-1964": [
    "eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:2205-2208": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:2362-2365": [
    "if isinstance(entry, _EntryPointEntry):",
    "factory = _factory_from_entry_point(entry, cwd=cwd)",
    "display = getattr(factory, \"__qualname__\", None) or type(factory).__name__",
    "return factory, display, None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:403-403": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:556-556": [
    "extension.resolved_path = str(entry.pkg_dir)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:539-549": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:696-706": [
    "if shell.shortcuts:",
    "# W1 limitation (adversarial-review MEDIUM): the TUI enumerates",
    "# shortcut KEYS once at chrome build, so keys from a lazily-activated",
@@ -2569,7 +2569,7 @@
    "\"they will bind on the next TUI start (key bindings are built \"",
    "\"once at startup)\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:595-596": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:752-753": [
    "1. ``cwd / .aelix / extensions /`` — project-local files / packages.",
    "2. ``<agent_dir> / extensions /`` — user globals. **In every shipped"
   ],

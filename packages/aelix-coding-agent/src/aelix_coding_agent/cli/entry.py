@@ -134,10 +134,10 @@ from aelix_coding_agent.core.tool_selection import (
     resolve_saved_off,
 )
 from aelix_coding_agent.extensions.loader import (
-    ExtensionInterrupted,
     discover_and_load_extensions,
     discover_extension_records,
     gate_manifest_mcp_contribs,
+    interrupted_extension,
     scan_extension_manifests,
 )
 from aelix_coding_agent.mcp import McpClientManager
@@ -5350,16 +5350,19 @@ def main_sync() -> None:
         # ``process.exit(129)``; Python pipelines conventionally use 141.)
         _stdout_to_devnull()
         sys.exit(141)
-    except ExtensionInterrupted as exc:
+    except BaseException as exc:
         # #664 — a ``KeyboardInterrupt`` while an extension's import or
-        # ``setup()`` ran (Ctrl+C, or the extension raising one): the run ends
-        # as it always did (130, 128+SIGINT), with one line naming the extension
-        # instead of a traceback.
-        with contextlib.suppress(Exception):
-            sys.stdout.flush()
-        print(f"aelix: {safe_for_terminal(str(exc))}", file=sys.stderr)
-        sys.exit(130)
-    except BaseException:
+        # ``setup()`` ran: the run ends (130, 128+SIGINT) with one line naming
+        # the extension instead of a traceback. #685 — that is an
+        # ``ExtensionInterrupted`` only when the extension raised it; a real
+        # Ctrl+C arrives as ``asyncio.run``'s own ``KeyboardInterrupt``, over the
+        # main task's ``CancelledError`` the loader marked on its way through.
+        interrupted = interrupted_extension(exc) if isinstance(exc, KeyboardInterrupt) else None
+        if interrupted is not None:
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
+            print(f"aelix: {safe_for_terminal(str(interrupted))}", file=sys.stderr)
+            sys.exit(130)
         # Ctrl+C / SystemExit / crashes keep their exact semantics — but
         # flush NOW and devnull stdout on EPIPE so a dirty buffer + dead
         # pipe cannot resurface as interpreter shutdown-flush noise on
