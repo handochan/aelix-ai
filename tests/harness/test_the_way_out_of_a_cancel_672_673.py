@@ -1,8 +1,8 @@
 """#672, #673 (ADR-0290) — how a cancelled turn ends, and what is not a cancel.
 
-What stops a batch is the task's own cancel count, not the exception anyone saw: a
-``CancelledError`` nobody sent is a tool error and the turn goes on, and a cancel somebody
-swallowed still stops the batch and the next request. A failure in one call commits the
+What stops a batch is a cancel the harness says it sent or the loop saw, not the exception
+anyone saw: a ``CancelledError`` nobody sent is a tool error and the turn goes on, and a cancel
+somebody swallowed still stops the batch and the next request. A failure in one call commits the
 others first. A second cancel stops waiting for a tool that ignores the first, and a
 further cancel or one ``dispose()`` gets past a hook parked anywhere on the way out.
 """

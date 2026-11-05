@@ -29,6 +29,7 @@ import contextlib
 import inspect
 import logging
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, TypeGuard
@@ -193,6 +194,10 @@ async def _run_loop(
     current_context = initial_context
     config = initial_config
     first_turn = True
+    # ``Agent`` runs the loop in its caller's task, so one run's cancel must not outlive it.
+    current = asyncio.current_task()
+    if current is not None:
+        _CANCEL_REACHED.discard(current)
     pending_messages: list[AgentMessage] = await _drain_queue(config.get_steering_messages)
 
     while True:  # outer: follow-up drain loop
@@ -244,7 +249,7 @@ async def _run_loop(
             if tool_calls:
                 # A cancel a listener swallowed while the answer streamed: the
                 # message has committed, and no call of it starts (ADR-0290).
-                _raise_if_cancel_pending()
+                _raise_if_cancel_pending(config.cancel_requested)
                 batch = await _execute_tool_calls(
                     current_context, message, config, signal, emit
                 )
@@ -333,7 +338,7 @@ async def _stream_assistant_response(
     emit = _with_message_start(emit)  # a message its stream never started gets one (#414)
     # #672, #673 (ADR-0290): a cancel a hook or listener caught and swallowed on the
     # way here must not send the next request.
-    _raise_if_cancel_pending()
+    _raise_if_cancel_pending(config.cancel_requested)
     partial: AssistantMessage | None = None
     partial_index: int | None = None
     final: AssistantMessage | None = None
@@ -371,7 +376,7 @@ async def _stream_assistant_response(
                     message=partial, assistant_message_event=event
                 )
             )
-            _raise_if_cancel_pending()
+            _raise_if_cancel_pending(config.cancel_requested)
         # `==`-or rather than `in ("end", "done")`: identical at runtime for a
         # Literal field, but pyright narrows a union on `==` and does NOT narrow
         # it on `in`, so the `in` spelling made `event.message` an error against
@@ -461,6 +466,13 @@ _STRAGGLER_GRACE_SECONDS = 0.05
 # Calls a second cancel stopped waiting for and that have not ended yet. Held so that
 # nothing collects a running task, and so that what one raises in the end is read.
 _STRAGGLERS: set[asyncio.Task[Any]] = set()
+
+# Tasks a cancel is known to have reached, once the exception is gone (#698, ADR-0290):
+# one this loop caught and did not raise, or a call it cancelled itself. A task's count
+# cannot say this. It also stays up with no cancel behind it: on 3.11 and 3.12 a stdlib
+# ``TaskGroup`` whose child fails after its body leaves it one up, as aiohttp <= 3.10.5
+# does on a timeout, and any of that can run on the turn's task.
+_CANCEL_REACHED: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
 
 
 class _ExecutedBatch:
@@ -617,12 +629,12 @@ async def _execute_and_finalize(
     cancelled, the result is :data:`_CUT_TEXT` and carries no tool output, never the
     unredacted one.
 
-    "A cancel reached this call" is this task's own count, ``cancelling()``, and not
-    the exception a tool raised. A ``CancelledError`` from a task nobody cancelled is
-    a tool bug (it awaited something else that was cancelled, say), so it is a result
-    like any other exception and the turn goes on. A tool that catches a real cancel
-    and returns, or raises something else out of it, has not taken it back: its result
-    stands and the caller still stops the batch.
+    "A cancel reached this call" is this task's count having risen across ``execute``,
+    or :func:`_cancel_pending`, and not the exception a tool raised. A ``CancelledError``
+    from a task nobody cancelled is a tool bug (it awaited something else that was
+    cancelled, say), so it is a result like any other exception and the turn goes on. A
+    tool that catches a real cancel and returns, or raises something else out of it, has
+    not taken it back: its result stands and the caller still stops the batch.
 
     Per Pi parity (``agent-loop.ts:609-637, 651-680``), exceptions from
     ``tool.execute`` are caught and converted to ``isError`` results;
@@ -664,6 +676,7 @@ async def _execute_and_finalize(
     # (before draining ``update_events``), so late callbacks are ignored.
     settled = False
     cut = False
+    requested = config.cancel_requested
 
     def _on_partial(partial: ToolResult) -> None:
         # Pi parity ``if (!acceptingUpdates) return;`` — once settled, drop the
@@ -699,12 +712,13 @@ async def _execute_and_finalize(
         # ToolExecutionContext field; ``config.model`` is already in scope.
         model=config.model,
     )
+    cancels = _own_cancels()
     try:
         result = await prepared.tool.execute(prepared.args, exec_ctx)
     except asyncio.CancelledError as exc:
         said = exc.result if isinstance(exc, ToolCancelled) else None
         said = said if isinstance(said, ToolResult) else None
-        if _cancel_pending():
+        if _note_cancel_caught(cancels) or _cancel_pending(requested):
             # #673 — the call was cut. A record of it is true whoever stopped the turn.
             cut = True
             # An error before any hook reads it: a redactor may handle only errors.
@@ -739,12 +753,14 @@ async def _execute_and_finalize(
     # landing in the drain cancels the updates with it, so none arrives after the
     # end event, and does not cost a result that is already in hand.
     if update_events:
+        cancels = _own_cancels()
         try:
             await asyncio.gather(*update_events, return_exceptions=cut)
         except asyncio.CancelledError:
+            _note_cancel_caught(cancels)
             _log.debug("a cancel landed in the updates of %s", prepared.tool_call.tool_call_id)
         except Exception:
-            if not _cancel_pending():
+            if not _cancel_pending(requested):
                 raise
             _log.debug(
                 "an update failed for cancelled call %s",
@@ -761,16 +777,18 @@ async def _execute_and_finalize(
             is_error=result.is_error,
             context=context,
         )
+        cancels = _own_cancels()
         try:
             override = await _maybe_await(config.after_tool_call(after_ctx))
         except asyncio.CancelledError:
+            _note_cancel_caught(cancels)
             _log.debug(
                 "a cancel landed in the after_tool_call hook of %s; its output is withheld",
                 prepared.tool_call.tool_call_id,
             )
             return _cut_result()
         except Exception:
-            if not _cancel_pending():
+            if not _cancel_pending(requested):
                 raise
             _log.debug(
                 "the after_tool_call hook failed on cancelled call %s; its output is withheld",
@@ -840,11 +858,12 @@ async def _execute_tool_calls_sequential(
     #672, #673 (ADR-0290): a cancel landing once a call began does not cost its
     result. The rest of the three steps runs and the cancel goes on after it, so a
     later call stays unstarted. That holds for a cancel a tool, a hook or a listener
-    swallowed too: what stops the batch is the task's count, not the exception.
+    swallowed too: what stops the batch is :func:`_cancel_pending`, not the exception.
     """
 
     result_messages: list[ToolResultMessage] = []
     all_terminate = bool(tool_calls)
+    requested = config.cancel_requested
 
     for tc in tool_calls:
         await emit(
@@ -865,16 +884,20 @@ async def _execute_tool_calls_sequential(
             # branches must follow this 3-step order; the previous Aelix
             # ordering appended the message BEFORE the end event and never
             # emitted ``message_start`` / ``message_end`` at all.
-            await _emit_tool_end(tc.tool_call_id, prepared.tool_name, prepared.result, emit)
-            msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, prepared.result, emit)
+            await _emit_tool_end(
+                tc.tool_call_id, prepared.tool_name, prepared.result, emit, requested
+            )
+            msg = await _commit_tool_result(
+                tc.tool_call_id, tc.tool_name, prepared.result, emit, requested
+            )
             if msg is not None:
                 result_messages.append(msg)
-            _raise_if_cancel_pending()
+            _raise_if_cancel_pending(requested)
             all_terminate = False
             continue
 
         # The start event or ``before_tool_call`` swallowed a cancel: nothing began.
-        _raise_if_cancel_pending()
+        _raise_if_cancel_pending(requested)
         result = await _execute_and_finalize(
             context, assistant_message, config, signal, prepared, emit
         )
@@ -886,12 +909,12 @@ async def _execute_tool_calls_sequential(
         # 3-step order as the immediate branch — end event fires first,
         # then the tool-result message ``message_start`` / ``message_end``
         # pair via the shared helper, then we append to the batch list.
-        await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, emit)
-        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, emit)
+        await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, emit, requested)
+        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, emit, requested)
         if msg is not None:
             result_messages.append(msg)
         # What stops the batch: a cut call's, or one a tool or a sink swallowed.
-        _raise_if_cancel_pending()
+        _raise_if_cancel_pending(requested)
 
     return _ExecutedBatch(result_messages, all_terminate)
 
@@ -942,11 +965,13 @@ async def _execute_tool_calls_parallel(
     pending: list[_Finalized | _Prepared] = []
     tasks: list[asyncio.Task[_Finalized] | None] = []
     turn = asyncio.current_task()
+    turn_cancels = 0
+    requested = config.cancel_requested
 
     async def _run(prep: _Prepared) -> _Finalized:
         # A cancel that came ahead of this first step: the call never begins. The
         # batch hands a cancel on only when it next runs, a loop turn behind this.
-        if turn is not None and turn.cancelling() > 0:
+        if (turn is not None and turn.cancelling() > turn_cancels) or _cancel_pending(requested):
             raise asyncio.CancelledError()
 
         async def sink(event: AgentEvent) -> AgentMessage | None:
@@ -957,7 +982,7 @@ async def _execute_tool_calls_parallel(
         )
         prep.ended_with = result
         # tool_execution_end fires in COMPLETION order (§E row 4).
-        await _emit_tool_end(prep.tool_call.tool_call_id, prep.tool.name, result, sink)
+        await _emit_tool_end(prep.tool_call.tool_call_id, prep.tool.name, result, sink, requested)
         return _Finalized(tool_call=prep.tool_call, tool_name=prep.tool.name, result=result)
 
     cancelled = False
@@ -967,7 +992,7 @@ async def _execute_tool_calls_parallel(
         for tc in tool_calls:
             # A cancel a hook or listener swallowed: the rest of the batch stays
             # unstarted, as it does for one that got through.
-            _raise_if_cancel_pending()
+            _raise_if_cancel_pending(requested)
             await emit(
                 ToolExecutionStartEvent(
                     tool_call_id=tc.tool_call_id,
@@ -1002,7 +1027,10 @@ async def _execute_tool_calls_parallel(
             else:
                 pending.append(prepared)
 
-        # Phase 2 — parallel execution (Pi agent-loop.ts:491-493, P-7 reversal).
+        # Phase 2 — parallel execution (Pi agent-loop.ts:491-493, P-7 reversal). With no
+        # await from here to the wait, in which the turn is parked: what its count stands
+        # at now can be stale, and a rise from now on is somebody cancelling it (#698).
+        turn_cancels = turn.cancelling() if turn is not None else 0
         tasks = [
             asyncio.ensure_future(_run(entry)) if isinstance(entry, _Prepared) else None
             for entry in pending
@@ -1033,7 +1061,9 @@ async def _execute_tool_calls_parallel(
             result = entry.ended_with
             if result is None:
                 result = _cut_result()
-                await _emit_tool_end(entry.tool_call.tool_call_id, entry.tool.name, result, emit)
+                await _emit_tool_end(
+                    entry.tool_call.tool_call_id, entry.tool.name, result, emit, requested
+                )
             finalized_entries.append(
                 _Finalized(tool_call=entry.tool_call, tool_name=entry.tool.name, result=result)
             )
@@ -1078,6 +1108,7 @@ async def _execute_tool_calls_parallel(
                 finalized.tool_call.tool_name,
                 finalized.result,
                 emit,
+                requested,
             )
         except Exception:
             # With a failure on its way up, a sink's own must not take its place or
@@ -1095,7 +1126,7 @@ async def _execute_tool_calls_parallel(
         if not finalized.result.terminate:
             all_terminate = False
 
-    if cancelled or _cancel_pending():
+    if cancelled or _cancel_pending(requested):
         # A sink's failure on the way out does not replace the cancel (ADR-0290 §5).
         raise asyncio.CancelledError()
     if failure is not None:
@@ -1110,20 +1141,48 @@ def _cut_result() -> ToolResult:
     return ToolResult(content=[TextContent(text=_CUT_TEXT)], is_error=True)
 
 
-def _cancel_pending() -> bool:
-    """Whether this task has been cancelled and nobody took it back (#672, ADR-0290).
+def _cancel_pending(requested: Callable[[], bool] | None) -> bool:
+    """Whether a cancel is known to have come, with no exception on its way up (#698, ADR-0290).
 
-    A task's count outlives the exception: whoever caught the ``CancelledError`` and
-    went on without ``uncancel()`` swallowed it, and this still says so.
+    Whoever sent it says so (*requested*, ``AgentLoopConfig.cancel_requested``), or this
+    loop saw it (:data:`_CANCEL_REACHED`). That is how a cancel someone caught and went on
+    from still stops the batch. This does not read the task's count: a count that is up
+    says nothing, on 3.11 and 3.12 no cancel has to be behind it, and nobody can tell one
+    that is from one that is not.
     """
 
     task = asyncio.current_task()
-    return task is not None and task.cancelling() > 0
+    if task is not None and task in _CANCEL_REACHED:
+        return True
+    return requested is not None and requested()
 
 
-def _raise_if_cancel_pending() -> None:
-    if _cancel_pending():
+def _raise_if_cancel_pending(requested: Callable[[], bool] | None) -> None:
+    if _cancel_pending(requested):
         raise asyncio.CancelledError()
+
+
+def _own_cancels() -> int:
+    """This task's count, for :func:`_note_cancel_caught` to read a rise against."""
+
+    task = asyncio.current_task()
+    return task.cancelling() if task is not None else 0
+
+
+def _note_cancel_caught(cancels: int) -> bool:
+    """Remember a ``CancelledError`` caught here and not raised, if a cancel sent it.
+
+    Which is the count having risen across the await it came out of, *cancels* being what
+    the count stood at before it. A value already up is not that, and neither is a
+    ``CancelledError`` a tool or a hook raised with no cancel behind it: that stays what it
+    would be with the count at zero.
+    """
+
+    task = asyncio.current_task()
+    if task is None or task.cancelling() <= cancels:
+        return False
+    _CANCEL_REACHED.add(task)
+    return True
 
 
 def _to_tool_result_message(
@@ -1158,6 +1217,8 @@ async def _wait_for_calls(
     """
 
     turn = asyncio.current_task()
+    # The turn is parked in this wait, so a rise from here on is somebody cancelling it.
+    cancels = turn.cancelling() if turn is not None else 0
     stopping = False
     failure: BaseException | None = None
     while True:
@@ -1166,22 +1227,29 @@ async def _wait_for_calls(
             failure = _first_failure(tasks)
             if failure is not None and not stopping:
                 stopping = True
-                for task in running:
-                    task.cancel()
+                _cancel_calls(running)
         if not running:
             return failure
         try:
             await asyncio.wait(running, return_when=asyncio.FIRST_EXCEPTION)
         except asyncio.CancelledError:
+            # Nothing but a cancel of this task raises this out of ``asyncio.wait``.
+            if turn is not None:
+                _CANCEL_REACHED.add(turn)
             # Two cancels in one loop turn arrive here as one exception and two counts.
-            second = stopping or (turn is not None and turn.cancelling() > 1)
+            second = stopping or (turn is not None and turn.cancelling() > cancels + 1)
             stopping = True
-            for task in running:
-                task.cancel()
+            _cancel_calls(running)
             if second:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.wait(running, timeout=_STRAGGLER_GRACE_SECONDS)
                 return failure or _first_failure(tasks)
+
+
+def _cancel_calls(running: list[asyncio.Task[_Finalized]]) -> None:
+    for task in running:
+        _CANCEL_REACHED.add(task)
+        task.cancel()
 
 
 def _first_failure(tasks: list[asyncio.Task[_Finalized] | None]) -> BaseException | None:
@@ -1204,6 +1272,7 @@ async def _emit_tool_end(
     tool_name: str,
     result: ToolResult,
     emit: AgentEventSink,
+    requested: Callable[[], bool] | None,
 ) -> None:
     """``tool_execution_end`` for a call whose result exists.
 
@@ -1212,6 +1281,7 @@ async def _emit_tool_end(
     With a cancel on its way up, a sink's failure must not replace it.
     """
 
+    cancels = _own_cancels()
     try:
         await emit(
             ToolExecutionEndEvent(
@@ -1222,9 +1292,10 @@ async def _emit_tool_end(
             )
         )
     except asyncio.CancelledError:
+        _note_cancel_caught(cancels)
         _log.debug("a cancel landed in tool_execution_end of %s", tool_call_id)
     except Exception:
-        if not _cancel_pending():
+        if not _cancel_pending(requested):
             raise
         _log.debug("tool_execution_end failed for cancelled call %s", tool_call_id, exc_info=True)
 
@@ -1234,6 +1305,7 @@ async def _commit_tool_result(
     tool_name: str,
     result: ToolResult,
     emit: AgentEventSink,
+    requested: Callable[[], bool] | None,
 ) -> ToolResultMessage | None:
     """Commit one result. Returns the message, or ``None`` if it is lost.
 
@@ -1247,20 +1319,22 @@ async def _commit_tool_result(
     """
 
     msg = _to_tool_result_message(tool_call_id, tool_name, result)
+    cancels = _own_cancels()
     try:
-        return await _emit_tool_result_message(msg, emit)
+        return await _emit_tool_result_message(msg, emit, requested)
     except asyncio.CancelledError:
+        _note_cancel_caught(cancels)
         _log.debug("a cancel landed while committing the result of tool call %s", tool_call_id)
         return None
     except Exception:
-        if not _cancel_pending():
+        if not _cancel_pending(requested):
             raise
         _log.debug("committing the result of cancelled call %s failed", tool_call_id, exc_info=True)
         return None
 
 
 async def _emit_tool_result_message(
-    msg: ToolResultMessage, emit: AgentEventSink
+    msg: ToolResultMessage, emit: AgentEventSink, requested: Callable[[], bool] | None
 ) -> ToolResultMessage:
     """Emit ``message_start`` + ``message_end`` for a tool-result message.
 
@@ -1281,15 +1355,17 @@ async def _emit_tool_result_message(
     :func:`_is_replacement` guard is defense-in-depth.
 
     #672 (ADR-0290): ``message_start`` commits nothing, so a cancel landing there costs
-    nothing. ``message_end`` still runs, and the task's count keeps the cancel.
+    nothing. ``message_end`` still runs, and :func:`_cancel_pending` keeps the cancel.
     """
 
+    cancels = _own_cancels()
     try:
         await emit(MessageStartEvent(message=msg))
     except asyncio.CancelledError:
+        _note_cancel_caught(cancels)
         _log.debug("a cancel landed in message_start of tool call %s", msg.tool_call_id)
     except Exception:
-        if not _cancel_pending():
+        if not _cancel_pending(requested):
             raise
         _log.debug(
             "message_start failed for cancelled call %s", msg.tool_call_id, exc_info=True

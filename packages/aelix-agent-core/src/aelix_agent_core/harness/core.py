@@ -740,6 +740,10 @@ class AgentHarness:
         # ``task.cancel()`` on it. Aelix additive over Pi (Pi does NOT cancel
         # ``Promise.all`` on tool error). None when idle.
         self._current_turn_task: asyncio.Task[Any] | None = None
+        # #698 (ADR-0290) — ``abort()`` cancelled this turn's task. Not
+        # ``_abort_requested``: an extension's ``ctx.abort()`` sets that with no
+        # cancel, and it does not stop the batch. Reset as each turn task is made.
+        self._turn_cancelled = False
 
         # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §D, P-450) — tool merge
         # extracted into ``_rebuild_tool_registry`` for Pi parity with
@@ -2034,6 +2038,7 @@ class AgentHarness:
         # Sprint 3c §C.2 — cancel in-flight turn task if any.
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
+            self._turn_cancelled = True
             turn_task.cancel()
         # #347 — and the summary request a compaction or a branch summary is waiting for
         # (:func:`_stopped_by_abort`): pi's ``abort()`` calls ``abortCompaction()`` and
@@ -5952,6 +5957,25 @@ class AgentHarness:
                 # nothing is sent. Cleared, the turn went to the model, and a swap
                 # waiting for the Esc's withdraw waited for its whole answer.
                 aborted_before = pending_inputs is not None and self._abort_requested
+                # #698 (ADR-0290) — how the loop learns its turn was cancelled when
+                # whoever caught the cancel went on: ``abort()`` says so, and a cancel
+                # of this task reaches the turn's through the ``await`` below with
+                # nothing of ours in between. This task is parked there for the whole
+                # turn, so its count cannot go stale from here on, and what an ``input``
+                # or ``before_agent_start`` hook left on it is under this read. The
+                # turn task's own count says nothing: anything running on it can leave
+                # it up with no cancel behind it.
+                self._turn_cancelled = False
+                awaiting_task = asyncio.current_task()
+                awaiting_cancels = awaiting_task.cancelling() if awaiting_task else 0
+
+                def cancel_requested() -> bool:
+                    return self._turn_cancelled or (
+                        awaiting_task is not None
+                        and awaiting_task.cancelling() > awaiting_cancels
+                    )
+
+                config.cancel_requested = cancel_requested
                 # Sprint 3c §C.2 — wrap the loop in a task so abort() can
                 # cancel it. We await the task (not the coroutine directly)
                 # and surface CancelledError as the expected abort path.
