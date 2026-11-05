@@ -878,8 +878,8 @@ async def _execute_tool_calls_sequential(
 
     #672, #673 (ADR-0290): a cancel landing once a call began does not cost its
     result. The rest of the three steps runs and the cancel goes on after it, so a
-    later call stays unstarted. That holds for a cancel a tool, a hook or a listener
-    swallowed too: what stops the batch is :func:`_cancel_pending`, not the exception.
+    later call stays unstarted. So does one a tool, a hook or a listener swallowed, under
+    a host that says it sent it: :func:`_cancel_pending` stops the batch (ADR-0290 limit 19).
     """
 
     result_messages: list[ToolResultMessage] = []
