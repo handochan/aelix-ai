@@ -565,6 +565,34 @@ async def test_a_bare_cancelled_error_from_a_sink_with_a_stale_count_is_no_cance
 
 
 @pytest.mark.parametrize("sequential", [True, False])
+async def test_a_bare_cancelled_error_from_an_update_sink_after_a_stale_count_in_that_call_is_no_cancel(
+    stale: Stale, sequential: bool
+) -> None:
+    """The drain reads its own baseline: what the tool left in ``execute`` is under it."""
+
+    provider = Provider([("c1", "one")])
+
+    async def emit(event: Any) -> None:
+        if event.type == "tool_execution_update":
+            raise asyncio.CancelledError()
+
+    loop_run = agent_loop(
+        [UserMessage(content=[TextContent(text="go")])],
+        AgentContext(system_prompt="", messages=[], tools=[_partial_tool(stale.leave)]),
+        AgentLoopConfig(
+            model=MODEL,
+            convert_to_llm=lambda messages: messages,
+            tool_execution="sequential" if sequential else "parallel",
+        ),
+        emit=emit,
+        stream_fn=provider,
+    )
+
+    await asyncio.ensure_future(loop_run)
+    assert len(provider.seen) == 2, "the turn goes on"
+
+
+@pytest.mark.parametrize("sequential", [True, False])
 async def test_a_bare_cancelled_error_from_after_tool_call_with_a_stale_count_is_no_cancel(
     tmp_path: Path, stale_or_not: Stale, sequential: bool
 ) -> None:
@@ -1505,7 +1533,11 @@ _SCOPES = {
 async def test_a_nested_run_a_scope_took_the_cancel_back_from_stops_no_outer_turn(
     tmp_path: Path, host: str, sequential: bool, where: str, scope: str, inner_sequential: bool
 ) -> None:
-    """The inner run caught that cancel on the shared task, and nobody cancelled the outer one."""
+    """The inner run caught that cancel, and nobody cancelled the outer one.
+
+    Mostly on the task the outer run is on. A parallel tool has a call's own task, and 3.11's
+    ``wait_for`` runs the inner call in a task of its own.
+    """
 
     inner = _Inner(sequential=inner_sequential)
     asked: list[str] = []
@@ -1639,6 +1671,79 @@ async def test_a_nested_run_does_not_erase_a_cancel_the_outer_run_caught(
     assert len(inner.provider.seen) == 1
 
 
+@pytest.mark.parametrize("host", ["agent", "harness"])
+async def test_a_nested_run_in_a_parallel_call_drops_the_waits_mark_and_commits_no_output(
+    tmp_path: Path, host: str
+) -> None:
+    """Limit 22. The wait marks the call's task with a nested run inside, and that run's end
+    puts back what it found. So the hook's error comes up in place of the default text: the call
+    has no result and no end event, and the output no hook redacted reaches nothing.
+    """
+
+    inner = _Inner()
+    returned: list[str] = []
+    hooks_failed: list[str] = []
+
+    async def one(_args: Any, _ctx: Any) -> ToolResult:
+        try:
+            await inner.run.agent.prompt("ask")
+        except asyncio.CancelledError:
+            returned.append("SECRET")
+            return ToolResult(content=[TextContent(text="SECRET")])
+        raise AssertionError("the wait cuts it")
+
+    if host == "agent":
+
+        async def after(ctx: Any) -> None:
+            hooks_failed.append(ctx.tool_call.tool_call_id)
+            raise ValueError("the redactor broke")
+
+        agent_run = _AgentRun(
+            [AgentTool(name="one", execute=one)], [("c1", "one")], after_tool_call=after
+        )
+        task = asyncio.ensure_future(agent_run.agent.prompt("go"))
+        await asyncio.wait_for(inner.reached.wait(), timeout=5)
+        await asyncio.sleep(0)
+        task.cancel()
+        await settle(task)
+
+        assert task.cancelled(), "the cancel goes on up"
+        assert hooks_failed == ["c1"]
+        assert agent_run.started() == ["c1"]
+        assert agent_run.committed() == []
+        assert not [e for e in agent_run.events if e.type == "tool_execution_end"]
+        assert len(agent_run.provider.seen) == 1
+        assert "SECRET" not in repr(agent_run.events)
+        assert "SECRET" not in repr(agent_run.agent.state.messages)
+    else:
+
+        async def two(_args: Any, _ctx: Any) -> ToolResult:
+            await inner.reached.wait()
+            await asyncio.sleep(0)
+            return ToolResult(content=[TextContent(text="TWO")])
+
+        async def hook(event: Any, _ctx: Any) -> None:
+            hooks_failed.append(event.tool_call_id)
+            raise ValueError("the redactor broke")
+
+        tools = [AgentTool(name="one", execute=one), AgentTool(name="two", execute=two)]
+        run = await start(tmp_path, [("c1", "one"), ("c2", "two")], tools)
+        run.harness.hooks.on("tool_result", hook)
+
+        with pytest.raises(AgentHarnessError, match="the redactor broke"):
+            await settle(run.begin())
+
+        assert hooks_failed == ["c2", "c1"], "a sibling's hook failed, and the wait cut this call"
+        assert run.ended() == []
+        assert results_of(await run.reopened()) == {}
+        assert run.path is not None
+        assert "SECRET" not in run.path.read_text()
+        wire = results_of(await run.next_request())
+        assert wire == {"c1": (NOT_STARTED, True), "c2": (NOT_STARTED, True)}
+
+    assert returned == ["SECRET"], "the tool did return its raw output"
+
+
 # === A wait for a shared catalog refresh ====================================
 
 
@@ -1705,6 +1810,90 @@ async def test_refresh_a_cancel_of_a_stale_caller_goes_on_up(stale_or_not: Stale
     await settle(task)
 
     assert task.cancelled()
+
+
+@pytest.mark.usefixtures("_online")
+async def test_refresh_a_cancel_pending_as_the_wait_begins_goes_on_up(stale_or_not: Stale) -> None:
+    """Ctrl+C in the sync code ahead of the wait, or a task cancelling itself: no rise to read."""
+
+    returned: list[Any] = []
+
+    async def body() -> None:
+        await stale_or_not.leave()
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        registry = _Registry(ends_cancelled=False)
+        returned.append(await ModelCatalogRefresher().refresh(registry, trigger="test"))  # type: ignore[arg-type]
+
+    task = asyncio.ensure_future(body())
+    await settle(task)
+
+    assert task.cancelled(), "a run nobody cancelled says nothing about this cancel"
+    assert returned == []
+
+
+@pytest.mark.usefixtures("_online")
+@pytest.mark.parametrize(
+    ("order", "cancelled"),
+    [
+        (["caller", "caller"], True),
+        (["run", "caller"], True),
+        (["caller", "run"], True),
+        (["run"], False),
+    ],
+)
+async def test_refresh_reads_who_was_cancelled_in_one_turn(
+    stale_or_not: Stale, order: list[str], cancelled: bool
+) -> None:
+    registry = _Registry(ends_cancelled=False)
+    refresher = ModelCatalogRefresher()
+    waiting = asyncio.Event()
+
+    async def body() -> Any:
+        await stale_or_not.leave()
+        waiting.set()
+        return await refresher.refresh(registry, trigger="test")  # type: ignore[arg-type]
+
+    task = asyncio.ensure_future(body())
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    await until(lambda: registry.ran)
+    await asyncio.sleep(0)
+    run_task = refresher._active[registry].task
+    for who in order:
+        (task if who == "caller" else run_task).cancel()
+    await settle(task)
+
+    assert task.cancelled() is cancelled
+    if not cancelled:
+        assert task.result() is None
+    await settle(run_task)
+
+
+@pytest.mark.usefixtures("_online")
+async def test_refresh_two_waiters_each_read_their_own_cancel(stale_or_not: Stale) -> None:
+    registry = _Registry(ends_cancelled=False)
+    refresher = ModelCatalogRefresher()
+
+    async def left_a_count() -> Any:
+        await stale_or_not.leave()
+        return await refresher.refresh(registry, trigger="test")  # type: ignore[arg-type]
+
+    cancelled = asyncio.ensure_future(left_a_count())
+    other = asyncio.ensure_future(refresher.refresh(registry, trigger="test"))  # type: ignore[arg-type]
+    await until(lambda: registry in refresher._active and refresher._active[registry].waiters == 2)
+    await asyncio.sleep(0)
+    run_task = refresher._active[registry].task
+
+    cancelled.cancel()
+    await settle(cancelled)
+    assert cancelled.cancelled()
+    assert not other.done(), "the run stays for the other waiter"
+    assert not run_task.done()
+
+    run_task.cancel()
+    await settle(other)
+    assert other.result() is None
 
 
 @pytest.mark.usefixtures("_online")

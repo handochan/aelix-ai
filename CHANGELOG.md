@@ -1301,10 +1301,10 @@ unwritten. Add them with the next release.
     catalog refresh that ends cancelled no longer stops its turn on such a count.
   - A tool that calls `uncancel()` no longer takes a stop back: the batch stops after it. Under
     `aelix_agent_core.Agent` or a direct `agent_loop` it still does.
-  - `Agent` and a direct `agent_loop` caller stop on a cancel the loop sees. One swallowed on the
-    caller's task goes undetected there, as before #672: by any tool, hook or listener on the
-    sequential path, and on the parallel path by a `before_tool_call` hook, a `tool_execution_start`
-    listener or a result's `message_end` listener. A direct caller that wants otherwise passes the new
+  - `Agent` and a direct `agent_loop` caller stop on a cancel the loop sees. Whatever runs on the
+    caller's task and swallows a cancel goes on there, as before #672, on both paths, an unknown tool's
+    `tool_execution_end` included. On the parallel path what runs on a call's own task stops the batch,
+    because the wait hands the cancel on. A direct caller that wants otherwise passes the new
     `AgentLoopConfig.cancel_requested`. A stale count or an old swallowed cancel on the caller's task
     no longer costs its next prompt.
 - **Esc and Ctrl+C stop a compaction (#347, ADR-0023, ADR-0286).** During a context

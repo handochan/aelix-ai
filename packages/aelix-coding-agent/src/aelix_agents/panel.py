@@ -58,7 +58,7 @@ PARTIAL_MIN_INTERVAL_MS = 500
 """Minimum wall time between two ``ctx.on_partial`` emissions FOR ONE CALL.
 
 The kernel appends an ``asyncio.Task`` per ``on_partial`` into a list it never
-prunes (``harness/loop.py:581`` declares ``update_events``, ``:608`` appends,
+prunes (``loop.py:689`` declares ``update_events``, ``:724`` appends,
 and it is drained only when the turn settles), and ``loop.py`` is KERNEL — it
 may not be edited — so throttling here is the ONLY legal mitigation for H10.
 

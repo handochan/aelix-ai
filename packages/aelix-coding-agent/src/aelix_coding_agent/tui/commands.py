@@ -918,7 +918,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:4260-4277`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:4716-4730`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1050,7 +1050,7 @@ async def _confirm_project_agent_for_run(
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
     UI seam instead — ``shell.py:3680`` binds the real TUI context onto
-    ``harness.runtime`` and re-binds it on every rebuild (``:3019``), so the
+    ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
     FAIL-CLOSED in every direction: no seam, a headless binding (whose ``select``
