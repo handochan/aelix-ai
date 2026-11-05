@@ -2440,6 +2440,13 @@ class AelixChrome:
         """
 
         self._modal = content
+        # #671 — prompt_toolkit caches the merged key bindings by the focused
+        # window and the set of controls, and finds a window's parents in a map
+        # it rebuilds at each render. A key handled after the modal took focus
+        # but before that render cached the modal's window with no parent, so
+        # its own Esc, Ctrl+C and number keys stayed out for as long as it was
+        # open (CI: Esc sent at once never closed it). Rebuilt here, at mount.
+        self.app.layout.update_parents_relations()
         self.invalidate()
 
     def unmount_modal(self) -> None:
