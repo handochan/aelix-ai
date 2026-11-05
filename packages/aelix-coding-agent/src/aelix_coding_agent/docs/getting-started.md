@@ -467,6 +467,9 @@ they clear the box as usual.
 The text stays in the session file on the branch left behind, so the `/resume` list's
 preview and `last:` line can still show it.
 
+`Esc` and `Ctrl+C` also [stop a compaction](compaction.md#stopping-a-compaction), `/compact`
+or an automatic one, and nothing of it is saved.
+
 A line that starts with `!` runs in your shell instead of going to the model:
 
 - `!cmd` runs `cmd` and prints its output; the model sees the output too, from

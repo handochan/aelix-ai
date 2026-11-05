@@ -571,7 +571,8 @@ and a branch summary - retries on the turn's decision, read at each failure:
   Under a prompt's claim (the threshold and overflow compactions) an earlier
   abort of that prompt counts too; in a public `compact()` / `navigate_tree()`
   `_abort_requested` may still describe a prompt that already returned, so it is
-  not read there. The TUI's interrupt keys reach the swapped handler for the
+  not read there (*since #347 they clear it on entry, and it is read everywhere*).
+  The TUI's interrupt keys reach the swapped handler for the
   length of any retry countdown, running or not (`AelixChrome.interrupt_armed`):
   a manual `/compact` runs outside the `set_running` turn wrapper, where Esc was
   inert and Ctrl+C armed the exit window while the countdown said "Esc to cancel".
@@ -580,7 +581,13 @@ and a branch summary - retries on the turn's decision, read at each failure:
   run out, the re-sent request's line reads `⟳ Retrying (N/M) now… Esc to
   interrupt` only over a turn's own request, which Esc's `abort()` cancels; over
   a summary request it reads `⟳ Retrying (N/M) now…` - nothing cancels a summary
-  request in flight (#347).
+  request in flight (#347). *2026-11-05, #347 (ADR-0023): `abort()` cuts a summary
+  request in flight, and a public `compact()` clears the flag on entry and reads
+  it, so that line reads `Esc to interrupt` whenever the TUI runs something, a turn
+  or a `/compact`, and a wait an abort ends raises `Compaction cancelled` where it
+  raised the request's failure. `abort_retry()` and an extension's `ctx.abort()` wake
+  the wait as here and cut no request; in an extension's own `compact` or
+  `navigate_tree` the keys still reach only the countdown.*
 - **What a request that is not retried does** - its budget ran out, retries are
   off, the error is not retryable, or a wait was aborted: its own failure
   propagates exactly as before #409 (`AgentHarnessError("compaction")` /
@@ -601,7 +608,8 @@ without one they send each request once, as before.
   `compact()` / `navigate_tree()` (during its `session_before_compact` hooks) is
   not seen by the retry; aelix has no compaction abort at all, so it did not stop
   the compaction before either (#347). An abort does not cancel a summary request
-  in flight, for the same reason - it only prevents the next one.
+  in flight, for the same reason - it only prevents the next one. *Closed
+  2026-11-05 by #347: no request follows such an abort, and one in flight is cut.*
 - **pi's newer pattern and its quota exclusions** (#414's "Not changed") apply to
   the summaries as to the turn: the classification is the turn's.
 - No gated citation moves (`check_citations.py --check`: 931 gated, none drifted):
@@ -623,6 +631,7 @@ without one they send each request once, as before.
   (the row for an abort made while the request was failing pins that), but the
   summary request in flight runs to its end (#347) - measured in a real TUI, the
   threshold compaction completed after that Esc (`r2/out/tui-after/threshold.screen`).
+  *#347 made the hint true on 2026-11-05.*
 
 ### Tests, sabotage and live runs
 

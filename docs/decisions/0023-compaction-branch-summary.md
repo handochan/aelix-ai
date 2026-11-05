@@ -13,7 +13,9 @@ from it. The REPL's record still appends directly. Three hazards (its
 docstring): an `abort()` made while a turn waits at its entry drain is lost
 (`_run` clears the flag on entry — #336's window), a drainer called from inside
 the write on the same task deadlocks (the lock is not re-entrant), and a write
-that never returns blocks every drainer, `dispose()` included.
+that never returns blocks every drainer, `dispose()` included. **AMENDED 2026-11-05
+by #347** (`## Amendment (2026-11-05, #347)` below): an abort stops a running compaction, and
+nothing of it is written.
 Supersedes (partial): ADR-0016 deferred (Phase machine expansion)
 Pi pin (ADR-0034): `badlogic/pi-mono@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -736,7 +738,8 @@ Who meets the held turn now (the full table is in the #334 design,
   to its end, and `dispose()` waits for it. Unchanged by #334. **#347**, with
   the next point: `_try_overflow_recovery` swallows every compaction error but
   "Nothing to compact" at `DEBUG`, so a failed overflow compaction (or one
-  refused for a missing claim — sabotage S3s) is silent.
+  refused for a missing claim — sabotage S3s) is silent. *2026-11-05: #347 closed the
+  abort half (its amendment, below); #546 gave the failure its `compaction_end`.*
 - **Code that awaits idle from inside the tail now waits for ever**: an async
   `auto_retry_*` or `compaction_*` subscriber, or a handler of a tail
   compaction's hooks, that calls `wait_for_idle()` — or `dispose()`, or the
@@ -910,3 +913,194 @@ times out at its `gap_entered` wait (`321-cancel-probe.py:577`). The
 ARMs, the critic probe, the sabotage table, the live check, the TUI countdown
 (`334-tui-countdown.py`) and the `-p` Ctrl+C check (`334-pty-ctrl-c.py` with
 `334-park-ext.py`).
+
+## Amendment (2026-11-05, #347) — an abort stops a running compaction, and nothing of it is written
+
+Issue: #347. Design: `.omc/specs/347-design-2026-11-05.md`. The owner's report (2026-11-04): Esc does
+not abort during a context compaction. Measured on `main` `8325a661`, the real TUI in a pty, a local
+server holding the summary (`.omc/probes/compact-esc/run.py`, `run.out`):
+
+```text
+overflow:  row '⠇ Compacting context… (0s · esc to cancel)'; Esc: row still there after 6 s; second key: still there; ends only when the summary returns
+/compact:  row '⠏ Compacting context…', no hint; Esc: nothing; second key: nothing; the summary returns and is saved (1 compaction entry)
+```
+
+Closes what this ADR's #334 amendment and ADR-0128's #409 amendment left to #347 and ADR-0286's limit 13.
+
+### The rule
+
+An abort stops a running compaction now, and nothing of it is written. That is any `abort()`, as pi's
+`abort()` calls `abortCompaction()` and `abortBranchSummary()` (`agent-session.ts:2565-2566` @ 469d8651b):
+Esc, Ctrl+C, RPC `abort`, `dispose()`, a signal. The summary request's connection is dropped, so nothing
+keeps spending.
+
+| Moment of the abort | Result |
+|---|---|
+| Summary request in flight, threshold, overflow or manual | Request cut at once, no compaction entry, `compaction_end` says aborted |
+| In a `session_before_compact` hook | The hook is not cut. The abort takes effect when it returns: no summary request, no entry |
+| While `compaction_start` is emitted, or between the hook and the request | No hook after it, no summary request |
+| Retry wait of the summary | Ends at once, `auto_retry_end` says `Retry cancelled` |
+| Summary already returned, entry not written | No entry (the check #654 made for a withdrawing abort, for any abort) |
+| `append_compaction` entered | The entry stands: the barrier of ADR-0286 (limit 9 for the boundary). The `session_compact` hook after it is not cancelled, and the abort rewrites nothing: a success ends as a success, a later failure as itself |
+
+What follows is as it was. On an overflow the prompt's tail withdraws the input and the box gets it back
+(ADR-0286), or a plain abort keeps it with the failed answer (#391). After a threshold compaction cut, the
+answer stays and the next turn's check compacts again.
+
+A manual compaction an abort ended before the write ends with `aborted=True` and no message
+(`_compaction_end_failure`), and raises `_CompactionCancelled("compaction", "Compaction cancelled")`, which
+is how its caller tells it from a failure. "Nothing to compact" and a hook's own `cancel` keep their words.
+
+### The mechanism
+
+`_stopped_by_abort(harness, work)` runs the summary request, `_with_summary_retry`, in a task held as
+`_summary_task`, and `abort()` cancels that task, so the request takes the cancel a turn's request takes and
+the adapter's `async for` drops the connection on the way out.
+It is a task of its own because the caller has to live on to end the compaction. A cancel of the caller stays
+the caller's: asyncio hands it on to the inner task, and `current_task().cancelling()`, read against its
+value on entry (ADR-0290 §1), tells the two apart. So a cancelled `prompt()` or `compact()` raises
+`CancelledError`, gives the phase back, writes nothing and, as before, sends no `compaction_end`.
+
+The `session_before_compact` hook stays on `compact()`'s own task, as it was before this amendment, and no
+signal is added to it (limit 1). Review round 1 moved it back: in a task of its own a ContextVar the hook set no
+longer reached the summarizer, resetting a token the caller made raised, `current_task()` changed, and a handler
+awaiting `abort()` cancelled itself at the abort's first suspension, which skipped the abort's own hook and lost
+queued lines on their way to a later `input_withdrawn` subscriber (`.omc/specs/347-codex-probes/hook_tasks.py`).
+
+`_abort_requested` is read before the hook, after it, before the request and before `append_compaction`. A public
+`compact()` clears it and `_withdraw_requested` on entry, as a prompt does at its claim, so an abort made while
+idle does not cancel the next `/compact`; a nested one keeps its prompt's. With that the flag always means this
+compaction, and `_compaction_end_failure` needs no claim to read it.
+
+`navigate_tree`'s summary request goes through the same helper, clearing the flags on entry and reading them
+before the request and again after it, before its write, as `compact()` does, and a stopped one returns
+`NavigateTreeResult(cancelled=True)` with the leaf where it was, as pi's `{cancelled: true, aborted: true}`. With that `_abort_requested` means this compaction or
+branch summary everywhere, and `_SummaryRetry` no longer asks for a claim before it reads it.
+
+Any raise after an abort reads as `Compaction cancelled` too, not only the cancel. A retry wait the abort also
+woke raises the failed request's error on 3.11, whose `wait_for` returns a wait that has ended and eats the cancel,
+and `Compaction cancelled` on 3.12 and later; an adapter may turn the cancel into something else (ADR-0286
+limit 9), and a `session_before_compact` hook may raise after an abort landed in it. The design left the wait as it was, and a run on 3.11 showed that the raise would then differ by version. So
+an abort in a retry wait, or one landing as a request fails, now raises `Compaction cancelled` where it raised the
+request's failure, and
+a sequence a cancel ended says `Retry cancelled` rather than `CancelledError`. `abort_retry()` is unchanged: no flag,
+the failure's own words. The row of a summary request re-sent after a failure reads `Esc to interrupt` whenever the
+TUI runs something. Only before the write: `compact()` sets a local `written` right after `append_compaction`, and
+from there `_compaction_end_failure` no longer reads the flag.
+
+### The TUI: `/compact` goes through the abort, not through a cancel of its task
+
+`_compact_handler` awaits `run_cancellable(work, abort=True)`: the TUI reads as running, so the keys are live and
+the row's hint is true, and the interrupt is `_on_interrupt`, as for an Esc in a turn. `run_cancellable` as `/agents run` uses it cancels the work's task. Not
+that here, for two reasons measured on a mutant taking that route (`Esc` as `task.cancel()`): the cancel sends no
+`compaction_end`, so the row stayed up reading `Compacting context…` with the TUI idle until the next `turn_start`,
+and it cannot tell a written entry from an unwritten one, so a key during a `session_compact` hook cut the hook and
+said `Compaction cancelled.` with 1 compaction entry in the session. Through the abort the table above holds as it
+is: the hook runs on, and the summary is what prints. The line is a calm yellow
+`Compaction cancelled.`, also for a hook that cancels without a reason, and a hook's own reason stays a red
+`✖ compact failed: …`. Enter during `/compact` queues the next input, as it did: there is no turn to steer
+(limit 10).
+
+A signal does not take that interrupt. `_handle_signal` calls a running command's interrupt only when it is not
+`_on_interrupt`, and otherwise aborts until idle, as for a turn, when the chrome is running or the harness's phase is
+not idle: nobody is there to press the key twice (ADR-0290), and an extension command awaiting
+`ctx.navigate_tree(summarize=True)`, or `ctx.compact()` then `ctx.wait_for_idle()`, holds the input loop with the chrome
+idle, where the EOF alone waited behind it.
+
+RPC: `compact` and `abort` run at once (#684), and the `compact` response is an error reading
+`Compaction cancelled`. An `abort` sent while idle, or ahead of `compact` in one write, does not cancel it. A
+shutdown waits for the running commands before `dispose()`, `compact` among them, so a signal or a stdin EOF
+(`rpc_ws` feeds its disconnect into the same path) now awaits `abort()` after `control.begin_shutdown()` when the
+phase is `compaction` or `branch_summary`, in a task, so an `abort` handler that parks does not hold the shutdown. A
+`prompt`'s compaction ended there already and still does. So a one-shot `printf '{"type":"compact"}\n' | aelix --mode rpc`
+no longer compacts: the EOF right behind it cancels it, as it already cut a piped `prompt`. A script keeps stdin open
+until the response, as pi's RPC asks too (`rpc-mode.ts:744-749`, `:826-829`).
+
+### Limits
+
+1. **A hook or a subscriber can hold it.** A `session_before_compact` handler, and a `compaction_start` or
+   `compaction_end` subscriber, run on the caller's task and take no cancel. One that parks holds the compaction
+   until it returns, as before #347, with the row, `dispose()` and a signal's exit behind it. Nothing is written and no
+   request is sent after a hook or a start an abort landed in. pi hands its hook a signal; this one has none. A handler
+   waiting on `ctx.ui.confirm` is the ordinary case: Esc closes the dialog and the compaction goes on, and a signal does
+   not exit until the dialog answers, as before #347.
+2. **A summarizer that swallows the cancel** holds it the same way; what it returns is not written.
+3. **A summary that came back as the abort landed** writes nothing, and its cost is spent.
+4. **`ctx.abort()` cuts no request (#545).** It sets the flag and wakes a retry wait, so no request follows it and
+   nothing is written, but one in flight runs to its end. `abort_retry()` is "stop retrying" and cuts none either.
+5. **`session_before_tree` is not cancelled.** An abort there sends no request, once the handler returns; a summary
+   the handler supplies and a move with no summary go on, as before. An extension's `compact` or `navigate_tree` runs
+   outside the running row, so the keys reach only a retry countdown there: RPC `abort`, a signal or quitting reach the
+   rest.
+6. **The countdown's Esc is `abort_retry`, as before.** A `/compact` whose summary is in its retry wait ends on
+   `✖ Retry failed: Retry cancelled`, then `✖ compact failed: <the failure>`, not on the calm line. A threshold
+   compaction's countdown ends the same way, on `✖ Auto-compaction failed: <the failure>`.
+7. **A `session_compact` hook parked after the write holds the turn and `dispose()`,** as before, and the entry stands.
+   The row still says `esc to cancel`, `/compact`'s too since this amendment, and no key helps: Esc, a second Esc and
+   Ctrl+C change nothing on screen, and a signal does not exit.
+8. **Esc takes about a second** (#460) before any of this starts; the row goes in about 1.2 s, Ctrl+C in 0.1 s.
+9. **The boundary is the entry into `append_compaction`.** The last check is before that call: an abort while the write
+   waits on its lock does not stop it, and the entry stands, on `compaction_end` a success. A write that then fails
+   ends as aborted, with nothing on file, and the raise keeps its words.
+10. **A line entered during `/compact` goes to the model after the key.** It waits on the chrome's input as the next
+    input, not on the harness's queues, so `_on_interrupt` has nothing to give back: `Compaction cancelled.`, then the
+    line is sent, where in a turn it would come back to the box. A signal drops the line instead: it ends the session.
+11. **Ctrl+D during `/compact` is inert while it runs,** as in a turn. Before this amendment it queued an EOF, which
+    took effect when the summary returned.
+12. **A cancel of the caller's task during the rebuild after the write** leaves `state.messages` stale until the next
+    prompt rebuilds it from the file. Pre-existing (`.omc/specs/347-codex-probes/rebuild_parent.py`).
+
+### Verification
+
+Regression: `tests/harness/test_abort_stops_a_compaction_347.py` (every row above for threshold, overflow and
+manual, on a real `AgentHarness` and a JSONL session read back, the summary cancelled rather than outlived; a real
+socket through the OpenAI adapter with its positive control; the stale flag; `dispose()`; an outer cancel; a branch
+summary), `tests/tui/test_esc_stops_a_compaction_347.py` and `tests/rpc/test_compact_and_abort_rpc_347.py`, on Python
+3.11, 3.12 and 3.14, and under the coarse clock on 3.11 and 3.12. Thirty-five mutations of the load-bearing lines each
+fail a test, as do nine more on what review round 1 changed. Changed because they pinned the old behaviour:
+`test_a_plain_abort_during_the_overflow_summary_still_compacts_and_keeps_the_input` and
+`test_esc_during_a_threshold_summary_after_an_answer_leaves_the_compaction_alone` (renamed for what they now say),
+`test_abort_during_a_public_compaction_says_the_queued_lines`,
+`test_esc_during_the_overflow_summary_says_the_input_is_back_once_per_run`,
+`test_an_abort_during_the_wait_ends_it_at_once_and_nothing_is_sent_again`,
+`test_an_abort_made_while_the_request_was_failing_stops_the_retry`,
+`test_under_a_prompts_claim_an_earlier_abort_of_that_prompt_stops_the_retry`,
+`test_an_abort_during_a_branch_summarys_wait_ends_it_at_once`,
+`test_a_zero_ms_wait_still_yields_so_an_abort_from_the_start_subscriber_counts` and
+`test_run_tui_the_in_flight_label_promises_esc_only_when_esc_interrupts`.
+
+The evidence stays local and untracked, as ADR-0286's does: `.omc/probes/347/` (drivers, output, grids, the mutation
+script and its output).
+
+Live, the real TUI through `os.forkpty` and pyte, a scratch cwd and an isolated `HOME`, `TMPDIR` and agent dir, with a
+local server holding the summary and watching its socket:
+
+| Case | Row gone after the key | Connections dropped | Compaction entries | Next prompt |
+|---|---|---|---|---|
+| `/compact`, Esc | 1.12 s | 1.05 s, both of a split turn's two | 0 | answered |
+| `/compact`, Ctrl+C | 0.08 s | 0.00 s, both | 0 | answered |
+| overflow, Esc | 1.12 s | 1.05 s | 0 | answered, without the withdrawn line; it was back in the box |
+| overflow, Ctrl+C | 0.08 s | 0.00 s | 0 | answered, the same |
+| threshold, Esc | 1.12 s | 1.05 s | 0 | answered, and its check compacted again |
+| `/compact`, Esc on a summary the harness re-sent after a `502`, row `⟳ Retrying (1/3) now… Esc to interrupt` | 1.11 s | 1.06 s, both | 0, no further request | answered; `✖ Retry failed: Retry cancelled`, then `Compaction cancelled.` |
+| `/compact`, Esc in the countdown | 1.14 s | none held | 0, no further request | limit 6's two red lines |
+| `/compact`, SIGTERM | exit 0 in 0.14 s | 0.00 s, both | 0 | |
+
+A second key changed nothing and the process stayed up in each of the first five. On OpenRouter `openai/gpt-4o-mini`,
+two prompts of about 3000 words: `/compact` with no key took 3.23 s and wrote 1 entry; in a second session, Esc about
+0.3 s after the row appeared took the row in 1.12 s, printed `Compaction cancelled.`, and wrote 0 entries, and asked for
+a codeword from the first prompt the model answered `PINEAPPLE-347`. The socket on the real model was not watched: the
+wall clock is the evidence there that the key landed inside the request, and the local server that the connection goes.
+
+Review round 1 re-ran the local-server rows, with the same numbers to within 0.1 s, and measured what it changed. A real
+`aelix --mode rpc` with `compact` held: SIGTERM exits 0 in 0.16 s and stdin EOF in 0.17 s, both connections dropped, 0
+entries, `compact` answered an error; before, it ran until the summary returned and wrote 1 entry. A `prompt`'s
+threshold or overflow compaction exits in 0.17-0.18 s on either, as it did. The TUI with an extension command, SIGTERM:
+`ctx.navigate_tree(summarize=True)` 0.13 s, `ctx.compact()` then `ctx.wait_for_idle()` 0.17 s, `ctx.compact()` alone
+0.14 s, connections dropped and 0 entries; before, the first two did not exit. `/compact`, SIGTERM and SIGHUP: 0.14 s.
+A `session_before_compact` hook sleeping 3 s: Esc or Ctrl+C left the row up until it returned, then
+`Compaction cancelled.`, 0 requests, 0 entries, and the next prompt was answered. A hook that parks: SIGTERM does not
+exit in 6 s, on `main` too. A `session_compact` hook that parks: the row says `esc to cancel` through Esc and Ctrl+C,
+SIGTERM does not exit in 5 s, 1 entry. Ctrl+D during `/compact`: alive, the row unchanged. On OpenRouter
+`openai/gpt-4o-mini`: `/compact` with no key 4.48 s and 1 entry; Esc 1.12 s and Ctrl+C 0.08 s, `Compaction cancelled.`, 0
+entries, and the next prompt answered with the codeword.

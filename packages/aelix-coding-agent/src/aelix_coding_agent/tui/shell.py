@@ -363,7 +363,8 @@ def _drive_compaction_indicator(chrome: AelixChrome, state: dict[str, Any], etyp
 
     A manual ``/compact`` dispatches OUTSIDE the ``set_running`` turn wrapper, so
     its multi-second summarizer LLM call would otherwise leave the prompt looking
-    frozen. Driven from the harness ``compaction_start`` / ``compaction_end``
+    frozen (#347: it runs through ``run_cancellable`` now, whose row alone would
+    read ``Working…``). Driven from the harness ``compaction_start`` / ``compaction_end``
     subscriber events (manual + threshold + overflow), this shows a live spinner
     with a "Compacting context…" label in the same row as "Working…".
 
@@ -375,8 +376,8 @@ def _drive_compaction_indicator(chrome: AelixChrome, state: dict[str, Any], etyp
     hook, summarizer failure), so the transient indicator always clears.
 
     ``turn_start`` is a SELF-HEAL trigger, handled identically to
-    ``compaction_end``: a compaction cancelled via BaseException (Ctrl+C /
-    CancelledError) never emits ``compaction_end`` (core re-raises before the
+    ``compaction_end``: a compaction whose task is cancelled from outside (the
+    keys go through ``abort()``, #347) never emits ``compaction_end`` (core re-raises before the
     emit), which would strand the indicator; the next turn means any compaction
     is long done, so the stale row is restored. It is a no-op when no indicator
     is active (the ``state["active"]`` guard), so it is safe to call on EVERY
@@ -2371,13 +2372,17 @@ async def run_tui(
     # since both now show as ``out_chrome.running``.
     running_command: dict[str, Callable[[], None] | None] = {"cancel": None}
 
-    async def _run_cancellable(work: Awaitable[Any]) -> Any:
+    async def _run_cancellable(work: Awaitable[Any], *, abort: bool = False) -> Any:
         # A TASK, so the interrupt has something to cancel: a handler is awaited
         # inside the input loop, outside the ``set_running`` turn wrapper, and
         # Esc / Ctrl+C reach ``on_interrupt`` only while ``running`` (or a retry
         # countdown) says so. Both are set for exactly the life of the task, and
         # ``on_interrupt`` points at THIS task rather than ``_safe_abort`` —
-        # there is no harness turn here for an abort to reach.
+        # there is no harness turn here for an abort to reach. #347: ``abort`` is
+        # work the harness's abort does reach, a ``/compact``. It goes the way an
+        # Esc in a turn goes, so the work ends as an aborted compaction does, with
+        # its ``compaction_end``, where a cancel of this task sends none and strands
+        # the working row, and an entry already written stands (``_compact_handler``).
         task = asyncio.ensure_future(work)
         interrupted = {"hit": False}
 
@@ -2386,10 +2391,11 @@ async def run_tui(
             if not task.done():
                 task.cancel()
 
+        interrupt = _on_interrupt if abort else _cancel_command
         prior_interrupt = out_chrome.on_interrupt
         prior_running = out_chrome.running
-        running_command["cancel"] = _cancel_command
-        out_chrome.on_interrupt = _cancel_command
+        running_command["cancel"] = interrupt
+        out_chrome.on_interrupt = interrupt
         out_chrome.set_running(True)
         try:
             return await task
@@ -2407,7 +2413,7 @@ async def run_tui(
             raise
         finally:
             running_command["cancel"] = None
-            if out_chrome.on_interrupt is _cancel_command:
+            if out_chrome.on_interrupt is interrupt:
                 out_chrome.on_interrupt = prior_interrupt
             out_chrome.set_running(prior_running)
 
@@ -2466,16 +2472,22 @@ async def run_tui(
             # and again if a hook holds it, since nobody is there to press Esc
             # twice and ``dispose()`` is behind that same await (ADR-0290); a
             # command through its own interrupt, so its handler reports the stop
-            # and returns instead of unwinding.
+            # and returns instead of unwinding. #347: a ``/compact``'s interrupt is the
+            # abort, so it goes the turn's way, and so does a compaction with no row of
+            # its own to read: an extension command awaiting ``navigate_tree`` or
+            # ``wait_for_idle`` holds that same await with the chrome idle.
             cancel_command = running_command["cancel"]
-            if cancel_command is not None:
+            if cancel_command is not None and cancel_command is not _on_interrupt:
                 cancel_command()
-            elif out_chrome.running:
+            elif out_chrome.running or getattr(runtime_host.harness, "phase", "idle") != "idle":
                 asyncio.ensure_future(_safe_abort_until_idle(runtime_host.harness))
             # Request a clean shutdown: EOF the input loop + stop the chrome so
             # run_tui's finally runs full teardown (unbind UI, unsubscribe,
             # dispose, restore terminal). Avoids sys.exit from a detached task,
             # which bypassed teardown and left the terminal in raw mode.
+            # #347: ahead of a line entered during a command, or the loop reads that
+            # first and sends it to the model after the signal.
+            out_chrome.drop_queued_input()
             out_chrome.request_eof()
             out_chrome.exit()
 
@@ -2516,7 +2528,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:235``, ``:277``, ``:288``, plus
-    # the abort close-out ``core.py:5998`` and the hook-fail one ``:6049``)
+    # the abort close-out ``core.py:6032`` and the hook-fail one ``:6083``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2654,7 +2666,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2982``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:3016``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2662,7 +2674,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:3008``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3042``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2822,7 +2834,7 @@ async def run_tui(
         # ``_retry_now_label``): advertising a key that does nothing is the defect.
         out_chrome.set_widget(
             _RETRY_WIDGET_KEY,
-            [_retry_now_label(attempt, max_attempts, out_chrome.running and not _compaction_working_state["active"])],
+            [_retry_now_label(attempt, max_attempts, out_chrome.running)],
             above=True,
         )
 
@@ -2956,9 +2968,9 @@ async def run_tui(
             }
         )
 
-    # Compaction has no turn-level spinner: a manual ``/compact`` dispatches
-    # outside the ``set_running`` wrapper, so its multi-second summarizer LLM
-    # call would leave the prompt looking frozen. Drive the "Working…" row from
+    # Compaction has no turn to name it: a manual ``/compact`` reads as running only
+    # for its keys (#347) and an extension's ``compact`` not at all, so its multi-second
+    # summarizer LLM call would show a bare "Working…" or no row. Drive the "Working…" row from
     # the harness compaction events (manual + threshold + overflow) so the user
     # sees a live "Compacting context…" indicator. The prior working state is
     # saved/restored so an in-flight turn (auto-compaction) keeps its own row.
@@ -3024,11 +3036,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2248``), so the refresh below is
+                # ``_state.messages`` (``core.py:2272``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1833``), so this never discards a figure a running
+                # ``core.py:1836``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3109,7 +3121,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:6065-6066`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:6099-6100`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3137,7 +3149,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:3008``).
+        # the model is already swapped in (``core.py:3042``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -4214,7 +4226,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4968-4969``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:5002-5003``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -5040,14 +5052,11 @@ def _show_summary_retry_error(
 def _retry_now_label(attempt: object, max_attempts: object, interruptible: bool) -> str:
     """#409 review round 2 — the widget while a retried request is in flight.
 
-    "Esc to interrupt" only when Esc does interrupt it: a turn's own retried
-    request runs in the turn task, which Esc's ``abort()`` cancels. A summary
-    request (a compaction's, a branch summary's) is cancelled by nothing
-    (#347): in a manual ``/compact`` or an extension's ``navigate_tree`` no
-    turn runs, so Esc is inert and Ctrl+C arms the exit window; inside a
-    turn's threshold or overflow compaction ``abort()`` stops any further retry
-    but not the request. Neither gets the promise - before round 2 the
-    summary's in-flight request read "Esc to interrupt" while Esc did nothing.
+    "Esc to interrupt" only when Esc does interrupt it, which is while the TUI runs
+    something: a turn's own retried request and, since #347, a summary request under
+    a turn or a ``/compact``, both of which Esc's ``abort()`` cancels. An extension's
+    ``navigate_tree`` or ``compact`` runs outside that, so Esc is inert and Ctrl+C arms
+    the exit window, and it gets no promise.
     """
 
     suffix = " Esc to interrupt" if interruptible else ""

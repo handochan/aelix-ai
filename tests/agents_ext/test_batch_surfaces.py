@@ -1476,7 +1476,7 @@ def test_clear_ends_every_open_group() -> None:
 def test_an_unchanged_panel_is_not_rewritten() -> None:
     """Hundreds of publishes per turn must not become hundreds of UI writes —
     and ``chrome.set_widget`` calls ``invalidate()`` unconditionally
-    (``chrome.py:2269-2275``), so an unchanged panel would be a full repaint per
+    (``chrome.py:2276-2282``), so an unchanged panel would be a full repaint per
     redraw."""
 
     ui = _Ui()

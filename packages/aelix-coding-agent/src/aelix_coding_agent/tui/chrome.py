@@ -2137,6 +2137,13 @@ class AelixChrome:
             raise EOFError
         return item
 
+    def drop_queued_input(self) -> None:
+        """Forget lines waiting for the input loop: a signal ends the session ahead of them."""
+
+        with contextlib.suppress(asyncio.QueueEmpty):
+            while True:
+                self._input_queue.get_nowait()
+
     def request_eof(self) -> None:
         """Push an EOF sentinel so a pending get_input raises EOFError.
 
@@ -2521,8 +2528,8 @@ class AelixChrome:
 
     #: #409 — Esc and Ctrl+C reach :attr:`on_interrupt` while this is set, running
     #: or not. The host sets it for the length of an auto-retry countdown, whose
-    #: widget says "Esc to cancel": a compaction's summary retry counts down in a
-    #: manual ``/compact`` too, which runs outside the ``set_running`` turn
+    #: widget says "Esc to cancel": a compaction's summary retry counts down in an
+    #: extension's ``compact`` too, which runs outside the ``set_running`` turn
     #: wrapper, where both keys were otherwise idle-mode keys (Esc inert, Ctrl+C
     #: the exit window). Declared here, at the end of the class, so the lines
     #: above keep their numbers (gated citations name them).
