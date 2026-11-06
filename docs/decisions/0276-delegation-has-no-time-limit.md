@@ -756,7 +756,9 @@ render byte for byte as before.*
     row tracks (the row's `proc` is set only after `start()` returns), and a child
     that exits inside that grace reports `started=False` with the work it did;
   - the final reap can wait forever when a `setsid` helper holds the pipes after
-    the root died (macOS has no descendant walk to find it);
+    the root died (macOS has no descendant walk to find it; *2026-11-06 note,
+    ADR-0291: it has one now, but a helper whose parent already died is outside
+    any walk, so this gap stands*);
   - a blocked stdin write is outside the 180 s command bound (D4 — the bound
     covers waiting for the answer, not a write that cannot drain);
   - the channel has no counterpart of D4's post-EOF exit bound.
@@ -782,6 +784,9 @@ render byte for byte as before.*
   kill does not reach, and macOS has no descendant walk to find it. Measured with
   Ctrl+C under `-p` (Esc in the TUI cancels through the same tree kill), and the
   same at `7e76f925` (ADR-0238's `setsid` asymmetry) — not a #604 regression.
+  *Closed 2026-11-06 (ADR-0291, #691): the walk asks the kernel on macOS now, and
+  the command goes with the child on every stop aelix makes. Not when aelix itself
+  is SIGKILLed: on macOS the child and its commands run on (ADR-0291 limit 3).*
 - **What a cancelled envelope cannot see** (D14): the channel's stderr ring, the
   line assembler's dropped-line count and the exit code (the kill is still in
   flight). Its error is therefore only the stream's own final error.

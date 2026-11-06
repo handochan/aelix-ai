@@ -30,14 +30,33 @@ Two defences, and BOTH are required:
   (``print_channel.PrintChannel.run``), and re-cancelling escalates EAGERLY
   rather than waiting out a grace nobody is left to enforce.
 
-WHY A ``/proc`` WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
+A reaper ALREADY in its grace is escalated through its ``escalate`` event, not
+through a flag: it read ``eager_kill`` when it started, so setting
+``row.eager_kill`` afterwards changed nothing it would read again. Until #691
+a ``stop`` that reused that reaper, or a second cancel, left it to wait out
+the grace it had started — measured, ``abort_child`` returned only when the
+grace did (4.70 s of a 5 s one through a print run), and with ``_reap``
+driven directly a ``setsid`` descendant holding the child's stdout outlived
+the second cancel by the whole grace (1.45 s of 1.5 s). A print reaper's one
+grace is the post-EOF bound's, which needs both pipes at EOF, so that
+descendant cannot be holding one there: an Esc in it finds the root alive and
+``_eager_abort`` ends what it walks at once, and the event is what makes the
+reaper run Q1 now for a member of the child's group the walk did not name
+(measured: dead 0.020 s after the Esc, and alive 7 s later without the event,
+its root dead by then). The dead-root shape is ``RpcChannel._shutdown``'s, a
+channel the bundled runtime does not build (ADR-0291 §6). ``_eager_abort`` and
+``abort_child`` set the row's event, and :func:`reap` waits on it beside the
+grace.
+
+WHY A DESCENDANT WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
 too"*. That is factually wrong: ``tools/bash.py:362`` and
 ``tools/_subprocess.py:107`` both spawn through
 ``containment_spawn_kwargs(new_session=True)`` — which is the
 ``start_new_session=True`` those two lines used to spell literally, and still is
 on POSIX — so a grandchild is the leader of its OWN group and ``killpg`` on the
-child's group cannot reach it. The descendant walk can.
+child's group cannot reach it. The descendant walk can. It reads ``/proc`` on
+Linux and asks the kernel through libproc on macOS (#691, ADR-0291).
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
 ``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:576-591``
@@ -50,12 +69,41 @@ changed. The escalation leg exists precisely for the child that does NOT
 cooperate, which is also the child whose grandchildren nobody else will clean
 up.
 
-ON WINDOWS THERE IS NEITHER (#220). ``descendant_pids`` returns ``[]`` with no
-``/proc`` to read and ``os.kill`` delivers no catchable signal, so both legs are
+AND EVERY STOP A HUMAN DRIVES IS THE ESCALATION LEG (#691). ``stop``, ``stop_all``
+and the extension teardown reach :func:`reap` with ``eager_kill=True``, a SIGTERM
+and on the same synchronous run a SIGKILL; Esc, Esc Esc and a signal to a
+headless parent reach ``PrintChannel._eager_abort``, a SIGKILL alone. So the
+child's ``dispose()`` gets no time to end the command its ``bash`` tool is
+running — it can START, on a parent descheduled between the SIGTERM and the
+SIGKILL (measured with a 20 ms pause), and nothing here depends on whether it
+does — and the walk is the only thing that names that command. Until #691 the
+walk read ``/proc`` alone, so on macOS it was empty and that command was left
+running with PPID 1 on every one of those paths (measured, the TUI and ``-p``).
+The walk now asks the kernel there too — ``proc_listpids(PROC_PPID_ONLY, …)``,
+one call per process in the tree — and keeps every property below: it is taken
+before any signal, from a child that has not been reaped, and deepest first. Why
+the walk and not a SIGTERM first that lets the child clean up: ADR-0291.
+
+AND THE GROUPS THE WALK'S PROCESSES LEAD (#691). The ``bash`` tool's shell leads
+its own group, and what it backgrounded stays there after its parent exits:
+``(sleep X &); sleep Y`` leaves X with PPID 1, which no walk can name, in the
+shell's group. So every walked process that leads its own group
+(:func:`group_leaders`, read with the walk) gets one ``killpg(SIGKILL)`` after
+the pids (:func:`kill_tree`'s ``groups``). A group holds only processes of its
+leader's session, and every session below the walk was started inside the
+delegated child's tree, so the group kill reaches nothing that tree did not
+start; the pid it is addressed to is ADR-0238's recycling residual, as every
+pid here is. It also takes what a shell started after the walk, which is most of
+ADR-0291's limit 1 (measured with a fork loop there, §5).
+
+ON WINDOWS THERE IS NEITHER (#220). ``descendant_pids`` returns ``[]`` there, with
+no ``/proc`` to read and no libproc to ask, and ``os.kill`` delivers no catchable
+signal, so both legs are
 handed to the ``ProcessTree`` the spawn site attached — a Job Object, which holds
 every descendant including one that made itself a session leader. The win32 arms
-of :func:`reap` and :func:`kill_tree` therefore do not consult the walk at all
-(``descendants`` is empty there anyway); they call ``soft_kill()``
+of :func:`reap` and :func:`kill_tree` therefore do not consult the walk at all —
+:func:`reap` takes none on its tree arm, and :func:`kill_tree`'s ignores the one
+it is handed (empty there anyway); they call ``soft_kill()``
 (``CTRL_BREAK_EVENT``) and ``hard_kill()`` (``taskkill /T /F`` then
 ``TerminateJobObject``) and return.
 
@@ -63,14 +111,18 @@ AND ONE GROUP KILL IS ADDED ON POSIX — a supplement, never a substitution (#22
 Q1). :func:`reap`'s escalation calls ``tree.hard_kill()`` (``killpg(pgid,
 SIGKILL)``) *after* the descendant loop, so the group only ever addresses what the
 walk could not name; the walk stays the thing that reaches a ``setsid``
-grandchild, which ``killpg`` cannot. It exists because the walk is EMPTY on
+grandchild, which ``killpg`` cannot. It was added because the walk was EMPTY on
 macOS: measured on Darwin, a non-``setsid`` descendant of a SIGTERM-ignoring
-child survives today's root-only escalation and dies to the group kill
-(the in-tree guard is
-``tests/agents_ext/test_print_channel_spawn.py::test_a_non_setsid_grandchild_dies_on_the_escalation``,
-which times out with the grandchild alive when this line is deleted; the live
-``main``-side half is ``.omc/specs/220-progress-2026-09-05.md`` §2). It lives in
-:func:`reap` ONLY — :func:`kill_tree` says why.
+child survived the root-only escalation and died to the group kill
+(``.omc/specs/220-progress-2026-09-05.md`` §2). Since #691 the walk names that
+descendant on macOS too, and Q1 is what it always said it was: the leg for a
+group member the walk did NOT name — one the child spawned after the snapshot
+(on the grace leg the snapshot precedes the SIGTERM and a SIGTERM-ignoring child
+keeps working for the whole grace), or a walk that failed. The in-tree guard
+blinds the walk to model exactly that
+(``tests/agents_ext/test_print_channel_spawn.py::test_a_non_setsid_grandchild_dies_on_the_escalation``,
+which times out with the grandchild alive when this line is deleted). It lives
+in :func:`reap` ONLY — :func:`kill_tree` says why.
 
 PID-RECYCLING HAZARD, and it is why the snapshot is taken where it is. The
 event loop's child watcher may already have ``waitpid``'d the child by the time
@@ -78,7 +130,8 @@ the escalation runs, so re-resolving anything from ``proc.pid`` at that moment
 can name a RECYCLED, unrelated process. ``contextlib.suppress(ProcessLookupError)``
 does not protect against that — the pid exists, it is just somebody else's.
 Hence the descendant walk is snapshotted BEFORE the SIGTERM, while the child is
-provably alive, and the child itself is signalled through :func:`_signal_child`
+provably alive — and the groups its processes lead with it, never re-read once a
+signal has gone out — and the child itself is signalled through :func:`_signal_child`
 — which re-reads ``proc.returncode`` immediately before the ``os.kill``, with no
 ``await`` in between — rather than through a re-resolved pgid.
 
@@ -96,6 +149,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
+import functools
 import os
 import signal
 import sys
@@ -105,7 +160,7 @@ from typing import TYPE_CHECKING, Any
 from aelix_ai.utils._process_tree import wait_released
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     # Typed here only: at RUNTIME this module touches exactly three members of a
     # tree — ``closed``, ``soft_kill()`` and ``hard_kill()`` — so a test can hand
@@ -127,6 +182,24 @@ _PR_SET_PDEATHSIG = 1
 
 _PROC = Path("/proc")
 
+_LIBPROC_PATH = "/usr/lib/libproc.dylib"
+"""Where macOS exports ``proc_listpids``. There is no such file on disk since
+macOS 11; ``dlopen`` resolves the path from the dyld shared cache, which is how
+``ctypes.util.find_library("proc")`` answers it too."""
+
+_PROC_PPID_ONLY = 6
+"""``proc_listpids``'s filter from ``<sys/proc_info.h>``: the processes whose
+parent is the ``typeinfo`` argument."""
+
+_FIRST_CAPACITY = 64
+"""Pids :func:`_darwin_children` asks for first. The kernel fills the buffer and
+drops the rest without saying so, so a full answer is asked again at twice the
+size."""
+
+_MAX_CAPACITY = 1 << 17
+"""Where that doubling stops: above any ``kern.maxproc``, so an answer this large
+is the whole answer."""
+
 
 def descendant_pids(pid: int) -> list[int]:
     """Every live descendant of ``pid``, DEEPEST FIRST.
@@ -135,24 +208,116 @@ def descendant_pids(pid: int) -> list[int]:
     parent first can leave the grandchild reparented to init and outside any
     later walk.
 
-    Reads ``/proc/<pid>/status`` (the ``PPid:`` line) rather than
-    ``/proc/<pid>/stat``: ``stat``'s second field is the executable name in
-    parentheses and may itself contain spaces AND parentheses, so field-index
-    parsing of ``stat`` is wrong for any process that chooses a hostile name.
+    TWO SOURCES, ONE WALK. On Linux it reads ``/proc/<pid>/status`` (the ``PPid:``
+    line) rather than ``/proc/<pid>/stat``: ``stat``'s second field is the
+    executable name in parentheses and may itself contain spaces AND parentheses,
+    so field-index parsing of ``stat`` is wrong for any process that chooses a
+    hostile name. On macOS, which has no ``/proc``, it asks the kernel for each
+    process's children with ``proc_listpids(PROC_PPID_ONLY, …)`` (#691) — no
+    process names are read at all. Before #691 the walk was empty there, and a
+    delegated child's ``bash`` command outlived every stop that SIGKILLs the child
+    at once (the module docstring). ``/proc`` is tested first, so a Linux host
+    walks ``/proc`` whatever ``sys.platform`` a test injects.
 
-    Returns ``[]`` on a platform without ``/proc`` (macOS, Windows) and on any
-    read error. A best-effort answer is correct here: the child itself is always
-    signalled through ``proc.kill()``, so an empty walk degrades to "kill the
-    child only", never to "kill nothing".
+    Neither source is one snapshot. The ``/proc`` walk reads one file per process
+    and the macOS walk makes one call per process in the tree, so a process forked
+    between two reads can be missed — the race ADR-0197 accepts for the walk.
+
+    Returns ``[]`` on Windows, which has neither source, and on any read error. A
+    best-effort answer is correct here: the child itself is always signalled
+    through :func:`_signal_child`, so an empty walk degrades to "kill the child
+    only", never to "kill nothing".
     """
 
-    if not _PROC.is_dir():
-        return []
+    if _PROC.is_dir():
+        children = _proc_children()
+        return _deepest_first(pid, lambda parent: children.get(parent, ()))
+    if _is_darwin():
+        libproc = _libproc()
+        if libproc is None:
+            return []
+        return _deepest_first(pid, lambda parent: _darwin_children(libproc, parent))
+    return []
+
+
+def _deepest_first(pid: int, children_of: Callable[[int], Iterable[int]]) -> list[int]:
+    """Breadth-first from ``pid``, then reverse.
+
+    BFS visits by generation, so the reversed order is deepest-generation first.
+    ``seen`` guards against the cycle a pid-reuse race can synthesise in the
+    snapshot.
+    """
+
+    ordered: list[int] = []
+    seen: set[int] = {pid}
+    frontier = list(children_of(pid))
+    while frontier:
+        nxt: list[int] = []
+        for candidate in frontier:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            ordered.append(candidate)
+            nxt.extend(children_of(candidate))
+        frontier = nxt
+    ordered.reverse()
+    return ordered
+
+
+def _is_darwin() -> bool:
+    """``sys.platform``, read at CALL time so a test can inject it (:func:`_is_win32`)."""
+
+    return sys.platform == "darwin"
+
+
+@functools.cache
+def _libproc() -> ctypes.CDLL | None:
+    """libproc with ``proc_listpids`` typed, or ``None`` when it cannot be loaded.
+
+    Loaded on first use and only on macOS, so no other platform ever touches it.
+    ``None`` makes the walk empty, which is the answer it gave before #691.
+    """
+
+    try:
+        lib = ctypes.CDLL(_LIBPROC_PATH, use_errno=True)
+        listpids = lib.proc_listpids
+    except (OSError, AttributeError):
+        return None
+    listpids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
+    listpids.restype = ctypes.c_int
+    return lib
+
+
+def _darwin_children(libproc: Any, pid: int) -> list[int]:
+    """``pid``'s children, from ``proc_listpids(PROC_PPID_ONLY, pid, …)``.
+
+    The call answers in BYTES and ``0`` on failure, an unknown pid included. It
+    fills at most the buffer and says nothing about the rest, so an answer that
+    fills it is asked again at twice the size. A zombie child is listed too;
+    signalling one is harmless.
+    """
+
+    width = ctypes.sizeof(ctypes.c_int)
+    capacity = _FIRST_CAPACITY
+    while True:
+        buffer = (ctypes.c_int * capacity)()
+        filled = libproc.proc_listpids(_PROC_PPID_ONLY, pid, buffer, capacity * width)
+        if filled <= 0:
+            return []
+        count = min(filled // width, capacity)
+        if count < capacity or capacity >= _MAX_CAPACITY:
+            return [child for child in buffer[:count] if child > 0]
+        capacity *= 2
+
+
+def _proc_children() -> dict[int, list[int]]:
+    """The ``/proc`` ``PPid`` index: parent pid → its children's pids."""
+
     parents: dict[int, int] = {}
     try:
         entries = list(_PROC.iterdir())
     except OSError:
-        return []
+        return {}
     for entry in entries:
         name = entry.name
         if not name.isdigit():
@@ -171,24 +336,46 @@ def descendant_pids(pid: int) -> list[int]:
     children: dict[int, list[int]] = {}
     for child, parent in parents.items():
         children.setdefault(parent, []).append(child)
+    return children
 
-    # Breadth-first from ``pid``, then reverse: BFS visits by generation, so the
-    # reversed order is deepest-generation first. ``seen`` guards against the
-    # cycle a pid-reuse race can synthesise in the snapshot.
-    ordered: list[int] = []
-    seen: set[int] = {pid}
-    frontier = list(children.get(pid, ()))
-    while frontier:
-        nxt: list[int] = []
-        for candidate in frontier:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            ordered.append(candidate)
-            nxt.extend(children.get(candidate, ()))
-        frontier = nxt
-    ordered.reverse()
-    return ordered
+
+def group_leaders(pids: Iterable[int]) -> list[int]:
+    """Those of ``pids`` that lead their own process group, read NOW (#691).
+
+    The other half of the walk's snapshot, taken right after it: before any
+    signal, while every pid in it was just seen alive. :func:`kill_tree` sends
+    each of these groups one ``SIGKILL`` after the pids, for what a group holds
+    that the walk cannot name — ``(cmd &)`` leaves ``cmd`` with PPID 1 in the
+    group of the ``bash`` tool's shell, and a command that shell starts after
+    the walk is there too. Only while that shell runs: a shell that has exited
+    is not walked, so what it left in its group — ``cmd &``, ``(cmd &)`` or
+    ``nohup cmd &`` from a ``bash`` call that returned — is named here by
+    nothing (ADR-0291 limit 2).
+
+    WHY IT CANNOT REACH A STRANGER. A process can join only a group of its own
+    session, and no process can join a session it was not born in. The delegated
+    child leads a session of its own (``start_new_session=True``), so every
+    session below the walk was started inside the child's tree, and so is every
+    member of every group named here. What is left is the number itself: a
+    leader that exits and is reaped after this read, in a group whose members
+    have all gone too, frees it, and a new process that took it AND made itself
+    a group leader before the kill would be signalled with its group. That is
+    ADR-0238's recycling residual with a group in place of a pid, and the reason
+    this is never re-read once a signal has gone out (ADR-0291).
+
+    ``getpgid`` failing is "not a leader": a pid that exited since the walk
+    (``ESRCH``; Darwin answers that for a zombie too) has no group to kill
+    through it. ``[]`` on Windows, where the job is the tree.
+    """
+
+    if sys.platform == "win32":
+        return []
+    leaders: list[int] = []
+    for pid in pids:
+        with contextlib.suppress(OSError):
+            if os.getpgid(pid) == pid:
+                leaders.append(pid)
+    return leaders
 
 
 def _signal_child(proc: Any, sig: int) -> None:
@@ -290,7 +477,7 @@ def _kill_signal() -> int:
     *cooperative* SIGTERM was that same uncatchable ``TerminateProcess``: the
     child never ran its ``_signal_cleanup_and_exit``, the grace bought nothing,
     and since that cleanup is what reaps its ``bash`` grandchildren —
-    ``descendant_pids`` returns ``[]`` with no ``/proc`` to walk — the
+    ``descendant_pids`` returns ``[]`` on Windows — the
     grandchildren were orphaned by the FIRST signal, before this function was
     ever consulted. Closing it needed process-group or job-object isolation at
     the SPAWN site, which Windows silently declines for ``start_new_session``
@@ -320,9 +507,13 @@ def _kill_signal() -> int:
 
 
 def kill_tree(
-    proc: Any, descendants: Sequence[int] = (), *, tree: ProcessTree | None = None
+    proc: Any,
+    descendants: Sequence[int] = (),
+    *,
+    tree: ProcessTree | None = None,
+    groups: Sequence[int] = (),
 ) -> None:
-    """SIGKILL ``descendants`` (deepest first) and then the child itself.
+    """SIGKILL ``descendants`` (deepest first), the child itself, then ``groups``.
 
     Synchronous and total: every signal is best-effort and no failure
     propagates. ``ProcessLookupError`` is the normal case (the target already
@@ -339,8 +530,8 @@ def kill_tree(
 
     ``tree`` (#220) replaces the whole body on win32, and ONLY there. The job IS
     the descendant set, so ``descendants`` is ignored on that arm — both product
-    callers' walks are empty on Windows anyway, ``descendant_pids`` having no
-    ``/proc`` to read. The arm is deliberately not followed by
+    callers' walks are empty on Windows anyway, ``descendant_pids`` having
+    nothing to read there. The arm is deliberately not followed by
     :func:`_signal_child`: on Windows that is ``TerminateProcess(handle, sig)``,
     which would race ``TerminateJobObject(job, 1)`` for the exit status the
     escalation tests assert.
@@ -363,6 +554,16 @@ def kill_tree(
     ``PrintChannel._eager_abort`` does exactly that (#220 review round 2,
     posix2/P2). So the group kill is dispatched by CALLERS that hold a bound,
     never from here.
+
+    ``groups`` (#691) is not that kill, and it is the callers' too. It is
+    :func:`group_leaders` of the same snapshot as ``descendants`` — the groups
+    the WALKED processes lead, never the child's own — and each gets one
+    ``killpg(SIGKILL)`` after every pid, for the members the walk could not
+    name. The caller reads it with the walk, because on the grace leg this runs
+    seconds after the snapshot and a pgid read now may be a stranger's.
+    ``_drain_after_exit`` passes none: its pids come from a pipe scan of a child
+    that is already dead, on the success path, where a group kill is the
+    revision-1 ``close()`` again.
     """
 
     if _is_win32() and _usable(tree):
@@ -373,6 +574,12 @@ def kill_tree(
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, sig)
     _signal_child(proc, sig)
+    if sys.platform != "win32":
+        # After every pid, so a group addresses only what the walk could not
+        # name. ``ESRCH`` is the common answer: the walk named every member.
+        for pgid in groups:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pgid, signal.SIGKILL)
 
 
 def kill_group_if_live(proc: Any, tree: ProcessTree | None) -> bool:
@@ -380,11 +587,12 @@ def kill_group_if_live(proc: Any, tree: ProcessTree | None) -> bool:
 
     :func:`reap` runs Q1 inline because it knows it is escalating. This is the
     same leg for the one other place that has to supply it — the second-Ctrl+C
-    / last-line-of-defence path in ``PrintChannel._eager_abort``, which on
-    macOS is otherwise a root-only ``SIGKILL`` with an empty descendant walk
-    beside it, exactly the hole Q1 exists to close (#220 review round 2,
-    posix2/P2; measured: a delegation cancelled with no reaper task left its
-    non-``setsid`` grandchild alive on Darwin).
+    / last-line-of-defence path in ``PrintChannel._eager_abort``, which without
+    it reaches only what the walk named, the groups those processes lead, and
+    the root: a member of the CHILD's own group that the walk missed survives
+    it, exactly the hole Q1 exists to close (#220 review round 2, posix2/P2;
+    measured before #691, when the macOS walk was empty: a delegation cancelled
+    with no reaper task left its non-``setsid`` grandchild alive on Darwin).
 
     THREE conditions, and each one is load-bearing:
 
@@ -427,7 +635,9 @@ async def reap(
     grace: float = DEFAULT_GRACE_SECONDS,
     eager_kill: bool = False,
     descendants: Sequence[int] | None = None,
+    groups: Sequence[int] | None = None,
     tree: ProcessTree | None = None,
+    escalate: asyncio.Event | None = None,
 ) -> int:
     """SIGTERM → grace → SIGKILL. Safe to be cancelled REPEATEDLY.
 
@@ -435,11 +645,22 @@ async def reap(
     what a second Ctrl+C means — the human has already waited once and pressing
     again is a request to stop waiting, not to restart the clock.
 
+    ``escalate`` is the same request for a reaper that is ALREADY in its grace
+    (#691): set — by ``_eager_abort`` on a second cancel, or by ``abort_child``
+    reusing this task for a ``stop`` — it ends the grace at once and the
+    escalation runs, with the snapshot taken before the SIGTERM. Set before this
+    starts, it is ``eager_kill``. A flag could not do this: the running
+    coroutine read ``eager_kill`` once, on entry.
+
     ``descendants`` is the pre-``terminate()`` snapshot from
-    :func:`descendant_pids`. Passing it in lets the caller take the snapshot
-    while the child is provably alive (see the module docstring on pid
-    recycling); ``None`` means "snapshot now", which is correct for every caller
-    that reaches this function before signalling anything.
+    :func:`descendant_pids`, and ``groups`` the :func:`group_leaders` read with
+    it. Passing them in lets the caller take the snapshot while the child is
+    provably alive (see the module docstring on pid recycling); ``descendants=None``
+    means "snapshot both now", which is correct for every caller that reaches
+    this function before signalling anything. A list handed in with no
+    ``groups`` kills no group: the groups belong to the read that produced the
+    pids, and are not looked up later from them. On the win32 tree arm there is
+    no walk to take — the job is the descendant set — so none is (#691).
 
     THE FINAL ``await`` IS NOT OPTIONAL. Without it the child becomes a zombie:
     SIGKILL removes the process but not its exit status, and only a ``wait``
@@ -459,9 +680,11 @@ async def reap(
     * **win32, no usable tree** — today's sequence, byte for byte. That fallback
       is why :func:`_kill_signal` still matters.
     * **POSIX** — legs unchanged (``SIGTERM`` to the root, then the descendant
-      walk), plus Q1: one ``tree.hard_kill()`` — ``killpg(pgid, SIGKILL)`` —
-      AFTER the walk, because the walk is ``[]`` on macOS and a non-``setsid``
-      descendant survives without it (measured; module docstring).
+      walk and the groups its processes lead), plus Q1: one ``tree.hard_kill()``
+      — ``killpg(pgid, SIGKILL)`` on the CHILD's group — AFTER the walk, for a
+      group member the walk did not name: one spawned after the snapshot, or a
+      walk that failed (module docstring). Until #691 the walk was ``[]`` on
+      macOS and every non-``setsid`` descendant was one.
 
     ``eager_kill=True`` on the win32 tree arm does NOT send the console event
     (Q4): ``abort_child`` always passes it, so this is the common ``stop`` /
@@ -476,9 +699,18 @@ async def reap(
     if returncode is not None:
         return int(returncode)
 
-    snapshot = (
-        list(descendants) if descendants is not None else descendant_pids(proc.pid)
-    )
+    if escalate is not None and escalate.is_set():
+        eager_kill = True
+    if descendants is not None:
+        snapshot = list(descendants)
+        leaders = list(groups) if groups is not None else []
+    elif _is_win32() and _usable(tree):
+        # The job is the descendant set; :func:`kill_tree`'s tree arm would
+        # ignore a walk, so none is taken (#691).
+        snapshot, leaders = [], []
+    else:
+        snapshot = descendant_pids(proc.pid)
+        leaders = group_leaders(snapshot)
     # ONE waiter, reused by both legs. Two concurrent ``proc.wait()`` calls are
     # legal, but a fresh coroutine per leg makes the "was it already awaited"
     # reasoning harder than it needs to be.
@@ -521,10 +753,26 @@ async def reap(
         # :func:`~aelix_ai.utils._process_tree.wait_released` is what ``waiter``
         # meant up to 3.13.14. Its own ``proc.wait()`` is a second waiter, which
         # is legal; ``waiter`` stays the one the final reap awaits.
+        #
+        # Raced against ``escalate`` too (#691): a second cancel or a ``stop``
+        # ends the grace here instead of after it. ``asyncio.wait`` cancels
+        # neither on its way out, so the ``finally`` does.
         released = asyncio.ensure_future(wait_released(proc))
+        escalated = (
+            asyncio.ensure_future(escalate.wait()) if escalate is not None else None
+        )
         try:
-            return int(await asyncio.wait_for(asyncio.shield(released), grace))
-        except BaseException:  # noqa: BLE001 — TimeoutError AND CancelledError
+            await asyncio.wait(
+                {released} if escalated is None else {released, escalated},
+                timeout=grace,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if released.done():
+                # The tree let go first (or with the request): nothing is left
+                # to escalate against. A ``released`` that raised re-raises
+                # here and escalates below, as the timeout does.
+                return int(released.result())
+        except BaseException:  # noqa: BLE001 — CancelledError, and a failed release
             # Deliberately NOT ``Exception``. A ``CancelledError`` here is the
             # second Ctrl+C (finding B1); swallowing it and escalating is the
             # ONLY behaviour that does not leave a session leader alive. The
@@ -533,8 +781,10 @@ async def reap(
             pass
         finally:
             released.cancel()
+            if escalated is not None:
+                escalated.cancel()
 
-    kill_tree(proc, snapshot, tree=tree)
+    kill_tree(proc, snapshot, tree=tree, groups=leaders)
     if not _is_win32() and _usable(tree):
         # Q1. AFTER the walk, so the group kill addresses only what the walk
         # could not name.
@@ -631,6 +881,7 @@ def pdeathsig_preexec() -> Callable[[], None] | None:
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
     "descendant_pids",
+    "group_leaders",
     "kill_group_if_live",
     "kill_tree",
     "pdeathsig",

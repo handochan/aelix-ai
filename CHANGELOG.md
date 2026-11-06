@@ -1283,6 +1283,21 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A delegated agent's `bash` command no longer outlives a stop on macOS (#691, ADR-0291).**
+  Esc, Esc Esc, `/agents run` then Esc, quitting, and a SIGTERM to aelix in the TUI, `-p`,
+  `--mode json` and `--mode rpc` stopped the delegated agent, and the parent said `aborted`, but
+  the command the agent's `bash` tool was running went on with PPID 1, after aelix itself had
+  exited. A long build or a command writing files kept going with nothing to say so. Now the
+  command, what it started under it, and what it put in the background with `(cmd &)` while it
+  was still running end with the agent. The same holds for a command an extension's `exec` is
+  running in the agent. Linux kept only the `(cmd &)` one alive, and Windows is unchanged.
+  - A delegated agent that closed its output but had not exited 30 s later gets a SIGTERM and 5 s
+    to end. A stop within those 5 s now ends it at once, instead of after the rest of them.
+  - What a `bash` command that had already finished left in the background, with `cmd &`,
+    `(cmd &)` or `nohup cmd &`, is still not reached, on Linux either: the `bash` tool leaves it
+    running when the command returns, and once that command's shell has exited nothing ties it
+    to the agent. Nor is a process that started a session of its own, such as a daemon's.
+  - If aelix itself is killed with SIGKILL on macOS, the agent and its commands still run on.
 - **A tool or hook that catches a failed `TaskGroup` no longer ends the turn with a traceback
   (#698, ADR-0290).** On Python 3.11 and 3.12 a sequential tool, a `tool_call` hook or a listener
   that used `asyncio.TaskGroup`, and caught a child's failure, ended the turn with nobody having

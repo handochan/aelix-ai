@@ -36,6 +36,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0291 — A stopped delegation takes what its bash started](0291-a-stopped-delegation-takes-what-its-bash-started.md)
+  (Accepted 2026-11-06; #691). Every stop of a delegated child — Esc, Esc Esc, `SubagentRuntime.stop`, `stop_all`,
+  quitting, a SIGTERM to the parent in the TUI, `-p`, json and rpc — SIGKILLs it at once, so its `dispose()`
+  gets no time to end its `bash` command, which leads a session of its own; only the reaper's descendant walk
+  names it, and that walk read `/proc` alone, so on macOS the command was left running with PPID 1 (measured on
+  all of them). `descendant_pids` now asks the kernel on macOS (`proc_listpids(PROC_PPID_ONLY, …)`, one call per
+  process, deepest first, best effort); Linux and Windows are unchanged. Each walked process that leads its own
+  group also gets a `killpg`, its pgid read with the walk, which takes what `(cmd &)` left in the group of a
+  shell still running, on both POSIX hosts. A reaper already in its grace escalates at once on a stop or a cancel
+  (`RunningChild.escalate`); the shape where a cancel cannot reach the descendants itself is the rpc
+  channel's, not in the product. A SIGTERM
+  first (pi's shape) was measured and not taken: it rewrites the stopped child's session (ADR-0277 D14), misses
+  a child that does not cooperate, and slows every stop. `_eager_abort` and `_reap` no longer walk a reaped
+  child, and Q1's guards blind the walk. Limits: a process forked inside the walk outside a walked group, what a
+  shell that already exited left in the background (`cmd &`, `(cmd &)`, `nohup cmd &` from a returned call) and
+  a new session, a SIGKILLed parent on macOS. Narrows ADR-0276's macOS limit, ADR-0238 (and #228's measured
+  shape) and ADR-0197 I2 (dated notes there).
 - [0290 — A cancelled turn keeps what ran](0290-a-cancelled-turn-keeps-what-ran.md)
   (Accepted 2026-11-04; #672, #673). Whatever cancels a turn, a call that finished keeps its real
   result, and a call the cancel cut gets an error result saying it was stopped and may have partly run,

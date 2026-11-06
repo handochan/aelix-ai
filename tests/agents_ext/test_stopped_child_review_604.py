@@ -444,19 +444,25 @@ async def test_a_member_that_ended_with_an_exception_is_not_rebuilt_as_cancelled
 
 @pytest.mark.skipif(
     sys.platform != "darwin",
-    reason="macOS has no /proc descendant walk, so the setsid helper keeps the pipes open",
+    reason="measured on macOS: the setsid helper the walk does not name keeps the pipes open",
 )
 async def test_rpc_batch_cancel_reports_every_child_after_slow_pipe_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Codex review probe with two REAL RPC children: one forks a setsid helper
     that holds its pipes, so its cleanup waits out the post-exit drain while the
-    other's ends at once — and the report used to omit the slow one."""
+    other's ends at once — and the report used to omit the slow one.
+
+    The helper has to OUTLIVE the cancel for that, and it did on macOS only
+    because the descendant walk was empty there. Since #691 the walk names it,
+    kills it with its child and the slow cleanup never happens, so the walk is
+    blinded: the helper stands for one it does not name (a daemon that left)."""
 
     import aelix_agents.rpc_channel as channel_module
     from aelix_agents.rpc_channel import RpcChannel
 
     monkeypatch.setattr(channel_module, "POST_EXIT_DRAIN_SECONDS", 0.8)
+    monkeypatch.setattr(channel_module, "descendant_pids", lambda _pid: [])
     marker = tmp_path / "helper.pid"
     source = "\n".join(
         [

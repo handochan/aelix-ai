@@ -1060,6 +1060,10 @@ snapshot taken **before** `terminate()` — a pid-recycling hazard, since the
 the walk is redundant (the child's own `_signal_cleanup_and_exit` →
 `dispose()` → `abort()` → `bash.py:210-215` `_kill_group` reaps them); the
 escalation leg exists precisely for the child that does not cooperate.
+*2026-11-06 note (ADR-0291, #691): the walk was `/proc` only, so it was empty on
+macOS, and every stop a human drives is the escalation leg (it SIGKILLs at once),
+so there a delegated child's `bash` command outlived every stop. The walk asks the
+kernel on macOS now (`proc_listpids`); Linux still reads `/proc`.*
 
 **Do not port pi's escalation literally.** Node's `subprocess.killed` means "a
 signal was sent", so pi's `if (!proc.killed) proc.kill("SIGKILL")` is false 5 s

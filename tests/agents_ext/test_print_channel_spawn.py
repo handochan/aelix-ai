@@ -93,6 +93,14 @@ from tests.print_mode_child import CHILD_SOURCE
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
+# #691: the descendant walk has a source on BOTH POSIX hosts — ``/proc`` on Linux,
+# libproc on macOS — so a case about what the walk names runs on both. Until #691
+# those cases were ``linux_only`` because the macOS walk was empty. Windows has
+# neither source, and the job is its tree (``reaper``'s module docstring).
+posix_walk = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the descendant walk has no source on win32; the job is the tree there",
+)
 # #215's ``escalation_reachable`` marker LIVED HERE AND IS RETIRED (#220).
 #
 # Its premise was true and is no longer: leg 1 on win32 used to be
@@ -452,6 +460,46 @@ def _nonsetsid_grandchild_stub(marker: Path) -> str:
         announce({str(marker)!r}, kid.pid)
         start()
         say("grandchild spawned")
+        time.sleep(120)
+        """
+    )
+
+
+def _left_in_the_shells_group_stub(marker: Path) -> str:
+    """A ``bash``-shaped grandchild that leaves ``(sleep X &)`` behind (#691).
+
+    The shell leads a session of its own, as the ``bash`` tool's does. ``(cmd &)``
+    forks a subshell that backgrounds ``cmd`` and exits at once, so ``cmd`` has
+    PPID 1 — no parent chain back to the child, so no walk can name it — and
+    stays in the shell's process group. The shell hands ``cmd``'s pid over by a
+    rename, and the stub announces it.
+
+    The shell's stdio is ``/dev/null``, as the ``bash`` tool's is not the child's:
+    a ``cmd`` holding the delegation's pipes would be evicted on Linux by
+    ``_drain_after_exit``'s pipe scan, and the case would measure that. SIGTERM
+    is ignored, so the grace leg waits out its grace.
+    """
+
+    handoff = str(marker) + ".sh"
+    script = '(sleep 120 & echo $! > "$1.tmp" && mv "$1.tmp" "$1"); sleep 120'
+    return _stub(
+        f"""
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        subprocess.Popen(
+            ["/bin/sh", "-c", {script!r}, "sh", {handoff!r}],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        for _ in range(3000):
+            if os.path.exists({handoff!r}):
+                break
+            time.sleep(0.01)
+        with open({handoff!r}, encoding="utf-8") as handle:
+            announce({str(marker)!r}, int(handle.read()))
+        start()
+        say("backgrounded in its group")
         time.sleep(120)
         """
     )
@@ -1877,7 +1925,7 @@ async def test_double_cancellation_still_kills(
     assert row.reaper_task.done()
 
 
-@linux_only
+@posix_walk
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
@@ -1888,6 +1936,9 @@ async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     ``_signal_cleanup_and_exit`` reaps them; this test covers the child that does
     NOT cooperate, which is also the child whose grandchildren nobody else will
     clean up.
+
+    ``linux_only`` until #691: the walk is the only leg that names this
+    grandchild, and it had no source on macOS, where the grandchild survived.
     """
 
     marker = tmp_path / "grandchild.pid"
@@ -1906,6 +1957,164 @@ async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     assert result.status == "error"
     grandchild = int(marker.read_text())
     assert await _await_death(grandchild, 5.0) < 5.0
+
+
+_LONG_GRACE = 30.0
+"""A grace the C1 cases below must NOT wait out: each bounds its verdict at a
+third of it, so a reaper that waits the grace fails on the bound."""
+
+
+def _reap_door(channel: str) -> Callable[[Any, RunningChild], Any]:
+    """``_reap`` of a print or an rpc channel with :data:`_LONG_GRACE`."""
+
+    import aelix_agents.rpc_channel as rc
+
+    if channel == "print":
+        return PrintChannel(grace=_LONG_GRACE)._reap
+    return rc.RpcChannel(grace=_LONG_GRACE)._reap
+
+
+async def _end_a_reap(proc: Any, row: RunningChild, *pids: int | None) -> None:
+    """Teardown for a case that drove ``_reap`` itself: nothing it started lives on.
+
+    The pids first, so a reaper still in its grace — a failure of the case — is
+    released by the pipes closing rather than left to run out its grace.
+    """
+
+    for pid in (*pids, proc.pid):
+        if pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(pid, _SIGKILL)
+    if row.reaper_task is not None:
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(row.reaper_task), 10)
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(proc.wait(), 10)
+
+
+@posix_walk
+@pytest.mark.parametrize("channel", ["print", "rpc"])
+async def test_a_second_cancel_escalates_a_reaper_already_in_its_grace(channel: str) -> None:
+    """Finding B1 for a reaper that is ALREADY waiting out its grace (#691).
+
+    The child dies to the reaper's SIGTERM and a ``setsid`` descendant it started
+    keeps its stdout, so the grace — it ends when the tree lets go of the pipes,
+    not at the root's exit — runs on, and the second cancel lands inside it.
+    ``_eager_abort`` cannot reach the descendant itself: the root is reaped, so
+    it walks nothing. Only the reaper's own snapshot, taken before its SIGTERM,
+    names it, and that reaper read ``eager_kill`` once, on entry: it waited out
+    the rest of its grace (measured, 1.45 s of a 1.5 s one). ``row.escalate`` ends
+    it at once.
+
+    ``_reap`` is driven directly, not through a run: a run's
+    ``_drain_after_exit`` would evict the pipe holder on Linux after
+    ``POST_EXIT_DRAIN_SECONDS`` and this would measure that instead. Both
+    channels: ``RpcChannel._reap`` and its ``_eager_abort`` have the same shape.
+    Only the rpc channel's run reaches it (``_shutdown``): a print run's one
+    grace is the post-EOF bound's, which needs both pipes at EOF, so no
+    descendant can be holding stdout there (ADR-0291 §6).
+    """
+
+    source = (
+        "import subprocess, sys, time; "
+        "k = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'],"
+        " start_new_session=True); "
+        "print(k.pid, flush=True); time.sleep(120)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        source,
+        stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    row = RunningChild(id="sub-second-cancel", profile="scout")
+    row.proc = proc
+    descendant: int | None = None
+    try:
+        assert proc.stdout is not None
+        descendant = int(await asyncio.wait_for(proc.stdout.readline(), 30))
+        awaiter = asyncio.ensure_future(_reap_door(channel)(proc, row))
+        await wait_until(
+            lambda: proc.returncode is not None, what="the child to die to the reaper's SIGTERM"
+        )
+        assert _alive(descendant), "the descendant must outlive the SIGTERM to hold the grace"
+        assert row.reaper_task is not None and not row.reaper_task.done()
+
+        awaiter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await awaiter
+        assert await _await_death(descendant, _LONG_GRACE / 3) < _LONG_GRACE / 3
+        await asyncio.wait_for(asyncio.shield(row.reaper_task), _LONG_GRACE / 3)
+    finally:
+        await _end_a_reap(proc, row, descendant)
+
+
+@posix_walk
+async def test_a_stop_escalates_a_reaper_already_in_its_grace(tmp_path: Path) -> None:
+    """``abort_child`` REUSES a running reaper, so it has to escalate it (#691).
+
+    ``stop`` / ``stop_all`` reach a child whose post-EOF reaper is already in its
+    grace: ``abort_child`` sets ``eager_kill`` and joins that reaper rather than
+    building a second one — and the reaper had read ``eager_kill`` on entry, so
+    the stop returned when the grace ran out (measured, 1.45 s of a 1.5 s one).
+    A SIGTERM-ignoring child, so only the escalation ends it.
+    """
+
+    marker = tmp_path / "soft-signal.seen"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _sigterm_ignoring_stub(marker),
+        stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    row = RunningChild(id="sub-stop-reaping", profile="scout")
+    row.proc = proc
+    try:
+        assert proc.stdout is not None
+        # Its first line comes after the ``SIG_IGN``, so the SIGTERM below is ignored.
+        assert await asyncio.wait_for(proc.stdout.readline(), 30)
+        awaiter = asyncio.ensure_future(_reap_door("print")(proc, row))
+        await wait_until(lambda: row.reaper_task is not None, what="the reaper to start")
+
+        started = time.monotonic()
+        await asyncio.wait_for(pc.abort_child(row), _LONG_GRACE / 3)
+        assert time.monotonic() - started < _LONG_GRACE / 3
+        assert proc.returncode == -signal.SIGKILL
+        assert await asyncio.wait_for(awaiter, 10) == -signal.SIGKILL
+    finally:
+        await _end_a_reap(proc, row)
+
+
+@pytest.mark.parametrize("channel", ["print", "rpc"])
+async def test_the_reap_leg_does_not_walk_a_reaped_child(
+    monkeypatch: pytest.MonkeyPatch, channel: str
+) -> None:
+    """``_reap`` walks only a child that has not been reaped, as ``_eager_abort`` does.
+
+    The post-EOF bound can race the child's exit, so ``_reap`` can be handed a
+    proc whose ``returncode`` is already set. ``reap`` then returns that status
+    without signalling, but the walk ``_reap`` takes for it came first, from a pid
+    that may already be somebody else's (#691). Both channels.
+    """
+
+    import aelix_agents.rpc_channel as rc
+
+    walked: list[int] = []
+
+    def _walk(pid: int) -> list[int]:
+        walked.append(pid)
+        return [_SQUATTER_PID]
+
+    monkeypatch.setattr(pc, "descendant_pids", _walk)
+    monkeypatch.setattr(rc, "descendant_pids", _walk)
+    row = RunningChild(id="sub-reap-reaped", profile="scout")
+    # ``returncode = 0``: dead and reaped. Built inside the loop (its StreamReader).
+    proc = _RecordingProc()
+
+    assert await _reap_door(channel)(proc, row) == 0
+    assert walked == [], "a reaped child's pid was walked"
 
 
 def _pdeathsig_helper(pidfile: Path) -> str:
@@ -2176,7 +2385,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1292-1296``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1302-1306``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2228,11 +2437,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1430``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1440``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:224``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:225``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -3102,7 +3311,7 @@ async def test_a_real_child_without_a_key_is_an_error_envelope_not_a_hang(
 # === descendant walk ==========================================================
 
 
-@linux_only
+@posix_walk
 async def test_descendant_pids_finds_a_grandchild() -> None:
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -3130,6 +3339,201 @@ async def test_descendant_pids_finds_a_grandchild() -> None:
 
 def test_descendant_pids_of_an_unknown_pid_is_empty() -> None:
     assert descendant_pids(2**22 - 1) == []
+
+
+@posix_walk
+async def test_descendant_pids_names_every_generation_deepest_first() -> None:
+    """#691: the walk names a ``setsid`` grandchild AND what it runs, deepest first.
+
+    The shape of a delegated child's ``bash`` call: the child starts a shell that
+    leads a session of its own (``tools/bash.py``'s
+    ``containment_spawn_kwargs(new_session=True)``), and the shell starts the
+    command. The walk answers deepest first, its contract (:func:`descendant_pids`),
+    and ``kill_tree`` signals the list in that order. Not so the shell cannot run
+    its next command: the snapshot comes first, so killing the command first is
+    what gives the shell that moment (300 trials never saw it used, #691 verify),
+    and a next command is in the shell's group, which the group kill after the
+    pids takes (ADR-0291 §5).
+
+    Red on macOS before #691, where the walk had no source and returned ``[]``;
+    green on Linux before and after. The pids come over the child's stdout, tagged,
+    because the two writers race.
+    """
+
+    great_src = "import time; time.sleep(60)"
+    grand_src = (
+        "import subprocess, sys, time; "
+        f"k = subprocess.Popen([sys.executable, '-c', {great_src!r}]); "
+        "print('GREAT', k.pid, flush=True); time.sleep(60)"
+    )
+    child_src = (
+        "import subprocess, sys, time; "
+        f"k = subprocess.Popen([sys.executable, '-c', {grand_src!r}], start_new_session=True); "
+        "print('GRAND', k.pid, flush=True); time.sleep(60)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        child_src,
+        stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    named: dict[str, int] = {}
+    try:
+        assert proc.stdout is not None
+        while len(named) < 2:
+            line = await asyncio.wait_for(proc.stdout.readline(), 30)
+            assert line, f"the child stopped talking after {named}"
+            tag, pid = line.decode().split()
+            named[tag] = int(pid)
+        assert descendant_pids(proc.pid) == [named["GREAT"], named["GRAND"]]
+    finally:
+        kill_tree(proc, descendant_pids(proc.pid))
+        await proc.wait()
+        for pid in named.values():
+            with contextlib.suppress(OSError):
+                os.kill(pid, _SIGKILL)
+
+
+class _FakeLibproc:
+    """``proc_listpids`` over a fixed tree, answering the way the kernel does.
+
+    In BYTES, and never more than the buffer holds — the kernel drops the rest
+    without saying so, which is what makes the caller ask again.
+    """
+
+    def __init__(
+        self, tree: dict[int, list[int]], *, failing: dict[int, int] | None = None
+    ) -> None:
+        self.tree = tree
+        self.failing = failing or {}
+        self.calls: list[tuple[int, int, int]] = []
+
+    def proc_listpids(self, kind: int, ppid: int, buffer: Any, size: int) -> int:
+        self.calls.append((kind, ppid, size))
+        if ppid in self.failing:
+            return self.failing[ppid]
+        width = ctypes.sizeof(ctypes.c_int)
+        kids = self.tree.get(ppid, [])[: size // width]
+        for index, kid in enumerate(kids):
+            buffer[index] = kid
+        return len(kids) * width
+
+
+def _walk_like_macos(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, libproc: _FakeLibproc | None
+) -> None:
+    """Make :func:`descendant_pids` take its macOS arm on any host, the kernel faked.
+
+    ``/proc`` is tested first, so it is pointed at a directory that does not exist.
+    ``raising=False`` on the two names #691 adds, so that on the base these cases
+    fail on their ASSERTION — the walk ``[]`` — rather than on a missing attribute.
+    """
+
+    monkeypatch.setattr(rp, "_PROC", tmp_path / "no-proc")
+    monkeypatch.setattr(rp, "_is_darwin", lambda: True, raising=False)
+    monkeypatch.setattr(rp, "_libproc", lambda: libproc, raising=False)
+
+
+def test_the_macos_walk_asks_the_kernel_for_each_process_and_answers_deepest_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#691's walk, on every host: one ``PROC_PPID_ONLY`` query per process.
+
+    Deepest generation first, as on Linux — ``kill_tree`` relies on the order.
+    """
+
+    kernel = _FakeLibproc({10: [11, 12], 11: [13], 13: [14]})
+    _walk_like_macos(monkeypatch, tmp_path, kernel)
+
+    assert descendant_pids(10) == [14, 13, 12, 11]
+    assert {kind for kind, _ppid, _size in kernel.calls} == {6}, "PROC_PPID_ONLY"
+    assert sorted(ppid for _kind, ppid, _size in kernel.calls) == [10, 11, 12, 13, 14]
+
+
+def test_the_macos_walk_asks_again_when_the_kernel_fills_the_buffer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A full answer may be a cut one, so it is asked again at twice the size.
+
+    Without that a process with more than ``_FIRST_CAPACITY`` children would have
+    the rest dropped from the kill, and nothing would say so.
+    """
+
+    kids = list(range(1000, 1100))
+    kernel = _FakeLibproc({10: kids})
+    _walk_like_macos(monkeypatch, tmp_path, kernel)
+
+    assert sorted(descendant_pids(10)) == kids
+    width = ctypes.sizeof(ctypes.c_int)
+    asked = [size // width for _kind, ppid, size in kernel.calls if ppid == 10]
+    assert asked == [64, 128], asked
+
+
+@pytest.mark.parametrize("cycle", [False, True], ids=["chain", "pid-reuse-cycle"])
+def test_the_macos_walk_survives_a_cycle_a_pid_reuse_race_can_draw(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cycle: bool
+) -> None:
+    """``seen`` holds on the macOS arm too: a pid seen twice is walked once."""
+
+    tree = {10: [11], 11: [12]}
+    if cycle:
+        tree[11] = [10, 12]
+        tree[12] = [11]
+    _walk_like_macos(monkeypatch, tmp_path, _FakeLibproc(tree))
+
+    assert descendant_pids(10) == [12, 11]
+
+
+@pytest.mark.parametrize("answer", [0, -1], ids=["libproc-says-0", "syscall-says-minus-1"])
+def test_a_failed_query_costs_the_macos_walk_only_that_process_s_children(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, answer: int
+) -> None:
+    """Best effort, as on Linux: a query that fails is no children, never a raise.
+
+    ``proc_listpids`` answers ``0`` on failure (an unknown pid included, which is
+    every process that exited since its parent was listed); ``-1`` is covered too
+    because the raw ``__proc_info`` call it wraps answers that. The rest of the
+    walk stands.
+    """
+
+    kernel = _FakeLibproc({10: [11, 12], 12: [13]}, failing={11: answer})
+    _walk_like_macos(monkeypatch, tmp_path, kernel)
+
+    assert descendant_pids(10) == [13, 12, 11]
+
+
+def test_the_macos_walk_is_empty_when_libproc_cannot_be_loaded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The answer the walk gave on macOS before #691, and no raise.
+
+    Green on the base too, by construction: this pins the fallback, and it goes
+    red if the ``None`` check in ``descendant_pids`` is dropped.
+    """
+
+    _walk_like_macos(monkeypatch, tmp_path, None)
+
+    assert descendant_pids(10) == []
+
+
+def test_the_walk_on_windows_neither_reads_proc_nor_loads_libproc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Windows is unchanged by #691: no source, an empty walk, the job does the rest.
+
+    Green on the base too, by construction; it goes red if the macOS arm is ever
+    reached off macOS.
+    """
+
+    def _must_not_load() -> None:
+        raise AssertionError("libproc was loaded off macOS")
+
+    monkeypatch.setattr(rp, "_PROC", tmp_path / "no-proc")
+    monkeypatch.setattr(rp, "_is_darwin", lambda: False, raising=False)
+    monkeypatch.setattr(rp, "_libproc", _must_not_load, raising=False)
+
+    assert descendant_pids(10) == []
 
 
 # === The parent's model reaches the child (M1) ================================
@@ -3537,7 +3941,9 @@ async def test_the_soft_signal_is_delivered_and_survived(tmp_path: Path) -> None
         assert result.exit_code == -signal.SIGKILL, detail
 
 
-async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) -> None:
+async def test_a_non_setsid_grandchild_dies_on_the_escalation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Q1's regression guard — and the only fixture that can measure it.
 
     The grandchild stays in the CHILD's process group, which is the shape
@@ -3545,32 +3951,36 @@ async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) ->
     (``extensions/api.py``'s ``exec`` had it until #221 gave it a session of its
     own), so the probe is the ONE production spawn of this shape and this
     fixture is its only driver — and ``ensure_tool`` reaches it from the
-    ``grep``/``find`` tools inside an agent turn. Which leg kills it depends on
-    the host, and that is the whole point:
+    ``grep``/``find`` tools inside an agent turn.
 
-    * **Linux** — the ``/proc`` walk names it, exactly as it names the ``setsid``
-      grandchild its sibling test uses. Green before #220.
-    * **Darwin** — ``descendant_pids`` is ``[]`` with no ``/proc`` to read, so
-      today's escalation is a root-only ``SIGKILL`` and this grandchild SURVIVES
-      it (measured on ``main``). Only Q1's ``tree.hard_kill()`` — ``killpg`` on
-      the group the spawn contained — can reach it. Delete the ``hard_kill``
-      line from ``reap``'s escalation and this test goes red HERE and nowhere
-      else.
+    THE WALK IS BLINDED, because Q1 is the leg for a group member the walk did
+    NOT name — one the child spawned after the snapshot (on this grace leg the
+    snapshot precedes the SIGTERM, and a SIGTERM-ignoring child keeps working),
+    or a walk that failed. A real walk names this grandchild on both POSIX hosts
+    since #691, and on Linux always did, so unblinded the case stays green with
+    the group kill deleted. Blinded, on Linux and macOS alike, only Q1's
+    ``tree.hard_kill()`` — ``killpg`` on the group the spawn contained — can reach
+    it: delete the ``hard_kill`` line from ``reap``'s escalation and this test
+    goes red HERE and nowhere else. Before #691 it bit on macOS only, where the
+    walk was empty unblinded.
+
     * **win32** — the job, and NOT this test's escalation. ``start_new_session``
       is ignored there, so the grandchild is a job member like everything else,
       and what ends it is ``run()``'s ``finally`` closing a
       ``kill_on_close=True`` job rather than anything the reaper did: the child
       has only a POSIX ``SIG_IGN`` and dies to leg 1, so the grace never
       elapses. This arm is therefore a containment check, not a mutation guard —
-      delete ``hard_kill`` and it stays green there. Darwin is the arm that
-      bites (#220 review round 2, W32-2). UNVERIFIED on this host; read from
-      source.
+      delete ``hard_kill`` and it stays green there (#220 review round 2,
+      W32-2). UNVERIFIED on this host; read from source.
 
-    Its ``setsid`` sibling stays ``@linux_only`` and unchanged on purpose: a
-    ``setsid`` grandchild is unreachable by ``killpg`` on every platform, so it
-    remains the live mutation guard for the WALK, which Q1 must not mask.
+    Its ``setsid`` sibling (:func:`test_bash_grandchild_killed_on_sigkill_leg`)
+    keeps the real walk on purpose: a ``setsid`` grandchild is unreachable by
+    ``killpg`` on every platform, so it remains the live mutation guard for the
+    WALK, which Q1 must not mask.
     """
 
+    # ``_reap`` takes the snapshot through this module's name for the walk.
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
     # ONE ``try`` around everything after the spawn, and the pid is read from
@@ -3637,11 +4047,19 @@ async def test_the_drain_after_exit_leg_is_the_job_on_win32_only(
     # and has to run on both legs.
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
     monkeypatch.setattr(rp.sys, "platform", platform)
+    # Nor the groups the holders lead (#691): those are the walk's, read from a
+    # LIVE child, and this is the success path with a dead one.
+    grouped: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        rp.os, "killpg", lambda pgid, sig: grouped.append((pgid, sig)), raising=False
+    )
+    monkeypatch.setattr(rp.os, "getpgid", lambda pid: pid, raising=False)
 
     tree = _StubTree()
     pumps: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
     await PrintChannel._drain_after_exit(_RecordingProc(), pumps, tree)
 
+    assert grouped == []
     if platform == "win32":
         assert tree.calls == ["hard_kill"]
         assert signalled == []
@@ -3878,9 +4296,9 @@ def test_the_eager_abort_leg_reaches_the_tree_per_platform(
     §A.8 asserts.
 
     POSIX: ``kill_tree`` runs the walk and the root signal, and Q1's group kill
-    comes from ``_eager_abort`` itself (round 2, posix2/P2) — on macOS the walk
-    is ``[]`` and without it a cancelled delegation leaves a non-``setsid``
-    grandchild alive.
+    comes from ``_eager_abort`` itself (round 2, posix2/P2) — without it a
+    cancelled delegation leaves a non-``setsid`` grandchild the walk missed alive
+    (measured on macOS before #691, when the walk there was ``[]``).
     """
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
@@ -3888,6 +4306,13 @@ def test_the_eager_abort_leg_reaches_the_tree_per_platform(
     monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [_SQUATTER_PID])
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    # LENT, for the windows leg's "linux" arm, where ``os.getpgid`` does not
+    # exist: the answer a POSIX host gives for a pid that cannot exist (#691).
+    def _no_such_pid(_pid: int) -> int:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(rp.os, "getpgid", _no_such_pid, raising=False)
 
     tree = _StubTree()
     row = RunningChild(id="sub-eager", profile="scout")
@@ -3897,6 +4322,7 @@ def test_the_eager_abort_leg_reaches_the_tree_per_platform(
     PrintChannel._eager_abort(proc, row)
 
     assert row.eager_kill is True
+    assert row.escalate.is_set()
     assert row.state == "stopped"
     if platform == "win32":
         # ONE ``hard_kill``, from ``kill_tree``'s win32 arm. A second one from
@@ -3922,9 +4348,10 @@ async def test_the_eager_aborts_group_kill_is_withheld_from_a_reaped_child(
     in between, is what separates that from the live-child cancel; delete the
     guard from ``kill_group_if_live`` and this goes red.
 
-    The walk and the root signal still run: ``kill_tree`` has always been safe
-    against a reaped child (``_signal_child`` re-reads ``returncode`` too), and
-    it is the GROUP kill that is new and needs the bound.
+    The root signal still runs: ``kill_tree`` has always been safe against a
+    reaped child (``_signal_child`` re-reads ``returncode`` too), and it is the
+    GROUP kill that is new and needs the bound. The walk does not (#691, the case
+    below).
     """
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
@@ -3938,6 +4365,51 @@ async def test_the_eager_aborts_group_kill_is_withheld_from_a_reaped_child(
     # ``_RecordingProc`` IS the dead-and-reaped shape: ``returncode = 0``.
     PrintChannel._eager_abort(_RecordingProc(), row)
     assert tree.calls == [], "a reaped child's group must not be killpg'd"
+
+
+@pytest.mark.parametrize("channel", ["print", "rpc"])
+async def test_the_eager_abort_does_not_walk_a_reaped_child(
+    monkeypatch: pytest.MonkeyPatch, channel: str
+) -> None:
+    """#691: the walk is taken only of a child that has not been reaped.
+
+    A reaped child's descendants were reparented when it died, so a walk from its
+    pid names none of them — only, if the pid was handed on, a stranger's
+    children, which ``kill_tree`` would then SIGKILL. That was already the
+    ``/proc`` walk's exposure on the cancel that lands inside
+    ``_drain_after_exit``; #691 gave macOS a walk too, so the guard came with it.
+    Both channels' ``_eager_abort``. Red before #691: the walk was taken and its
+    pid signalled.
+    """
+
+    import aelix_agents.rpc_channel as rc
+
+    walked: list[int] = []
+    signalled: list[tuple[int, int]] = []
+
+    def _walk(pid: int) -> list[int]:
+        walked.append(pid)
+        return [_SQUATTER_PID]
+
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", "linux")
+    monkeypatch.setattr(pc, "descendant_pids", _walk)
+    monkeypatch.setattr(rc, "descendant_pids", _walk)
+    monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    row = RunningChild(id="sub-eager-reaped", profile="scout")
+    row.tree = _StubTree()
+    # ``returncode = 0``: dead and reaped. Built inside the loop, as its sibling
+    # above does: its ``StreamReader`` wants a running loop.
+    proc = _RecordingProc()
+    if channel == "print":
+        PrintChannel._eager_abort(proc, row)
+    else:
+        row.proc = proc
+        rc.RpcChannel._eager_abort(row)
+
+    assert walked == [], "a reaped child's pid was walked"
+    assert signalled == [], "a pid the walk named for a reaped child was signalled"
 
 
 async def test_the_eager_aborts_group_kill_defers_to_a_running_reaper(
@@ -3981,7 +4453,7 @@ async def test_the_eager_aborts_group_kill_defers_to_a_running_reaper(
     ),
 )
 async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The CANCEL path's own Q1 — the hole round 2 measured (posix2/P2).
 
@@ -3992,17 +4464,20 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
     started killing there is no reaper task at all — the cancellation lands in
     ``_stream_and_reap``'s
     ``except asyncio.CancelledError`` with a LIVE child, ``_eager_abort`` runs
-    ``kill_tree`` with an empty walk on macOS, ``run()``'s ``finally`` closes the
-    tree (a POSIX no-op) and the grandchild is beyond anyone's reach for the rest
-    of the process's life.
+    ``kill_tree`` with whatever the walk named, ``run()``'s ``finally`` closes
+    the tree (a POSIX no-op) and a grandchild the walk missed is beyond anyone's
+    reach for the rest of the process's life.
 
-    MEASURED on Darwin before the fix: timeout path ``gc_alive=False``, cancel
-    path ``gc_alive=True``, same fixture, same tree. Delete
-    ``kill_group_if_live`` from ``_eager_abort`` and this goes red on macOS —
-    and stays green on Linux, where the ``/proc`` walk already names the
-    grandchild, which is why the sibling timeout case cannot cover it.
+    MEASURED on Darwin before the fix, when the walk there was empty: timeout
+    path ``gc_alive=False``, cancel path ``gc_alive=True``, same fixture, same
+    tree. The walk is BLINDED here for the reason its sibling gives: since #691
+    it names this grandchild on both POSIX hosts, and Q1 is the leg for one it
+    did not name. Delete ``kill_group_if_live`` from ``_eager_abort`` and this
+    goes red on Linux and macOS alike.
     """
 
+    # ``_eager_abort`` walks through this module's name for the walk.
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
     row = RunningChild(id="sub-cancel-grandchild", profile="scout")
@@ -4034,6 +4509,260 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
         if grandchild is not None:
             with contextlib.suppress(Exception):
                 os.kill(grandchild, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+async def _start_with_a_setsid_grandchild(
+    tmp_path: Path, row: RunningChild
+) -> tuple[asyncio.Future[Any], Path]:
+    """A delegation whose child runs a ``bash``-shaped grandchild, announced.
+
+    :func:`_grandchild_stub`: the child ignores SIGTERM, which no eager leg waits
+    for anyway, and its grandchild leads a session of its own, exactly as the
+    command a delegated child's ``bash`` tool runs does.
+    """
+
+    marker = tmp_path / "grandchild.pid"
+    channel = _stub_channel(_grandchild_stub(marker), grace=0.5)
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    await wait_until(
+        lambda: _announced_pid(marker) is not None,
+        what="the stub to announce its grandchild",
+    )
+    await wait_until(
+        lambda: row.stream.summary == "grandchild spawned",
+        what="the stub to finish setting up",
+    )
+    return run, marker
+
+
+@posix_walk
+async def test_a_cancelled_delegation_takes_the_command_its_bash_runs(tmp_path: Path) -> None:
+    """#691: Esc, Esc Esc and a SIGTERM to the parent — the command does not outlive them.
+
+    They all cancel the turn, and the cancel reaches ``_eager_abort`` with the
+    child alive and no reaper built: a SIGKILL with no grace, so the child's
+    ``dispose()`` never reaps its ``bash`` command, and the command leads its own
+    session, so neither the child's group kill (Q1) nor anything else but the
+    walk can name it. Red on macOS before #691 — the walk had no source there and
+    the grandchild was left with PPID 1 (measured in the TUI and in ``-p``).
+    """
+
+    row = RunningChild(id="sub-cancel-setsid", profile="scout")
+    run, marker = await _start_with_a_setsid_grandchild(tmp_path, row)
+    grandchild = _announced_pid(marker)
+    try:
+        assert grandchild is not None and _alive(grandchild)
+        assert row.reaper_task is None, "the cancel path is the one with no reaper"
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        assert await _await_death(grandchild, 10.0) < 10.0
+    finally:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        if grandchild is not None:
+            with contextlib.suppress(Exception):
+                os.kill(grandchild, _SIGKILL)
+
+
+@posix_walk
+async def test_a_stopped_delegation_takes_the_command_its_bash_runs(tmp_path: Path) -> None:
+    """#691: ``SubagentRuntime.stop``, ``stop_all`` and the extension teardown — the same.
+
+    They reach the child through ``abort_child`` → ``reap(eager_kill=True,
+    descendants=None)``, which takes the walk itself before its SIGTERM and then
+    SIGKILLs with no grace. Red on macOS before #691, for the same reason as the
+    cancel case.
+    """
+
+    row = RunningChild(id="sub-stop-setsid", profile="scout")
+    run, marker = await _start_with_a_setsid_grandchild(tmp_path, row)
+    grandchild = _announced_pid(marker)
+    try:
+        assert grandchild is not None and _alive(grandchild)
+        await asyncio.wait_for(pc.abort_child(row, grace=0.5), 30)
+        result = await asyncio.wait_for(run, 30)
+        assert result.status == "aborted", result
+        assert await _await_death(grandchild, 10.0) < 10.0
+    finally:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        if grandchild is not None:
+            with contextlib.suppress(Exception):
+                os.kill(grandchild, _SIGKILL)
+
+
+@posix_walk
+@pytest.mark.parametrize("door", ["cancel", "stop", "grace"])
+async def test_a_stopped_delegation_takes_what_its_bash_left_in_the_shells_group(
+    tmp_path: Path, door: str
+) -> None:
+    """#691: ``(cmd &)``'s ``cmd`` dies with the delegation, on every kill leg.
+
+    ``cmd`` has PPID 1, so the walk cannot name it, but it is in the group of the
+    shell the walk does name, and that shell leads its group. Each leg reads the
+    groups its walked processes lead with the walk and ``killpg``s them after the
+    pids: ``cancel`` is ``_eager_abort`` (Esc, a signal to the parent), ``stop`` is
+    ``abort_child`` → ``reap(eager_kill=True)``, ``grace`` is ``_reap``'s SIGTERM, a
+    grace the child ignores, and the escalation. Red without the group kill, on
+    Linux and macOS alike: ``cmd`` is left running with PPID 1.
+    """
+
+    marker = tmp_path / "backgrounded.pid"
+    channel = _stub_channel(_left_in_the_shells_group_stub(marker), grace=0.5)
+    row = RunningChild(id=f"sub-group-{door}", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    left: int | None = None
+    try:
+        await wait_until(
+            lambda: row.stream.summary == "backgrounded in its group",
+            what="the stub to background its command",
+        )
+        left = _announced_pid(marker)
+        assert left is not None and _alive(left)
+        if door == "cancel":
+            assert row.reaper_task is None, "the cancel path is the one with no reaper"
+            run.cancel()
+            with contextlib.suppress(BaseException):
+                await run
+        elif door == "stop":
+            await asyncio.wait_for(pc.abort_child(row, grace=0.5), 30)
+            result = await asyncio.wait_for(run, 30)
+            assert result.status == "aborted", result
+        else:
+            soft_kill = await _start_the_soft_kill(channel, row)
+            result = await asyncio.wait_for(run, 40)
+            await asyncio.wait_for(soft_kill, 40)
+            assert result.status == "error", result
+        assert await _await_death(left, 10.0) < 10.0
+    finally:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        if left is None:
+            left = _announced_pid(marker)
+        if left is not None:
+            with contextlib.suppress(Exception):
+                # Its group is the shell's, so a failed run leaves nothing either.
+                os.killpg(os.getpgid(left), _SIGKILL)
+            with contextlib.suppress(Exception):
+                os.kill(left, _SIGKILL)
+
+
+def _lend_the_group_calls(
+    monkeypatch: pytest.MonkeyPatch, pgid_of: dict[int, int]
+) -> list[tuple[Any, ...]]:
+    """POSIX injected, with ``getpgid`` answering from ``pgid_of``: one shared log.
+
+    ``getpgid``, ``os.kill`` and ``killpg`` all write to the log returned, so
+    "read before any signal" and "killed after every pid" are its order.
+    """
+
+    events: list[tuple[Any, ...]] = []
+
+    def _getpgid(pid: int) -> int:
+        events.append(("getpgid", pid))
+        return pgid_of[pid]
+
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", "linux")
+    monkeypatch.setattr(rp.os, "getpgid", _getpgid, raising=False)
+    monkeypatch.setattr(rp.os, "kill", lambda pid, sig: events.append(("kill", pid, sig)))
+    monkeypatch.setattr(
+        rp.os, "killpg", lambda pgid, sig: events.append(("killpg", pgid, sig)), raising=False
+    )
+    return events
+
+
+class _DiesOnTheKill(_LiveProc):
+    """A RUNNING proc whose ``wait`` answers at once, as an eager reap's child does."""
+
+    async def wait(self) -> int:
+        return -_SIGKILL
+
+
+@pytest.mark.parametrize("channel", ["print", "rpc"])
+def test_the_eager_abort_reads_the_walks_groups_first_and_kills_them_last(
+    monkeypatch: pytest.MonkeyPatch, channel: str
+) -> None:
+    """#691: what ``_eager_abort`` does with the groups its walk's processes lead.
+
+    Read with the walk, before any signal — ``getpgid`` first in the log, once
+    per pid, and never again once a kill has gone out (a pgid read then may be a
+    stranger's); killed after every pid; and only a pid that leads its own group
+    is one, so a walked member of somebody else's group adds nothing. That member
+    is in the CHILD's group here, as a non-``setsid`` grandchild is: the child's
+    own group is Q1's, behind Q1's guards, and never one of these (reading every
+    walked pid's group instead would kill it here, past those guards). Both
+    channels. No process is started: the platform is injected and ``getpgid`` /
+    ``killpg`` are lent, so the windows leg runs it too.
+    """
+
+    import aelix_agents.rpc_channel as rc
+
+    proc = _LiveProc()
+    leader, member = _SQUATTER_PID - 1, _SQUATTER_PID - 2
+    events = _lend_the_group_calls(monkeypatch, {leader: leader, member: proc.pid})
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [member, leader])
+    monkeypatch.setattr(rc, "descendant_pids", lambda _pid: [member, leader])
+
+    row = RunningChild(id="sub-eager-groups", profile="scout")
+    if channel == "print":
+        PrintChannel._eager_abort(proc, row)
+    else:
+        row.proc = proc
+        rc.RpcChannel._eager_abort(row)
+
+    assert events == [
+        ("getpgid", member),
+        ("getpgid", leader),
+        ("kill", member, _SIGKILL),
+        ("kill", leader, _SIGKILL),
+        ("kill", proc.pid, _SIGKILL),
+        ("killpg", leader, _SIGKILL),
+    ], events
+
+
+@pytest.mark.parametrize("channel", ["print", "rpc"])
+async def test_the_reap_leg_hands_its_reaper_the_groups_of_its_walk(
+    monkeypatch: pytest.MonkeyPatch, channel: str
+) -> None:
+    """#691: ``_reap`` reads the groups with its walk and passes them to ``reap``.
+
+    ``reap`` handed a list of pids with no groups kills no group (its docstring),
+    so a ``_reap`` that dropped them would leave what ``(cmd &)`` put in a running
+    shell's group alive past the reaper's escalation. The print channel has a
+    real-process case for that
+    (``test_a_stopped_delegation_takes_what_its_bash_left_in_the_shells_group``);
+    the rpc channel has none, so this is its pin. The log is the eager abort's
+    above: read with the walk, before the reaper's SIGTERM, killed after every
+    pid, and never the child's own group. ``eager_kill`` is set, so the reaper
+    kills at once. No process is started.
+    """
+
+    import aelix_agents.rpc_channel as rc
+
+    proc = _DiesOnTheKill()
+    leader, member = _SQUATTER_PID - 1, _SQUATTER_PID - 2
+    events = _lend_the_group_calls(monkeypatch, {leader: leader, member: proc.pid})
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [member, leader])
+    monkeypatch.setattr(rc, "descendant_pids", lambda _pid: [member, leader])
+    row = RunningChild(id="sub-reap-groups", profile="scout")
+    row.proc = proc
+    row.eager_kill = True
+
+    assert await asyncio.wait_for(_reap_door(channel)(proc, row), 10) == -_SIGKILL
+    assert events == [
+        ("getpgid", member),
+        ("getpgid", leader),
+        ("kill", proc.pid, signal.SIGTERM),
+        ("kill", member, _SIGKILL),
+        ("kill", leader, _SIGKILL),
+        ("kill", proc.pid, _SIGKILL),
+        ("killpg", leader, _SIGKILL),
+    ], events
 
 
 async def test_an_attach_failure_degrades_instead_of_abandoning_the_child(
@@ -4337,6 +5066,7 @@ def _by_path(stub: Callable[[Path], str]) -> Callable[[Path], tuple[str, str]]:
         pytest.param(_by_path(_pipe_holding_stub), id="pipe-holding"),
         pytest.param(_by_path(_grandchild_stub), id="setsid-grandchild"),
         pytest.param(_by_path(_nonsetsid_grandchild_stub), id="non-setsid-grandchild"),
+        pytest.param(_by_path(_left_in_the_shells_group_stub), id="left-in-the-shells-group"),
         pytest.param(
             _by_path(
                 lambda pid_file: _pipe_holding_daemon_stub(
