@@ -359,7 +359,7 @@ async def show_modal(
     if on_handle is not None:
         on_handle(AelixOverlayHandle(chrome, content, hidden))
 
-    chrome.mount_modal(slot_content)
+    chrome.mount_modal(slot_content, focus=content)
     focused = chrome.focus(content)
     try:
         if focused is False:
@@ -367,8 +367,11 @@ async def show_modal(
             raise ValueError("a capturing modal needs a focusable window")
         return await result
     finally:
-        chrome.unmount_modal()
-        chrome.focus_input()
+        # #701 — this modal leaves; one it covered (a picker opened mid-turn,
+        # under a tool approval) gets the slot and the keys back.
+        chrome.unmount_modal(slot_content)
+        if not chrome.is_modal_open():
+            chrome.focus_input()
 
 
 __all__ = ["AelixOverlayHandle", "make_float", "show_modal"]

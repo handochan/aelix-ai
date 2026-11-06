@@ -76,6 +76,7 @@ from aelix_coding_agent.tui.commands import (
     CommandInterrupted,
     active_tool_views,
     match_command,
+    mid_turn_refusal,
     sanitize_for_terminal,
     slash_word,
 )
@@ -100,6 +101,7 @@ from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import ParsedInput
 from aelix_coding_agent.tui.input_marks import SubmittedLine, classify_submitted
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
+from aelix_coding_agent.tui.mid_turn import MID_TURN, setter_line
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.overlay import show_modal
 from aelix_coding_agent.tui.queued_messages import QueuedKind, QueuedMessages
@@ -1092,7 +1094,17 @@ async def run_tui(
     # the just-finalized text could vanish before it reaches scrollback.
     output_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
 
+    # #701 (ADR-0292) — while a command Entered mid-turn is open (its task, and
+    # the picker or panel it awaits), what it commits goes under the answer
+    # being written instead of above it (``_output_pump``'s ``after_stream``).
+    mid_turn_state: dict[str, int] = {"open": 0}
+    mid_turn_tasks: set[asyncio.Task[None]] = set()
+
     def _commit(renderable: object) -> None:
+        kind = "after_stream" if mid_turn_state["open"] else "commit"
+        output_queue.put_nowait((kind, renderable))
+
+    def _stream_commit(renderable: object) -> None:
         output_queue.put_nowait(("commit", renderable))
 
     def _commit_extension_failures() -> None:
@@ -1137,7 +1149,7 @@ async def run_tui(
     # written is never reflowed, because those bytes belong to the host terminal
     # (``full_screen=False``) — the same guarantee any terminal program gives.
     renderer = EventRenderer(
-        commit=_commit,
+        commit=_stream_commit,
         set_tail=_set_tail,
         width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
     )
@@ -1755,7 +1767,8 @@ async def run_tui(
         )  # persist default
         await settings_manager.flush()
         _commit(
-            Text(
+            # #701 — from ``/settings`` opened mid-turn, it says when it applies.
+            setter_line(
                 # #251 — same helper as the footer: this line is printed and the
                 # footer repainted inside one action, so naming different tiers
                 # here would contradict the row below it. The ROW's own value
@@ -1763,7 +1776,6 @@ async def run_tui(
                 # default, which no model owns (ADR-0125).
                 f"thinking level → {_thinking_display(runtime_host.harness, new_level)}"
                 " (persisted as default)",
-                style="green",
             )
         )
         # Repaint so the OPTIONAL 🧠 thinking-level footer segment reflects the
@@ -3610,9 +3622,14 @@ async def run_tui(
     # tasks alive until they finish (same pattern as context_usage_tasks).
     queue_tasks: set[asyncio.Task[None]] = set()
 
-    def _enqueue(kind: str, line: str) -> None:
+    def _enqueue(kind: str, line: str, *, expanded: str | None = None) -> None:
         label = "Steering" if kind == "steer" else "Follow-up"
-        text = str(line)  # the harness and the echo take the text alone
+        # The harness and the echo take the text alone. #701 — *expanded* is a
+        # template's or ``/skill:<name>``'s text Entered mid-turn: that is what
+        # the harness queues, and the typed line what the pending row and the
+        # echo show, as the idle path echoes it.
+        shown = str(line)
+        text = shown if expanded is None else expanded
 
         async def _run() -> None:
             # Late-steer race (W4 code-review): the chrome fired this only while
@@ -3633,8 +3650,8 @@ async def run_tui(
                 # beginning with ``/quit`` stays a prompt, a typed ``/quit`` a quit.
                 parsed = classify_submitted(line)
                 if parsed.kind in ("bash", "bash_transient"):
-                    parsed = ParsedInput("prompt", text.strip())
-                out_chrome.submit_line(SubmittedLine(text, parsed))
+                    parsed = ParsedInput("prompt", shown.strip())
+                out_chrome.submit_line(SubmittedLine(shown, parsed))
                 return
             # #668 — the line waits in the pending area, and its echo is
             # committed when the turn hands it to the model (its user
@@ -3656,7 +3673,7 @@ async def run_tui(
             except asyncio.CancelledError:
                 call.cancel()  # the TUI is closing: nothing is left to queue it for
                 raise
-            queued = queued_lines.taken(harness, qkind, text, before)
+            queued = queued_lines.taken(harness, qkind, text, before, shown=shown)
             try:
                 await call
             except Exception as exc:  # noqa: BLE001 — surface, never crash chrome
@@ -4166,8 +4183,19 @@ async def run_tui(
             bound_shortcuts=bound_shortcut_keys,
             shell_lane=shell_lane,
             typed_prompt=typed_prompt,
+            mid_turn_state=mid_turn_state,
+            mid_turn_tasks=mid_turn_tasks,
+            queue_line=lambda kind, line, expanded: _enqueue(kind, line, expanded=expanded),
         )
     finally:
+        # #701 (Codex 701-handler-survives-quit) — a command run mid-turn and
+        # still open (a picker, a setter still awaiting, an extension's command)
+        # ends with the TUI, first, while what it holds is still bound.
+        for mtask in list(mid_turn_tasks):
+            if not mtask.done():
+                mtask.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await mtask
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
         if descriptor_unsub is not None:
@@ -4683,6 +4711,13 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
     output-queue seam comment) now holds by construction: they are one frame.
     """
 
+    # #701 (ADR-0292) — ``after_stream`` lines (what a command run mid-turn
+    # prints) wait while the answer's live window is up, and land under it when
+    # the window is committed and cleared, or at a ``release``: committed at
+    # once, they printed above the whole answer still being written.
+    stream_live = False
+    held: list[object] = []
+
     while True:
         first = await queue.get()
         items: list[tuple[str, object]] = [first]
@@ -4708,9 +4743,20 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
         for kind, payload in items:
             if kind == "commit":
                 pending.append(payload)
+            elif kind == "after_stream":
+                (held if stream_live else pending).append(payload)
+            elif kind == "release":
+                pending.extend(held)
+                held.clear()
             elif kind == "tail":
                 tail_seen = True
                 tail_ansi = payload if isinstance(payload, str) else ""
+                stream_live = bool(tail_ansi)
+                if not stream_live and held:
+                    # The window's text is in ``pending`` already (the renderer
+                    # commits it before it clears the tail): these go under it.
+                    pending.extend(held)
+                    held.clear()
             elif kind == "pending":
                 # #668 — ``(rows, spacer, hint row)`` from the queued lines, which
                 # draw the area in ``run_tui``; the bare rows from a lane of its own.
@@ -4775,6 +4821,9 @@ async def _input_loop(
     bound_shortcuts: frozenset[str] | None = None,
     shell_lane: ShellLane | None = None,
     typed_prompt: dict[str, str | None] | None = None,
+    mid_turn_state: dict[str, int] | None = None,
+    mid_turn_tasks: set[asyncio.Task[None]] | None = None,
+    queue_line: Callable[[str, SubmittedLine, str], None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -4795,10 +4844,16 @@ async def _input_loop(
     # Issue #9 — surface bindings for extension-command output: a handler's
     # str-return and any failure commit to scrollback (a handler's own ctx.ui
     # toasts/dialogs flow through the separately-bound TUI ui).
+    # #701 — and under the answer while one runs mid-turn (ADR-0292 D6).
     ext_command_bindings = CommandSurfaceBindings(
-        emit_text=lambda s: output_queue.put_nowait(("commit", Text(s))),
-        emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
+        emit_text=lambda s: output_queue.put_nowait((_commit_kind(), Text(s))),
+        emit_error=lambda s: output_queue.put_nowait(
+            (_commit_kind(), Text(s, style="bold red"))
+        ),
     )
+
+    def _commit_kind() -> str:
+        return "after_stream" if open_state["open"] else "commit"
 
     # #189 — imported once per loop, not once per turn. Local rather than
     # module-level for the same reason the other three call sites in this file
@@ -4822,6 +4877,152 @@ async def _input_loop(
             width=lambda: terminal_columns(chrome),
             output_text=renderer.user_bash_output,
         )
+
+    # #701 (ADR-0292) — a ``/`` line Entered while a turn runs. This loop is
+    # parked in ``harness.prompt`` then, so the chrome asks here before it
+    # steers: a command never reaches the model as text. The read-only and
+    # setting built-ins (``MID_TURN_RUNS``) and an extension's commands run now,
+    # in a task of their own, and an extension's panel opens; ``/quit`` stops the
+    # answer and quits; a template or
+    # ``/skill:<name>`` is expanded and its text steered (Alt+Enter: queued as a
+    # follow-up), as pi's ``prompt(text, {streamingBehavior})`` does; the rest
+    # are refused with the line kept and the reason under the input. Only while
+    # THIS loop runs a turn: under a running command the line is queued as the
+    # next input, as before (``_enqueue``).
+    turn_active = {"v": False}
+    quit_after_turn = {"v": False}
+    # #701 (Codex 701-handler-survives-quit) — ``run_tui`` holds the set and
+    # cancels what is still open when the TUI closes.
+    running_mid_turn: set[asyncio.Task[None]] = mid_turn_tasks if mid_turn_tasks is not None else set()
+    open_state = mid_turn_state if mid_turn_state is not None else {"open": 0}
+
+    def _mid_turn_refused(word: str, why: str) -> tuple[str, str]:
+        return ("refused", f"/{word} can't run until the answer ends — {why}")
+
+    def _mid_turn_command(line: SubmittedLine) -> tuple[str, str] | None:
+        if not turn_active["v"]:
+            return None
+        parsed = classify_submitted(line)
+        typed = str(line).strip()
+        if parsed.kind == "quit":
+            # Verify V1 — pi runs ``/quit`` ahead of its streaming branch
+            # (``interactive-mode.ts:3455``, ``:3493``): the answer is stopped as
+            # a signal stops it, and the loop returns once ``prompt`` does.
+            quit_after_turn["v"] = True
+            asyncio.ensure_future(_safe_abort_until_idle(runtime_host.harness))
+            return ("ran", "")
+        if parsed.kind == "reload":
+            word = slash_word(typed) or parsed.kind
+            command = match_command(typed, command_ctx.commands)
+            why = mid_turn_refusal(command, "") if command is not None else None
+            return _mid_turn_refused(word, why or "it can run only when the answer is over")
+        if parsed.kind != "prompt" or parsed.literal or not parsed.text.startswith("/"):
+            return None
+        text = parsed.text
+        word = slash_word(text)
+        if not word:
+            return None  # a bare ``/``: text, as at idle
+        command = match_command(text, command_ctx.commands)
+        if command is not None and command.handler is not None:
+            args = text[len("/" + word) :].strip()
+            why = mid_turn_refusal(command, args)
+            if why is not None:
+                return _mid_turn_refused(word, why)
+            _run_mid_turn(command, args)
+            return ("ran", "")
+        names: set[str] = set()
+        if dispatch is not None:
+            with contextlib.suppress(Exception):
+                names = {name for name, _desc in dispatch.list_commands()}
+        if text[1:].split(" ", 1)[0] in names:
+            # Verify V2 — pi ``agent-session.ts:2144-2153``: an extension's
+            # command runs at once, even while the model answers, and is never
+            # sent to it. The dispatch the idle path below uses.
+            _run_mid_turn_extension(text)
+            return ("ran", "")
+        if (
+            descriptor_renderer is not None
+            and (modal := _match_management_modal(descriptor_renderer, text)) is not None
+        ):
+            # Verify F4 — an extension's panel opens as the ``/skill`` and
+            # ``/tool`` panels do: ``open_modal`` mounts it through
+            # ``show_modal``, so a dialog the turn opens goes over it and hands
+            # it back, and its close names its own modal (ADR-0292 D7).
+            descriptor_renderer.open_modal(modal)
+            return ("ran", "")
+        harness = runtime_host.harness
+        expanded = None
+        with contextlib.suppress(Exception):
+            expanded = expand_resource_command(
+                text,
+                skills=getattr(harness, "skills", None) or (),
+                templates=getattr(harness, "prompt_templates", None) or (),
+                skill_commands_enabled=(
+                    settings_manager.get_enable_skill_commands()
+                    if settings_manager is not None
+                    else True
+                ),
+            )
+        if expanded is not None:
+            # Verify V2 — pi ``agent-session.ts:2196-2198``: the expansion is
+            # what is steered, as at idle it is what is sent; the pending row and
+            # the echo show the typed line, as the idle echo does.
+            kind = "follow_up" if getattr(line, "after_turn", False) else "steer"
+            if queue_line is not None:
+                queue_line(kind, line, expanded)
+                return ("ran", "")
+            target = chrome.on_steer if kind == "steer" else chrome.on_follow_up
+            if target is None:
+                return _mid_turn_refused(word, "it sends a message of its own")
+            target(SubmittedLine(expanded, ParsedInput("prompt", expanded, literal=True)))
+            return ("ran", "")
+        off = None
+        if skill_off_reason is not None and text.startswith("/skill:"):
+            off = skill_off_reason(text[len("/skill:") :].partition(" ")[0])
+        return ("refused", off or f"Unknown command: /{word} — type /help")
+
+    def _spawn_mid_turn(work: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(work)
+        running_mid_turn.add(task)
+        task.add_done_callback(running_mid_turn.discard)
+
+    def _run_mid_turn_extension(text: str) -> None:
+        async def _go() -> None:
+            open_state["open"] += 1
+            try:
+                if dispatch is not None:
+                    await dispatch.try_execute(text, ext_command_bindings)  # never raises
+            finally:
+                open_state["open"] -= 1
+
+        _spawn_mid_turn(_go())
+
+    def _run_mid_turn(command: BuiltinCommand, args: str) -> None:
+        async def _go() -> None:
+            # The model and the level are read when a run of the model starts
+            # (``AgentLoopConfig``): a steer, a tool result or a follow-up joins
+            # the run that is going, and a retry of this message starts a new one
+            # (Codex 701-thinking-retry). So a setter run here says on its own
+            # line, while this turn runs, that it applies from the next message
+            # (``setter_line``); a second line said it twice (fix round 2). Set
+            # in this task's own context: the picker or panel it awaits reads it.
+            MID_TURN.set(lambda: turn_active["v"])
+            open_state["open"] += 1
+            try:
+                await command.handler(command_ctx, args)  # type: ignore[misc]
+            except CommandInterrupted:
+                return
+            except Exception as exc:  # noqa: BLE001 — said, never raised out of a task
+                output_queue.put_nowait(
+                    ("after_stream", Text(f"✖ /{command.name} failed: {exc}", style="bold red"))
+                )
+                return
+            finally:
+                open_state["open"] -= 1
+
+        _spawn_mid_turn(_go())
+
+    chrome.on_mid_turn_command = _mid_turn_command
 
     while True:
         # #596 — the ``!`` blocks a command (``/compact``, ``/reload``, …) or a
@@ -5160,6 +5361,7 @@ async def _input_loop(
         # ``input`` hook handles below starts none.
         renderer.take_run_end()
         chrome.set_running(True)
+        turn_active["v"] = True
         turn_raised = False
         if typed_prompt is not None:
             typed_prompt["line"] = line
@@ -5179,9 +5381,14 @@ async def _input_loop(
                     ("commit", Text(f"✖ {exc}", style="bold red"))
                 )
         finally:
+            turn_active["v"] = False
+            # #701 — whatever a mid-turn command printed is under the answer now.
+            output_queue.put_nowait(("release", None))
             chrome.set_running(False)
             if typed_prompt is not None:
                 typed_prompt["line"] = None
+        if quit_after_turn["v"]:
+            return  # #701 — a ``/quit`` Entered mid-turn stopped this turn
 
         # #596 — the ``!`` commands run during the turn reach the transcript and
         # the model now, after the turn's last message and before the next

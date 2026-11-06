@@ -1289,6 +1289,20 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/` command typed while the model answers runs or says why it waits, and never reaches the
+  model as text (#701, ADR-0292).** Enter on `/thinking high` mid-turn sent the line to the model as
+  a steering message (Alt+Enter as a follow-up), with nothing on screen to say so. Now `/thinking`,
+  `/model` and their pickers, `/settings`, `/skill`, `/tool`, `/permissions` and the read-only
+  commands run at once; a new model or thinking level is used from the next message (or a retry
+  of this one), and a dim line says so. `/quit` stops the answer and quits, an extension's command
+  runs and an extension's panel opens at once, and a prompt template or `/skill:<name>` steers its
+  expansion. `/new`, `/resume`, `/fork`, `/clone`, `/import`, `/reload`, `/compact`, `/clear`,
+  `/login`, `/logout`, `/extension`, `/name <text>` and `/agents use`/`run` wait: the line stays
+  in the input and the row under it says why. An unknown `/word` says "Unknown command", as at
+  idle. What such a command prints lands under the answer instead of above it; a tool approval
+  that opens over a picker or an extension's panel hands it back when it closes, and one that
+  opens over a `/skill` or `/tool` panel whose save is still running stays up when the panel
+  closes, instead of vanishing with its answer pending.
 - **A `/reload` that worked says so, and a `/skill` or `/tool` save always says what it did
   for the model (#704, ADR-0284, ADR-0279).** A successful `/reload` left no line unless an
   extension changed, so a `/reload` after turning a skill off read as ignored. It now leaves

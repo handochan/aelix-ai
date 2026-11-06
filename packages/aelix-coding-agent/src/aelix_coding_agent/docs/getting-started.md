@@ -454,6 +454,21 @@ and moves into the transcript when the model takes it, so the transcript reads i
 order the model saw things. `Alt+Up` brings the queued lines back into the input, as the
 `↳ Alt+Up to edit all queued messages` row under them says when there is room for it.
 
+A line that starts with `/` is a command while the model answers too, never a message
+to it. Commands that only show something or change a setting run at once: `/thinking`,
+`/model` (and their pickers), `/settings`, `/skill`, `/tool`, `/permissions`, `/help`,
+`/cost`, `/stats` and the like. A new model or thinking level is used from your next
+message (or a retry of this one), and a dim line says so. `/quit` stops the answer and
+quits. An extension's command runs at once, an extension's panel opens, and a prompt
+template or `/skill:<name>` is expanded and its text steered into the answer (with
+`Alt+Enter`, queued as a follow-up).
+Commands that would change the session under the answer — `/new`, `/resume`, `/fork`,
+`/clone`, `/import`, `/reload`, `/compact`, `/clear`, `/login`, `/extension`,
+`/name <text>`, `/agents use` or `run` — do not run then: the line stays in the input and
+the row under it says why, so you can press Enter again once the answer is over, or `Esc`
+to stop it. `Alt+Enter` on a command does the same as Enter. What a command prints while
+the answer streams appears under it, once that message is done.
+
 When a turn is over, the `Working…` row leaves one dim line behind in the
 transcript: `✓ done · 4.2s · 14:05` — how long the turn took and the time it ended.
 A turn you stopped reads `stopped · 2.9s · 14:05` (one stopped while it waited to

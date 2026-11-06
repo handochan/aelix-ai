@@ -36,6 +36,20 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0292 — A `/` line Entered during a turn is a command, not a steer](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md)
+  (Accepted 2026-11-06; #701). Enter and Alt+Enter on a typed `/` line while a turn runs never send
+  it to the model: the chrome asks the input loop first. An explicit table in `tui/commands.py`
+  (`MID_TURN_RUNS`, `mid_turn_refusal`) runs `/thinking`, `/model`, `/settings`, the pickers, the
+  panels and the read-only commands at once, in a task beside the turn; `/quit` stops the turn and
+  quits; an extension's command runs at once; a template or `/skill:<name>` steers its expansion;
+  the rest — `/new`, `/resume`, `/fork`, `/clone`, `/import`, `/reload`, `/compact`, `/clear`,
+  `/login`, `/extension`, `/name <text>`, `/agents use|run` — are refused with the line kept and
+  the reason on the row under it. A model or thinking change applies from the next message or a
+  retry of this one (a run snapshots both) and says so; what a mid-turn command prints waits under
+  the live answer (`after_stream`). The modal slot stacks, so a tool approval over a picker hands
+  the picker back, and a panel's own close names its modal, so one under a tool approval leaves the
+  approval up. pi dispatches built-ins first and lets handlers refuse;
+  diverged (the draft decision is synchronous). Amends ADR-0119 and ADR-0159 by dated notes.
 - [0290 — A cancelled turn keeps what ran](0290-a-cancelled-turn-keeps-what-ran.md)
   (Accepted 2026-11-04; #672, #673). Whatever cancels a turn, a call that finished keeps its real
   result, and a call the cancel cut gets an error result saying it was stopped and may have partly run,

@@ -218,7 +218,9 @@ async def run_thinking_picker(
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ thinking switch failed: {exc}", style="bold red"))
         return
-    commit(Text(f"thinking → {thinking_level_display(model, chosen)}", style="green"))
+    from aelix_coding_agent.tui.mid_turn import setter_line
+
+    commit(setter_line(f"thinking → {thinking_level_display(model, chosen)}"))
 
 
 __all__ = ["thinking_level_display", "thinking_picker_labels", "run_thinking_picker"]

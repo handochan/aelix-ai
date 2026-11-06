@@ -175,10 +175,10 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
 
     A MULTI-ROW TITLE KEEPS THE OLD SHAPE, and that is load-bearing rather than
     tidy. The spawn-consent dialog passes a NINE-row title
-    (``tests/agents_ext/test_spawn_consent.py:1351`` pins ``title.count("\\n")
+    (``tests/agents_ext/test_spawn_consent.py:1352`` pins ``title.count("\\n")
     == 8``) and ``aelix_agents/consent.py`` writes its height budget down as
     ``title_rows + option_rows + 4``, gated by
-    ``tests/agents_ext/test_batch_consent.py:344``. Nine rows cannot ride a rule,
+    ``tests/agents_ext/test_batch_consent.py:345``. Nine rows cannot ride a rule,
     and quietly changing that arithmetic is how ``Cancel`` goes off screen.
     MEASURED against the shipped helper: single-row title 8 rows → 7, nine-row
     title 16 rows → 16, and the top rule is exactly as wide as the bottom one at
@@ -1521,9 +1521,12 @@ class AelixTUIContext:
 
             async def _close(lines: list[object]) -> None:
                 def _unmount() -> None:
-                    chrome.unmount_modal()
-                    with contextlib.suppress(Exception):
-                        chrome.focus_input()
+                    # #701 (verify V3) — by name, as the standalone panel does: a
+                    # turn's dialog over this modal stays and keeps the keys.
+                    chrome.unmount_modal(window)
+                    if not chrome.is_modal_open():
+                        with contextlib.suppress(Exception):
+                            chrome.focus_input()
                     if not result.done():
                         result.set_result(None)
 
@@ -1637,11 +1640,12 @@ class AelixTUIContext:
             ):
                 kb.add(key)(_key(key))
             kb.add("<any>")(_key("<any>"))
-            return Window(
+            window = Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
                 height=lambda: Dimension.exact(_height()),
                 dont_extend_height=True,
             )
+            return window
 
         await show_modal(chrome, build)
         for task in list(tasks):

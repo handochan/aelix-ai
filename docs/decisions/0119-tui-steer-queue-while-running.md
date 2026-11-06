@@ -81,3 +81,14 @@ deferred "per-message list panel": each queued line is listed, steering lines fi
 gets them, in the rows the pending area's eight leave (at least three, then "… N more queued"),
 with pi's "↳ Alt+Up to edit all queued messages" under them when a row is free (ADR-0287 D6), and
 the footer keeps its `⋯ N queued` count.
+
+## Note (2026-11-06, #701): a `/` line Entered during a turn is a command
+
+*Amended 2026-11-06 by [ADR-0292](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md).*
+Enter and Alt+Enter steer or follow up every line **except** a `!` one (above) and a `/` one the
+input drew as a command: the chrome asks the input loop first (`on_mid_turn_command`). `/thinking`,
+`/model`, `/settings` and the other read-only or setting commands run at once, beside the turn,
+and apply from the next message; `/quit` stops the turn and quits; an extension's command runs at
+once; a template or `/skill:<name>` steers its expansion (Alt+Enter: a follow-up); the rest are
+refused with the line kept in the input and the reason on the row under it. Before, such a line
+reached the model as a steering or follow-up message.

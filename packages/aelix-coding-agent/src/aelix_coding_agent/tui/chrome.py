@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from prompt_toolkit.output.base import Output
 
     from aelix_coding_agent.extensions.widget_protocols import Theme
+    from aelix_coding_agent.tui.input import ParsedInput
 
 logger = logging.getLogger(__name__)
 
@@ -762,6 +763,15 @@ class AelixChrome:
         # steer()/follow_up() concurrently — mirror of the on_interrupt pattern).
         self.on_steer: Callable[[str], None] | None = None
         self.on_follow_up: Callable[[str], None] | None = None
+        # #701 (ADR-0292) — asked first when Enter or Alt+Enter sends a line
+        # while a turn runs: ``None`` when it is not a command (it steers or
+        # follows up, as before); ``("ran", "")`` when the host ran it; or
+        # ``("refused", why)``, and the line stays in the input with *why* on
+        # the row under it. A typed ``/`` line never reaches the model as text.
+        self.on_mid_turn_command: Callable[[SubmittedLine], tuple[str, str] | None] | None = None
+        # The draft a mid-turn command was refused for, and why; drawn on the
+        # status row while the input still holds that draft and a turn runs.
+        self._command_refusal: tuple[str, str] | None = None
         # Ctrl+T toggles thinking-block visibility; Alt+Up restores queued
         # steer/follow-up messages back into the editor (Sprint 6h₁₅, ADR-0123).
         self.on_thinking_toggle: Callable[[], None] | None = None
@@ -871,6 +881,8 @@ class AelixChrome:
         # #596 — the cursor never stands in front of a sigil drawn as the marker.
         self.buffer.on_cursor_position_changed += self._keep_cursor_after_sigil
         self.buffer.on_text_changed += self._keep_cursor_after_sigil
+        # #701 — an edit takes a mid-turn command's refusal away for good.
+        self.buffer.on_text_changed += self._drop_command_refusal
         # Submitted lines flow through a queue (loop-agnostic at construction;
         # robust to input arriving before/after a get_input() call).
         self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
@@ -927,6 +939,12 @@ class AelixChrome:
         # ``None`` → the placeholder (0 rows) renders, so the slot is invisible
         # when idle. Set BEFORE the app is built (``_render_modal_slot`` reads it).
         self._modal: AnyContainer | None = None
+        # #701 — the modals mounted under the one on screen, each with the
+        # window to focus when it is on top again. A dialog the turn opens (a
+        # tool approval) can mount over a picker the user opened mid-turn; the
+        # picker comes back when it closes instead of being left unanswered.
+        self._modal_stack: list[tuple[AnyContainer, AnyContainer | None]] = []
+        self._modal_focus: AnyContainer | None = None
         # A zero-row idle placeholder — measured to contribute 0 rows, so the
         # slot adds no gap to the chrome when no modal is open.
         self._modal_placeholder: Window = Window(height=0)
@@ -1309,6 +1327,10 @@ class AelixChrome:
                     if parsed.text:
                         self.on_shell(parsed)
                     return
+            # #701 (ADR-0292) — a command typed while a turn runs is run or
+            # refused here, never steered to the model as text.
+            if self._running and submit_text.strip() and _mid_turn(submit_text, parsed):
+                return
             # Mid-turn Enter steers (injects into the running turn) instead of
             # feeding the serialized input queue — bypasses _input_loop, which is
             # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
@@ -1342,6 +1364,29 @@ class AelixChrome:
                 self.buffer.history.append_string(submit_text)
             self._reset_paste_state()
 
+        def _mid_turn(submit_text: str, parsed: ParsedInput, *, follow_up: bool = False) -> bool:
+            """#701 — whether the host took a mid-turn line as a command.
+
+            Ran: the input clears, as for any line sent. Refused: the draft
+            stays, and the status row says why until it is edited. *follow_up*:
+            Alt+Enter, carried as the line's ``after_turn``.
+            """
+
+            decide = self.on_mid_turn_command
+            if decide is None:
+                return False
+            verdict = decide(SubmittedLine(submit_text, parsed, after_turn=follow_up))
+            if verdict is None:
+                return False
+            outcome, why = verdict
+            if outcome == "ran":
+                self._command_refusal = None
+                _consume(submit_text)
+            else:
+                self._command_refusal = (self.buffer.text, why)
+                self.invalidate()
+            return True
+
         @kb.add("escape", "enter")
         def _follow_up(event: object) -> None:
             # Alt+Enter is the follow-up affordance: while a turn is running it
@@ -1364,6 +1409,15 @@ class AelixChrome:
                 if parsed.text and self.shell_busy():
                     _consume(submit_text)
                     self.on_shell(parsed, after_turn=True)
+                return
+            # #701 — Alt+Enter on a command runs or refuses it as Enter does:
+            # queued as a follow-up, it reached the model as text. A template's
+            # expansion is queued as a follow-up (``after_turn``).
+            if (
+                self._running
+                and submit_text.strip()
+                and _mid_turn(submit_text, parsed, follow_up=True)
+            ):
                 return
             if self._running and submit_text.strip() and self.on_follow_up is not None:
                 self.buffer.reset()
@@ -1707,6 +1761,9 @@ class AelixChrome:
                 stopped=self._ask(self.stopped_provider),
             )
             parts.insert(0, paint_shell(self._theme_now(), hint))
+        refusal = self._command_refusal_now()
+        if refusal and not self.is_modal_open():
+            parts.insert(0, f"\x1b[33m{refusal}\x1b[0m")
         # #66 item 2 — the transient "Press Ctrl+C again to exit" hint. Rendered
         # (not stored in ``_status``) so it self-clears once the arm window
         # elapses — the app's ``refresh_interval`` repaints drop it with no timer.
@@ -1716,6 +1773,28 @@ class AelixChrome:
         if not parts:
             return ""
         return "  ".join(parts)
+
+    def _drop_command_refusal(self, _buffer: object = None) -> None:
+        refusal = self._command_refusal
+        if refusal is not None and self.buffer.text != refusal[0]:
+            self._command_refusal = None
+
+    def _command_refusal_now(self) -> str:
+        """#701 — why the command in the input did not run, while it still waits.
+
+        Only while a turn runs and the input holds the line that was refused:
+        an edit, a send or the turn's end takes it away.
+        """
+
+        refusal = self._command_refusal
+        if refusal is None:
+            return ""
+        draft, why = refusal
+        if not self._running or self.buffer.text != draft:
+            return ""
+        from aelix_coding_agent.tui.selection_panel import fit, flat  # noqa: PLC0415
+
+        return fit(flat(why), max(10, self._terminal_width() - 2))
 
     def _ctrl_c_exit_hint(self) -> str:
         """The idle-exit hint while a Ctrl+C exit window is armed, else ``""``.
@@ -2233,6 +2312,7 @@ class AelixChrome:
             self._last_ctrl_c = None
         else:
             self._submitted_line = None  # #654: its turn is over, nothing can withdraw it
+            self._command_refusal = None  # #701: the command can run now
         self.invalidate()
 
     @property
@@ -2300,6 +2380,15 @@ class AelixChrome:
         self._pending_spacer = spacer
         self._pending_hint_row = hint_row
         self.invalidate()
+
+    def stream_live(self) -> bool:
+        """#701 — whether the answer's live window (``__stream__``) holds text now.
+
+        A panel that closes then prints its summary through the output queue,
+        which keeps it under the answer, instead of straight above the chrome.
+        """
+
+        return bool(self._widgets_above.get("__stream__"))
 
     def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:
         slots = self._widgets_above if above else self._widgets_below
@@ -2463,7 +2552,7 @@ class AelixChrome:
 
         return self._modal if self._modal is not None else self._modal_placeholder
 
-    def mount_modal(self, content: AnyContainer) -> None:
+    def mount_modal(self, content: AnyContainer, *, focus: AnyContainer | None = None) -> None:
         """Mount ``content`` in the in-flow modal slot (Sprint 6h₂₈, ADR-0159).
 
         REPLACES the role :meth:`add_float` played for ``show_modal``: the slot
@@ -2474,7 +2563,10 @@ class AelixChrome:
         completions menu + descriptor toasts (which never clip) stay as Floats.
         """
 
+        if self._modal is not None and self._modal is not content:
+            self._modal_stack.append((self._modal, self._modal_focus))
         self._modal = content
+        self._modal_focus = focus
         # #671 — prompt_toolkit caches the merged key bindings by the focused
         # window and the set of controls, and finds a window's parents in a map
         # it rebuilds at each render. A key handled after the modal took focus
@@ -2484,10 +2576,35 @@ class AelixChrome:
         self.app.layout.update_parents_relations()
         self.invalidate()
 
-    def unmount_modal(self) -> None:
-        """Remove the in-flow modal so the slot collapses to 0 rows (ADR-0159)."""
+    def unmount_modal(self, content: AnyContainer | None = None) -> None:
+        """Remove the in-flow modal so the slot collapses to 0 rows (ADR-0159).
 
-        self._modal = None
+        #701 — *content* names the modal leaving: the container mounted, or
+        the window it focuses (what a panel's own close holds; ``show_modal``
+        mounts a wrapper around it). ``None`` is the one on screen, which no
+        close may assume is its own: a turn's dialog can have mounted over it
+        (a ``/skill`` panel's save still running under a tool approval took the
+        approval down, its future left pending, verify V3). One mounted over
+        another hands the slot back to the one under it, focused again; one that
+        was already covered just leaves the stack, and a second unmount of the
+        same modal (a panel's own close, then ``show_modal``'s cleanup) does
+        nothing.
+        """
+
+        if content is not None and content is not self._modal and content is not self._modal_focus:
+            self._modal_stack = [
+                e for e in self._modal_stack if e[0] is not content and e[1] is not content
+            ]
+            return
+        if self._modal_stack:
+            self._modal, self._modal_focus = self._modal_stack.pop()
+            with contextlib.suppress(Exception):
+                self.app.layout.update_parents_relations()
+            if self._modal_focus is not None:
+                self.focus(self._modal_focus)
+        else:
+            self._modal = None
+            self._modal_focus = None
         self.invalidate()
 
     def is_modal_open(self) -> bool:

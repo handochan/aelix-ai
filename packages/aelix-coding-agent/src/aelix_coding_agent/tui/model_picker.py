@@ -321,7 +321,9 @@ async def run_model_picker(
         with contextlib.suppress(Exception):
             settings_manager.set_default_model_and_provider(chosen_provider, chosen_id)
             await settings_manager.flush()
-    commit(Text(f"model → {getattr(chosen, 'id', '?')}", style="green"))
+    from aelix_coding_agent.tui.mid_turn import setter_line
+
+    commit(setter_line(f"model → {getattr(chosen, 'id', '?')}"))
     # The footer ✱ segment is a cached string — refresh so it reflects the new
     # model immediately (not only on the next unrelated repaint).
     if refresh_footer is not None:

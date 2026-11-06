@@ -873,7 +873,7 @@
    "tag = _DID_NOT_START_TAG if not member.started else member.result.status",
    "summary = member.result.summary or NO_OUTPUT",
    "error = member.result.error",
-   "# The note set mirrors ``render_subagent_result`` (``tool.py:1405-1415``) so a",
+   "# The note set mirrors ``render_subagent_result`` (``tool.py:1407-1417``) so a",
    "# batch member never says less about itself than the same child would say on",
    "# the single-mode path. Asked of the UNCAPPED summary: an error that the",
    "# budget cut out of the body is part of the summary still, and re-adding it",
@@ -962,7 +962,7 @@
    "# the rung above. A memo let a LATER tool call skip the dialog — its tasks and",
    "# its cwd were chosen after the human had answered and were never on screen. A",
    "# batch is ONE tool call, already validated by the hook and frozen into",
-   "# ``PendingSpawn`` (``tool.py:401-425``), whose every task and whose one cwd are",
+   "# ``PendingSpawn`` (``tool.py:403-427``), whose every task and whose one cwd are",
    "# rendered before the human answers — and if they cannot all be rendered, the",
    "# call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing",
    "# is memoised and the grant is still spent by exactly this one call."
@@ -1477,7 +1477,7 @@
    "that reached EOF is how a mid-flight death is distinguished from a clean",
    "finish that merely produced no text.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1000-1085": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1002-1087": [
    "def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:",
    "\"\"\"The ``[agent … ]`` footer both renderers print.",
    "",
@@ -1487,10 +1487,10 @@
    "refusal, so without the override the footer says ``error`` one line under a",
    "heading that says ``did not start``. Keyword-only with a ``None`` default so"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1051-1051": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1053-1053": [
    "if usage.cost:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1358-1367": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1360-1369": [
    "if result.dropped_tools:",
    "notes.append(",
    "\"Tools not granted to this agent: \"",
@@ -1500,7 +1500,7 @@
    "if result.dropped_lines:",
    "notes.append("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1371-1404": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1373-1406": [
    "def render_subagent_result(result: SubagentResult) -> ToolResult:",
    "\"\"\"Fold the envelope into what the parent's model reads.",
    "",
@@ -1510,7 +1510,7 @@
    "which is what the truncation marker points at when there is one (#199).",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1405-1415": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1407-1417": [
    "body = result.summary or \"(no output)\"",
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
@@ -1520,29 +1520,29 @@
    "notes.append(f\"Error: {note}\")",
    "if result.note:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1406-1408": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1408-1410": [
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
    "body, result.error, truncated=result.truncated"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1407-1407": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1409-1409": [
    "if result.error and not error_repeats_summary("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1422-1422": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1424-1424": [
    "text = \"\\n\\n\".join([body, *notes, _usage_line(result)])"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1425-1425": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1427-1427": [
    "details=result.details,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:358-358": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:360-360": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:358-360": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:360-362": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``",
    "into a 1-tuple at parse time so the single and batch paths downstream are one",
    "code path rather than two that must be kept in agreement.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:401-418": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:403-420": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1552,7 +1552,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:401-425": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:403-427": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1562,7 +1562,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:676-682": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:678-684": [
    "if len(raw) > MAX_PARALLEL_TASKS:",
    "raise AgentCallError(",
    "f\"{len(raw)} tasks is more than one call may carry — the limit is \"",
@@ -1571,7 +1571,7 @@
    "\"bigger task.\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:870-879": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:872-881": [
    "``execution_mode=\"sequential\"`` IS A SECURITY SETTING, not a performance",
    "one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The",
    "kernel's ``_execute_tool_calls``",
@@ -1581,7 +1581,7 @@
    "product-core cost. It is belt-and-braces with the hook location and with",
    "``consent.py``'s process-wide lock — and because the description is"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:894-894": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:896-896": [
    "execution_mode=\"sequential\","
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/discovery.py:357-357": [
@@ -2823,7 +2823,7 @@
    "full height, so the security-critical deny option is ALWAYS visible even when",
    "the diff body is far taller than the cap."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1136-1148": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1154-1166": [
    "# ``widgets_above``/``widgets_below`` stay UNGATED on purpose. An empty",
    "# ``FormattedTextControl`` reports ``line_count == 1``, so each holds a",
    "# permanent 1-row floor — that row is a LAYOUT STABILISER, not dead space.",
@@ -2833,15 +2833,15 @@
    "# runs inside ``print_above_many``'s ``apply_before_redraw`` hook, i.e.",
    "# inside the erase/CPR two-phase fold-in the round-3 flicker fix made"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1150-1152": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1168-1170": [
    "Window(",
    "FormattedTextControl(self._render_widgets_above),",
    "dont_extend_height=True,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1216-1216": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1234-1234": [
    "refresh_interval=0.1,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1315-1322": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1337-1344": [
    "if self._running and submit_text.strip() and self.on_steer is not None:",
    "self.buffer.reset()",
    "with contextlib.suppress(Exception):",
@@ -2851,18 +2851,18 @@
    "self.on_steer(SubmittedLine(submit_text, parsed))",
    "return"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1564-1567": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1618-1621": [
    "@kb.add(",
    "\"s-tab\",",
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1694-1696": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1748-1750": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1694-1717": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1748-1771": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]",
@@ -2872,13 +2872,13 @@
    "if sigil and not self.is_modal_open():",
    "hint = shell_hint("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1718-1718": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1775-1775": [
    "return \" \".join(parts)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1948-1948": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2027-2027": [
    "return ANSI(\"\\n\".join(lines))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2304-2310": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2393-2399": [
    "def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:",
    "slots = self._widgets_above if above else self._widgets_below",
    "if lines is None:",
@@ -2887,10 +2887,10 @@
    "slots[key] = list(lines)",
    "self.invalidate()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:929-929": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:941-941": [
    "self._modal: AnyContainer | None = None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:963-979": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:981-997": [
    "def _ansi_row(",
    "getter: Callable[[], str], *, gate_visible: bool = False",
    ") -> ConditionalContainer:",
@@ -2900,17 +2900,17 @@
    "if gate_visible:",
    "cond = cond & Condition(lambda: self._working_visible or self._running)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1464-1465": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1463-1464": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1865-1865": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1864-1864": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2414-2414": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2413-2413": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2415-2415": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2414-2414": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1000-1003": [
@@ -2934,10 +2934,10 @@
    "",
    "GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1755-1755": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1759-1759": [
    "_orig_idx, (oid, label, _desc) = opts[vi]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:2058-2073": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:2062-2077": [
    "def set_widget(",
    "self,",
    "key: str,",
@@ -3050,13 +3050,13 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:346-346": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1090-1090": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1092-1092": [
    "# through the same queue as committed lines keeps them ordered — otherwise a"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1571-1571": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1583-1583": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2531-2548": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2543-2560": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3066,21 +3066,21 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3455-3457": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3467-3469": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3716-3716": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3733-3733": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3861-3861": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3878-3878": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3946-3946": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3963-3963": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:459-475": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:461-477": [
    "",
    "def _reload_rebuild_enabled() -> bool:",
    "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
@@ -3090,13 +3090,13 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4736-4736": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4782-4782": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4875-4875": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5076-5076": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4956-4970": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5157-5171": [
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
    "# args = the text after the command word (Sprint 6h₁₂d). The",
@@ -3134,13 +3134,13 @@
    "harness = AgentHarness(options)",
    "await run_rpc_mode(harness)"
   ],
-  "tests/agents_ext/test_batch_consent.py:344-344": [
+  "tests/agents_ext/test_batch_consent.py:345-345": [
    "\"\"\"``title_rows + option_rows + 4 <= cap(24)`` for every N the check admits."
   ],
   "tests/agents_ext/test_child_trust_argv.py:189-189": [
    "@pytest.mark.skipif(sys.platform == \"win32\", reason=\"POSIX symlink semantics\")"
   ],
-  "tests/agents_ext/test_spawn_consent.py:1351-1351": [
+  "tests/agents_ext/test_spawn_consent.py:1352-1352": [
    "assert title.count(\"\\n\") == 8"
   ],
   "tests/agents_ext/test_tool_and_security.py:674-686": [

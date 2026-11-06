@@ -1366,14 +1366,22 @@ async def run_selection_panel(
 
         async def _close(lines: list[object]) -> None:
             def _unmount() -> None:
-                chrome.unmount_modal()
-                with contextlib.suppress(Exception):
-                    chrome.focus_input()
+                # #701 (verify V3) — this panel leaves, by name: a turn's dialog
+                # mounted over it while the save ran stays on screen and keeps
+                # the keys, instead of being taken down with its answer pending.
+                chrome.unmount_modal(window)
+                if not chrome.is_modal_open():
+                    with contextlib.suppress(Exception):
+                        chrome.focus_input()
                 if not result.done():
                     result.set_result(None)
 
             printer = getattr(chrome, "print_above_many", None)
-            if printer is None:
+            live = getattr(chrome, "stream_live", None)
+            if printer is None or (callable(live) and live()):
+                # #701 — opened while the model answers: printed straight above
+                # the chrome, the summary would land above the answer still
+                # being written; the output queue puts it under it.
                 for line in lines:
                     ctx.commit(line)
                 _unmount()
@@ -1420,11 +1428,12 @@ async def run_selection_panel(
             return min(_rows() - 7, _modal_cap(chrome, None))
 
         control = SelectionList(model, layout, _width, kb, cap=_live_cap)
-        return Window(
+        window = Window(
             control,
             height=lambda: Dimension.exact(control.current_layout().height),
             dont_extend_height=True,
         )
+        return window
 
     await show_modal(chrome, build)
     for task in list(tasks):

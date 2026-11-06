@@ -645,7 +645,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:568``/``tool.py:1051`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:568``/``tool.py:1053`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -1457,7 +1457,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:1564-1567``) and wave 2 may start half an hour after
+            # (``chrome.py:1618-1621``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).

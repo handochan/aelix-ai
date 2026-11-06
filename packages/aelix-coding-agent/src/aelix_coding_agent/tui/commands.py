@@ -26,6 +26,7 @@ from rich.table import Table
 from rich.text import Text
 
 from aelix_coding_agent.extensions.ext_ui import select_declared
+from aelix_coding_agent.tui.mid_turn import setter_line
 from aelix_coding_agent.tui.stats_dashboard import format_session_cost, format_tool_usage
 from aelix_coding_agent.tui.stream import drop_format_controls
 
@@ -401,24 +402,22 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             # discriminator the /model tests assert on, and an unverified id must
             # not be able to impersonate a catalogued one.
             ctx.commit(
-                Text(
-                    f"⚠ switched to {provider}/{model_id} — {caution}",
-                    style="yellow",
-                )
+                setter_line(f"⚠ switched to {provider}/{model_id} — {caution}", "yellow")
             )
         else:
             # Name the provider: the pair is what actually switched, and a bare id
             # made a wrong-provider resolution look identical to a right one (#134).
-            ctx.commit(Text(f"model → {model_id} ({provider})", style="green"))
+            # #701 — run mid-turn, it says when the switch applies (ADR-0292 D5).
+            ctx.commit(setter_line(f"model → {model_id} ({provider})"))
     else:
         # A bare Model (empty provider) — the switch "succeeds" but turns will
         # fail later; caution, not green (ADR-0250: an OpenRouter key no longer
         # makes an arbitrary id OpenRouter's, so that advice is gone).
         ctx.commit(
-            Text(
+            setter_line(
                 f"model → {model_id} (no provider resolved — turns may fail; "
                 "write it as <provider>/<id>)",
-                style="yellow",
+                "yellow",
             )
         )
     # The footer ✱ segment is a cached string — refresh it so it reflects the
@@ -918,7 +917,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:4956-4970`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5157-5171`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1049,7 +1048,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3946`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3963`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1599,7 +1598,7 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
         # #559 — the footer's ``🧠`` reads the live level, whichever way the
         # setter ended: a handler's raise comes after the level was replaced.
         _refresh_footer_quietly(ctx)
-    ctx.commit(Text(f"thinking → {thinking_level_display(model, args)}", style="green"))
+    ctx.commit(setter_line(f"thinking → {thinking_level_display(model, args)}"))
 
 
 async def _expand_handler(ctx: CommandContext, args: str) -> None:
@@ -2493,12 +2492,90 @@ def match_command(text: str, commands: list[BuiltinCommand]) -> BuiltinCommand |
     return None
 
 
+#: #701 (ADR-0292) — the built-ins Enter runs at once while the model answers.
+#: They show something, open a picker or panel, or change a setting the next
+#: request reads; none of them writes the session file mid-turn (a model or
+#: thinking change is queued by the harness until the turn ends) or replaces the
+#: harness. ``quit`` stops the answer and quits, as pi's ``/quit`` runs ahead of
+#: its streaming branch (the input loop handles it, verify V1). ``name`` and
+#: ``agents`` run only in their read-only forms (:func:`mid_turn_refusal`).
+#: Every other built-in is refused, its line kept in the input, with the reason
+#: in :data:`_MID_TURN_REFUSED`.
+MID_TURN_RUNS: frozenset[str] = frozenset(
+    {
+        "quit",
+        "help",
+        "hotkeys",
+        "model",
+        "thinking",
+        "settings",
+        "scoped-models",
+        "statusline",
+        "permissions",
+        "mode",
+        "tool",
+        "skill",
+        "trust",
+        "cost",
+        "stats",
+        "session",
+        "context",
+        "hooks",
+        "mcp",
+        "tree",
+        "expand",
+        "copy",
+        "export",
+        "name",
+        "agents",
+    }
+)
+
+#: #701 (ADR-0292) — why a built-in waits for the turn to end, as the row under
+#: the input says it. Worded after what the command would do to the turn.
+_MID_TURN_REFUSED: dict[str, str] = {
+    "reload": "it rebuilds the session the answer is running in",
+    "new": "it replaces the session the answer is running in",
+    "resume": "it replaces the session the answer is running in",
+    "import": "it replaces the session the answer is running in",
+    "fork": "it starts from the session the answer is still writing",
+    "clone": "it copies the session the answer is still writing",
+    "compact": "it rewrites the context the answer is using",
+    "clear": "it clears the screen the answer is being written to",
+    "login": "it changes credentials the answer may be using",
+    "logout": "it changes credentials the answer may be using",
+    "extension": "it installs and scaffolds extensions",
+}
+
+
+def mid_turn_refusal(command: BuiltinCommand, args: str) -> str | None:
+    """#701 (ADR-0292) — ``None`` when Enter runs *command* now, mid-turn; else why not.
+
+    ``/name`` with text writes the session file, and ``/agents use`` / ``run``
+    swap the profile or start a delegation: only their read-only forms run.
+    A built-in in neither table is refused, so a new command has to be placed.
+    """
+
+    name = command.name
+    if name == "name" and args.strip():
+        return "renaming writes the session file the answer is still writing"
+    if name == "agents":
+        sub = args.split(maxsplit=1)[0] if args.strip() else ""
+        if sub not in ("", "list", "show"):
+            return "it switches the profile or starts a delegation"
+    if name in MID_TURN_RUNS:
+        return None
+    return _MID_TURN_REFUSED.get(name, "it can run only when the answer is over")
+
+
 __all__ = [
     "BUILTIN_COMMANDS",
+    "MID_TURN_RUNS",
     "BuiltinCommand",
     "CommandContext",
     "CommandInterrupted",
     "build_help_renderable",
     "match_command",
+    "mid_turn_refusal",
     "slash_word",
 ]
