@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -965,11 +965,19 @@ def summary(
     effect_note: str,
     width: int = 80,
     always_note: bool = False,
+    held: Sequence[tuple[str, bool, str]] = (),
 ) -> Text:
     """The transcript lines Enter leaves behind (ADR-0279 D11), wrapped to *width* with their indent.
 
     *always_note* (a kind whose effect is ``reload``, #25): Enter saved and
     applied nothing, so the guidance is said whenever something was saved.
+
+    #704 — a save that was applied always says what it did for the model. The
+    note when the session's list moved; else, for *held* (``(label, saved
+    value, why)`` of a change the session still does not use, read after the
+    apply), that it stays as it was and why; else that the session already had
+    it. Before, a save the apply found nothing to do for left the file line
+    alone, and "saved" read as "applied" or as nothing at all.
     """
 
     out = Text()
@@ -1004,10 +1012,22 @@ def summary(
             line("A turn is running; this applies when it ends.", "yellow")
         if apply.warning:
             line(f"{apply.warning}.", "yellow")
-        if effect_note and (
-            apply.deferred or (apply.applied and (apply.turned_on or apply.turned_off))
-        ):
+        moved = apply.applied and bool(apply.turned_on or apply.turned_off)
+        if effect_note and (apply.deferred or moved):
             line(effect_note, "dim")
+        if apply.applied and not apply.deferred:
+            for label, value, why in held:
+                reason = f": {why}" if why else ""
+                line(f"{label} stays {'off' if value else 'on'} in this session{reason}.", "yellow")
+            kept = {h[0] for h in held}
+            settled = [(label, value) for label, value in changed if label not in kept]
+            if settled and not moved and not apply.warning:
+                if len(settled) == 1:
+                    label, value = settled[0]
+                    what = f"{label} {'on' if value else 'off'}"
+                else:
+                    what = "these"
+                line(f"Nothing changes for the model: this session already had {what}.", "dim")
     elif always_note and effect_note and save is not None and save.changed:
         line(effect_note, "dim")
     return out
@@ -1065,7 +1085,7 @@ class SelectionPanelBody:
         *,
         title: str,
         noun: tuple[str, str] = ("item", "items"),
-        effect_note: str = "",
+        effect_note: str | Callable[[], str] = "",
         width: Callable[[], int] = lambda: 80,
         commit: Callable[[object], None] = lambda _line: None,
         title_row: TitleRow | None = None,
@@ -1236,11 +1256,62 @@ class SelectionPanelBody:
                 title,
                 save,
                 applied,
-                effect_note=self.effect_note,
+                effect_note=self._effect_note(),
                 width=self._width(),
                 always_note=reload_bound,
+                held=self._held(save, applied),
             )
         ]
+
+    def _effect_note(self) -> str:
+        """The note, read when the save is said: #704 — what the model gets can
+        depend on the session as it is then (a skill list the prompt withholds)."""
+
+        note = self.effect_note
+        if not callable(note):
+            return note
+        try:
+            return note()
+        except Exception:  # noqa: BLE001 — the summary is said without it
+            return ""
+
+    def _held(
+        self, save: SaveResult | None, applied: ApplyResult | None
+    ) -> tuple[tuple[str, bool, str], ...]:
+        """#704 — the saved changes this session still does not use, read after the apply.
+
+        A fresh read: what the model gets now is the live state (``live``, a
+        lock's value), not what the apply returned. Empty when nothing was
+        applied here — deferred, refused or failed — or the read fails.
+        """
+
+        if save is None or not save.changed or applied is None:
+            return ()
+        if not applied.applied or applied.deferred:
+            return ()
+        try:
+            states = self.selection.snapshot(self.kind).states
+        except Exception:  # noqa: BLE001 — the summary is said without it
+            return ()
+        by_label: dict[str, ItemState] = {}
+        for state in states:
+            by_label.setdefault(state.item.label, state)
+        out: list[tuple[str, bool, str]] = []
+        for label, value in save.changed:
+            state = by_label.get(label)
+            if state is None:
+                continue
+            now = state.live if state.live is not None else state.in_force
+            if now == value:
+                continue
+            if state.lock is not None:
+                why = state.lock.reason
+            elif state.live is False and state.applied:
+                why = "it was turned off for this run"
+            else:
+                why = ""
+            out.append((label, value, why))
+        return tuple(out)
 
 
 async def run_selection_panel(
@@ -1250,7 +1321,7 @@ async def run_selection_panel(
     *,
     title: str,
     noun: tuple[str, str] = ("item", "items"),
-    effect_note: str = "",
+    effect_note: str | Callable[[], str] = "",
     render_width_cap: Callable[[], int | None] = lambda: None,
 ) -> None:
     """Open the panel for *kind*; return when it has closed (ADR-0279 D11)."""

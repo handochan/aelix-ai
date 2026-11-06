@@ -1283,6 +1283,18 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/reload` that worked says so, and a `/skill` or `/tool` save always says what it did
+  for the model (#704, ADR-0284, ADR-0279).** A successful `/reload` left no line unless an
+  extension changed, so a `/reload` after turning a skill off read as ignored. It now leaves
+  `✓ Reloaded settings, extensions, skills, prompt templates and context files`, then what the
+  model gained and lost by name (`· skills: +gamma, -alpha`) or `· no changes`; an extension
+  change still has its own line under it. A panel save the session already matched — a tool an
+  extension had already turned off this run, a skill another session had saved — said only
+  which file it wrote; it now says `Nothing changes for the model: this session already had grep
+  off.`, or that an item stays as it was in this session and why. An extension command's
+  `ctx.reload()` leaves the same `✓ Reloaded …` line, a list that could not be read is named as
+  not compared rather than counted as unchanged, a `/skill` save with the `read` tool off says the
+  model is not shown the skill list, and the minimal REPL's `/reload` says it reloaded.
 - **`\` + Enter starts a new line wherever the cursor is (#700, ADR-0121).** With the
   cursor in the middle of a line, `abc\|def` (`|` the cursor) sent the line: the backslash
   was looked for at the end of the input, and only with the cursor there. Now the `\` right

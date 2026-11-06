@@ -2315,7 +2315,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:138-138": [
    "def _normalise_trailing_terminators(output: str) -> str:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:514-540": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:514-543": [
    "stripped = line.strip()",
    "if not stripped:",
    "continue",
@@ -2323,7 +2323,7 @@
    "return",
    "if stripped == \"/reload\":",
    "await harness.reload_resources()",
-   "continue"
+   "# #704 — a success says so, as the TUI's does (ASCII: this prints"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:519-519": [
    "if stripped == \"/reload\":"
@@ -3050,20 +3050,13 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:341-341": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1302-1302": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1066-1066": [
+   "# through the same queue as committed lines keeps them ordered — otherwise a"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1547-1547": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:190-206": [
-   "",
-   "def _reload_rebuild_enabled() -> bool:",
-   "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
-   "",
-   "``/reload`` routes through :meth:`AgentSessionRuntime.reload` — re-discovers",
-   "on-disk extensions + rebuilds the runtime via the P-302 factory, so an",
-   "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
-   "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2265-2282": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2507-2524": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3073,27 +3066,37 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3189-3191": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3431-3433": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3450-3450": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3692-3692": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3595-3595": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3837-3837": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3680-3680": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3922-3922": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4455-4455": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:435-451": [
+   "",
+   "def _reload_rebuild_enabled() -> bool:",
+   "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
+   "",
+   "``/reload`` routes through :meth:`AgentSessionRuntime.reload` — re-discovers",
+   "on-disk extensions + rebuilds the runtime via the P-302 factory, so an",
+   "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
+   "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4712-4712": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4594-4594": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4851-4851": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4716-4730": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4932-4946": [
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
    "# args = the text after the command word (Sprint 6h₁₂d). The",
@@ -3102,9 +3105,6 @@
    "args = parsed.text[len(\"/\" + slash_word(parsed.text)) :].strip()",
    "await command.handler(command_ctx, args)",
    "continue"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:821-821": [
-   "# through the same queue as committed lines keeps them ordered — otherwise a"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/statusline_picker.py:96-96": [
    "options = [(s.id, s.label, s.description) for s in segments]"

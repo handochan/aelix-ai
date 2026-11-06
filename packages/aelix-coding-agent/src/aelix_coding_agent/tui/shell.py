@@ -28,7 +28,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.compaction import calculate_context_tokens
@@ -186,6 +187,250 @@ def _reload_text(lines: list[tuple[str, str]], width: int = 80) -> Text:
                 out.append("\n")
             out.append((lead if row_index == 0 else hang) + row, style=style or None)
     return out
+
+
+#: #704 — what a successful ``/reload`` re-read, as its line names it. pi's
+#: ``handleReloadCommand`` says "Reloaded keybindings, extensions, skills,
+#: prompts, themes, and context files"; aelix has no keybindings file and reads
+#: the theme at launch, and it re-reads both settings files (ADR-0177).
+_RELOADED_WHAT = "settings, extensions, skills, prompt templates and context files"
+
+#: The most names a bucket lists before "N more".
+_RELOAD_NAMES_SHOWN = 4
+
+
+def _reload_buckets(harness: object) -> dict[str, list[str] | None]:
+    """#704 — the names a ``/reload`` can change for the model, by bucket.
+
+    Skills and prompt templates as the harness holds them, tools as a turn
+    sends them (``active_tool_views``, the startup ``[Tools]`` row's source).
+    A bucket that cannot be read is ``None``: :func:`reload_success_line` says
+    it was not compared, rather than counting it as unchanged.
+    """
+
+    def _names(items: object) -> list[str]:
+        return [str(getattr(item, "name", item)) for item in cast("Iterable[object]", items or ())]
+
+    readers: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("skills", lambda: getattr(harness, "skills", None)),
+        ("prompt templates", lambda: getattr(harness, "prompt_templates", None)),
+        ("tools", lambda: active_tool_views(harness)),
+    )
+    out: dict[str, list[str] | None] = {}
+    for bucket, read in readers:
+        try:
+            out[bucket] = _names(read())
+        except Exception:  # noqa: BLE001 — said on the line, never raised into the loop
+            out[bucket] = None
+    return out
+
+
+def skill_effect_note(harness: object) -> str:
+    """What a ``/skill`` save does for the model, as the panel's summary says it.
+
+    #704 (Codex 704-skill-overclaim) — the skill list reaches the model only
+    while it has the ``read`` tool (``skills_catalog_visible``, pi's gate: the
+    list tells the model to read a skill's file). With ``--no-tools``, or
+    ``read`` off, a save changes what the session holds and nothing the model
+    is shown, so the note says that instead of "from your next message". A
+    harness whose active tools cannot be read gets the usual note.
+    """
+
+    getter = getattr(harness, "_action_get_active_tools", None)
+    if callable(getter):
+        try:
+            active = {str(name) for name in cast("Iterable[object]", getter() or ())}
+        except Exception:  # noqa: BLE001 — the usual note
+            active = None
+        if active is not None and "read" not in active:
+            return "The model is not shown the skill list in this session: the read tool is off."
+    return (
+        "The model gets the new list from your next message; skill text it "
+        "already read stays in this conversation."
+    )
+
+
+@dataclass(frozen=True)
+class _ReloadBefore:
+    """#704 — what a rebuild ``/reload`` is compared with, read before it starts."""
+
+    #: The extensions (ADR-0284 D6), ``None`` with no extension control.
+    inventory: Any
+    #: What the model had (:func:`_reload_buckets`).
+    buckets: dict[str, list[str] | None]
+    #: A failed rebuild had stopped aelix (#663).
+    was_stopped: bool
+
+
+def _reload_before(runtime_host: Any, extension_control: ExtensionControl | None) -> _ReloadBefore:
+    return _ReloadBefore(
+        inventory=extension_control.inventory() if extension_control is not None else None,
+        buckets=_reload_buckets(runtime_host.harness),
+        was_stopped=isinstance(getattr(runtime_host, "stopped", None), str),
+    )
+
+
+def reload_success_commits(
+    runtime_host: Any,
+    before: _ReloadBefore,
+    *,
+    extension_control: ExtensionControl | None,
+    bound_shortcuts: frozenset[str] | None,
+    width: int,
+) -> list[Text]:
+    """#704 — what a rebuild that worked leaves in the transcript, in order.
+
+    "✓ /reload succeeded — aelix is running again" when it ended a stop (#663);
+    the ``✓ Reloaded …`` line every success leaves; the extensions entry when
+    an extension changed, failed or waits (ADR-0284 D6); the model fallback
+    warning (#376). The typed ``/reload`` and an extension command's
+    ``ctx.reload()`` (:class:`_ReportedReloadRuntime`) both commit these.
+    """
+
+    out: list[Text] = []
+    if before.was_stopped:
+        # #663 — the stop the last failure announced is over.
+        out.append(Text("✓ /reload succeeded — aelix is running again", style="green"))
+    extension_note = (
+        reload_lines(
+            before.inventory,
+            extension_control.inventory(),
+            launch=extension_control.launch,
+            bound_shortcuts=bound_shortcuts,
+        )
+        if extension_control is not None
+        else []
+    )
+    # A success always says so (pi ``handleReloadCommand``'s "Reloaded …");
+    # before #704 it left nothing unless an extension changed, and a /reload
+    # after /skill read as ignored.
+    success = reload_success_line(
+        before.buckets,
+        _reload_buckets(runtime_host.harness),
+        more_below=bool(extension_note),
+    )
+    out.append(_reload_text([("green", success)], width))
+    if extension_note:
+        out.append(_reload_text(extension_note, width))
+    # #376 — the rebuild restores the session's model from its record, and
+    # says so when it cannot, as /resume, /fork, /clone and /import do
+    # (``_commit_model_fallback``).
+    fallback = getattr(runtime_host, "model_fallback_message", None)
+    if isinstance(fallback, str) and fallback:
+        out.append(Text(f"Warning: {fallback}", style="yellow"))
+    return out
+
+
+def _after_reload_commits(
+    command_ctx: Any, save_implicit_trust_after_reload: Callable[[], bool] | None
+) -> list[Text]:
+    """What every ``/reload`` that ran does after it, and the line that may say so.
+
+    #240 — after both arms, because NEITHER reaches ``_load_models``: the
+    rebuild arm calls ``AgentSessionRuntime.reload`` (not
+    ``AgentHarness.reload``, whose ``reset()`` leg is dead code — nothing ever
+    assigns ``_model_registry`` on an AgentHarness) and re-binds the SAME
+    registry object. So a user reaching for /reload to pick up a rotated
+    ``models.json`` credential gets nothing unless the cached ``!command``
+    values are dropped here. The registry arrives on ``command_ctx``.
+
+    #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload, not
+    before. A session that was trusted without ever being asked (nothing to
+    gate at startup) records that trust once resources have actually appeared
+    and been loaded, so the next launch does not re-ask about a directory the
+    user has been working in. Deliberately NOT a gate: by this line the new
+    resources are already loaded. Making it one was measured to work and was
+    declined in favour of pi parity — see ADR-0216 and #112. Both families are
+    named (#509 verify V2): the predicate counts a ``.agents/skills`` here or
+    in a parent too, and one that arrived alone was announced as ``.aelix``
+    resources the folder never had.
+    """
+
+    clear_command_value_cache(getattr(command_ctx, "model_registry", None))
+    out: list[Text] = []
+    if save_implicit_trust_after_reload is not None:
+        with contextlib.suppress(Exception):
+            if save_implicit_trust_after_reload():
+                out.append(
+                    Text(
+                        "Saved project trust for this folder (it gained .aelix "
+                        "resources or .agents/skills during this session).",
+                        style="yellow",
+                    )
+                )
+    return out
+
+
+class _ReportedReloadRuntime:
+    """#704 (Codex 704-other-entries) — the session runtime an extension command's ``ctx`` gets.
+
+    Everything goes to the runtime itself but ``reload()``: pi routes an
+    extension's ``ctx.reload()`` through ``handleReloadCommand``
+    (``interactive-mode.ts:2145-2146``), so it says what it reloaded as the
+    typed ``/reload`` does. *report* runs the reload between its before and
+    after reads; a reload that fails still raises into the command
+    (``RebuildFailedError``, ADR-0289), whose error line the dispatcher prints,
+    as before.
+    """
+
+    def __init__(
+        self,
+        runtime: Any,
+        report: Callable[[Callable[[], Awaitable[None]]], Awaitable[None]],
+    ) -> None:
+        self._runtime = runtime
+        self._report = report
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
+
+    async def reload(self) -> None:
+        await self._report(self._runtime.reload)
+
+
+def reload_success_line(
+    before: Mapping[str, list[str] | None],
+    after: Mapping[str, list[str] | None],
+    *,
+    more_below: bool = False,
+    what: str = _RELOADED_WHAT,
+) -> str:
+    """#704 — the line every successful ``/reload`` leaves: what it re-read and what moved.
+
+    ``skills: +deploy, -lint`` for a name the harness gained or lost — turned
+    on or off in a settings file, or a file added or removed; aelix cannot
+    tell those apart here, so neither word is used. ``· no changes`` when no
+    bucket moved and *more_below* is false; *more_below* is the extensions
+    entry (ADR-0284 D6) committed under this line, which says what changed.
+    *what* names what was re-read: the kill-switch arm only asks the
+    extensions' ``resources_discover`` again. A bucket that could not be read
+    on either side (``None``) is named as not compared (Codex 704-getter-raises),
+    and the line then never says "no changes": that it found none would be a
+    claim about a list it did not see.
+    """
+
+    parts: list[str] = []
+    unread: list[str] = []
+    for bucket in ("skills", "prompt templates", "tools"):
+        if bucket not in before and bucket not in after:
+            continue
+        old, new = before.get(bucket), after.get(bucket)
+        if old is None or new is None:
+            unread.append(bucket)
+            continue
+        names = [f"+{n}" for n in new if n not in old] + [f"-{n}" for n in old if n not in new]
+        if not names:
+            continue
+        shown = names[:_RELOAD_NAMES_SHOWN]
+        if len(names) > len(shown):
+            shown.append(f"{len(names) - len(shown)} more")
+        parts.append(f"{bucket}: {', '.join(shown)}")
+    if unread:
+        parts.append(f"{' and '.join(unread)}: not compared (could not be read)")
+    head = f"✓ Reloaded {what}"
+    if parts:
+        return f"{head} · {' · '.join(parts)}"
+    return head if more_below else f"{head} · no changes"
 
 
 def _reload_rebuild_enabled() -> bool:
@@ -1804,10 +2049,7 @@ async def run_tui(
             skill_control.kind,
             title="Skills",
             noun=("skill", "skills"),
-            effect_note=(
-                "The model gets the new list from your next message; skill text it "
-                "already read stays in this conversation."
-            ),
+            effect_note=lambda: skill_effect_note(runtime_host.harness),
             render_width_cap=lambda: render_width_cap["value"],
         )
 
@@ -3703,10 +3945,25 @@ async def run_tui(
         # input-loop dispatch and the autocomplete source. ``repo`` +
         # ``session_runtime`` let a handler's ctx drive fork / new_session /
         # switch_session.
+        # #704 — a handler's ``ctx.reload()`` leaves the line ``/reload`` does.
+        async def _reload_for_extension(reload: Callable[[], Awaitable[None]]) -> None:
+            before = _reload_before(runtime_host, extension_control)
+            await reload()
+            for entry in reload_success_commits(
+                runtime_host,
+                before,
+                extension_control=extension_control,
+                bound_shortcuts=bound_shortcut_keys,
+                width=terminal_columns(out_chrome),
+            ):
+                _commit(entry)
+            for entry in _after_reload_commits(command_ctx, save_implicit_trust_after_reload):
+                _commit(entry)
+
         dispatch = CommandDispatchService(
             lambda: runtime_host.harness,
             repo=getattr(runtime_host, "_repo", None),
-            session_runtime=runtime_host,
+            session_runtime=_ReportedReloadRuntime(runtime_host, _reload_for_extension),
         )
 
         def _respect_gitignore() -> bool:
@@ -4595,11 +4852,9 @@ async def _input_loop(
                 # #25 (ADR-0284 D6) — what the extensions were before, so the
                 # line below says what this reload changed; and a reload that
                 # raises says how far it got (Codex F08) instead of escaping.
-                before_inventory = (
-                    extension_control.inventory() if extension_control is not None else None
-                )
+                # #704 — and what the model had, for the line every success leaves.
+                before = _reload_before(runtime_host, extension_control)
                 before_harness = runtime_host.harness
-                was_stopped = isinstance(getattr(runtime_host, "stopped", None), str)
                 try:
                     await runtime_host.reload()
                 except Exception as exc:  # noqa: BLE001 — said, never raised into the loop
@@ -4620,7 +4875,7 @@ async def _input_loop(
                             # A build was committed (the new one, or the one on the
                             # previous settings): what it changed is true.
                             lines += reload_lines(
-                                before_inventory,
+                                before.inventory,
                                 extension_control.inventory(),
                                 launch=extension_control.launch,
                                 bound_shortcuts=bound_shortcuts,
@@ -4628,38 +4883,23 @@ async def _input_loop(
                     output_queue.put_nowait(
                         ("commit", _reload_text(lines, terminal_columns(chrome)))
                     )
-                    if was_stopped and getattr(runtime_host, "stopped", None) is None:
+                    if before.was_stopped and getattr(runtime_host, "stopped", None) is None:
                         # #663 (verify V6) — a build was installed, the new one or
                         # the one on the previous settings: the stop is over too.
                         output_queue.put_nowait(
                             ("commit", Text("✓ aelix is running again", style="green"))
                         )
                     continue
-                if was_stopped:
-                    # #663 — the stop the last failure announced is over.
-                    output_queue.put_nowait(
-                        ("commit", Text("✓ /reload succeeded — aelix is running again", style="green"))
-                    )
-                if extension_control is not None:
-                    extension_note = reload_lines(
-                        before_inventory,
-                        extension_control.inventory(),
-                        launch=extension_control.launch,
-                        bound_shortcuts=bound_shortcuts,
-                    )
-                    if extension_note:
-                        output_queue.put_nowait(
-                            ("commit", _reload_text(extension_note, terminal_columns(chrome)))
-                        )
-                # #376 — the rebuild restores the session's model from its
-                # record, and says so when it cannot, as /resume, /fork,
-                # /clone and /import do (``_commit_model_fallback``).
-                fallback = getattr(runtime_host, "model_fallback_message", None)
-                if isinstance(fallback, str) and fallback:
-                    output_queue.put_nowait(
-                        ("commit", Text(f"Warning: {fallback}", style="yellow"))
-                    )
+                for entry in reload_success_commits(
+                    runtime_host,
+                    before,
+                    extension_control=extension_control,
+                    bound_shortcuts=bound_shortcuts,
+                    width=terminal_columns(chrome),
+                ):
+                    output_queue.put_nowait(("commit", entry))
             else:
+                before_buckets = _reload_buckets(harness)
                 try:
                     await harness.reload_resources()
                 except Exception as exc:  # noqa: BLE001 — #663: said, never raised into the loop
@@ -4668,41 +4908,17 @@ async def _input_loop(
                         ("commit", _reload_text([("bold red", failure)], terminal_columns(chrome)))
                     )
                     continue
-            # #240 — AFTER both arms, because NEITHER reaches ``_load_models``:
-            # the rebuild arm calls ``AgentSessionRuntime.reload`` (not
-            # ``AgentHarness.reload``, whose ``reset()`` leg is dead code —
-            # nothing ever assigns ``_model_registry`` on an AgentHarness) and
-            # re-binds the SAME registry object. So a user reaching for /reload
-            # to pick up a rotated ``models.json`` credential gets nothing
-            # unless we drop the cached ``!command`` values here. The registry
-            # arrives on ``command_ctx``; ``run_tui``'s own ``model_registry``
-            # parameter is not in scope in this function.
-            clear_command_value_cache(getattr(command_ctx, "model_registry", None))
-            # #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload,
-            # not before. A session that was trusted without ever being asked
-            # (nothing to gate at startup) records that trust once resources
-            # have actually appeared and been loaded, so the next launch does
-            # not re-ask about a directory the user has been working in.
-            #
-            # Deliberately NOT a gate: by this line the new resources are
-            # already loaded. Making it one was measured to work and was
-            # declined in favour of pi parity — see ADR-0216 and #112.
-            # Both families are named (#509 verify V2): the predicate counts a
-            # ``.agents/skills`` here or in a parent too, and one that arrived
-            # alone was announced as ``.aelix`` resources the folder never had.
-            if save_implicit_trust_after_reload is not None:
-                with contextlib.suppress(Exception):
-                    if save_implicit_trust_after_reload():
-                        output_queue.put_nowait(
-                            (
-                                "commit",
-                                Text(
-                                    "Saved project trust for this folder (it gained .aelix "
-                                    "resources or .agents/skills during this session).",
-                                    style="yellow",
-                                ),
-                            )
-                        )
+                success = reload_success_line(
+                    before_buckets,
+                    _reload_buckets(harness),
+                    what="the extensions' resources (AELIX_RELOAD_REBUILD is off)",
+                )
+                output_queue.put_nowait(
+                    ("commit", _reload_text([("green", success)], terminal_columns(chrome)))
+                )
+            # #240, #112 — after both arms (``_after_reload_commits``).
+            for entry in _after_reload_commits(command_ctx, save_implicit_trust_after_reload):
+                output_queue.put_nowait(("commit", entry))
             continue
         # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
         # command core BEFORE going to the model: (1) built-in registry handler,
