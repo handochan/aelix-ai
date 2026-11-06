@@ -370,6 +370,14 @@ class AgentLoopConfig:
     # Pure functional boundary after the final response/message_end replacement,
     # before tools or queued inputs are consumed. Appended for positional ABI.
     should_stop_after_response: Callable[[AssistantMessage], bool] | None = None
+    # #698 (ADR-0290): whether whoever runs the loop has cancelled this turn, read
+    # where a cancel somebody caught and went on from must still stop the batch.
+    # Pure and synchronous. ``None`` (``Agent``, a direct ``agent_loop`` caller): the
+    # loop stops on what is delivered to it, and whatever runs on the caller's task and
+    # swallows a cancel goes on, on both paths, an unknown tool's ``tool_execution_end``
+    # included. On the parallel path what runs on a call's own task stops the batch,
+    # because the wait hands the cancel on. Appended for positional ABI.
+    cancel_requested: Callable[[], bool] | None = None
 
 
 __all__ = [

@@ -82,10 +82,10 @@ without awaiting: a second Esc can land in an await. `tool_result` handlers run 
 and none of your output. A handler with `error_mode="continue"` is the exception: its raise is
 swallowed and the output stays, so do not register a redactor that way.
 
-Do not catch the cancel and return, and do not call `uncancel()`. The task's cancel count is what
-says a stop came: `uncancel()` takes it back, and in a sequential batch the next call starts. A
-tool that ignores the cancel holds the turn until the next Esc; in a parallel batch that Esc stops
-waiting for it.
+Do not catch the cancel and return: the turn stops all the same, and the model reads what you
+returned as a call that finished. `uncancel()` takes no stop back. A tool that ignores the cancel
+holds the turn until it ends, however many times Esc is pressed; in a parallel batch a second Esc
+stops waiting for it.
 
 On a signal the process aborts, waits 2 seconds and aborts again, so async cleanup in your
 `finally` gets those 2 seconds.

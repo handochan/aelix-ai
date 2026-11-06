@@ -357,7 +357,7 @@ class SessionActivityTracker:
         if message is None:
             return
         # The loop emits message_end for EVERY persisting message (the user
-        # prompt, follow-ups, AND every tool-result message — see loop.py:98-99),
+        # prompt, follow-ups, AND every tool-result message — see loop.py:99-100),
         # not just assistant responses. UserMessage / ToolResultMessage carry no
         # ``.model`` and no ``.usage``, so counting them would inflate the
         # per-model ``requests`` (and the busiest-first leaderboard ordering) by

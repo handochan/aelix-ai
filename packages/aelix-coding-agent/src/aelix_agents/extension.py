@@ -370,7 +370,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:5200-5202``
+    smuggled through ``event.args`` even though ``harness/core.py:5205-5207``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -614,7 +614,7 @@ class AgentsExtension:
 
         ``ExtensionAPI.get_active_tools`` calls
         ``runtime.actions.get_active_tools`` — literally the same bound method
-        ``_make_context_kwargs`` puts on the context (``core.py:826``), only on
+        ``_make_context_kwargs`` puts on the context (``core.py:830``), only on
         the CURRENT harness rather than a dead one, since ``self._api`` is
         replaced by ``_invoke_factory`` on every rebuild while ``self._ctx`` is
         not. An unbound runtime raises ``ExtensionError`` (measured), so a host
@@ -725,7 +725,7 @@ class AgentsExtension:
         the value was "re-read every time a context is built … the model the
         parent's own next turn would use". Only the first half holds:
         ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
-        (``core.py:4706``) and ``ExtensionContext.model`` hands back
+        (``core.py:4711``) and ``ExtensionContext.model`` hands back
         ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
         hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
         are slash commands that fire none, so the parent's next turn could
@@ -874,8 +874,8 @@ class AgentsExtension:
         """Refresh the roster, reset the delegation budget, drop stale grants,
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
-        ``before_agent_start`` (``harness/core.py:1647``) runs BEFORE the
-        per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
+        ``before_agent_start`` (``harness/core.py:1651``) runs BEFORE the
+        per-turn ``AgentContext`` is assembled (``:5750-5754``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
 
@@ -886,7 +886,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1066-1132``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1070-1136``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -926,7 +926,7 @@ class AgentsExtension:
 
         Everything that can refuse a delegation refuses HERE, where the kernel
         renders the refusal as a model-readable blocked tool call
-        (``loop.py:571-584``) and where no process has been created yet. On
+        (``loop.py:604-617``) and where no process has been created yet. On
         success the approval is filed under ``event.tool_call_id`` and the hook
         returns ``None`` — observationally identical to not having run.
         """
@@ -1413,7 +1413,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:5200-5202``
+        security property rather than a style rule. ``harness/core.py:5205-5207``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``
