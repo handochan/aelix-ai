@@ -3,7 +3,7 @@
 The P2 gate asked once per spawn. A ``mode="parallel"`` / ``mode="chain"`` call
 starts up to eight children from ONE tool call, and decision S4 says that is one
 dialog rendering every member's task and the single cwd they share — not one
-dialog per child (two modals from one call collide on ``tui/chrome.py:926``'s
+dialog per child (two modals from one call collide on ``tui/chrome.py:941``'s
 single ``_modal`` slot) and emphatically not a remembered grant (the session memo
 this module removed covered LATER calls, whose tasks nobody had seen).
 
@@ -208,9 +208,10 @@ def _tall_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_an_eight_task_batch_opens_exactly_one_dialog() -> None:
     """S4's headline: one tool call, one decision, one modal.
 
-    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:926``'s single
+    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:941``'s single
     ``_modal`` slot unconditionally, so a second dialog from the same call
-    orphans the first Future and hangs the turn.
+    orphans the first Future and hangs the turn (until #701, which stacks the
+    slot; eight dialogs in a row are still seven too many).
     """
 
     spy = _SelectSpy(CANCEL_OPTION)
@@ -1027,7 +1028,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:358``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:360``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.

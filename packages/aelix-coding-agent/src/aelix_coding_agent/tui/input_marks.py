@@ -100,8 +100,9 @@ class SubmittedLine(str):
 
     The input queue hands lines to the input loop as text; this keeps the
     typed buffer's classification with the expanded text, so the loop runs
-    what the input drew. ``after_turn`` marks an Alt+Enter ``!`` line queued
-    to run once the turn is over (#596).
+    what the input drew. ``after_turn`` marks an Alt+Enter line: a ``!`` line
+    queued to run once the turn is over (#596), a template Entered mid-turn
+    whose expansion is queued as a follow-up (#701).
     """
 
     parsed: ParsedInput

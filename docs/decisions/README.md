@@ -36,6 +36,20 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0292 — A `/` line Entered during a turn is a command, not a steer](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md)
+  (Accepted 2026-11-06; #701). Enter and Alt+Enter on a typed `/` line while a turn runs never send
+  it to the model: the chrome asks the input loop first. An explicit table in `tui/commands.py`
+  (`MID_TURN_RUNS`, `mid_turn_refusal`) runs `/thinking`, `/model`, `/settings`, the pickers, the
+  panels and the read-only commands at once, in a task beside the turn; `/quit` stops the turn and
+  quits; an extension's command runs at once; a template or `/skill:<name>` steers its expansion;
+  the rest — `/new`, `/resume`, `/fork`, `/clone`, `/import`, `/reload`, `/compact`, `/clear`,
+  `/login`, `/extension`, `/name <text>`, `/agents use|run` — are refused with the line kept and
+  the reason on the row under it. A model or thinking change applies from the next message or a
+  retry of this one (a run snapshots both) and says so; what a mid-turn command prints waits under
+  the live answer (`after_stream`). The modal slot stacks, so a tool approval over a picker hands
+  the picker back, and a panel's own close names its modal, so one under a tool approval leaves the
+  approval up. pi dispatches built-ins first and lets handlers refuse;
+  diverged (the draft decision is synchronous). Amends ADR-0119 and ADR-0159 by dated notes.
 - [0291 — A stopped delegation takes what its bash started](0291-a-stopped-delegation-takes-what-its-bash-started.md)
   (Accepted 2026-11-06; #691). Every stop of a delegated child — Esc, Esc Esc, `SubagentRuntime.stop`, `stop_all`,
   quitting, a SIGTERM to the parent in the TUI, `-p`, json and rpc — SIGKILLs it at once, so its `dispose()`
@@ -131,7 +145,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (`AgentSessionRuntime.reload_phase`, Codex F08) — 2026-11-03 note (ADR-0289, #663): past the
   teardown it says "kept the previous settings" or "aelix is stopped until /reload succeeds" — 2026-11-03
   note (#664): an extension's `SystemExit` is a load error like any other, and a
-  `KeyboardInterrupt` in its import or `setup()` ends aelix with one line naming it. Failed and deferred-then-failed packs are their
+  `KeyboardInterrupt` in its import or `setup()` ends aelix with one line naming it — 2026-11-06
+  note (#704): every successful `/reload`, and an extension's `ctx.reload()` in the TUI, also
+  leaves "✓ Reloaded settings, extensions, skills, prompt templates and context files" and what the
+  model gained and lost by name, "no changes", or a list it could not read. Failed and deferred-then-failed packs are their
   own state (F09). A pack turned off at `/reload` keeps its MCP connections until restart with
   their tools hidden; one off at launch connects at the next launch (F11); providers and new
   shortcut keys wait for a restart and say so (F10). `/tool` gets an `ext off` placeholder. A
@@ -194,7 +211,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   kept), trust is an input to every read (an untrusted project file is never opened or stat'ed),
   an apply prepares the prompt before committing, one save writes one file; the extension filter
   (C5, C16) is #25's, the tool policy (C7 tools, C11, C13) #510's, C6 a separate issue. Amends
-  ADR-0165 D5, ADR-0169 #12, ADR-0196 and ADR-0252.
+  ADR-0165 D5, ADR-0169 #12, ADR-0196 and ADR-0252. 2026-11-06 note (#704): a save that was applied
+  always says what it did for the model — the note, "<name> stays off in this session: <why>.", or
+  "Nothing changes for the model: this session already had <name> off."
 - [0280 — The chrome stays on the last rows once the transcript fills the screen](0280-the-chrome-stays-on-the-last-rows-once-the-transcript-fills-the-screen.md)
   (Accepted 2026-10-31; #632). Once the chrome has reached the terminal bottom with no modal open,
   it is pinned there: a pad above it takes the spare rows inline prompt-toolkit keeps reserved, so

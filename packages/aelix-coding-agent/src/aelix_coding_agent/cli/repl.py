@@ -419,7 +419,7 @@ async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
     )
     # NOT the output: ``content`` above already carries it, and nothing reads
     # this key back — ``bash_execution`` has no registered renderer, so
-    # ``tui/render.py:1939-1955`` draws the ``[bash_execution]`` label and
+    # ``tui/render.py:1982-1998`` draws the ``[bash_execution]`` label and
     # ``content``. Storing it twice cost a 2,000,455-byte session file for
     # 1,000,001 bytes of output before #299's fix pass. What stays is what a
     # future renderer could not recover from ``content``: the command, the
@@ -500,7 +500,7 @@ async def run_repl(harness: AgentHarness, *, cwd: str) -> None:
       every later resume (#299)
     - ``!!<cmd>`` — emit ``user_bash``, print the output, record nothing
       (transient: the model never sees it, live or on replay)
-    - ``/reload`` — call :meth:`AgentHarness.reload_resources`
+    - ``/reload`` — call :meth:`AgentHarness.reload_resources` and say so
     - ``/quit`` / ``/exit`` — exit the REPL
     - anything else — :meth:`AgentHarness.prompt` (triggers ``input`` emit)
     """
@@ -518,6 +518,9 @@ async def run_repl(harness: AgentHarness, *, cwd: str) -> None:
             return
         if stripped == "/reload":
             await harness.reload_resources()
+            # #704 — a success says so, as the TUI's does (ASCII: this prints
+            # to whatever console encoding the terminal has).
+            print("Reloaded the extensions' resources.")
             continue
         if line.startswith("!!"):
             cmd = line[2:].strip()

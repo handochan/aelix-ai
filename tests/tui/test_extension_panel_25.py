@@ -50,11 +50,14 @@ class _Chrome:
         size = SimpleNamespace(rows=rows, columns=columns)
         self.app = SimpleNamespace(output=SimpleNamespace(get_size=lambda: size))
 
-    def mount_modal(self, _content: Any) -> None:
+    def mount_modal(self, _content: Any, *, focus: Any = None) -> None:
         self.events.append("mount")
 
-    def unmount_modal(self) -> None:
+    def unmount_modal(self, _content: Any = None) -> None:
         self.events.append("unmount")
+
+    def is_modal_open(self) -> bool:
+        return False  # #701: show_modal refocuses the input when no modal is left
 
     def focus(self, target: Any) -> None:
         self.content = target

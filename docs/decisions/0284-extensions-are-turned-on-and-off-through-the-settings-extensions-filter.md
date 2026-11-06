@@ -186,7 +186,11 @@ failed to load: RuntimeError: boom". The same holds for the D4 built-in locks.
 ### D6. What `/reload` says (M3; Codex F08)
 
 Under the TUI the factory no longer prints load errors; `/reload` commits ONE
-transcript entry when something changed or failed, and nothing otherwise:
+extensions entry when an extension changed or failed or something waits, and
+none otherwise. Since #704 it sits under the `✓ Reloaded …` line that every
+`/reload` that succeeds commits (the 2026-11-06 note below; a `/reload` that ends
+a stop puts "✓ /reload succeeded — aelix is running again" above that line), so a
+`/reload` never leaves nothing:
 
 ```
 Extensions after /reload: weather.py off · jira-tools on · lint.py failed
@@ -302,6 +306,34 @@ private counter, and wrapping the process's SIGINT handler around each load
 `setup()` whose `TaskGroup` leaves the count up and which then fails with a
 cancel of its own in the error's chain (a second `TaskGroup` failing while its
 body waits) reads as interrupted.
+
+*2026-11-06 note (#704):* "nothing otherwise" left a successful `/reload` with no
+line at all, so a `/reload` after a `/skill` change read as ignored (owner report,
+2026-11-06). Every `/reload` that succeeds now commits one line first — pi's
+`handleReloadCommand` ends with "Reloaded keybindings, extensions, skills, prompts,
+themes, and context files":
+
+```
+✓ Reloaded settings, extensions, skills, prompt templates and context files · skills: +gamma, -alpha
+```
+
+It names what the model gains and loses, by bucket (skills and prompt templates as the
+harness holds them, tools as a turn sends them), four names then "N more", and says
+"· no changes" when nothing moved and no extensions entry follows. A bucket the harness
+could not be read for, before or after, is named instead ("· skills: not compared (could
+not be read)"), and the line then never says "no changes". The order is: "✓ /reload
+succeeded — aelix is running again" when the reload ended a stop (#663), this line, the
+extensions entry above, unchanged and as its own entry, then a model fallback warning.
+The kill-switch arm (`AELIX_RELOAD_REBUILD=0`) says "✓ Reloaded the extensions'
+resources (AELIX_RELOAD_REBUILD is off)". A failed `/reload` is unchanged.
+
+An extension command's `ctx.reload()` in the TUI leaves the same lines (pi routes it
+through `handleReloadCommand`, `interactive-mode.ts:2145-2146`): the command context's
+session runtime is the runtime itself but for `reload()`, which reads the extensions and
+the buckets before and commits the lines after (`_ReportedReloadRuntime`). One that fails
+still raises `RebuildFailedError` into the command, whose error line the dispatcher
+prints, as before; it does not print the `/reload` failure entry. The minimal REPL's
+`/reload` prints "Reloaded the extensions' resources."
 
 ### D7. What waits for a restart (owner decision 10; Codex F10, F11)
 

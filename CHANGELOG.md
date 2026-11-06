@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
+  ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
+  or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`
+  or `Ctrl+C` (in a retry's wait too), or the time alone under a failure's red `✖` line, then
+  the length (`840ms`, `4.2s`, `42s`, `1m 12s`, `1h 03m`) and the local `HH:MM` it ended.
+  Commands, lines an `input` hook handled and turns an extension starts leave no line.
 - **The input shows what Enter will do with a line, and a `!` line runs while the
   model is answering (#596, ADR-0287).**
   - Type `!` and the input is in shell mode: the `!` (or `!!`) takes the place of
@@ -1283,6 +1289,39 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/` command typed while the model answers runs or says why it waits, and never reaches the
+  model as text (#701, ADR-0292).** Enter on `/thinking high` mid-turn sent the line to the model as
+  a steering message (Alt+Enter as a follow-up), with nothing on screen to say so. Now `/thinking`,
+  `/model` and their pickers, `/settings`, `/skill`, `/tool`, `/permissions` and the read-only
+  commands run at once; a new model or thinking level is used from the next message (or a retry
+  of this one), and a dim line says so. `/quit` stops the answer and quits, an extension's command
+  runs and an extension's panel opens at once, and a prompt template or `/skill:<name>` steers its
+  expansion. `/new`, `/resume`, `/fork`, `/clone`, `/import`, `/reload`, `/compact`, `/clear`,
+  `/login`, `/logout`, `/extension`, `/name <text>` and `/agents use`/`run` wait: the line stays
+  in the input and the row under it says why. An unknown `/word` says "Unknown command", as at
+  idle. What such a command prints lands under the answer instead of above it; a tool approval
+  that opens over a picker or an extension's panel hands it back when it closes, and one that
+  opens over a `/skill` or `/tool` panel whose save is still running stays up when the panel
+  closes, instead of vanishing with its answer pending.
+- **A `/reload` that worked says so, and a `/skill` or `/tool` save always says what it did
+  for the model (#704, ADR-0284, ADR-0279).** A successful `/reload` left no line unless an
+  extension changed, so a `/reload` after turning a skill off read as ignored. It now leaves
+  `✓ Reloaded settings, extensions, skills, prompt templates and context files`, then what the
+  model gained and lost by name (`· skills: +gamma, -alpha`) or `· no changes`; an extension
+  change still has its own line under it. A panel save the session already matched — a tool an
+  extension had already turned off this run, a skill another session had saved — said only
+  which file it wrote; it now says `Nothing changes for the model: this session already had grep
+  off.`, or that an item stays as it was in this session and why. An extension command's
+  `ctx.reload()` leaves the same `✓ Reloaded …` line, a list that could not be read is named as
+  not compared rather than counted as unchanged, a `/skill` save with the `read` tool off says the
+  model is not shown the skill list, and the minimal REPL's `/reload` says it reloaded.
+- **`\` + Enter starts a new line wherever the cursor is (#700, ADR-0121).** With the
+  cursor in the middle of a line, `abc\|def` (`|` the cursor) sent the line: the backslash
+  was looked for at the end of the input, and only with the cursor there. Now the `\` right
+  before the cursor becomes the line break, in a draft of one line or of many, and also while
+  the model is answering, when Enter would otherwise steer. `\\` and Enter still sends one
+  literal backslash, and an input that only ends in `\`, with the cursor elsewhere, is sent
+  as typed.
 - **A delegated agent's `bash` command no longer outlives a stop on macOS (#691, ADR-0291).**
   Esc, Esc Esc, `/agents run` then Esc, quitting, and a SIGTERM to aelix in the TUI, `-p`,
   `--mode json` and `--mode rpc` stopped the delegated agent, and the parent said `aborted`, but

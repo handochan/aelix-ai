@@ -1072,9 +1072,10 @@ async def test_a_decline_does_not_poison_the_next_spawn() -> None:
 async def test_concurrent_requests_are_serialized() -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:926``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:941``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn
-    hangs until Ctrl+C. The kernel already serialises the ``tool_call`` hook
+    hangs until Ctrl+C (until #701, which stacks it; two dialogs at once stay
+    wrong). The kernel already serialises the ``tool_call`` hook
     (``loop.py:1012-1049``), and the tool additionally declares
     ``execution_mode="sequential"``, but the lock is what covers the
     ``/agents run`` door and any future caller.

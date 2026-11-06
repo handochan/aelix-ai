@@ -105,6 +105,13 @@ list in the system prompt, so the next request usually cannot reuse the
 provider's cached prompt (with the `read` tool off there is no list, and the
 prompt may not change at all).
 
+The line Enter leaves in the transcript always says what the save did for the
+model: the note above when the list changed, or `Nothing changes for the model:
+this session already had <name> on.` when the session already had it that way
+(another session saved the file, say), or that a skill stays as it was in this
+session and why. With the `read` tool off it says the model is not shown the
+skill list in this session.
+
 `/skill:<name>` still inserts an enabled skill's text. For a skill that is off
 it answers `<name> is off — /skill to turn it on` and sends nothing.
 
@@ -207,6 +214,20 @@ one template, not every template in its folder.
 `/reload` re-reads both settings files and rescans the skill and template
 directories, so an edited `SKILL.md`, a new skill directory or a hand-edited
 list takes effect without a restart.
+
+Every `/reload` that succeeds leaves one line, then what changed for the model,
+by name, or `no changes`:
+
+```text
+✓ Reloaded settings, extensions, skills, prompt templates and context files · skills: +gamma, -alpha
+```
+
+`+` is a name the session gained and `-` one it lost, whether a file was added or
+removed or a settings list turned it on or off. A change to the extensions is
+said on its own line under it (`Extensions after /reload: …`). A skill you turned
+off in `/skill` is already off for the model when you press Enter there, so a
+`/reload` after it does not list it again. An extension command that calls
+`ctx.reload()` leaves the same line.
 
 ## Without the TUI
 

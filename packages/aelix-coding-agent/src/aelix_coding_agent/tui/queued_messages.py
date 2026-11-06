@@ -99,11 +99,21 @@ class QueuedMessages:
         return _queued(harness, kind)
 
     def taken(
-        self, harness: Any, kind: QueuedKind, text: str, before: list[Any]
+        self,
+        harness: Any,
+        kind: QueuedKind,
+        text: str,
+        before: list[Any],
+        *,
+        shown: str | None = None,
     ) -> QueuedLine | None:
         """``steer()`` / ``follow_up()`` ran their first step: draw the line with
         the message they queued for it, the first one in *kind*'s queue that was
         not there *before* and carries *text*.
+
+        *shown* is what the row and the echo say when it is not *text*: the
+        typed ``/<template>`` or ``/skill:<name>`` line whose expansion was
+        queued mid-turn (#701).
 
         ``None`` when there is none: the harness refused the line before
         queueing it (a disposed harness), or something cleared it in the same
@@ -115,7 +125,7 @@ class QueuedMessages:
                 continue
             if any(q.message is message for q in self._lines):
                 continue
-            line = QueuedLine(kind, text, message)
+            line = QueuedLine(kind, text if shown is None else shown, message)
             self._lines.append(line)
             self.redraw()
             return line

@@ -30,7 +30,7 @@ WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 from ``:1012-1049``) while ``execute()`` runs in a task per call
 (``loop.py:1055-1058``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:305``). Two modals from one batch would collide on
-``tui/chrome.py:926``'s single ``_modal`` slot — ``mount_modal`` overwrites
+``tui/chrome.py:941``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
 tool's ``execution_mode="sequential"`` are the belt and braces.
@@ -259,7 +259,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:401-425``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:403-427``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -1577,7 +1577,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:358``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:360``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1585,7 +1585,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:358)."
+            "AgentCall guarantees at least one task (tool.py:360)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter

@@ -18,9 +18,9 @@ What lives here:
   (Codex F11): a server whose plugin is off at ``/reload`` keeps its
   connection and loses its tools; a plugin turned on connects its servers at
   the next launch.
-* :func:`reload_lines` — the one transcript entry ``/reload`` leaves: what
-  changed, what failed, and what waits for a restart (MCP servers, providers,
-  new shortcut keys — Codex F10).
+* :func:`reload_lines` — the extensions entry ``/reload`` leaves under its
+  ``✓ Reloaded …`` line (#704): what changed, what failed, and what waits for
+  a restart (MCP servers, providers, new shortcut keys — Codex F10).
 * :class:`ExtensionGrammar` — the panel's save: ADR-0279 D1's edit, except that
   a row whose name another row shares is written by a form only it answers to
   (#25 verify V2), and no other row's saved value moves.
@@ -1413,9 +1413,13 @@ def reload_lines(
     launch: McpLaunch | None = None,
     bound_shortcuts: frozenset[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """``(style, text)`` lines for the one transcript entry ``/reload`` leaves (ADR-0284 D6).
+    """``(style, text)`` lines for ``/reload``'s extensions entry (ADR-0284 D6).
 
-    Empty when nothing changed, nothing failed and nothing waits. The first line
+    The shell commits them under the ``✓ Reloaded …`` line every successful
+    ``/reload`` leaves first (#704, ``tui/shell.py`` ``reload_success_line``).
+    Empty when no extension changed, nothing failed and nothing waits: that
+    line then stands alone, and says ``· no changes`` when no skill, prompt
+    template or tool moved either. The first line
     names what changed; then one line per failure — a pack that failed to load
     and one discovery refused (a malformed manifest, review R06) — per MCP
     server whose tools this build hid, or whose failed pack leaves them in use

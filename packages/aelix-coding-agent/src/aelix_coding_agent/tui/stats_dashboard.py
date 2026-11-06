@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.tui.durations import call_duration, wall_duration
 from aelix_coding_agent.tui.picker_text import _PickerText
 
 if TYPE_CHECKING:
@@ -103,39 +104,10 @@ def _bar(fraction: float, width: int = _BAR_WIDTH) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def _wall(seconds: Any) -> str:
-    """Human wall-clock duration (``42s`` / ``3m 05s`` / ``1h 02m``)."""
-
-    try:
-        total = max(0, int(float(seconds)))
-    except (TypeError, ValueError):
-        return "0s"
-    if total < 60:
-        return f"{total}s"
-    if total < 3600:
-        return f"{total // 60}m {total % 60:02d}s"
-    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
-
-
-def _dur(seconds: Any) -> str:
-    """Per-call latency: ``—`` (None/bad) / ``840ms`` / ``1.2s`` / ``45s``.
-
-    Sub-second values read in milliseconds (tool calls are often <1s); ``[1s,10s)``
-    keeps one decimal; ≥10s rounds to whole seconds. Distinct from :func:`_wall`
-    (which formats long minute/hour spans for *session* duration).
-    """
-
-    if seconds is None:
-        return "—"
-    try:
-        s = max(0.0, float(seconds))
-    except (TypeError, ValueError):
-        return "—"
-    if s < 1.0:
-        return f"{round(s * 1000)}ms"
-    if s < 10.0:
-        return f"{s:.1f}s"
-    return f"{round(s)}s"
+# #702 — the duration shapes moved to ``tui/durations.py``, shared with the line
+# a turn leaves; the private names stay for this module's callers.
+_wall = wall_duration
+_dur = call_duration
 
 
 def _avg_tool_seconds(per_tool: Any) -> float | None:

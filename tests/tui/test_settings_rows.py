@@ -537,10 +537,11 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the calls in the file that also mentions the name in
-    # prose: the input loop's gate and, since #508, the ``/`` menu's. The
-    # docstring above ``_input_loop`` names it too; a substring scan would add it.
+    # prose: the input loop's gate, since #508 the ``/`` menu's, and since #701
+    # the mid-turn classifier's (read per Enter). The docstring above
+    # ``_input_loop`` names it too; a substring scan would add it.
     skill_sites = sites["get_enable_skill_commands"]
-    assert len(skill_sites) == 2, skill_sites
+    assert len(skill_sites) == 3, skill_sites
     assert all("tui/shell.py" in site for site in skill_sites), skill_sites
 
 
@@ -964,7 +965,9 @@ async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
 
     #508 adds the one other call: the ``/`` menu's, inside ``run_tui``'s nested
     ``_resource_commands``, which the completer calls on every keystroke. It is
-    pinned to that def, so a read hoisted out of it is red too.
+    pinned to that def, so a read hoisted out of it is red too. #701 adds a
+    third, read on every mid-turn Enter inside ``_input_loop``'s nested
+    ``_mid_turn_command``, pinned the same way.
     """
 
     import ast
@@ -997,7 +1000,13 @@ async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "get_enable_skill_commands"
     ]
-    assert len(gate_calls) == 2, [c.lineno for c in gate_calls]
+    mid_turn = next(n for n in ast.walk(loop) if _named(n, "_mid_turn_command"))
+    per_enter = set(map(id, ast.walk(mid_turn)))
+    assert len(gate_calls) == 3, [c.lineno for c in gate_calls]
+    assert len([c for c in gate_calls if id(c) in per_enter]) == 1, (
+        f"shell.py:{[c.lineno for c in gate_calls]} — the mid-turn read is not in "
+        "_mid_turn_command, which runs per Enter"
+    )
     loop_gate = [c for c in gate_calls if id(c) in per_turn]
     assert len(loop_gate) == 1, (
         f"shell.py:{[c.lineno for c in gate_calls]} — no read of the gate in the "

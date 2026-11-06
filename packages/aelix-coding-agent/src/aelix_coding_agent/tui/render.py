@@ -290,6 +290,11 @@ def _compact_args(args: dict[str, Any]) -> str:
 #: does not import the REPL). Its body replays in the tool-output shape (#177).
 _BASH_EXECUTION_TYPE = "bash_execution"
 
+#: #702 — the ``final_error`` of the ``auto_retry_end`` an aborted retry wait
+#: emits (``aelix_agent_core.harness.core``, the turn's backoff and the
+#: compaction summary's), spelled out for the same reason.
+_RETRY_CANCELLED = "Retry cancelled"
+
 #: Tool-header summary cap, in terminal CELLS. Deliberately NOT derived from the
 #: live width: the header is committed as a bare Rich ``Text`` to the adaptive
 #: scrollback console, which soft-wraps it, so this is a density choice rather
@@ -923,6 +928,12 @@ class EventRenderer:
         # and consumed by ``tui/shell.py`` AFTER ``harness.prompt`` returns.
         # See :meth:`take_turn_ended_in_error` for why that is the only signal.
         self._turn_ended_in_error: bool = False
+        # #702 — how the last agent run ended, for the line the TUI leaves when
+        # a typed turn is over: ``None`` before any run, else the last assistant
+        # message's ``stop_reason`` (an auto-retry that succeeded ends on its
+        # success). Consumed by :meth:`take_run_end`.
+        self._run_seen: bool = False
+        self._run_stop: str | None = None
         # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
         # by sequential id so ``/expand N`` can recover the text a truncated card
         # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
@@ -967,7 +978,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:821, 1051, 2151) — without asking each to remember.
+        # (shell.py:1092, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -1011,6 +1022,8 @@ class EventRenderer:
         if event.type == "agent_start":
             self._agent_running = True
             self._input_return_said = False
+            self._run_seen = True
+            self._run_stop = None
         elif event.type == "agent_end":
             self._agent_running = False
         elif event.type == "message_start":
@@ -1023,6 +1036,7 @@ class EventRenderer:
             self._finalize_text()
             self._close_thinking()
             self._render_message_error(event.message)
+            self._note_run_stop(event.message)
         elif event.type == "turn_end":
             # ``_finalize_text`` FIRST so the partial streamed answer is committed
             # to scrollback before the abort notice — the notice has to read as
@@ -1040,10 +1054,20 @@ class EventRenderer:
             # the attribute unconditionally turned those into an AttributeError
             # inside the subscriber — caught in review by the full suite.
             self._render_turn_abort(getattr(event, "message", None))
+            self._note_run_stop(getattr(event, "message", None))
         elif event.type == "tool_execution_start":
             self._render_tool_start(event.tool_name, event.args)
         elif event.type == "tool_execution_end":
             self._render_tool_end(event.tool_name, event.result, event.is_error)
+        elif event.type == "auto_retry_end":
+            # #702 (Codex 702-retry-cancel) — Esc or Ctrl+C in a retry's backoff
+            # ends the run there, after the ``error`` the retry was for and with
+            # no ``turn_end`` of its own: the cancel is how it ended.
+            if (
+                getattr(event, "success", True) is False
+                and getattr(event, "final_error", None) == _RETRY_CANCELLED
+            ):
+                self._run_stop = "aborted"
         # tool_execution_update / turn_start / unknown → no-op.
 
     def finalize(self) -> None:
@@ -1276,6 +1300,25 @@ class EventRenderer:
             if message.stop_reason == "error":
                 self._turn_ended_in_error = True
 
+    def _note_run_stop(self, message: object) -> None:
+        if isinstance(message, AssistantMessage) or getattr(message, "role", None) == "assistant":
+            stop = getattr(message, "stop_reason", None)
+            if isinstance(stop, str):
+                self._run_stop = stop
+
+    def take_run_end(self) -> tuple[bool, str | None]:
+        """#702 — ``(an agent run started, its last stop_reason)`` since the last call.
+
+        Read-and-cleared, so a prompt that an ``input`` hook handled (no run)
+        does not report the previous turn's. ``"aborted"`` is Esc, Ctrl+C or a
+        signal (the close-out's ``turn_end``); ``"error"`` a provider failure
+        the loop returned on.
+        """
+
+        seen, stop = self._run_seen, self._run_stop
+        self._run_seen, self._run_stop = False, None
+        return seen, stop
+
     def take_turn_ended_in_error(self) -> bool:
         """Did the message that just ended carry ``stop_reason == "error"``? (#240)
 
@@ -1463,7 +1506,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:4455). A provider
+            # write the same last-writer-wins sink (shell.py:4782). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

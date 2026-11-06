@@ -555,7 +555,8 @@ class DescriptorRenderer:
         bindings ever ran: the modal could not be closed, and what was typed
         under it went to the model. The action is dispatched after the modal is
         unmounted, because an action with ``confirm`` opens a dialog in the same
-        single slot, and the closing modal's unmount would take it down.
+        single slot, and the closing modal's unmount would take it down (until
+        #701: an unmount names its modal now, and the slot stacks).
         """
         renderable = self.build_tool_renderable(envelope)
         actions = list(getattr(envelope.payload, "actions", None) or [])

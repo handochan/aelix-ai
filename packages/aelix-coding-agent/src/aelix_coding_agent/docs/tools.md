@@ -160,6 +160,12 @@ an extension turned off stays off. Extensions see the change as a
 A tool turned off in a settings file stays off even if an extension asks for
 it; turn it back on here.
 
+The line Enter leaves in the transcript always says what the save did for the
+model: `The model gets the new tool list from your next message.`, or
+`Nothing changes for the model: this session already had grep off.` (a tool an
+extension had already turned off this run, say), or that a tool stays as it was
+in this session and why.
+
 ## `defaultTools`
 
 The panel writes `defaultTools` in the settings file; you can edit it by hand.

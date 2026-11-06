@@ -125,3 +125,17 @@ and `HSplit` shares the spare rows between them in turn: a `Window` without
 the footer where it used to get 16 (round-1 verifier, #632). Every dialog that
 ships sizes to its content and is unaffected; a new panel in the slot should
 do the same.
+
+## Amendment (2026-11-06, #701) — the slot stacks
+
+*By [ADR-0292](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md) D7.* A
+picker opened while the model answers can be under a dialog the turn opens (a tool approval).
+`mount_modal` replaced it and its future was never answered once the dialog closed. Now
+`mount_modal(content, focus=…)` keeps the modal it covers and `unmount_modal(content)` hands the
+slot back to it, focused; a covered modal that leaves only leaves the stack, and a second unmount
+of the same modal is nothing. `show_modal` passes both and refocuses the input only when no modal
+is left. A panel's own close names its modal too: `unmount_modal` matches the container mounted or
+the window it focuses, and the `/skill`, `/tool` and tabbed (`/extension`) hosts pass the window they
+built. The first cut let a panel's close call `unmount_modal()` with no argument, on the belief that the
+modal on top is its own; with a tool approval mounted over a panel whose save was still running, that
+took the approval down and left its future pending (fix round 1, verify V3).

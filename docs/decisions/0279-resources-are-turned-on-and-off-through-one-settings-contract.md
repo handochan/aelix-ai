@@ -463,7 +463,17 @@ loaded on its own to keep the path the path entries need.
   changes applied from elsewhere — is printed and the panel unmounted and the
   input refocused inside ONE `print_above_many` suspend
   (`apply_before_redraw`); `show_modal`'s own cleanup then repeats both
-  harmlessly. Esc closes the same way with one line ("N unsaved changes
+  harmlessly. *2026-11-06 note (#704):* a save that was applied always says
+  what it did for the model. The kind's note when the session's list moved;
+  else, for a change a fresh read after the apply shows the session still not
+  using (a lock, or `live` off), "<name> stays off in this session: <why>.";
+  else "Nothing changes for the model: this session already had <name> off."
+  (one name) or "… these." Before, a save the apply found nothing to do for —
+  a tool an extension had already turned off this run, a skill another session
+  had saved — left only the file line. The `/skill` note is read when the save is
+  said: with the `read` tool off (`--no-tools`, `--tools` without it) it is "The
+  model is not shown the skill list in this session: the read tool is off.", as
+  the banner says, not "from your next message" (Codex 704-skill-overclaim). Esc closes the same way with one line ("N unsaved changes
   discarded." / "closed, nothing changed."), no confirmation. A save that would
   create `.aelix/settings.json` asks first (D3); Esc there goes back to the
   list.

@@ -28,7 +28,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.compaction import calculate_context_tokens
@@ -75,6 +76,7 @@ from aelix_coding_agent.tui.commands import (
     CommandInterrupted,
     active_tool_views,
     match_command,
+    mid_turn_refusal,
     sanitize_for_terminal,
     slash_word,
 )
@@ -99,6 +101,7 @@ from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import ParsedInput
 from aelix_coding_agent.tui.input_marks import SubmittedLine, classify_submitted
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
+from aelix_coding_agent.tui.mid_turn import MID_TURN, setter_line
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.overlay import show_modal
 from aelix_coding_agent.tui.queued_messages import QueuedKind, QueuedMessages
@@ -186,6 +189,274 @@ def _reload_text(lines: list[tuple[str, str]], width: int = 80) -> Text:
                 out.append("\n")
             out.append((lead if row_index == 0 else hang) + row, style=style or None)
     return out
+
+
+#: #704 — what a successful ``/reload`` re-read, as its line names it. pi's
+#: ``handleReloadCommand`` says "Reloaded keybindings, extensions, skills,
+#: prompts, themes, and context files"; aelix has no keybindings file and reads
+#: the theme at launch, and it re-reads both settings files (ADR-0177).
+_RELOADED_WHAT = "settings, extensions, skills, prompt templates and context files"
+
+#: The most names a bucket lists before "N more".
+_RELOAD_NAMES_SHOWN = 4
+
+
+def _reload_buckets(harness: object) -> dict[str, list[str] | None]:
+    """#704 — the names a ``/reload`` can change for the model, by bucket.
+
+    Skills and prompt templates as the harness holds them, tools as a turn
+    sends them (``active_tool_views``, the startup ``[Tools]`` row's source).
+    A bucket that cannot be read is ``None``: :func:`reload_success_line` says
+    it was not compared, rather than counting it as unchanged.
+    """
+
+    def _names(items: object) -> list[str]:
+        return [str(getattr(item, "name", item)) for item in cast("Iterable[object]", items or ())]
+
+    readers: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("skills", lambda: getattr(harness, "skills", None)),
+        ("prompt templates", lambda: getattr(harness, "prompt_templates", None)),
+        ("tools", lambda: active_tool_views(harness)),
+    )
+    out: dict[str, list[str] | None] = {}
+    for bucket, read in readers:
+        try:
+            out[bucket] = _names(read())
+        except Exception:  # noqa: BLE001 — said on the line, never raised into the loop
+            out[bucket] = None
+    return out
+
+
+def skill_effect_note(harness: object) -> str:
+    """What a ``/skill`` save does for the model, as the panel's summary says it.
+
+    #704 (Codex 704-skill-overclaim) — the skill list reaches the model only
+    while it has the ``read`` tool (``skills_catalog_visible``, pi's gate: the
+    list tells the model to read a skill's file). With ``--no-tools``, or
+    ``read`` off, a save changes what the session holds and nothing the model
+    is shown, so the note says that instead of "from your next message". A
+    harness whose active tools cannot be read gets the usual note.
+    """
+
+    getter = getattr(harness, "_action_get_active_tools", None)
+    if callable(getter):
+        try:
+            active = {str(name) for name in cast("Iterable[object]", getter() or ())}
+        except Exception:  # noqa: BLE001 — the usual note
+            active = None
+        if active is not None and "read" not in active:
+            return "The model is not shown the skill list in this session: the read tool is off."
+    return (
+        "The model gets the new list from your next message; skill text it "
+        "already read stays in this conversation."
+    )
+
+
+@dataclass(frozen=True)
+class _ReloadBefore:
+    """#704 — what a rebuild ``/reload`` is compared with, read before it starts."""
+
+    #: The extensions (ADR-0284 D6), ``None`` with no extension control.
+    inventory: Any
+    #: What the model had (:func:`_reload_buckets`).
+    buckets: dict[str, list[str] | None]
+    #: A failed rebuild had stopped aelix (#663).
+    was_stopped: bool
+
+
+def _reload_before(runtime_host: Any, extension_control: ExtensionControl | None) -> _ReloadBefore:
+    return _ReloadBefore(
+        inventory=extension_control.inventory() if extension_control is not None else None,
+        buckets=_reload_buckets(runtime_host.harness),
+        was_stopped=isinstance(getattr(runtime_host, "stopped", None), str),
+    )
+
+
+def reload_success_commits(
+    runtime_host: Any,
+    before: _ReloadBefore,
+    *,
+    extension_control: ExtensionControl | None,
+    bound_shortcuts: frozenset[str] | None,
+    width: int,
+) -> list[Text]:
+    """#704 — what a rebuild that worked leaves in the transcript, in order.
+
+    "✓ /reload succeeded — aelix is running again" when it ended a stop (#663);
+    the ``✓ Reloaded …`` line every success leaves; the extensions entry when
+    an extension changed, failed or waits (ADR-0284 D6); the model fallback
+    warning (#376). The typed ``/reload`` and an extension command's
+    ``ctx.reload()`` (:class:`_ReportedReloadRuntime`) both commit these.
+    """
+
+    out: list[Text] = []
+    if before.was_stopped:
+        # #663 — the stop the last failure announced is over.
+        out.append(Text("✓ /reload succeeded — aelix is running again", style="green"))
+    extension_note = (
+        reload_lines(
+            before.inventory,
+            extension_control.inventory(),
+            launch=extension_control.launch,
+            bound_shortcuts=bound_shortcuts,
+        )
+        if extension_control is not None
+        else []
+    )
+    # A success always says so (pi ``handleReloadCommand``'s "Reloaded …");
+    # before #704 it left nothing unless an extension changed, and a /reload
+    # after /skill read as ignored.
+    success = reload_success_line(
+        before.buckets,
+        _reload_buckets(runtime_host.harness),
+        more_below=bool(extension_note),
+    )
+    out.append(_reload_text([("green", success)], width))
+    if extension_note:
+        out.append(_reload_text(extension_note, width))
+    # #376 — the rebuild restores the session's model from its record, and
+    # says so when it cannot, as /resume, /fork, /clone and /import do
+    # (``_commit_model_fallback``).
+    fallback = getattr(runtime_host, "model_fallback_message", None)
+    if isinstance(fallback, str) and fallback:
+        out.append(Text(f"Warning: {fallback}", style="yellow"))
+    return out
+
+
+def _after_reload_commits(
+    command_ctx: Any, save_implicit_trust_after_reload: Callable[[], bool] | None
+) -> list[Text]:
+    """What every ``/reload`` that ran does after it, and the line that may say so.
+
+    #240 — after both arms, because NEITHER reaches ``_load_models``: the
+    rebuild arm calls ``AgentSessionRuntime.reload`` (not
+    ``AgentHarness.reload``, whose ``reset()`` leg is dead code — nothing ever
+    assigns ``_model_registry`` on an AgentHarness) and re-binds the SAME
+    registry object. So a user reaching for /reload to pick up a rotated
+    ``models.json`` credential gets nothing unless the cached ``!command``
+    values are dropped here. The registry arrives on ``command_ctx``.
+
+    #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload, not
+    before. A session that was trusted without ever being asked (nothing to
+    gate at startup) records that trust once resources have actually appeared
+    and been loaded, so the next launch does not re-ask about a directory the
+    user has been working in. Deliberately NOT a gate: by this line the new
+    resources are already loaded. Making it one was measured to work and was
+    declined in favour of pi parity — see ADR-0216 and #112. Both families are
+    named (#509 verify V2): the predicate counts a ``.agents/skills`` here or
+    in a parent too, and one that arrived alone was announced as ``.aelix``
+    resources the folder never had.
+    """
+
+    clear_command_value_cache(getattr(command_ctx, "model_registry", None))
+    out: list[Text] = []
+    if save_implicit_trust_after_reload is not None:
+        with contextlib.suppress(Exception):
+            if save_implicit_trust_after_reload():
+                out.append(
+                    Text(
+                        "Saved project trust for this folder (it gained .aelix "
+                        "resources or .agents/skills during this session).",
+                        style="yellow",
+                    )
+                )
+    return out
+
+
+class _ReportedReloadRuntime:
+    """#704 (Codex 704-other-entries) — the session runtime an extension command's ``ctx`` gets.
+
+    Everything goes to the runtime itself but ``reload()``: pi routes an
+    extension's ``ctx.reload()`` through ``handleReloadCommand``
+    (``interactive-mode.ts:2145-2146``), so it says what it reloaded as the
+    typed ``/reload`` does. *report* runs the reload between its before and
+    after reads; a reload that fails still raises into the command
+    (``RebuildFailedError``, ADR-0289), whose error line the dispatcher prints,
+    as before.
+    """
+
+    def __init__(
+        self,
+        runtime: Any,
+        report: Callable[[Callable[[], Awaitable[None]]], Awaitable[None]],
+    ) -> None:
+        self._runtime = runtime
+        self._report = report
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
+
+    async def reload(self) -> None:
+        await self._report(self._runtime.reload)
+
+
+def reload_success_line(
+    before: Mapping[str, list[str] | None],
+    after: Mapping[str, list[str] | None],
+    *,
+    more_below: bool = False,
+    what: str = _RELOADED_WHAT,
+) -> str:
+    """#704 — the line every successful ``/reload`` leaves: what it re-read and what moved.
+
+    ``skills: +deploy, -lint`` for a name the harness gained or lost — turned
+    on or off in a settings file, or a file added or removed; aelix cannot
+    tell those apart here, so neither word is used. ``· no changes`` when no
+    bucket moved and *more_below* is false; *more_below* is the extensions
+    entry (ADR-0284 D6) committed under this line, which says what changed.
+    *what* names what was re-read: the kill-switch arm only asks the
+    extensions' ``resources_discover`` again. A bucket that could not be read
+    on either side (``None``) is named as not compared (Codex 704-getter-raises),
+    and the line then never says "no changes": that it found none would be a
+    claim about a list it did not see.
+    """
+
+    parts: list[str] = []
+    unread: list[str] = []
+    for bucket in ("skills", "prompt templates", "tools"):
+        if bucket not in before and bucket not in after:
+            continue
+        old, new = before.get(bucket), after.get(bucket)
+        if old is None or new is None:
+            unread.append(bucket)
+            continue
+        names = [f"+{n}" for n in new if n not in old] + [f"-{n}" for n in old if n not in new]
+        if not names:
+            continue
+        shown = names[:_RELOAD_NAMES_SHOWN]
+        if len(names) > len(shown):
+            shown.append(f"{len(names) - len(shown)} more")
+        parts.append(f"{bucket}: {', '.join(shown)}")
+    if unread:
+        parts.append(f"{' and '.join(unread)}: not compared (could not be read)")
+    head = f"✓ Reloaded {what}"
+    if parts:
+        return f"{head} · {' · '.join(parts)}"
+    return head if more_below else f"{head} · no changes"
+
+
+def turn_end_line(outcome: str, seconds: float, ended_at: float) -> Text:
+    """#702 — the dim line a typed turn leaves when it is over.
+
+    ``✓ done · 4.2s · 14:05`` for a turn that ended normally; ``stopped · …``
+    for Esc, Ctrl+C or a signal, under the yellow "Operation aborted" line;
+    the time alone (``4.2s · 14:05``) for a failure, under its red ``✖`` line,
+    which says what went wrong. *seconds* from ``set_running(True)`` to
+    ``(False)`` (:func:`~aelix_coding_agent.tui.durations.turn_duration`);
+    *ended_at* an epoch, shown as local ``HH:MM``.
+    """
+
+    from aelix_coding_agent.tui.durations import turn_duration  # noqa: PLC0415
+
+    when = time.strftime("%H:%M", time.localtime(ended_at))
+    tail = f"{turn_duration(seconds)} · {when}"
+    if outcome == "done":
+        text = f"✓ done · {tail}"
+    elif outcome == "stopped":
+        text = f"stopped · {tail}"
+    else:
+        text = tail
+    return Text(text, style="dim")
 
 
 def _reload_rebuild_enabled() -> bool:
@@ -823,7 +1094,17 @@ async def run_tui(
     # the just-finalized text could vanish before it reaches scrollback.
     output_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
 
+    # #701 (ADR-0292) — while a command Entered mid-turn is open (its task, and
+    # the picker or panel it awaits), what it commits goes under the answer
+    # being written instead of above it (``_output_pump``'s ``after_stream``).
+    mid_turn_state: dict[str, int] = {"open": 0}
+    mid_turn_tasks: set[asyncio.Task[None]] = set()
+
     def _commit(renderable: object) -> None:
+        kind = "after_stream" if mid_turn_state["open"] else "commit"
+        output_queue.put_nowait((kind, renderable))
+
+    def _stream_commit(renderable: object) -> None:
         output_queue.put_nowait(("commit", renderable))
 
     def _commit_extension_failures() -> None:
@@ -868,7 +1149,7 @@ async def run_tui(
     # written is never reflowed, because those bytes belong to the host terminal
     # (``full_screen=False``) — the same guarantee any terminal program gives.
     renderer = EventRenderer(
-        commit=_commit,
+        commit=_stream_commit,
         set_tail=_set_tail,
         width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
     )
@@ -1486,7 +1767,8 @@ async def run_tui(
         )  # persist default
         await settings_manager.flush()
         _commit(
-            Text(
+            # #701 — from ``/settings`` opened mid-turn, it says when it applies.
+            setter_line(
                 # #251 — same helper as the footer: this line is printed and the
                 # footer repainted inside one action, so naming different tiers
                 # here would contradict the row below it. The ROW's own value
@@ -1494,7 +1776,6 @@ async def run_tui(
                 # default, which no model owns (ADR-0125).
                 f"thinking level → {_thinking_display(runtime_host.harness, new_level)}"
                 " (persisted as default)",
-                style="green",
             )
         )
         # Repaint so the OPTIONAL 🧠 thinking-level footer segment reflects the
@@ -1804,10 +2085,7 @@ async def run_tui(
             skill_control.kind,
             title="Skills",
             noun=("skill", "skills"),
-            effect_note=(
-                "The model gets the new list from your next message; skill text it "
-                "already read stays in this conversation."
-            ),
+            effect_note=lambda: skill_effect_note(runtime_host.harness),
             render_width_cap=lambda: render_width_cap["value"],
         )
 
@@ -3059,7 +3337,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:1025``), so anything reaching this line already has it.
+            # (``render.py:1038``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
@@ -3344,9 +3622,14 @@ async def run_tui(
     # tasks alive until they finish (same pattern as context_usage_tasks).
     queue_tasks: set[asyncio.Task[None]] = set()
 
-    def _enqueue(kind: str, line: str) -> None:
+    def _enqueue(kind: str, line: str, *, expanded: str | None = None) -> None:
         label = "Steering" if kind == "steer" else "Follow-up"
-        text = str(line)  # the harness and the echo take the text alone
+        # The harness and the echo take the text alone. #701 — *expanded* is a
+        # template's or ``/skill:<name>``'s text Entered mid-turn: that is what
+        # the harness queues, and the typed line what the pending row and the
+        # echo show, as the idle path echoes it.
+        shown = str(line)
+        text = shown if expanded is None else expanded
 
         async def _run() -> None:
             # Late-steer race (W4 code-review): the chrome fired this only while
@@ -3367,8 +3650,8 @@ async def run_tui(
                 # beginning with ``/quit`` stays a prompt, a typed ``/quit`` a quit.
                 parsed = classify_submitted(line)
                 if parsed.kind in ("bash", "bash_transient"):
-                    parsed = ParsedInput("prompt", text.strip())
-                out_chrome.submit_line(SubmittedLine(text, parsed))
+                    parsed = ParsedInput("prompt", shown.strip())
+                out_chrome.submit_line(SubmittedLine(shown, parsed))
                 return
             # #668 — the line waits in the pending area, and its echo is
             # committed when the turn hands it to the model (its user
@@ -3390,7 +3673,7 @@ async def run_tui(
             except asyncio.CancelledError:
                 call.cancel()  # the TUI is closing: nothing is left to queue it for
                 raise
-            queued = queued_lines.taken(harness, qkind, text, before)
+            queued = queued_lines.taken(harness, qkind, text, before, shown=shown)
             try:
                 await call
             except Exception as exc:  # noqa: BLE001 — surface, never crash chrome
@@ -3703,10 +3986,25 @@ async def run_tui(
         # input-loop dispatch and the autocomplete source. ``repo`` +
         # ``session_runtime`` let a handler's ctx drive fork / new_session /
         # switch_session.
+        # #704 — a handler's ``ctx.reload()`` leaves the line ``/reload`` does.
+        async def _reload_for_extension(reload: Callable[[], Awaitable[None]]) -> None:
+            before = _reload_before(runtime_host, extension_control)
+            await reload()
+            for entry in reload_success_commits(
+                runtime_host,
+                before,
+                extension_control=extension_control,
+                bound_shortcuts=bound_shortcut_keys,
+                width=terminal_columns(out_chrome),
+            ):
+                _commit(entry)
+            for entry in _after_reload_commits(command_ctx, save_implicit_trust_after_reload):
+                _commit(entry)
+
         dispatch = CommandDispatchService(
             lambda: runtime_host.harness,
             repo=getattr(runtime_host, "_repo", None),
-            session_runtime=runtime_host,
+            session_runtime=_ReportedReloadRuntime(runtime_host, _reload_for_extension),
         )
 
         def _respect_gitignore() -> bool:
@@ -3885,8 +4183,19 @@ async def run_tui(
             bound_shortcuts=bound_shortcut_keys,
             shell_lane=shell_lane,
             typed_prompt=typed_prompt,
+            mid_turn_state=mid_turn_state,
+            mid_turn_tasks=mid_turn_tasks,
+            queue_line=lambda kind, line, expanded: _enqueue(kind, line, expanded=expanded),
         )
     finally:
+        # #701 (Codex 701-handler-survives-quit) — a command run mid-turn and
+        # still open (a picker, a setter still awaiting, an extension's command)
+        # ends with the TUI, first, while what it holds is still bound.
+        for mtask in list(mid_turn_tasks):
+            if not mtask.done():
+                mtask.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await mtask
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
         if descriptor_unsub is not None:
@@ -4402,6 +4711,13 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
     output-queue seam comment) now holds by construction: they are one frame.
     """
 
+    # #701 (ADR-0292) — ``after_stream`` lines (what a command run mid-turn
+    # prints) wait while the answer's live window is up, and land under it when
+    # the window is committed and cleared, or at a ``release``: committed at
+    # once, they printed above the whole answer still being written.
+    stream_live = False
+    held: list[object] = []
+
     while True:
         first = await queue.get()
         items: list[tuple[str, object]] = [first]
@@ -4427,9 +4743,20 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
         for kind, payload in items:
             if kind == "commit":
                 pending.append(payload)
+            elif kind == "after_stream":
+                (held if stream_live else pending).append(payload)
+            elif kind == "release":
+                pending.extend(held)
+                held.clear()
             elif kind == "tail":
                 tail_seen = True
                 tail_ansi = payload if isinstance(payload, str) else ""
+                stream_live = bool(tail_ansi)
+                if not stream_live and held:
+                    # The window's text is in ``pending`` already (the renderer
+                    # commits it before it clears the tail): these go under it.
+                    pending.extend(held)
+                    held.clear()
             elif kind == "pending":
                 # #668 — ``(rows, spacer, hint row)`` from the queued lines, which
                 # draw the area in ``run_tui``; the bare rows from a lane of its own.
@@ -4494,6 +4821,9 @@ async def _input_loop(
     bound_shortcuts: frozenset[str] | None = None,
     shell_lane: ShellLane | None = None,
     typed_prompt: dict[str, str | None] | None = None,
+    mid_turn_state: dict[str, int] | None = None,
+    mid_turn_tasks: set[asyncio.Task[None]] | None = None,
+    queue_line: Callable[[str, SubmittedLine, str], None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -4514,10 +4844,16 @@ async def _input_loop(
     # Issue #9 — surface bindings for extension-command output: a handler's
     # str-return and any failure commit to scrollback (a handler's own ctx.ui
     # toasts/dialogs flow through the separately-bound TUI ui).
+    # #701 — and under the answer while one runs mid-turn (ADR-0292 D6).
     ext_command_bindings = CommandSurfaceBindings(
-        emit_text=lambda s: output_queue.put_nowait(("commit", Text(s))),
-        emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
+        emit_text=lambda s: output_queue.put_nowait((_commit_kind(), Text(s))),
+        emit_error=lambda s: output_queue.put_nowait(
+            (_commit_kind(), Text(s, style="bold red"))
+        ),
     )
+
+    def _commit_kind() -> str:
+        return "after_stream" if open_state["open"] else "commit"
 
     # #189 — imported once per loop, not once per turn. Local rather than
     # module-level for the same reason the other three call sites in this file
@@ -4541,6 +4877,152 @@ async def _input_loop(
             width=lambda: terminal_columns(chrome),
             output_text=renderer.user_bash_output,
         )
+
+    # #701 (ADR-0292) — a ``/`` line Entered while a turn runs. This loop is
+    # parked in ``harness.prompt`` then, so the chrome asks here before it
+    # steers: a command never reaches the model as text. The read-only and
+    # setting built-ins (``MID_TURN_RUNS``) and an extension's commands run now,
+    # in a task of their own, and an extension's panel opens; ``/quit`` stops the
+    # answer and quits; a template or
+    # ``/skill:<name>`` is expanded and its text steered (Alt+Enter: queued as a
+    # follow-up), as pi's ``prompt(text, {streamingBehavior})`` does; the rest
+    # are refused with the line kept and the reason under the input. Only while
+    # THIS loop runs a turn: under a running command the line is queued as the
+    # next input, as before (``_enqueue``).
+    turn_active = {"v": False}
+    quit_after_turn = {"v": False}
+    # #701 (Codex 701-handler-survives-quit) — ``run_tui`` holds the set and
+    # cancels what is still open when the TUI closes.
+    running_mid_turn: set[asyncio.Task[None]] = mid_turn_tasks if mid_turn_tasks is not None else set()
+    open_state = mid_turn_state if mid_turn_state is not None else {"open": 0}
+
+    def _mid_turn_refused(word: str, why: str) -> tuple[str, str]:
+        return ("refused", f"/{word} can't run until the answer ends — {why}")
+
+    def _mid_turn_command(line: SubmittedLine) -> tuple[str, str] | None:
+        if not turn_active["v"]:
+            return None
+        parsed = classify_submitted(line)
+        typed = str(line).strip()
+        if parsed.kind == "quit":
+            # Verify V1 — pi runs ``/quit`` ahead of its streaming branch
+            # (``interactive-mode.ts:3455``, ``:3493``): the answer is stopped as
+            # a signal stops it, and the loop returns once ``prompt`` does.
+            quit_after_turn["v"] = True
+            asyncio.ensure_future(_safe_abort_until_idle(runtime_host.harness))
+            return ("ran", "")
+        if parsed.kind == "reload":
+            word = slash_word(typed) or parsed.kind
+            command = match_command(typed, command_ctx.commands)
+            why = mid_turn_refusal(command, "") if command is not None else None
+            return _mid_turn_refused(word, why or "it can run only when the answer is over")
+        if parsed.kind != "prompt" or parsed.literal or not parsed.text.startswith("/"):
+            return None
+        text = parsed.text
+        word = slash_word(text)
+        if not word:
+            return None  # a bare ``/``: text, as at idle
+        command = match_command(text, command_ctx.commands)
+        if command is not None and command.handler is not None:
+            args = text[len("/" + word) :].strip()
+            why = mid_turn_refusal(command, args)
+            if why is not None:
+                return _mid_turn_refused(word, why)
+            _run_mid_turn(command, args)
+            return ("ran", "")
+        names: set[str] = set()
+        if dispatch is not None:
+            with contextlib.suppress(Exception):
+                names = {name for name, _desc in dispatch.list_commands()}
+        if text[1:].split(" ", 1)[0] in names:
+            # Verify V2 — pi ``agent-session.ts:2144-2153``: an extension's
+            # command runs at once, even while the model answers, and is never
+            # sent to it. The dispatch the idle path below uses.
+            _run_mid_turn_extension(text)
+            return ("ran", "")
+        if (
+            descriptor_renderer is not None
+            and (modal := _match_management_modal(descriptor_renderer, text)) is not None
+        ):
+            # Verify F4 — an extension's panel opens as the ``/skill`` and
+            # ``/tool`` panels do: ``open_modal`` mounts it through
+            # ``show_modal``, so a dialog the turn opens goes over it and hands
+            # it back, and its close names its own modal (ADR-0292 D7).
+            descriptor_renderer.open_modal(modal)
+            return ("ran", "")
+        harness = runtime_host.harness
+        expanded = None
+        with contextlib.suppress(Exception):
+            expanded = expand_resource_command(
+                text,
+                skills=getattr(harness, "skills", None) or (),
+                templates=getattr(harness, "prompt_templates", None) or (),
+                skill_commands_enabled=(
+                    settings_manager.get_enable_skill_commands()
+                    if settings_manager is not None
+                    else True
+                ),
+            )
+        if expanded is not None:
+            # Verify V2 — pi ``agent-session.ts:2196-2198``: the expansion is
+            # what is steered, as at idle it is what is sent; the pending row and
+            # the echo show the typed line, as the idle echo does.
+            kind = "follow_up" if getattr(line, "after_turn", False) else "steer"
+            if queue_line is not None:
+                queue_line(kind, line, expanded)
+                return ("ran", "")
+            target = chrome.on_steer if kind == "steer" else chrome.on_follow_up
+            if target is None:
+                return _mid_turn_refused(word, "it sends a message of its own")
+            target(SubmittedLine(expanded, ParsedInput("prompt", expanded, literal=True)))
+            return ("ran", "")
+        off = None
+        if skill_off_reason is not None and text.startswith("/skill:"):
+            off = skill_off_reason(text[len("/skill:") :].partition(" ")[0])
+        return ("refused", off or f"Unknown command: /{word} — type /help")
+
+    def _spawn_mid_turn(work: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(work)
+        running_mid_turn.add(task)
+        task.add_done_callback(running_mid_turn.discard)
+
+    def _run_mid_turn_extension(text: str) -> None:
+        async def _go() -> None:
+            open_state["open"] += 1
+            try:
+                if dispatch is not None:
+                    await dispatch.try_execute(text, ext_command_bindings)  # never raises
+            finally:
+                open_state["open"] -= 1
+
+        _spawn_mid_turn(_go())
+
+    def _run_mid_turn(command: BuiltinCommand, args: str) -> None:
+        async def _go() -> None:
+            # The model and the level are read when a run of the model starts
+            # (``AgentLoopConfig``): a steer, a tool result or a follow-up joins
+            # the run that is going, and a retry of this message starts a new one
+            # (Codex 701-thinking-retry). So a setter run here says on its own
+            # line, while this turn runs, that it applies from the next message
+            # (``setter_line``); a second line said it twice (fix round 2). Set
+            # in this task's own context: the picker or panel it awaits reads it.
+            MID_TURN.set(lambda: turn_active["v"])
+            open_state["open"] += 1
+            try:
+                await command.handler(command_ctx, args)  # type: ignore[misc]
+            except CommandInterrupted:
+                return
+            except Exception as exc:  # noqa: BLE001 — said, never raised out of a task
+                output_queue.put_nowait(
+                    ("after_stream", Text(f"✖ /{command.name} failed: {exc}", style="bold red"))
+                )
+                return
+            finally:
+                open_state["open"] -= 1
+
+        _spawn_mid_turn(_go())
+
+    chrome.on_mid_turn_command = _mid_turn_command
 
     while True:
         # #596 — the ``!`` blocks a command (``/compact``, ``/reload``, …) or a
@@ -4595,11 +5077,9 @@ async def _input_loop(
                 # #25 (ADR-0284 D6) — what the extensions were before, so the
                 # line below says what this reload changed; and a reload that
                 # raises says how far it got (Codex F08) instead of escaping.
-                before_inventory = (
-                    extension_control.inventory() if extension_control is not None else None
-                )
+                # #704 — and what the model had, for the line every success leaves.
+                before = _reload_before(runtime_host, extension_control)
                 before_harness = runtime_host.harness
-                was_stopped = isinstance(getattr(runtime_host, "stopped", None), str)
                 try:
                     await runtime_host.reload()
                 except Exception as exc:  # noqa: BLE001 — said, never raised into the loop
@@ -4620,7 +5100,7 @@ async def _input_loop(
                             # A build was committed (the new one, or the one on the
                             # previous settings): what it changed is true.
                             lines += reload_lines(
-                                before_inventory,
+                                before.inventory,
                                 extension_control.inventory(),
                                 launch=extension_control.launch,
                                 bound_shortcuts=bound_shortcuts,
@@ -4628,38 +5108,23 @@ async def _input_loop(
                     output_queue.put_nowait(
                         ("commit", _reload_text(lines, terminal_columns(chrome)))
                     )
-                    if was_stopped and getattr(runtime_host, "stopped", None) is None:
+                    if before.was_stopped and getattr(runtime_host, "stopped", None) is None:
                         # #663 (verify V6) — a build was installed, the new one or
                         # the one on the previous settings: the stop is over too.
                         output_queue.put_nowait(
                             ("commit", Text("✓ aelix is running again", style="green"))
                         )
                     continue
-                if was_stopped:
-                    # #663 — the stop the last failure announced is over.
-                    output_queue.put_nowait(
-                        ("commit", Text("✓ /reload succeeded — aelix is running again", style="green"))
-                    )
-                if extension_control is not None:
-                    extension_note = reload_lines(
-                        before_inventory,
-                        extension_control.inventory(),
-                        launch=extension_control.launch,
-                        bound_shortcuts=bound_shortcuts,
-                    )
-                    if extension_note:
-                        output_queue.put_nowait(
-                            ("commit", _reload_text(extension_note, terminal_columns(chrome)))
-                        )
-                # #376 — the rebuild restores the session's model from its
-                # record, and says so when it cannot, as /resume, /fork,
-                # /clone and /import do (``_commit_model_fallback``).
-                fallback = getattr(runtime_host, "model_fallback_message", None)
-                if isinstance(fallback, str) and fallback:
-                    output_queue.put_nowait(
-                        ("commit", Text(f"Warning: {fallback}", style="yellow"))
-                    )
+                for entry in reload_success_commits(
+                    runtime_host,
+                    before,
+                    extension_control=extension_control,
+                    bound_shortcuts=bound_shortcuts,
+                    width=terminal_columns(chrome),
+                ):
+                    output_queue.put_nowait(("commit", entry))
             else:
+                before_buckets = _reload_buckets(harness)
                 try:
                     await harness.reload_resources()
                 except Exception as exc:  # noqa: BLE001 — #663: said, never raised into the loop
@@ -4668,41 +5133,17 @@ async def _input_loop(
                         ("commit", _reload_text([("bold red", failure)], terminal_columns(chrome)))
                     )
                     continue
-            # #240 — AFTER both arms, because NEITHER reaches ``_load_models``:
-            # the rebuild arm calls ``AgentSessionRuntime.reload`` (not
-            # ``AgentHarness.reload``, whose ``reset()`` leg is dead code —
-            # nothing ever assigns ``_model_registry`` on an AgentHarness) and
-            # re-binds the SAME registry object. So a user reaching for /reload
-            # to pick up a rotated ``models.json`` credential gets nothing
-            # unless we drop the cached ``!command`` values here. The registry
-            # arrives on ``command_ctx``; ``run_tui``'s own ``model_registry``
-            # parameter is not in scope in this function.
-            clear_command_value_cache(getattr(command_ctx, "model_registry", None))
-            # #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload,
-            # not before. A session that was trusted without ever being asked
-            # (nothing to gate at startup) records that trust once resources
-            # have actually appeared and been loaded, so the next launch does
-            # not re-ask about a directory the user has been working in.
-            #
-            # Deliberately NOT a gate: by this line the new resources are
-            # already loaded. Making it one was measured to work and was
-            # declined in favour of pi parity — see ADR-0216 and #112.
-            # Both families are named (#509 verify V2): the predicate counts a
-            # ``.agents/skills`` here or in a parent too, and one that arrived
-            # alone was announced as ``.aelix`` resources the folder never had.
-            if save_implicit_trust_after_reload is not None:
-                with contextlib.suppress(Exception):
-                    if save_implicit_trust_after_reload():
-                        output_queue.put_nowait(
-                            (
-                                "commit",
-                                Text(
-                                    "Saved project trust for this folder (it gained .aelix "
-                                    "resources or .agents/skills during this session).",
-                                    style="yellow",
-                                ),
-                            )
-                        )
+                success = reload_success_line(
+                    before_buckets,
+                    _reload_buckets(harness),
+                    what="the extensions' resources (AELIX_RELOAD_REBUILD is off)",
+                )
+                output_queue.put_nowait(
+                    ("commit", _reload_text([("green", success)], terminal_columns(chrome)))
+                )
+            # #240, #112 — after both arms (``_after_reload_commits``).
+            for entry in _after_reload_commits(command_ctx, save_implicit_trust_after_reload):
+                output_queue.put_nowait(("commit", entry))
             continue
         # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
         # command core BEFORE going to the model: (1) built-in registry handler,
@@ -4914,7 +5355,13 @@ async def _input_loop(
         # record still being written finishes first, and one that finishes
         # later sees the turn running and waits for the settle after it.
         await lane.settle(from_loop=True)
+        # #702 (verify V8, Codex 702-hook-handled) — the run the renderer saw
+        # before this line is not this turn's: an extension's turn (#674,
+        # ``send_message(trigger_turn=True)``) starts one too, and a line an
+        # ``input`` hook handles below starts none.
+        renderer.take_run_end()
         chrome.set_running(True)
+        turn_active["v"] = True
         turn_raised = False
         if typed_prompt is not None:
             typed_prompt["line"] = line
@@ -4934,14 +5381,35 @@ async def _input_loop(
                     ("commit", Text(f"✖ {exc}", style="bold red"))
                 )
         finally:
+            turn_active["v"] = False
+            # #701 — whatever a mid-turn command printed is under the answer now.
+            output_queue.put_nowait(("release", None))
             chrome.set_running(False)
             if typed_prompt is not None:
                 typed_prompt["line"] = None
+        if quit_after_turn["v"]:
+            return  # #701 — a ``/quit`` Entered mid-turn stopped this turn
 
         # #596 — the ``!`` commands run during the turn reach the transcript and
         # the model now, after the turn's last message and before the next
         # request (pi flushes ``_pendingBashMessages`` when its run ends).
         await lane.settle(from_loop=True)
+        # #702 — the working row is gone; what it said stays as one dim line:
+        # how the turn ended, how long it took, when. After the ``!`` records
+        # above, which ran inside the turn. Only a run that started, or one
+        # that raised (its ``✖`` line is above): an ``input`` hook that handled
+        # the line ran no turn.
+        run_seen, run_stop = renderer.take_run_end()
+        seconds = chrome.last_run_seconds
+        if (run_seen or turn_raised) and seconds is not None:
+            outcome = (
+                "failed"
+                if turn_raised or run_stop == "error"
+                else "stopped"
+                if run_stop == "aborted"
+                else "done"
+            )
+            output_queue.put_nowait(("commit", turn_end_line(outcome, seconds, time.time())))
         # #240 — a turn that failed may have failed on a stale credential, so
         # drop the resolved ``!command`` values and let the next request re-fork.
         #

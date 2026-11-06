@@ -13,7 +13,7 @@ the child stream produces out to two places:
   panel (a ``set_widget`` block above the input, one per call, for one child or
   eight; ADR-0278, layouts in :mod:`aelix_agents.panel`) and NO statusline row
   (D2); for a child nobody grouped — a ``/agents run`` child — ONE height-1
-  statusline row (``tui/chrome.py:1687-1710`` renders ``set_status`` into a
+  statusline row (``tui/chrome.py:1748-1771`` renders ``set_status`` into a
   single line), exactly as before.
 
 THE PANEL IS NOT DRAWN FROM THE PUBLISH PATH (ADR-0278 D6). Every snapshot is
@@ -233,7 +233,7 @@ The statusline is one segment on a shared height-1 row and the model is
 child-authored (read off the child's own ``message_end``), so the term is
 sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
 strips newlines from this row but bounds neither its width nor its ESC content
-(``chrome.py:1687-1710``), so this field is defended at the source, the posture
+(``chrome.py:1748-1771``), so this field is defended at the source, the posture
 the panel already takes. ``current_tool`` and ``profile`` were left to that far
 end until #178 and are now defended the same way — see
 :func:`format_status_row`."""
@@ -392,7 +392,7 @@ class SubagentProgressBridge:
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
-        ``invalidate()`` unconditionally (``chrome.py:2276-2282``), so an
+        ``invalidate()`` unconditionally (``chrome.py:2393-2399``), so an
         unchanged panel re-written on every redraw would be a full repaint for
         nothing."""
 
@@ -883,7 +883,7 @@ class SubagentProgressBridge:
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:2058-2073`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:2062-2077`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for and ADR-0278 keeps; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

@@ -438,8 +438,10 @@ Discover and Sources tabs and back, and unsaved changes wait for you there.
 
 Nothing changes until **`/reload`** (or a restart): the row says `off · /reload`
 until then. After `/reload` an extension that is off is not imported at all —
-its tools, commands, hooks and skills are gone — and `/reload` leaves one line
-saying what changed and what failed:
+its tools, commands, hooks and skills are gone. `/reload` leaves a
+`✓ Reloaded …` line that names the skills, prompt templates and tools the
+model gained and lost (`+name`, `-name`), and under it, when an extension
+changed or failed, one entry saying what changed and what failed:
 
 ```
 Extensions after /reload: weather.py off · broken-ext.py failed
