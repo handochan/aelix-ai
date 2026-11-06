@@ -454,6 +454,14 @@ and moves into the transcript when the model takes it, so the transcript reads i
 order the model saw things. `Alt+Up` brings the queued lines back into the input, as the
 `↳ Alt+Up to edit all queued messages` row under them says when there is room for it.
 
+When a turn is over, the `Working…` row leaves one dim line behind in the
+transcript: `✓ done · 4.2s · 14:05` — how long the turn took and the time it ended.
+A turn you stopped reads `stopped · 2.9s · 14:05` (one stopped while it waited to
+retry too), and one that failed shows the time alone under its red `✖` line. A reply
+that came in under a second reads in milliseconds (`✓ done · 840ms · 14:05`).
+Commands such as `/compact` leave no such line, and neither does a turn an extension
+started.
+
 Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to
 edit the current input in `$VISUAL` / `$EDITOR`.

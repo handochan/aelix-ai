@@ -834,6 +834,9 @@ class AelixChrome:
         # while running, ticking with the existing ``refresh_interval`` repaints
         # (no extra loop). Reset to None on ``set_running(False)``.
         self._run_started: float | None = None
+        # #702 — how long the run that just ended took, on the same clock, for
+        # the line the turn leaves (``last_run_seconds``).
+        self._last_run_seconds: float | None = None
         self._spinner_frames: tuple[str, ...] = _DEFAULT_SPINNER
         self._spinner_index: int = 0
         # Spinner advances by wall-clock time (not render cadence) so its speed
@@ -2209,10 +2212,21 @@ class AelixChrome:
         self.invalidate()
 
     def set_running(self, running: bool) -> None:
+        was_running = self._running
         self._running = running
         # Sprint 6h₂₅ (ADR-0153, WP-3) — stamp the turn-start on rising edge so
         # _render_working can show elapsed seconds; clear on falling edge.
-        self._run_started = self._time() if running else None
+        # #702 — on the EDGES only: a command run while a turn runs sets
+        # ``running`` again and puts back what it found (``_run_cancellable``),
+        # which restarted the turn's clock. The falling edge keeps how long the
+        # run took (``last_run_seconds``).
+        if running and not was_running:
+            self._run_started = self._time()
+            self._last_run_seconds = None
+        elif not running:
+            if self._run_started is not None:
+                self._last_run_seconds = max(0.0, self._time() - self._run_started)
+            self._run_started = None
         # #66 item 2 — a turn starting disarms any pending idle Ctrl+C-exit window
         # so a fast turn can't let a stale first-press count as the "second press".
         if running:
@@ -2220,6 +2234,16 @@ class AelixChrome:
         else:
             self._submitted_line = None  # #654: its turn is over, nothing can withdraw it
         self.invalidate()
+
+    @property
+    def last_run_seconds(self) -> float | None:
+        """#702 — how long the last run took, from ``set_running(True)`` to ``(False)``.
+
+        ``None`` while one runs and before the first. The working row's clock
+        (``_time``), so a test's injected clock decides it too.
+        """
+
+        return self._last_run_seconds
 
     def set_footer_line(self, text: str) -> None:
         # WP-8 (Feature 5) — the footer row is multi-line-capable, so it KEEPS

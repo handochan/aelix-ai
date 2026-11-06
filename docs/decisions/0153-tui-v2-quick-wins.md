@@ -80,6 +80,27 @@ steer/follow-up echo in `shell.py`, and the replayed-transcript echo in
   0). Both are pure `BufferControl` input processors — headless-safe under
   `DummyOutput`. The committed-echo chevron stays `» ` (Feature B); the stored
   `prompt='» '` ctor field remains unused.
+- *2026-11-06 note (#702):* the stamp moves on the EDGES only: `set_running(True)`
+  while already running no longer restarts the turn's clock. Nothing nests them
+  during a turn today — `_run_cancellable` wraps its work in `set_running(True)` and
+  puts back what it found, but only `/compact` and `/agents run` go through it, and
+  they run between turns (ADR-0292 refuses both mid-turn; the commands that do run
+  beside a turn do not touch it) — so this guards against a nesting rather than
+  fixing one that ran. The falling edge
+  keeps the run's length (`AelixChrome.last_run_seconds`), and a typed TUI turn
+  leaves one dim transcript line when it is over: `✓ done · 4.2s · 14:05`,
+  `stopped · 4.2s · 14:05` after Esc / Ctrl+C (under the yellow "Operation
+  aborted"), or the time alone after a failure (under its red `✖` line). The
+  outcome is the last assistant `stop_reason` the renderer saw
+  (`EventRenderer.take_run_end`), so an auto-retry that succeeded reads `done`, and
+  Esc or Ctrl+C in a retry's backoff (an `auto_retry_end` with "Retry cancelled")
+  reads `stopped` (Codex 702-retry-cancel); what the renderer saw is cleared as a
+  typed turn starts, so a line an `input` hook handled ran no turn and leaves none
+  even after an extension's turn (#674) set it (verify V8). The length is
+  `tui/durations.py`'s `turn_duration` (`840ms` / `4.2s` / `42s` / `1m 12s` /
+  `1h 03m`, the sub-second shape `/stats`'s latency uses); `/stats`'s two shapes moved there unchanged. Commands, extension
+  turns (#674), `-p`, json and rpc leave no line. No `/settings` row turns it
+  off: one dim row per typed turn, and none was asked for.
 - The `↑ N tokens` clause is **OMITTED / deferred.** The streaming event path
   carries text *deltas* (strings), not an incremental output-token / usage
   signal — usage only arrives at `message_end`. There is no cheap real source

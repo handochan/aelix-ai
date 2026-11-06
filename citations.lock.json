@@ -2823,7 +2823,7 @@
    "full height, so the security-critical deny option is ALWAYS visible even when",
    "the diff body is far taller than the cap."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1133-1145": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1136-1148": [
    "# ``widgets_above``/``widgets_below`` stay UNGATED on purpose. An empty",
    "# ``FormattedTextControl`` reports ``line_count == 1``, so each holds a",
    "# permanent 1-row floor — that row is a LAYOUT STABILISER, not dead space.",
@@ -2833,15 +2833,15 @@
    "# runs inside ``print_above_many``'s ``apply_before_redraw`` hook, i.e.",
    "# inside the erase/CPR two-phase fold-in the round-3 flicker fix made"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1147-1149": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1150-1152": [
    "Window(",
    "FormattedTextControl(self._render_widgets_above),",
    "dont_extend_height=True,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1213-1213": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1216-1216": [
    "refresh_interval=0.1,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1312-1319": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1315-1322": [
    "if self._running and submit_text.strip() and self.on_steer is not None:",
    "self.buffer.reset()",
    "with contextlib.suppress(Exception):",
@@ -2851,18 +2851,18 @@
    "self.on_steer(SubmittedLine(submit_text, parsed))",
    "return"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1561-1564": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1564-1567": [
    "@kb.add(",
    "\"s-tab\",",
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1691-1693": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1694-1696": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1691-1714": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1694-1717": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]",
@@ -2872,13 +2872,13 @@
    "if sigil and not self.is_modal_open():",
    "hint = shell_hint("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1715-1715": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1718-1718": [
    "return \" \".join(parts)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1945-1945": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1948-1948": [
    "return ANSI(\"\\n\".join(lines))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2280-2286": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2304-2310": [
    "def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:",
    "slots = self._widgets_above if above else self._widgets_below",
    "if lines is None:",
@@ -2887,10 +2887,10 @@
    "slots[key] = list(lines)",
    "self.invalidate()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:926-926": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:929-929": [
    "self._modal: AnyContainer | None = None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:960-976": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:963-979": [
    "def _ansi_row(",
    "getter: Callable[[], str], *, gate_visible: bool = False",
    ") -> ConditionalContainer:",
@@ -3005,23 +3005,23 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/overlay.py:64-64": [
    "_MODAL_MIN_HEIGHT = 3"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1010-1046": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1021-1061": [
    "def on_agent_event(self, event: AgentEvent) -> None:",
    "if event.type == \"agent_start\":",
    "self._agent_running = True",
    "self._input_return_said = False",
+   "self._run_seen = True",
+   "self._run_stop = None",
    "elif event.type == \"agent_end\":",
-   "self._agent_running = False",
-   "elif event.type == \"message_start\":",
-   "self._reset_message_state()"
+   "self._agent_running = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1025-1025": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1038-1038": [
    "self._render_message_error(event.message)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1642-1642": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1685-1685": [
    "max_lines=40 if is_error else self.tool_card_max_lines,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1939-1955": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1982-1998": [
    "content = getattr(msg, \"content\", None)",
    "text = content if isinstance(content, str) else _join_text(content or [])",
    "# #177 — both halves are the extension's (and, on replay, the session",
@@ -3031,7 +3031,7 @@
    "# (:meth:`user_bash_output`) — the colour codes go whole rather than",
    "# leaving ``[31m`` behind, and the marks stay, as in any tool output."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:324-344": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:329-349": [
    "#: the accumulator that can still reach the window. The budget is counted in",
    "#: CHARACTERS against a width counted in CELLS; one cell per character (ASCII) is",
    "#: the case that yields the fewest rows per character, so ``width × (window +",
@@ -3041,22 +3041,22 @@
    "",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:340-343": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:345-348": [
    "became dynamic would have made the CJK case drift further, not less.",
    "``_truncate_lines`` below has always measured cells; this makes the file",
    "agree with itself.",
    "\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:341-341": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:346-346": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1066-1066": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1090-1090": [
    "# through the same queue as committed lines keeps them ordered — otherwise a"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1547-1547": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1571-1571": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2507-2524": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2531-2548": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3066,21 +3066,21 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3431-3433": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3455-3457": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3692-3692": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3716-3716": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3837-3837": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3861-3861": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3922-3922": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3946-3946": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:435-451": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:459-475": [
    "",
    "def _reload_rebuild_enabled() -> bool:",
    "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
@@ -3090,13 +3090,13 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4712-4712": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4736-4736": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4851-4851": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4875-4875": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4932-4946": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4956-4970": [
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
    "# args = the text after the command word (Sprint 6h₁₂d). The",

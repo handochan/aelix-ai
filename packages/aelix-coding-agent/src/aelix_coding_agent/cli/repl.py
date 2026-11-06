@@ -419,7 +419,7 @@ async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
     )
     # NOT the output: ``content`` above already carries it, and nothing reads
     # this key back — ``bash_execution`` has no registered renderer, so
-    # ``tui/render.py:1939-1955`` draws the ``[bash_execution]`` label and
+    # ``tui/render.py:1982-1998`` draws the ``[bash_execution]`` label and
     # ``content``. Storing it twice cost a 2,000,455-byte session file for
     # 1,000,001 bytes of output before #299's fix pass. What stays is what a
     # future renderer could not recover from ``content``: the command, the

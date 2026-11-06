@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
+  ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
+  or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`
+  or `Ctrl+C` (in a retry's wait too), or the time alone under a failure's red `✖` line, then
+  the length (`840ms`, `4.2s`, `42s`, `1m 12s`, `1h 03m`) and the local `HH:MM` it ended.
+  Commands, lines an `input` hook handled and turns an extension starts leave no line.
 - **The input shows what Enter will do with a line, and a `!` line runs while the
   model is answering (#596, ADR-0287).**
   - Type `!` and the input is in shell mode: the `!` (or `!!`) takes the place of

@@ -433,6 +433,30 @@ def reload_success_line(
     return head if more_below else f"{head} · no changes"
 
 
+def turn_end_line(outcome: str, seconds: float, ended_at: float) -> Text:
+    """#702 — the dim line a typed turn leaves when it is over.
+
+    ``✓ done · 4.2s · 14:05`` for a turn that ended normally; ``stopped · …``
+    for Esc, Ctrl+C or a signal, under the yellow "Operation aborted" line;
+    the time alone (``4.2s · 14:05``) for a failure, under its red ``✖`` line,
+    which says what went wrong. *seconds* from ``set_running(True)`` to
+    ``(False)`` (:func:`~aelix_coding_agent.tui.durations.turn_duration`);
+    *ended_at* an epoch, shown as local ``HH:MM``.
+    """
+
+    from aelix_coding_agent.tui.durations import turn_duration  # noqa: PLC0415
+
+    when = time.strftime("%H:%M", time.localtime(ended_at))
+    tail = f"{turn_duration(seconds)} · {when}"
+    if outcome == "done":
+        text = f"✓ done · {tail}"
+    elif outcome == "stopped":
+        text = f"stopped · {tail}"
+    else:
+        text = tail
+    return Text(text, style="dim")
+
+
 def _reload_rebuild_enabled() -> bool:
     """Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).
 
@@ -3301,7 +3325,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:1025``), so anything reaching this line already has it.
+            # (``render.py:1038``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
@@ -5130,6 +5154,11 @@ async def _input_loop(
         # record still being written finishes first, and one that finishes
         # later sees the turn running and waits for the settle after it.
         await lane.settle(from_loop=True)
+        # #702 (verify V8, Codex 702-hook-handled) — the run the renderer saw
+        # before this line is not this turn's: an extension's turn (#674,
+        # ``send_message(trigger_turn=True)``) starts one too, and a line an
+        # ``input`` hook handles below starts none.
+        renderer.take_run_end()
         chrome.set_running(True)
         turn_raised = False
         if typed_prompt is not None:
@@ -5158,6 +5187,22 @@ async def _input_loop(
         # the model now, after the turn's last message and before the next
         # request (pi flushes ``_pendingBashMessages`` when its run ends).
         await lane.settle(from_loop=True)
+        # #702 — the working row is gone; what it said stays as one dim line:
+        # how the turn ended, how long it took, when. After the ``!`` records
+        # above, which ran inside the turn. Only a run that started, or one
+        # that raised (its ``✖`` line is above): an ``input`` hook that handled
+        # the line ran no turn.
+        run_seen, run_stop = renderer.take_run_end()
+        seconds = chrome.last_run_seconds
+        if (run_seen or turn_raised) and seconds is not None:
+            outcome = (
+                "failed"
+                if turn_raised or run_stop == "error"
+                else "stopped"
+                if run_stop == "aborted"
+                else "done"
+            )
+            output_queue.put_nowait(("commit", turn_end_line(outcome, seconds, time.time())))
         # #240 — a turn that failed may have failed on a stale credential, so
         # drop the resolved ``!command`` values and let the next request re-fork.
         #
