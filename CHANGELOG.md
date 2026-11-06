@@ -1283,6 +1283,13 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`\` + Enter starts a new line wherever the cursor is (#700, ADR-0121).** With the
+  cursor in the middle of a line, `abc\|def` (`|` the cursor) sent the line: the backslash
+  was looked for at the end of the input, and only with the cursor there. Now the `\` right
+  before the cursor becomes the line break, in a draft of one line or of many, and also while
+  the model is answering, when Enter would otherwise steer. `\\` and Enter still sends one
+  literal backslash, and an input that only ends in `\`, with the cursor elsewhere, is sent
+  as typed.
 - **A tool or hook that catches a failed `TaskGroup` no longer ends the turn with a traceback
   (#698, ADR-0290).** On Python 3.11 and 3.12 a sequential tool, a `tool_call` hook or a listener
   that used `asyncio.TaskGroup`, and caught a child's failure, ended the turn with nobody having

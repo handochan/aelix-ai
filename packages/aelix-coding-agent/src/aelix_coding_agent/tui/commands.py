@@ -2293,7 +2293,7 @@ async def _context_handler(ctx: CommandContext, args: str) -> None:
 # next to the registry so /hotkeys and the real bindings can't silently drift.
 _HOTKEYS: list[tuple[str, str]] = [
     ("Enter", "Submit message (or steer the running turn)"),
-    ("\\ + Enter", "Insert a newline (multi-line input)"),
+    ("\\ + Enter", "Insert a newline at the cursor (multi-line input)"),
     ("Alt+Enter", "Queue a follow-up message (while a turn runs)"),
     ("Alt+↑", "Restore queued messages back into the editor"),
     ("Ctrl+T", "Toggle thinking-block visibility"),

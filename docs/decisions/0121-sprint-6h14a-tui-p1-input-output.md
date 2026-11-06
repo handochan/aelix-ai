@@ -26,10 +26,21 @@ The input `Buffer` is now `multiline=True` and the input window grows to 10 rows
 
 - **Bracketed multi-line paste keeps its line breaks** (was mangled/submitted
   per-line under `multiline=False`) — the main real-world multiline need.
-- **Manual newline = backslash-continuation.** A draft ending in an ODD number of
-  trailing backslashes + Enter consumes one `\` and inserts a newline instead of
+- **Manual newline = backslash-continuation.** An ODD run of backslashes right
+  before the cursor + Enter consumes one `\` and inserts a newline there instead of
   submitting; `\\` is a literal backslash and submits. This is the same idiom
   Claude Code uses and is terminal-independent.
+
+  **Amendment (2026-11-06, #700).** As shipped, the run was counted at the END of
+  the buffer and the cursor had to be there too, so `abc\|def` (`|` the cursor)
+  sent the line — the [L3] limit below, reported by the owner as "\ + Enter 글자
+  중간에 하면 줄바꿈이 아니라 그냥 채팅이 보내짐". The run is now read from
+  `document.text_before_cursor`, wherever the cursor is, on every line of the draft
+  and also mid-turn (the check runs before the steer branch). A buffer that merely
+  ENDS in `\` with the cursor elsewhere, after no backslash, submits as typed.
+  `Alt+Enter` (follow-up) does not take part: it is the explicit queue key, idle it
+  does nothing, and a `\` + `Alt+Enter` mid-turn queues the line as typed, as
+  before.
 
 **pi divergence (documented):** pi binds `tui.input.newLine = shift+enter` /
 `tui.input.submit = enter` (`packages/tui/src/keybindings.ts`). prompt-toolkit
@@ -140,7 +151,8 @@ protected core byte-unchanged; pi-parity claims independently confirmed (esp.
 - **[L2]** `FileMentionCompleter` will list dirs above cwd (`@../`). Left as a
   conscious decision (user's own session, no content read, pi does whole-tree).
 - **[L3]** mid-text trailing-`\`+Enter submits with a dangling backslash; **[L4]**
-  diff path truncates twice (negligible). Both accepted as-is.
+  diff path truncates twice (negligible). Both accepted as-is. — [L3] fixed by
+  #700 (2026-11-06, the amendment in §1).
 
 ## Deferred
 

@@ -2841,7 +2841,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1213-1213": [
    "refresh_interval=0.1,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1308-1315": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1312-1319": [
    "if self._running and submit_text.strip() and self.on_steer is not None:",
    "self.buffer.reset()",
    "with contextlib.suppress(Exception):",
@@ -2851,18 +2851,18 @@
    "self.on_steer(SubmittedLine(submit_text, parsed))",
    "return"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1557-1560": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1561-1564": [
    "@kb.add(",
    "\"s-tab\",",
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1687-1689": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1691-1693": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1687-1710": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1691-1714": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]",
@@ -2872,13 +2872,13 @@
    "if sigil and not self.is_modal_open():",
    "hint = shell_hint("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1711-1711": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1715-1715": [
    "return \" \".join(parts)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1941-1941": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1945-1945": [
    "return ANSI(\"\\n\".join(lines))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2276-2282": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:2280-2286": [
    "def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:",
    "slots = self._widgets_above if above else self._widgets_below",
    "if lines is None:",

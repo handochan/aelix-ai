@@ -440,6 +440,12 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
   same recovery rules used when reopening the session. `/name` without arguments
   shows the current name.
 
+To start a new line in the input, type `\` and press Enter. It works wherever the
+cursor is, also in the middle of a line or of a draft that already has lines: the `\`
+right before the cursor turns into the line break. `\\` and Enter sends the line with
+one literal backslash in it, and a `\` that is not right before the cursor stays as
+typed.
+
 While the model is answering, Enter sends a line as a steer, which the model reads at
 its next step (after the text it is writing, or after a tool's result), and `Alt+Enter`
 queues it as a follow-up for after the answer. A queued line is shown under the answer as

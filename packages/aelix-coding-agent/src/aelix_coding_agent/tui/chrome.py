@@ -1251,7 +1251,7 @@ class AelixChrome:
         # but in this terminal/parser both CR and LF are how "Enter" is delivered
         # (the pipe-input tests feed ``\n`` = c-j to submit), so we bind BOTH to the
         # accept handler to keep submit working. Manual newline entry is via
-        # backslash-continuation (a line ending in a single ``\`` — see below); pi
+        # backslash-continuation (a single ``\`` before the cursor — see below); pi
         # uses Shift+Enter, but prompt-toolkit 3.0.52 collapses the Shift+Enter
         # CSI-u sequence to c-m (== Enter), so a distinct newline key isn't
         # available (ADR-0121).
@@ -1267,12 +1267,16 @@ class AelixChrome:
                 self.buffer.apply_completion(complete_state.current_completion)
                 return
             text = self.buffer.text
-            # Backslash-continuation: a draft ending in an ODD number of trailing
-            # backslashes inserts a newline instead of submitting (manual multi-line
-            # entry — same idiom Claude Code uses; terminal-independent). One
-            # trailing ``\`` is consumed; ``\\`` is a literal backslash + submit.
-            trailing = len(text) - len(text.rstrip("\\"))
-            if trailing % 2 == 1 and self.buffer.cursor_position == len(text):
+            # Backslash-continuation: an ODD run of backslashes right before the
+            # cursor inserts a newline there instead of submitting (manual
+            # multi-line entry — same idiom Claude Code uses; terminal-independent).
+            # One ``\`` is consumed; ``\\`` is a literal backslash + submit. #700 —
+            # the run is read before the CURSOR, wherever it is in the draft: it
+            # was read at the end of the buffer, with the cursor required there,
+            # so ``abc\|def`` sent the line.
+            before = self.buffer.document.text_before_cursor
+            trailing = len(before) - len(before.rstrip("\\"))
+            if trailing % 2 == 1:
                 self.buffer.delete_before_cursor(1)
                 self.buffer.insert_text("\n")
                 return
