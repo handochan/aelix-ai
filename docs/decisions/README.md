@@ -568,7 +568,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   range, ADR-0254 §2.3/§3 and ADR-0128's "not covered" (dated notes).
 
 - [0128 — Auto-retry with exponential backoff](0128-sprint-6h20-auto-retry.md)
-  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551; amended 2026-10-28, #597). The retry reads `settings.json` `retry.enabled` /
+  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551; amended 2026-10-28, #597; amended 2026-11-06, #572). The retry reads `settings.json` `retry.enabled` /
   `maxRetries` / `baseDelayMs` / `maxAgentDelayMs` at each decision (pi's cap
   included); rpc `set_auto_retry` writes `retry.enabled` globally as pi does;
   module constants remain the fallback. ADR-0251 §12.3's follow-up note amended.
@@ -596,6 +596,13 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   #597 (PR #614, mikemikimike): a Responses stream that ends before its terminal event is
   retried, as pi retries it, on every Responses adapter; the Codex adapter normalizes CRLF
   before framing (pi frames LF only), one chunk at a time.
+  #572: the TLS verdict has a second value, `resend`, for a failure the session's strict
+  relaxation answers - retried whatever its text says, so a Codex request that failed on
+  strict alone is sent again and answered instead of ending the prompt - and the harness
+  keeps the adapter's error text (verdict and `classifier_text`) in a record of its own from
+  `message_end` on (`_ProviderErrorRecord`, #379's precedent), so a hook that rebuilds the
+  answer changes no retry or overflow decision. A plain-`str` error a hook rewrites is still
+  classified on its new words, as pi does.
 
 - [0263 — Configured request auth before new prompt records](0263-configured-request-auth-before-new-prompt-records.md)
   (Accepted, 2026-10-12; #416). Request-supported headers/token/Vertex source

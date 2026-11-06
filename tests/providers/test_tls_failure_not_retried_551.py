@@ -317,9 +317,11 @@ def test_a_502_that_quotes_certificate_words_is_still_retried() -> None:
 def test_a_message_rebuilt_from_its_text_is_classified_on_its_text(
     pki: _Pki, untrusted: _TlsServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The known limit (ADR-0128 #551 amendment): the mark travels with the message
-    object, as #186's ``classifier_text`` does; an extension that rebuilds the
-    message hands the harness a plain ``str``, retried on its words as before."""
+    """The mark travels with the message object, as #186's ``classifier_text`` does: a
+    message the harness never recorded (a resumed session's) with the same words as a
+    plain ``str`` is retried on its words. A ``message_end`` hook's rebuild no longer is:
+    the harness keeps the adapter's text from ``message_end`` on (#572,
+    ``tests/providers/test_tls_retry_verdict_572.py``)."""
 
     _trusting(monkeypatch, pki.trusted_ca, strict=False)
     described = describe_provider_error(_sdk_failure(untrusted.port))

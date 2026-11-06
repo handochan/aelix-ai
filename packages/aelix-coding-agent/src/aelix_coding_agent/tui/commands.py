@@ -446,7 +446,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2453``) and render it
+    the harness's own auto-compaction guard at ``core.py:2456``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
 
     #347 — through ``run_cancellable``, so Esc and Ctrl+C reach it and the row's
@@ -531,7 +531,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5738-5744`` intersects ``_state.tools`` with
+    (``harness/core.py:5747-5753`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.

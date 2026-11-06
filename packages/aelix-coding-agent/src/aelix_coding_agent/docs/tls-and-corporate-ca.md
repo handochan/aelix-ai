@@ -250,11 +250,10 @@ verification on a strict interpreter, it re-tests that host twice — once with
 strict on, once with it off — whatever the verify code, as long as the error
 names the host (the Google adapters do not take this path). Only if the
 handshake **fails with strict and succeeds without it** does it relax that one
-flag for the rest of the session, saying so in place of the advice. For the
-OpenAI and Anthropic APIs the automatic retry then sends the request again,
-now without strict, and a request that failed on strict alone passes; that
-retry is the only one a certificate failure gets. An OpenAI Codex request is
-not retried, so its next prompt is the one that passes:
+flag for the rest of the session, saying so in place of the advice. The
+automatic retry then sends the request again, now without strict, and a
+request that failed on strict alone passes - for every provider, OpenAI Codex
+included; that retry is the only one a certificate failure gets:
 
 ```text
 RFC-5280 strict verification relaxed for this session after the host below failed it but verified against this machine's trust store without it.

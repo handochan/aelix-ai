@@ -31,10 +31,10 @@ or a human ends it, and cancellation (below) is how a human does.
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:5983-5989``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:6003-6009``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:117``) and is threaded unchanged into
 ``ToolExecutionContext(signal=signal)`` (``loop.py:726-728``). Abort is
-``turn_task.cancel()`` (``core.py:2039-2042``). So ``CancelledError`` is the ONLY
+``turn_task.cancel()`` (``core.py:2042-2045``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.
 """

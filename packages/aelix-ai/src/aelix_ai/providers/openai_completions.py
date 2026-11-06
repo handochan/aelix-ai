@@ -1432,8 +1432,9 @@ async def stream_openai_completions(
         # that can fail Python 3.13's strict RFC-5280 checks even when the OS
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
-        # the harness already retries "Connection error." on its own, so the next
-        # attempt is the one that succeeds.
+        # ``describe_provider_error`` then gives a failure the relaxation answers
+        # the ``resend`` verdict, which the harness retries whatever its text says
+        # (#572), so the next attempt, on a new client, is the one that succeeds.
         maybe_relax_strict_for_session(exc)
         err_msg = describe_provider_error(exc)
 
@@ -1455,11 +1456,18 @@ async def stream_openai_completions(
             # The provider's words, quoted like the rest of the message (#186),
             # and classified on what they said before the quoting.
             from aelix_ai.providers._error_hints import quote_model_text
-            from aelix_ai.utils.overflow import classifier_text_of, with_classifier_text
+            from aelix_ai.utils.overflow import (
+                classifier_text_of,
+                retry_verdict,
+                with_classifier_text,
+            )
 
+            verdict = retry_verdict(err_msg)  # #572: the verdict carries over too
             err_msg = with_classifier_text(
                 f"{err_msg}\n{quote_model_text(str(raw_meta))}",
                 f"{classifier_text_of(err_msg)}\n{raw_meta}",
+                repeats_on_retry=verdict == "repeats",
+                resend_on_retry=verdict == "resend",
             )
 
         error_output = AssistantMessage(

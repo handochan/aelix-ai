@@ -19,7 +19,7 @@ Aelix adaptations of the verbatim Pi port:
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 # Stop reasons that mark a *successfully completed* assistant answer. Pi uses
 # only ``"stop"``; Aelix's Anthropic adapter emits ``"end_turn"`` for the same
@@ -118,36 +118,60 @@ class ClassifiedErrorText(str):
     writes the display text. The carrier lives as long as the message object
     does - from the adapter to the harness's classification in the same
     process. A message rebuilt from its fields (a resumed session, an
-    extension's ``message_end`` replacement built anew) is a plain ``str`` and
-    is classified on its display text.
+    extension's ``message_end`` replacement built anew) is a plain ``str``.
+    The harness keeps what its adapter described (#572): at ``message_end``,
+    before the hooks run, it copies this text into a record of its own and
+    points the record at the message the hooks leave, so a hook's rebuild is
+    classified as the adapter described it (``AgentHarness._is_retryable_error``,
+    the overflow recovery). A message no ``message_end`` carried - a resumed
+    session's - is classified on its display text.
 
-    :attr:`repeats_on_retry` (#551) is the adapter's verdict that sending the
-    request again would fail the same way - a TLS certificate verification
-    failure (:func:`aelix_ai.providers._error_hints.tls_failure_repeats_on_retry`);
-    the harness does not retry such a message, whatever its text matches. It
-    travels like :attr:`classifier_text`: a rebuilt message loses it and is
-    classified on its text, as before #551.
+    :attr:`repeats_on_retry` and :attr:`resend_on_retry` are the adapter's
+    verdict on sending the request again (:func:`retry_verdict`): it would fail
+    the same way - a TLS certificate verification failure (#551,
+    :func:`aelix_ai.providers._error_hints.tls_failure_repeats_on_retry`) - or
+    the next attempt verifies differently and can pass - a failure the
+    session's strict relaxation answers (#572). The harness does not retry the
+    first and retries the second, whatever the text matches. At most one is
+    set. They travel like :attr:`classifier_text`.
     """
 
     classifier_text: str
     repeats_on_retry: bool = False
+    resend_on_retry: bool = False
+
+
+#: The adapter's verdict on sending a failed request again (#551, #572):
+#: ``"repeats"`` - the next attempt fails the same way, so it is not retried;
+#: ``"resend"`` - it verifies differently and can pass, so it is retried
+#: whatever the text says. No verdict: the retry pattern decides.
+RetryVerdict = Literal["repeats", "resend"]
 
 
 def with_classifier_text(
-    display: str, classifier_text: str, *, repeats_on_retry: bool = False
+    display: str,
+    classifier_text: str,
+    *,
+    repeats_on_retry: bool = False,
+    resend_on_retry: bool = False,
 ) -> str:
     """``display``, carrying ``classifier_text`` for :func:`classifier_text_of`.
 
     A plain ``str`` comes back when the two are equal and nothing else is
-    carried: nothing was lost. ``repeats_on_retry`` (#551) always carries.
+    carried: nothing was lost. A retry verdict (#551 ``repeats_on_retry``,
+    #572 ``resend_on_retry``; at most one) always carries.
     """
 
-    if display == classifier_text and not repeats_on_retry:
+    if repeats_on_retry and resend_on_retry:
+        raise ValueError("a failure either repeats on a retry or is resent, not both")
+    if display == classifier_text and not (repeats_on_retry or resend_on_retry):
         return display
     carried = ClassifiedErrorText(display)
     carried.classifier_text = classifier_text
     if repeats_on_retry:
         carried.repeats_on_retry = True
+    if resend_on_retry:
+        carried.resend_on_retry = True
     return carried
 
 
@@ -165,6 +189,20 @@ def repeats_on_retry(error_message: str) -> bool:
     """
 
     return getattr(error_message, "repeats_on_retry", False) is True
+
+
+def retry_verdict(error_message: str) -> RetryVerdict | None:
+    """The adapter's verdict on sending this failure again (#551, #572), or ``None``.
+
+    Read off :class:`ClassifiedErrorText`; any other text has none, and the
+    retry pattern decides it.
+    """
+
+    if repeats_on_retry(error_message):
+        return "repeats"
+    if getattr(error_message, "resend_on_retry", False) is True:
+        return "resend"
+    return None
 
 
 def _usage_field(usage: Any, *keys: str) -> int:
@@ -244,9 +282,11 @@ def get_overflow_patterns() -> list[re.Pattern[str]]:
 
 __all__ = [
     "ClassifiedErrorText",
+    "RetryVerdict",
     "classifier_text_of",
     "get_overflow_patterns",
     "is_context_overflow",
     "repeats_on_retry",
+    "retry_verdict",
     "with_classifier_text",
 ]

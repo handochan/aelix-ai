@@ -537,8 +537,8 @@ async def stream_anthropic(
         output_ceiling = min(output_ceiling, window_room)
     # #250: clamp the requested level against what THIS row offers, the way
     # every sibling adapter already does (google_generative_ai.py:309,
-    # google_vertex.py:443, openai_responses.py:614, openai_completions.py:1521,
-    # openai_codex_responses.py:692). This adapter was the only one passing
+    # google_vertex.py:443, openai_responses.py:615, openai_completions.py:1529,
+    # openai_codex_responses.py:693). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
     # ``thinking:``) verbatim and ``harness/core.py`` snapshots the state level
@@ -841,8 +841,9 @@ async def stream_anthropic(
         # that can fail Python 3.13's strict RFC-5280 checks even when the OS
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
-        # the harness already retries "Connection error." on its own, so the next
-        # attempt is the one that succeeds.
+        # ``describe_provider_error`` then gives a failure the relaxation answers
+        # the ``resend`` verdict, which the harness retries whatever its text says
+        # (#572), so the next attempt, on a new client, is the one that succeeds.
         maybe_relax_strict_for_session(exc)
         error_msg = describe_provider_error(exc)
         # Snapshot whatever we managed to assemble so observers can see

@@ -1283,6 +1283,23 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An OpenAI Codex prompt that failed on Python 3.13's strict certificate check is sent
+  again and answered, and a certificate the machine does not trust stays unretried when an
+  extension rebuilds the failed answer (#572, ADR-0128 amendment 2026-11-06).** When a
+  corporate proxy's certificate fails only RFC 5280 strict checking, aelix measures that
+  this machine trusts the chain and relaxes strict for the session (#184). The OpenAI and
+  Anthropic requests were then retried and passed, but a Codex request was not: its error
+  text matched no retry pattern, so the prompt ended in the error (exit 1 in `-p`) and the
+  next one passed. Now it is sent again on a new client and answered. And an extension's
+  `message_end` hook that rebuilt the failed answer (a JSON round trip) made aelix forget
+  #551's "do not retry" verdict: an untrusted certificate's `Connection error.` was retried
+  three times again (20 s instead of 2 s, measured in docker on Python 3.13.15). The harness
+  now keeps the adapter's verdict, and the error text its classifiers read, in a record of
+  its own, so a rebuilt answer is retried exactly as the original would be, and a `502` or
+  a context overflow past the displayed text's 512-character cut is still seen - and, after
+  a successful compaction, no longer stays in the context the prompt is sent again with. A
+  hook that gives such an answer new words does not change its verdict either (the words are
+  what is shown); a plain error a hook rewrites is still classified on its new words.
 - **A tool or hook that catches a failed `TaskGroup` no longer ends the turn with a traceback
   (#698, ADR-0290).** On Python 3.11 and 3.12 a sequential tool, a `tool_call` hook or a listener
   that used `asyncio.TaskGroup`, and caught a child's failure, ended the turn with nobody having

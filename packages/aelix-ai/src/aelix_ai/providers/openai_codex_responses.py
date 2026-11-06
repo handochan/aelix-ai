@@ -648,8 +648,9 @@ async def stream_openai_codex_responses(
         # that can fail Python 3.13's strict RFC-5280 checks even when the OS
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
-        # the harness already retries "Connection error." on its own, so the next
-        # attempt is the one that succeeds.
+        # ``describe_provider_error`` then gives a failure the relaxation answers
+        # the ``resend`` verdict, which the harness retries whatever its text says
+        # (#572), so the next attempt, on a new client, is the one that succeeds.
         maybe_relax_strict_for_session(exc)
         err_msg = describe_provider_error(exc)
         error_output = AssistantMessage(
