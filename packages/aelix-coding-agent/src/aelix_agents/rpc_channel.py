@@ -107,6 +107,7 @@ from aelix_agents.prompt_file import remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
     descendant_pids,
+    group_leaders,
     kill_tree,
     pdeathsig_preexec,
     reap,
@@ -440,7 +441,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1686-1693``); this channel
+            # ``_eager_abort`` (``print_channel.py:1696-1703``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -789,8 +790,8 @@ class RpcChannel:
         taken here, while the child is provably still alive, which is what
         makes a ``PPid`` index usable at all.
 
-        ``tree=row.tree`` is what the walk cannot be on Windows: without
-        ``/proc`` :func:`descendant_pids` returns ``[]``, so before #220 both of
+        ``tree=row.tree`` is what the walk cannot be on Windows: there
+        :func:`descendant_pids` returns ``[]``, so before #220 both of
         the reaper's legs degraded to a root-only ``TerminateProcess`` — an
         uncatchable kill that skipped the child's cooperative shutdown and left
         its descendants to ``RpcClient.stop()`` afterwards. With the tree the
@@ -802,13 +803,20 @@ class RpcChannel:
 
         task = row.reaper_task
         if task is None or task.done():
+            # A reaped child is not walked, as in :meth:`_eager_abort` (#691);
+            # ``reap`` returns its status at once. ``row.escalate`` is what a
+            # second interrupt sets to end this reaper's grace.
+            live = getattr(proc, "returncode", None) is None
+            walk = descendant_pids(proc.pid) if live else []
             task = asyncio.ensure_future(
                 reap(
                     proc,
                     grace=self._grace,
                     eager_kill=row.eager_kill,
-                    descendants=descendant_pids(proc.pid),
+                    descendants=walk,
+                    groups=group_leaders(walk),
                     tree=row.tree,
+                    escalate=row.escalate,
                 )
             )
             row.reaper_task = task
@@ -828,10 +836,11 @@ class RpcChannel:
         it, and ``row.tree_owned`` is ``False`` on every rpc row so no §A.6 rule
         does either (#220).
 
-        NO POSIX GROUP KILL HERE, unlike ``PrintChannel._eager_abort``, and the
-        asymmetry is deliberate. The print row owns its tree and nothing else
-        will ever escalate once ``run()`` has returned, so that site has to
-        supply Q1 itself on the cancel path (#220 review round 2, posix2/P2).
+        NO POSIX GROUP KILL OF THE CHILD'S GROUP HERE, unlike
+        ``PrintChannel._eager_abort``, and the asymmetry is deliberate. The
+        print row owns its tree and nothing else will ever escalate once
+        ``run()`` has returned, so that site has to supply Q1 itself on the
+        cancel path (#220 review round 2, posix2/P2).
         Here the tree is BORROWED and :meth:`RpcClient.stop` still owes it a
         soft -> grace -> hard sequence whose hard leg is that same
         ``killpg`` (``rpc_client.py``), so adding one would pre-empt a teardown
@@ -854,10 +863,18 @@ class RpcChannel:
         """
 
         row.eager_kill = True
+        # Ends the grace of a reaper :meth:`_reap` already started (#691).
+        row.escalate.set()
         row.state = "stopped"
         proc = row.proc
         if proc is not None:
-            kill_tree(proc, descendant_pids(proc.pid), tree=row.tree)
+            # A reaped child is not walked, as in ``PrintChannel._eager_abort``
+            # (#691): its pid may already be somebody else's. The groups the
+            # walked processes lead are the walk's, not the client's tree, so
+            # they pre-empt nothing ``RpcClient.stop`` owes it.
+            live = getattr(proc, "returncode", None) is None
+            walk = descendant_pids(proc.pid) if live else []
+            kill_tree(proc, walk, tree=row.tree, groups=group_leaders(walk))
 
 
 def _stderr_of(exc: BaseException, client: RpcClient) -> str:

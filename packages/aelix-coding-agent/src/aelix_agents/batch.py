@@ -282,12 +282,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1824-1826`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1845-1847`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:1346-1354``,
+      it kills the child eagerly before re-raising (``print_channel.py:1356-1364``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -298,7 +298,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1430`` vs ``:1431``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1440`` vs ``:1441``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each

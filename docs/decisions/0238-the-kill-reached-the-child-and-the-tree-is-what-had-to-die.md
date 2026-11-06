@@ -883,6 +883,9 @@ is not, but the split now falls elsewhere: after #220 the Windows verdict is
 whole, and what remains is POSIX's — a `setsid` grandchild is outside the group
 on every platform, and on a host with no `/proc` (macOS) the reaper's walk is
 empty, so only the group kill of the paragraph below reaches anything there.
+*2026-11-06 note (ADR-0291, #691): no longer — the walk asks the kernel on macOS
+(`proc_listpids`), and names a `setsid` grandchild there as `/proc` does on Linux.
+That split was why a delegated child's `bash` command outlived every stop on macOS.*
 
 ## Consequences
 
@@ -960,6 +963,10 @@ empty, so only the group kill of the paragraph below reaches anything there.
   non-`setsid` grandchild alive on macOS (**measured**, #220 review round 2).
   `RpcChannel._eager_abort` does not: its tree is borrowed and `RpcClient.stop`
   still owes it a hard leg of its own.
+  *2026-11-06 note (ADR-0291, #691): the walk names that grandchild on macOS too
+  now, so the group kill stays for a member the walk did not name — spawned after
+  the snapshot, or a walk that failed — and its two guards blind the walk to keep
+  biting. Both `_eager_abort`s walk only a child that has not been reaped.*
 
   The bound on the group kill is the GROUP, not the pid, and the earlier
   drafting of this paragraph got that wrong. "`reap` owns the only
@@ -1446,6 +1453,15 @@ empty, so only the group kill of the paragraph below reaches anything there.
   is SIGKILLed. [#228](https://github.com/handochan/aelix-ai/issues/228) carries it; the WeakSet-of-live-trees
   mitigation proposed in `print_mode`'s signal block is that issue's design and
   not this one's.
+  *2026-11-06 note (ADR-0291 §7, #691): the measured shape is closed. The walk asks
+  the kernel on macOS now, an `exec` in flight is the delegated child's own child,
+  so the walk names it and what it started, and what it backgrounded goes with the
+  group of the walked process that leads it, while that process runs. Measured with
+  a real extension (a `tool_call` hook awaiting `api.exec`) in a real delegated
+  child, scripted model: `-p` and SIGTERM, and Esc in the TUI, left the command and
+  its grandchild with PPID 1 on 679e5e5c and nothing on #691. What stays is a child
+  nothing walks, its parent SIGKILLed on macOS, and what an `exec` that has returned
+  left in the background (ADR-0291 limit 2).*
 - **The two tool spawn sites hold a tree, and the bash tool's drain got a bound
   (amendment, 2026-09-05).** #222 converted the last two teardown paths in this
   repository that addressed a pid: `_LocalBashOperations.exec` and

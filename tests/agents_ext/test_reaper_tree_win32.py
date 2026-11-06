@@ -19,10 +19,12 @@ whole surface. And the patch is still REQUIRED, for the two fallback cases whose
 arm runs ``reaper._kill_signal()``.
 
 WHAT THE INJECTED PLATFORM DOES *NOT* PROVE. ``descendant_pids`` decides on
-``/proc`` existing, not on ``sys.platform``, so on the Linux CI leg the walk is
-still REAL under this patch. These cases pin that the tree arm returns BEFORE
-consulting it; "``descendant_pids`` is ``[]`` on Windows" is asserted by the
-windows leg, not here.
+``/proc`` existing first and only then on ``sys.platform`` (macOS's libproc
+source, #691), so on the Linux CI leg the walk is still REAL under this patch.
+These cases pin that the tree arm never consults it — ``reap`` takes no walk
+there (:func:`test_win32_reap_takes_no_walk_on_its_tree_arm`, a spy that fails
+if it is called) and ``kill_tree`` signals none it is handed; "``descendant_pids``
+is ``[]`` on Windows" is asserted by the windows leg, not here.
 
 Every asynchronous case is wrapped in ``asyncio.wait_for(..., 5.0)``. The
 waiters here are wedged deliberately — they resolve only when the product line
@@ -33,6 +35,7 @@ rather than hang the suite.
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
 import time
 from typing import Any
@@ -322,7 +325,7 @@ def test_win32_kill_tree_uses_the_job_and_signals_no_pids(
     """The job IS the descendant set, so the walk is not consulted at all.
 
     ``descendants`` is ignored on this arm — on Windows it is empty anyway,
-    ``descendant_pids`` having no ``/proc`` to read — and the arm deliberately
+    ``descendant_pids`` having nothing to read there — and the arm deliberately
     does not fall through to ``_signal_child``: ``TerminateProcess(handle, sig)``
     would race ``TerminateJobObject(job, 1)`` for the exit status the escalation
     tests read.
@@ -413,8 +416,9 @@ async def test_posix_tree_uses_the_signal_legs_and_then_the_group(
     own ``_signal_cleanup_and_exit`` still runs. The escalation is still the
     descendant walk. Only then does Q1's ``tree.hard_kill()`` —
     ``killpg(pgid, SIGKILL)`` — fire, addressing what the walk could not name:
-    ``descendant_pids`` is ``[]`` on macOS, where a non-``setsid`` descendant
-    measurably survives the root-only escalation.
+    until #691 ``descendant_pids`` was ``[]`` on macOS, where a non-``setsid``
+    descendant measurably survived the root-only escalation, and a member spawned
+    after the snapshot is still one on every POSIX host.
 
     Three deletions each turn this red, and every one of them on an ASSERTION
     rather than on a timeout — this is the one case in the file whose gate is
@@ -458,3 +462,308 @@ async def test_posix_tree_uses_the_signal_legs_and_then_the_group(
         ("kill", CHILD_PID, SIGKILL),
         ("hard_kill",),
     ], events
+
+
+@pytest.mark.parametrize("eager", [True, False], ids=["eager", "grace"])
+async def test_win32_reap_takes_no_walk_on_its_tree_arm(
+    monkeypatch: pytest.MonkeyPatch, eager: bool
+) -> None:
+    """The job IS the descendant set, so ``reap`` takes no walk on that arm (#691).
+
+    ``descendants=None`` is "snapshot now", and on the tree arm there is nothing
+    a snapshot would be used for: ``kill_tree``'s job arm ignores it. Until
+    #691's first review the snapshot was taken before the arm was chosen, so
+    this file's sentence "the tree arm never consults the walk" was true of
+    ``kill_tree`` only. A spy that fails if it is called, on both legs.
+    """
+
+    def _must_not_walk(_pid: int) -> list[int]:
+        raise AssertionError("reap walked on the win32 tree arm")
+
+    sent = _record_signals(monkeypatch)
+    _simulate_win32(monkeypatch)
+    monkeypatch.setattr(reaper, "descendant_pids", _must_not_walk)
+    monkeypatch.setattr(reaper, "group_leaders", _must_not_walk, raising=False)
+    proc = _Wedged()
+    tree = _Tree(gate=proc.gate)
+
+    rc = await asyncio.wait_for(
+        reap(proc, grace=GRACE, eager_kill=eager, descendants=None, tree=tree), 5.0
+    )
+
+    assert rc == 1
+    assert tree.names == (["hard_kill"] if eager else ["soft_kill", "hard_kill"]), tree.calls
+    assert sent == []
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+async def test_reap_escalates_on_its_event_inside_the_grace(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second cancel or a ``stop`` ends a grace that has already started (#691).
+
+    ``reap`` reads ``eager_kill`` once, on entry, so the caller's way into a
+    reaper already waiting is the ``escalate`` event, which the grace races. The
+    grace here is a minute and the event is set a moment in: the escalation must
+    follow the event, not the grace. Every arm — the job on win32, the walk and
+    Q1 on POSIX.
+    """
+
+    if platform == "win32":
+        _simulate_win32(monkeypatch)
+    else:
+        _simulate_posix(monkeypatch, platform)
+    proc = _Wedged()
+    sent = _record_signals(monkeypatch, opens=proc.gate)
+    tree = _Tree(gate=proc.gate)
+    escalate = asyncio.Event()
+    long_grace = 60.0
+
+    reaping = asyncio.ensure_future(
+        reap(
+            proc,
+            grace=long_grace,
+            descendants=[DESCENDANT_PID],
+            tree=tree,
+            escalate=escalate,
+        )
+    )
+    await asyncio.sleep(GRACE)
+    assert not reaping.done(), "the reaper must still be in its grace"
+    asked = time.monotonic() - tree.t0
+    escalate.set()
+    rc = await asyncio.wait_for(reaping, 5.0)
+
+    assert rc == 1
+    assert tree.at("hard_kill") >= asked, tree.calls
+    assert tree.at("hard_kill") < asked + 5.0, tree.calls
+    if platform == "win32":
+        assert tree.names == ["soft_kill", "hard_kill"], tree.calls
+        assert sent == []
+    else:
+        assert tree.names == ["hard_kill"], tree.calls
+        assert sent == [
+            (CHILD_PID, signal.SIGTERM),
+            (DESCENDANT_PID, SIGKILL),
+            (CHILD_PID, SIGKILL),
+        ]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+async def test_posix_reap_reads_the_groups_with_its_walk_and_kills_them_after_the_pids(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The groups the walked processes lead: read before the SIGTERM, killed after (#691).
+
+    ``(cmd &)`` leaves ``cmd`` in the group of the ``bash`` tool's shell with PPID
+    1, where no walk can name it, so each walked process that leads its own group
+    gets a ``killpg`` after the pids. The pgid is read in the snapshot, before any
+    signal, and never again: on this grace leg the kill comes a grace later, and
+    a pgid read then may be a stranger's. One log, so "before", "once" and
+    "after the pids, before Q1" are measurements. ``getpgid`` / ``killpg`` are lent,
+    so the windows leg runs it too.
+    """
+
+    _simulate_posix(monkeypatch, platform)
+    proc = _Wedged()
+    events: list[tuple[Any, ...]] = []
+    sent = _record_signals(monkeypatch, opens=proc.gate, events=events)
+    tree = _Tree(gate=proc.gate, events=events)
+
+    def _getpgid(pid: int) -> int:
+        events.append(("getpgid", pid))
+        return pid
+
+    monkeypatch.setattr(reaper, "descendant_pids", lambda _pid: [DESCENDANT_PID])
+    monkeypatch.setattr(reaper.os, "getpgid", _getpgid, raising=False)
+    monkeypatch.setattr(
+        reaper.os,
+        "killpg",
+        lambda pgid, sig: events.append(("killpg", pgid, sig)),
+        raising=False,
+    )
+
+    rc = await asyncio.wait_for(reap(proc, grace=GRACE, descendants=None, tree=tree), 5.0)
+
+    assert rc == 1
+    assert sent == [
+        (CHILD_PID, signal.SIGTERM),
+        (DESCENDANT_PID, SIGKILL),
+        (CHILD_PID, SIGKILL),
+    ]
+    assert events == [
+        ("getpgid", DESCENDANT_PID),
+        ("kill", CHILD_PID, signal.SIGTERM),
+        ("kill", DESCENDANT_PID, SIGKILL),
+        ("kill", CHILD_PID, SIGKILL),
+        ("killpg", DESCENDANT_PID, SIGKILL),
+        ("hard_kill",),
+    ], events
+
+
+@pytest.mark.parametrize("eager", [True, False], ids=["eager", "grace"])
+async def test_pids_handed_in_without_their_groups_get_no_group_looked_up(
+    monkeypatch: pytest.MonkeyPatch, eager: bool
+) -> None:
+    """A list of pids handed to ``reap`` or ``kill_tree`` alone kills no group (#691).
+
+    The groups belong to the read that produced the pids, before any signal; on
+    the grace leg the kill comes a grace later, and a pgid looked up then from
+    those pids may be a stranger's. So neither function reads one:
+    ``group_leaders`` and ``getpgid`` are spies that fail if they are called, and
+    no ``killpg`` goes out. Both ``reap`` legs, and ``kill_tree`` as
+    ``_drain_after_exit`` calls it. ``getpgid`` / ``killpg`` are lent, so the
+    windows leg runs it too.
+    """
+
+    def _must_not_look_up(*_args: Any) -> Any:
+        raise AssertionError("a pgid was looked up from pids handed in without their groups")
+
+    _simulate_posix(monkeypatch, "linux")
+    proc = _Wedged()
+    sent = _record_signals(monkeypatch, opens=proc.gate)
+    tree = _Tree(gate=proc.gate)
+    killed_groups: list[int] = []
+    monkeypatch.setattr(reaper, "group_leaders", _must_not_look_up)
+    monkeypatch.setattr(reaper.os, "getpgid", _must_not_look_up, raising=False)
+    monkeypatch.setattr(
+        reaper.os, "killpg", lambda pgid, _sig: killed_groups.append(pgid), raising=False
+    )
+
+    rc = await asyncio.wait_for(
+        reap(proc, grace=GRACE, eager_kill=eager, descendants=[DESCENDANT_PID], tree=tree), 5.0
+    )
+    kill_tree(_Dead(), [DESCENDANT_PID])
+
+    assert rc == 1
+    assert sent == [
+        (CHILD_PID, signal.SIGTERM),
+        (DESCENDANT_PID, SIGKILL),
+        (CHILD_PID, SIGKILL),
+        (DESCENDANT_PID, SIGKILL),
+    ]
+    assert killed_groups == []
+    # Q1 is the tree's, not a ``killpg`` of a looked-up group.
+    assert tree.names == ["hard_kill"], tree.calls
+
+
+@pytest.mark.parametrize("ends_by", ["release", "timeout", "cancel"])
+async def test_a_grace_leaves_no_waiter_on_the_event_however_it_ends(
+    ends_by: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grace cancels its ``escalate`` waiter on every way out (#691).
+
+    ``asyncio.wait`` cancels nothing it waits on, so the grace's ``finally`` does.
+    A waiter left behind sits on the row's event for good, and once the event is
+    gone the loop reports it, "Task was destroyed but it is pending!", through
+    its exception handler (measured in the #691 review with that cancel deleted:
+    two reports; with it kept on the release alone, one on each other way out).
+    The three ways out: the child dies to the SIGTERM and the tree lets go, the
+    common end, with nothing escalated; the grace runs out; and the reaper task
+    itself is cancelled in it.
+    """
+
+    _simulate_posix(monkeypatch, "linux")
+    proc = _Wedged()
+    sent: list[tuple[int, int]] = []
+
+    def _kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+        if ends_by == "release" and pid == CHILD_PID and sig == signal.SIGTERM:
+            proc.gate.set()  # it dies to the SIGTERM, and the tree lets go
+        if sig == SIGKILL:
+            proc.gate.set()  # the escalation is what ends it
+
+    monkeypatch.setattr(reaper.os, "kill", _kill)
+    tree = _Tree()
+    loop = asyncio.get_running_loop()
+    reported: list[str] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(str(context.get("message"))))
+    try:
+        before = asyncio.all_tasks()
+        escalate = asyncio.Event()
+        reaping = asyncio.ensure_future(
+            reap(
+                proc,
+                grace=GRACE if ends_by == "timeout" else 60.0,
+                descendants=[DESCENDANT_PID],
+                tree=tree,
+                escalate=escalate,
+            )
+        )
+        if ends_by == "cancel":
+            await asyncio.sleep(GRACE)
+            assert not reaping.done(), "the reaper must still be in its grace"
+            reaping.cancel()
+        done, _ = await asyncio.wait({reaping}, timeout=5.0)
+        for _ in range(3):
+            await asyncio.sleep(0)  # a cancelled waiter is done once it has run
+        left = [repr(task) for task in asyncio.all_tasks() - before if not task.done()]
+        del escalate
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous)
+
+    assert reaping in done, "the reaper neither ended nor escalated"
+    assert reaping.result() == 1
+    if ends_by == "release":
+        assert sent == [(CHILD_PID, signal.SIGTERM)], "the grace was meant to end by release"
+        assert tree.names == [], tree.calls
+    else:
+        assert (DESCENDANT_PID, SIGKILL) in sent, "the grace was meant to end by its escalation"
+    assert left == [], left
+    assert reported == [], reported
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+async def test_a_reaper_cancelled_in_its_grace_escalates_instead_of_ending(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding B1 at its source: the reaper TASK cancelled in its grace still kills.
+
+    The channels never cancel it, since they await it shielded, but whatever does
+    (a loop's teardown cancels every task left) must not end it between its
+    SIGTERM and its kill, which would leave the child and what is under it
+    running. So the grace catches ``BaseException``, not ``Exception``: the
+    cancellation escalates at once and the task returns the child's status.
+    Every arm.
+    """
+
+    if platform == "win32":
+        _simulate_win32(monkeypatch)
+    else:
+        _simulate_posix(monkeypatch, platform)
+    proc = _Wedged()
+    sent = _record_signals(monkeypatch, opens=proc.gate)
+    tree = _Tree(gate=proc.gate)
+
+    reaping = asyncio.ensure_future(
+        reap(
+            proc,
+            grace=60.0,
+            descendants=[DESCENDANT_PID],
+            tree=tree,
+            escalate=asyncio.Event(),
+        )
+    )
+    await asyncio.sleep(GRACE)
+    assert not reaping.done(), "the reaper must still be in its grace"
+    asked = time.monotonic() - tree.t0
+    reaping.cancel()
+    done, _ = await asyncio.wait({reaping}, timeout=5.0)
+
+    assert reaping in done, "the cancelled reaper neither escalated nor ended"
+    assert not reaping.cancelled(), "the cancellation ended the reaper before its kill"
+    assert reaping.result() == 1
+    assert tree.at("hard_kill") >= asked, tree.calls
+    if platform == "win32":
+        assert tree.names == ["soft_kill", "hard_kill"], tree.calls
+        assert sent == []
+    else:
+        assert tree.names == ["hard_kill"], tree.calls
+        assert sent == [
+            (CHILD_PID, signal.SIGTERM),
+            (DESCENDANT_PID, SIGKILL),
+            (CHILD_PID, SIGKILL),
+        ]

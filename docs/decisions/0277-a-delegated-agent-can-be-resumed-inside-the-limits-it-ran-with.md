@@ -753,6 +753,11 @@ result, so a child ended by SIGTERM with time to act (the `-p` handler aborts th
 leaves `Command aborted: …` in its file. Stopping one from the parent is still a SIGKILL
 (`print_channel._eager_abort`, `abort_child`), so what this section measured is unchanged,
 and `tests/agents_ext/test_agent_resume_real_child_610.py` still pins it.*
+*2026-11-06 note (ADR-0291, #691): `abort_child`'s is a SIGTERM and, on the same synchronous run,
+the SIGKILL. A parent descheduled between the two lets the child's SIGTERM handler start (a
+stand-in child's `dispose()` ran with a 20 ms pause injected there). A real child that got as far
+as ADR-0290's unwind would leave `Command aborted: …`, a result a resume reads like any other; not
+measured with a real child. Undisturbed, the stop leaves what this section measured.*
 
 ### D15. A run is a key, and a resume is counted with its delegation
 

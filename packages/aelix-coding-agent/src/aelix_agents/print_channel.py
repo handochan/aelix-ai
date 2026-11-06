@@ -106,6 +106,7 @@ from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
     descendant_pids,
+    group_leaders,
     kill_group_if_live,
     kill_tree,
     pdeathsig_preexec,
@@ -194,9 +195,9 @@ from its own callback. 20 wakeups a second while a delegation is in flight, and
 none at all otherwise."""
 
 _PROC_DIR = Path("/proc")
-"""Same source :mod:`aelix_agents.reaper` reads, different index: that module
-walks ``PPid`` to find a live child's descendants, :func:`pipe_holder_pids`
-walks ``fd`` to find whoever holds a DEAD child's stdio."""
+"""Same source :mod:`aelix_agents.reaper` reads on Linux, different index: that
+module walks ``PPid`` to find a live child's descendants (libproc on macOS, #691),
+:func:`pipe_holder_pids` walks ``fd`` to find whoever holds a DEAD child's stdio."""
 
 _RESUME_NEEDS_LIMITS = (
     "a resume plan carries no recorded limits, and a resumed agent is never "
@@ -232,6 +233,12 @@ class RunningChild:
     purpose (finding B1) and would otherwise outlive session teardown, which
     ADR-0197 forbids."""
     eager_kill: bool = False
+    escalate: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    """Set beside :attr:`eager_kill` by ``_eager_abort`` and :func:`abort_child`
+    (#691). ``eager_kill`` is read once, when a reaper is BUILT; a reaper already
+    in its grace waits on this instead, so a second cancel or a ``stop`` that
+    reuses that reaper escalates it at once rather than when its grace ends
+    (finding B1)."""
     tree: ProcessTree | None = None
     """Attached right after the spawn, before the first ``await``. Shared with
     ``rpc_channel``, which borrows the client's tree instead of attaching one."""
@@ -1256,6 +1263,9 @@ async def abort_child(
 
     child.stopped = True
     child.eager_kill = True
+    # A reaper ``_reap`` already started is in its grace and is reused below;
+    # this is what makes it stop waiting (#691).
+    child.escalate.set()
     proc = child.proc
     if proc is None:
         # A stop that arrives BEFORE the process exists (the registry row is
@@ -1801,21 +1811,32 @@ class PrintChannel:
         escalates to SIGKILL immediately rather than waiting out a grace whose
         only purpose was to let a cooperative child clean up.
 
-        The descendant walk is taken HERE, while the child is provably still
-        alive — every leg that reaches this method has a live child, which is
-        what makes ``PPid`` a usable index. The dead-child case never comes here;
-        it goes to :meth:`_drain_after_exit`.
+        The descendant walk is taken HERE, with the groups its processes lead,
+        while the child is provably still alive — every leg that reaches this
+        method has a live child, which is what makes ``PPid`` a usable index.
+        The dead-child case never comes here; it goes to
+        :meth:`_drain_after_exit`. A child already reaped when this runs (the
+        post-EOF bound racing its exit) is not walked, as in
+        :meth:`_eager_abort` (#691): ``reap`` returns its status at once, and
+        its pid may already be somebody else's.
+
+        The reaper waits on ``row.escalate`` beside its grace, which is what
+        makes the re-cancellation above eager for a reaper already running.
         """
 
         task = row.reaper_task
         if task is None or task.done():
+            live = getattr(proc, "returncode", None) is None
+            walk = descendant_pids(proc.pid) if live else []
             task = asyncio.ensure_future(
                 reap(
                     proc,
                     grace=self._grace,
                     eager_kill=row.eager_kill,
-                    descendants=descendant_pids(proc.pid),
+                    descendants=walk,
+                    groups=group_leaders(walk),
                     tree=row.tree,
+                    escalate=row.escalate,
                 )
             )
             row.reaper_task = task
@@ -1845,22 +1866,46 @@ class PrintChannel:
         """
 
         row.eager_kill = True
+        # A reaper already in its grace read ``eager_kill`` when it started; the
+        # event is what ends that grace now, with the snapshot it took before
+        # its SIGTERM (#691). A root that died to that SIGTERM is not walked
+        # below, so without it a ``setsid`` descendant waited out the grace.
+        row.escalate.set()
         row.state = "stopped"
-        kill_tree(proc, descendant_pids(proc.pid), tree=row.tree)
+        # THE WALK IS WHAT REACHES THE CHILD'S ``bash`` COMMAND (#691): this is
+        # a SIGKILL with no grace, so the child's ``dispose()`` gets no time, and
+        # the command leads a session of its own that the child's group kill
+        # does not reach. Esc, Esc Esc and a signal to a headless parent come
+        # here. Until #691 the walk was ``[]`` on macOS and that command
+        # outlived every one of them. The groups the walked processes lead go
+        # with it, read in the same breath, before any signal: what ``(cmd &)``
+        # left in the shell's group has no parent chain back to the child.
+        #
+        # Only a child that has not been reaped is walked. A cancel that lands
+        # inside ``_drain_after_exit`` reaches here with the child dead and
+        # reaped: its descendants were reparented when it died, so the walk
+        # could name nothing of its own — only the children of whoever got the
+        # pid next (``reaper``'s PID-recycling hazard).
+        live = getattr(proc, "returncode", None) is None
+        walk = descendant_pids(proc.pid) if live else []
+        kill_tree(proc, walk, tree=row.tree, groups=group_leaders(walk))
         # Q1 ON THE CANCEL PATH (#220 review round 2, posix2/P2). ``kill_tree``
-        # deliberately runs no POSIX group kill of its own, so on macOS — where
-        # ``descendant_pids`` is ``[]`` — the line above is a root-only
-        # ``SIGKILL`` and a non-``setsid`` grandchild survives it. MEASURED on
-        # Darwin: a delegation cancelled with no reaper running (``reaper_task
-        # is None``) left the grandchild alive, while the deadline path — gone
-        # since #604, and a reaper path like ``stop`` — killed it.
+        # deliberately runs no group kill of the CHILD's group, so the line
+        # above reaches only what the walk named, the groups those processes
+        # lead, and the root. MEASURED on Darwin before #691, when the walk
+        # there was ``[]``: a delegation cancelled with no reaper running
+        # (``reaper_task is None``) left a non-``setsid`` grandchild alive,
+        # while the deadline path — gone since #604, and a reaper path like
+        # ``stop`` — killed it. The walk names that grandchild now; the group
+        # kill stays for a member the walk did not name.
         # Ctrl+C is ``turn_task.cancel()`` (``batch.py``), so that is the path a
         # human actually drives.
         #
         # ONLY when nothing else will escalate. If a reaper task exists and is
-        # still running it owns the escalation and runs Q1 itself after its
-        # grace; duplicating it here would kill the tree BEFORE that grace
-        # elapses, which is the window ``run()``'s close rule (§A.6) exists to
+        # still running it owns the escalation: the event above ends its grace
+        # and it runs Q1 itself, after the kill of its own snapshot. Duplicating
+        # it here would kill the tree from outside that reaper while it is still
+        # pending, which is the window ``run()``'s close rule (§A.6) exists to
         # observe and
         # ``test_the_tree_is_closed_after_the_reapers_escalation_never_before``
         # exists to measure. The condition is the same one ``abort_child`` and

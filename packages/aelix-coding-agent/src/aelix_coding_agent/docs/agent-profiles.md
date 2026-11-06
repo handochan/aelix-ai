@@ -387,7 +387,16 @@ and, if it should go on, to resume it — the call is spelled out with the
 agent's profile and id. A member of a parallel or chain call gets no such
 line. When you stop a delegation with Esc, the report the model gets with your
 next prompt says the stop was intended, and tells it to resume or repeat that
-work only if you ask. A resumed agent is told that it is being resumed, that it
+work only if you ask. Any stop — Esc, quitting, a SIGTERM or Ctrl+C to aelix —
+also ends the command the agent's `bash` tool was running, what that command
+started, and what it put in the background with `(cmd &)` while it was still
+running. On macOS and Linux a stop does not reach what a command that had
+already finished left in the background with `cmd &`, `(cmd &)` or
+`nohup cmd &`: the `bash` tool leaves it running when the command returns, and
+once that command's shell has exited nothing ties it to the agent. Nor does it
+reach a process that started a session of its own, such as a daemon's. If aelix
+itself is killed with SIGKILL, on macOS the agent and its commands run on.
+A resumed agent is told that it is being resumed, that it
 should not redo work it already finished, and that a tool call showing no
 result may or may not have run. Resuming is the model's call, through its
 `agent` tool; no command does it (`/agents run` cannot).
