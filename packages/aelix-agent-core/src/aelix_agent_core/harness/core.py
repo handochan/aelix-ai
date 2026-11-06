@@ -27,7 +27,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
@@ -52,7 +52,7 @@ from aelix_ai.streaming import (
 from aelix_ai.streaming import (
     Context as LlmContext,
 )
-from aelix_ai.utils.overflow import ClassifiedErrorText
+from aelix_ai.utils.overflow import ClassifiedErrorText, RetryVerdict
 
 from aelix_agent_core.agent import AgentListener
 from aelix_agent_core.default_convert import default_convert_to_llm
@@ -965,6 +965,9 @@ class AgentHarness:
         # #379 review round 3: the setup failure that ended the latest attempt,
         # as the harness itself recorded it (see ``_SetupFailure``).
         self._setup_failure: _SetupFailure | None = None
+        # #572: the latest answer's error text as its adapter described it (see
+        # ``_ProviderErrorRecord``, at the end of this module).
+        self._error_record: _ProviderErrorRecord | None = None
         # Issue #4 Lane B (ADR-0126 follow-up) — overflow-driven compaction
         # recovery. pi parity ``agent-session.ts:_checkCompaction`` Case 1 +
         # ``_overflowRecoveryAttempted``. Reset at the start of each ``prompt()``
@@ -2528,7 +2531,7 @@ class AgentHarness:
         failure = self._setup_failure
         if failure is not None and last_assistant is failure.message:
             return False
-        if not is_context_overflow(last_assistant, context_window):
+        if not is_context_overflow(_as_described(self, last_assistant), context_window):  # #572
             return False
 
         # Issue #4 (FU2 Guard A) — pi ``agent-session.ts:1781-1789``. Skip when the
@@ -2588,7 +2591,7 @@ class AgentHarness:
         try:
             await self.compact(reason="overflow", will_retry=True, _claim=claim)
         except BaseException as exc:  # #391: a cancel too, re-raised; #546: any raise
-            _restore_failed_answer(self._state, failed, context_window)
+            _restore_failed_answer(self._state, failed, context_window, harness=self)
             if not isinstance(exc, Exception):
                 raise
             # pi ``:1931-1934`` / #4811 (nothing to compact), ``:2054-2069`` (failed): no retry.
@@ -2604,15 +2607,16 @@ class AgentHarness:
         # replay it. Guard on ``is_context_overflow`` (not pi's ``stopReason ==
         # "error"``) so it also drops a ``"length"`` overflow (Case 3 in
         # ``overflow.py``); a legitimate trailing assistant is never an overflow.
+        # #572: read as its adapter described it, as the check that got here was.
         if (
             self._state.messages
             and isinstance(self._state.messages[-1], AssistantMessage)
-            and is_context_overflow(self._state.messages[-1], context_window)
+            and is_context_overflow(_as_described(self, self._state.messages[-1]), context_window)
         ):
             self._state.messages.pop()
         # #391 — an abort during the compaction: no re-run, so the answer is back.
         if claim is not None and self._abort_requested:
-            _restore_failed_answer(self._state, failed, context_window)
+            _restore_failed_answer(self._state, failed, context_window, harness=self)
             return False
         return True
 
@@ -2663,6 +2667,8 @@ class AgentHarness:
         failure = self._setup_failure
         if failure is not None and message is failure.message:
             return failure.retry_reason is not None
+        # #572: classified as its adapter described it, whatever a hook rebuilt.
+        message = _as_described(self, message)
 
         # pi ``:2486`` — context overflow is handled by compaction, not retry.
         model = self._state.model
@@ -2675,8 +2681,11 @@ class AgentHarness:
         if getattr(message, "stop_reason", None) != "error":
             return False
         err = getattr(message, "error_message", None)
-        if not err or _repeats_on_retry(err):  # #551: a TLS verification failure
+        if not err:
             return False
+        verdict = _retry_verdict(err)  # #551 / #572: a TLS verification failure
+        if verdict is not None:
+            return verdict == "resend"
         return _RETRYABLE_ERROR_PATTERN.search(classifier_text_of(err)) is not None  # #186
 
     async def _close_retry_sequence_on_raise(self, exc: BaseException) -> None:
@@ -5765,6 +5774,9 @@ class AgentHarness:
                 # frozen dataclass, so aelix swaps by identity (loop return)
                 # instead — see ``loop.py`` ``_stream_assistant_response``.
                 if event.type == "message_end":
+                    # #572: what the adapter described, kept before any hook runs.
+                    if isinstance(event.message, AssistantMessage):
+                        self._error_record = _record_provider_error(event.message)
                     # 1) Run the hook reduction FIRST. The new
                     #    ``_reducer_message_end`` returns the replaced
                     #    ``AgentMessage`` (same role) or ``None`` (no
@@ -5826,6 +5838,14 @@ class AgentHarness:
                             else event.message
                         )
                         failure.ended = True
+                    # #572: and so does the adapter's error text.
+                    record = self._error_record
+                    if (
+                        record is not None
+                        and record.message is event.message
+                        and isinstance(final_message, AssistantMessage)
+                    ):
+                        record.message = final_message
                     # 2) Persist the REPLACEMENT (Sprint 4a primary write path,
                     #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
                     #    When no session is attached we skip — the no-session
@@ -7166,7 +7186,11 @@ def _drop_failed_answer(state: AgentState) -> AssistantMessage | None:
 
 
 def _restore_failed_answer(
-    state: AgentState, failed: AssistantMessage | None, context_window: int
+    state: AgentState,
+    failed: AssistantMessage | None,
+    context_window: int,
+    *,
+    harness: AgentHarness | None = None,
 ) -> None:
     """Put back the answer :func:`_drop_failed_answer` took, unless the context has it (#391).
 
@@ -7174,7 +7198,8 @@ def _restore_failed_answer(
     (a ``session_compact`` hook) left the answer there already, the branch's last entry:
     the same object, or an overflow in its place. Anything else ends without it, and it
     goes back at the end - where it was, since nothing is appended to the live context
-    while a compaction runs.
+    while a compaction runs. The overflow test reads the message as its adapter
+    described it when ``harness`` kept the adapter's text (#572, :func:`_as_described`).
     """
 
     from aelix_ai.utils.overflow import is_context_overflow
@@ -7183,7 +7208,8 @@ def _restore_failed_answer(
         return
     last = state.messages[-1] if state.messages else None
     if last is failed or (
-        isinstance(last, AssistantMessage) and is_context_overflow(last, context_window)
+        isinstance(last, AssistantMessage)
+        and is_context_overflow(last if harness is None else _as_described(harness, last), context_window)
     ):
         return
     state.messages.append(failed)
@@ -7260,31 +7286,94 @@ def _overflow_case(harness: AgentHarness) -> bool:
     failure = harness._setup_failure
     if failure is not None and last is failure.message:
         return False
-    return is_context_overflow(last, getattr(model, "context_window", 0) or 0)
+    return is_context_overflow(_as_described(harness, last), getattr(model, "context_window", 0) or 0)
 
 
-def _repeats_on_retry(error_message: Any) -> bool:
-    """Is this failed answer one the next attempt would repeat? (#551)
+def _retry_verdict(error_message: Any) -> RetryVerdict | None:
+    """The adapter's verdict on sending this failed answer again (#551, #572).
 
     :meth:`AgentHarness._is_retryable_error` asks it before the retry pattern,
     and so do the compaction and branch-summary retries (#409), which call that
-    method. aelix-additive: pi retries this failure. A TLS certificate
-    verification failure is marked by the adapter that described it
-    (:func:`aelix_ai.utils.overflow.repeats_on_retry`, set by
-    ``describe_provider_error``): the next attempt verifies the same chain
-    against the same trust store and fails the same way, while its
-    ``Connection error.`` matched the pattern and the TUI showed the remedy
-    once per attempt - five times. A failure the session's strict relaxation
-    answers is not marked and is retried as before (#184). The mark travels
-    with the message object, like #186's ``classifier_text``: a message an
-    extension rebuilds is classified on its text. Only aelix's retry is decided
-    here: the OpenAI and Anthropic SDKs' own connection retries inside the one
-    request (``max_retries`` 2) still run, so it makes 3 handshakes, not 1.
+    method. aelix-additive: pi decides on the text alone. ``describe_provider_error``
+    gives a TLS certificate verification failure one of two
+    (:func:`aelix_ai.utils.overflow.retry_verdict`):
+
+    * ``"repeats"`` (#551) - the next attempt verifies the same chain against
+      the same trust store and fails the same way, while its ``Connection
+      error.`` matched the pattern and the TUI showed the remedy once per
+      attempt - five times. Not retried.
+    * ``"resend"`` (#572) - the session's strict relaxation answers it: the next
+      attempt builds a new client, without ``VERIFY_X509_STRICT``, and passes
+      (#184). Retried whatever the text matches: the Codex adapter's words for
+      it match nothing, so before #572 that prompt ended in the error and the
+      next one passed.
+
+    Any other failure has none, and the pattern decides. The verdict is read off
+    the text the adapter described (:func:`_as_described`), so a ``message_end``
+    hook that rebuilds the message keeps it. Only aelix's retry is decided here:
+    the OpenAI and Anthropic SDKs' own connection retries inside the one request
+    (``max_retries`` 2) still run, so it makes 3 handshakes, not 1.
 
     Here, at the end of the module, so that no locked citation of the lines
     above moves.
     """
 
-    from aelix_ai.utils.overflow import repeats_on_retry
+    from aelix_ai.utils.overflow import retry_verdict
 
-    return repeats_on_retry(error_message)
+    return retry_verdict(error_message)
+
+
+@dataclass
+class _ProviderErrorRecord:
+    """The harness's own copy of the error text an adapter described (#572).
+
+    An adapter's error text carries what its display text cannot: the text the
+    classifiers read before #186's quoting (``classifier_text``) and the retry
+    verdict (#551, #572), on a :class:`~aelix_ai.utils.overflow.ClassifiedErrorText`.
+    A ``message_end`` hook that rebuilds the message - a JSON round trip, a
+    message built anew from its fields - leaves a plain ``str``, and before #572
+    the harness classified that: an untrusted certificate's ``Connection error.``
+    was retried 2, 4 and 8 s apart again, and a ``502`` or an overflow past the
+    512-character cut was not seen. #379 met the same problem for an auth
+    callback's failure and kept its answer on the harness (:class:`_SetupFailure`);
+    this does the same for the provider's answer.
+
+    Set at every assistant ``message_end``, before the hooks run, from the
+    message the loop hands over (:func:`_record_provider_error`; ``None`` when
+    its error text carries nothing beyond its words), and pointed at the message
+    the hooks leave. The retry decision and the overflow recovery classify that
+    message as the adapter described it (:func:`_as_described`). A message the
+    harness did not see end - a compaction's summary request, a resumed
+    session's answer - is read as it is.
+    """
+
+    message: Any
+    text: ClassifiedErrorText
+
+
+def _record_provider_error(message: AssistantMessage) -> _ProviderErrorRecord | None:
+    """The record of ``message``'s error text, when it carries more than its words (#572).
+
+    A plain ``str`` is not recorded: a hook that rewrites it is classified on its
+    new words, as pi classifies the message its hooks leave.
+    """
+
+    text = message.error_message
+    if isinstance(text, ClassifiedErrorText):
+        return _ProviderErrorRecord(message=message, text=text)
+    return None
+
+
+def _as_described(harness: AgentHarness, message: Any) -> Any:
+    """``message`` with the error text its adapter described, when the harness kept it (#572).
+
+    The message the hooks left (its stop reason, its content) with the adapter's
+    text back in it, for classification only; nothing stores it.
+    """
+
+    record = harness._error_record
+    if record is None or message is not record.message or not isinstance(message, AssistantMessage):
+        return message
+    if message.error_message is record.text:
+        return message
+    return replace(message, error_message=record.text)

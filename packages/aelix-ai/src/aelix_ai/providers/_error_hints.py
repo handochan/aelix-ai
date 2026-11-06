@@ -55,16 +55,24 @@ A VERIFICATION FAILURE IS NOT RETRIED (#551). The next attempt verifies the
 same chain against the same trust store and fails the same way, so the retry
 layers ask the attribution below - the one that decides the remedy - before
 they send again: :func:`tls_failure_repeats_on_retry` for the harness's turn
-and summary retries (through the ``repeats_on_retry`` mark
-:func:`describe_provider_error` puts on the message), an OAuth refresh's
-``retry_reason`` and the Copilot device-code poll, and
-:func:`is_tls_verification_error` for the Codex adapter's connection retries,
-which reuse one client. Before #551 the turn retried it on its ``Connection
-error.`` text, and the TUI stacked this remedy five times. The one failure a
-retry on a new client can pass is one a strict relaxation answers
-(:func:`_strict_relaxation_answers`). Not among these layers: the OpenAI and
-Anthropic SDKs' own connection retries inside one request (``max_retries``,
-default 2), so such a request still makes 3 handshakes before it fails.
+and summary retries (through the retry verdict :func:`describe_provider_error`
+puts on the message), an OAuth refresh's ``retry_reason`` and the Copilot
+device-code poll, and :func:`is_tls_verification_error` for the Codex
+adapter's connection retries, which reuse one client. Before #551 the turn
+retried it on its ``Connection error.`` text, and the TUI stacked this remedy
+five times. The one failure a retry on a new client can pass is one a strict
+relaxation answers (:func:`_strict_relaxation_answers`), and that one is SENT
+AGAIN (#572): its verdict is ``resend``, which the harness retries whatever the
+text says - the Codex adapter's words for it, ``[SSL: CERTIFICATE_VERIFY_FAILED]
+... Missing Authority Key Identifier``, match no retry pattern, so before #572
+that prompt ended in the error. The harness keeps the verdict in a record of
+its own from ``message_end`` on, so a hook that rebuilds the message keeps it
+(#572). The built-in adapters that relax send such a request again themselves,
+once, before the turn sees it (#703, :mod:`aelix_ai.providers._strict_resend`),
+and the relaxation is announced on one line instead of as an error. Not among
+these layers: the OpenAI and Anthropic SDKs' own connection
+retries inside one request (``max_retries``, default 2), so such a request
+still makes 3 handshakes before it fails.
 """
 
 from __future__ import annotations
@@ -418,7 +426,7 @@ def _is_strict_only(code: int | None, text: str) -> bool:
     return any(message in text for message in _STRICT_ONLY.values())
 
 
-def _strict_hint(code: int | None, text: str) -> str | None:
+def _strict_hint(code: int | None, text: str, *, after_response: bool = False) -> str | None:
     """The remedy when RFC-5280 strictness — not trust — is what rejected the chain.
 
     WHY THIS BRANCH EXISTS. Without it, a strict-only rejection fell through to
@@ -448,7 +456,7 @@ def _strict_hint(code: int | None, text: str) -> str | None:
 
     relaxation = session_relaxation()
     if relaxation is not None:
-        return relaxation.remedy()
+        return relaxation.remedy(after_response=after_response)
 
     if not strict_is_enabled():
         return None
@@ -729,8 +737,9 @@ def _strict_relaxation_answers(tls: BaseException) -> bool:
     relaxation (:func:`aelix_ai.providers._tls_strict.maybe_relax_strict_for_session`)
     clears ``VERIFY_X509_STRICT`` from every context built after it, so a
     request that failed on strict passes on its next attempt, which builds a
-    new client - the turn's retry has been that next attempt since #184 ("the
-    harness already retries 'Connection error.' on its own"). It answers a
+    new client - the turn's retry has been that next attempt since #184, and
+    since #572 for every adapter, by the ``resend`` verdict this gives (the
+    Codex adapter's text never matched the retry pattern). It answers a
     failure whose code is the one it was measured on (the failure that caused
     it, or a sibling request that failed the same way before it took effect),
     or a code only strict raises (:data:`_STRICT_ONLY`: a context built without
@@ -741,7 +750,8 @@ def _strict_relaxation_answers(tls: BaseException) -> bool:
 
     Known limit: code 79 under a relaxation measured on 79 is answered even
     when it came from a relaxed context (a ``CA:FALSE`` issuer gives 79 both
-    ways), so that failure is retried as before #551.
+    ways), so that failure is retried as before #551 - on every adapter since
+    #572, up to the retry budget.
     """
 
     from aelix_ai.providers._tls_strict import session_relaxation
@@ -767,7 +777,8 @@ def tls_failure_repeats_on_retry(exc: BaseException) -> bool:
 
     For a retry that opens a NEW client: the Copilot device-code poll, an
     OAuth refresh's ``retry_reason``, and the turn (through
-    :func:`describe_provider_error`'s mark). A retry on the SAME client - the
+    :func:`describe_provider_error`'s verdict, ``repeats`` for this and
+    ``resend`` for a failure the relaxation answers, #572). A retry on the SAME client - the
     Codex adapter's connection retries - can never pass a verification
     failure, since that client's context is fixed, and asks
     :func:`is_tls_verification_error` instead.
@@ -777,7 +788,7 @@ def tls_failure_repeats_on_retry(exc: BaseException) -> bool:
     return tls is not None and not _strict_relaxation_answers(tls)
 
 
-def _tls_hint(err: BaseException) -> str | None:
+def _tls_hint(err: BaseException, *, after_response: bool = False) -> str | None:
     """The remedy matching ``err``'s verify code, or :data:`None` when none fits.
 
     ``verify_code`` / ``verify_message`` exist ONLY on a verifier-raised error:
@@ -804,7 +815,7 @@ def _tls_hint(err: BaseException) -> str | None:
     if code in _CLOCK_CODES:
         return _TLS_CLOCK_HINT
 
-    strict = _strict_hint(code, str(err))
+    strict = _strict_hint(code, str(err), after_response=after_response)
     if strict is not None:
         return strict
 
@@ -871,7 +882,9 @@ def _unquoted(exc: BaseException) -> str:
     return _raw_text(exc).strip()
 
 
-def describe_provider_error(exc: BaseException, *, classifier_text: str | None = None) -> str:
+def describe_provider_error(
+    exc: BaseException, *, classifier_text: str | None = None, after_response: bool = False
+) -> str:
     """Base message + the innermost real cause + a TLS remedy when relevant.
 
     Non-TLS errors keep their base message (plus the recovered cause), so this
@@ -908,15 +921,28 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     when the caller passes the text its classifiers read before (the two Google
     adapters used ``str(exc)``).
 
-    A TLS verification failure no strict relaxation answers is marked
-    ``repeats_on_retry`` (#551, :func:`tls_failure_repeats_on_retry`), and the
-    harness does not retry it: before #551 its ``Connection error.`` matched the
-    retry pattern and the TUI showed the remedy once per attempt. The mark is
-    read after any strict relaxation this failure caused - every adapter that
-    relaxes calls :func:`~aelix_ai.providers._tls_strict.
-    maybe_relax_strict_for_session` first - so the failure that caused one
-    stays retried. Like :attr:`classifier_text`, it lives as long as the
-    message object does.
+    A TLS verification failure carries a retry verdict
+    (:func:`aelix_ai.utils.overflow.retry_verdict`): ``repeats`` when no strict
+    relaxation answers it (#551, :func:`tls_failure_repeats_on_retry`), and
+    the harness does not retry it - before #551 its ``Connection error.``
+    matched the retry pattern and the TUI showed the remedy once per attempt;
+    ``resend`` when one does (#572), and the harness retries it whatever its
+    text matches - the Codex adapter's text matched nothing, so before #572 that
+    request was not sent again. The verdict is read after any strict relaxation
+    this failure caused - every adapter that relaxes calls
+    :func:`~aelix_ai.providers._tls_strict.maybe_relax_strict_for_session`
+    first - so the failure that caused one is sent again. Like
+    :attr:`classifier_text`, it lives on the message object; the harness copies
+    both into a record of its own at ``message_end`` (#572).
+
+    ``after_response`` (#703 fix round 1): the adapter had the provider's
+    response to this request in hand when ``exc`` was raised - an
+    ``on_response`` hook (the harness's ``after_provider_response``) that failed,
+    or a failure mid-stream. A TLS failure then is not this request's own
+    connection (a hook's request of its own), and it never gets ``resend``:
+    sending it again would send a request the provider has answered. It gets
+    ``repeats`` when no relaxation answers it, as any TLS failure does, and no
+    verdict when one does, as before #572.
     """
 
     from aelix_ai.utils.overflow import with_classifier_text
@@ -926,7 +952,10 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     if cause is not None:
         base = f"{base} — {cause}"
     tls = _tls_error(exc)
-    remedy = None if tls is None else _tls_hint(tls)
+    answered = tls is not None and _strict_relaxation_answers(tls)
+    # Fix round 2: a failure after the response that the relaxation answers is not
+    # sent again (below), so the note's last line must not say "if it still fails".
+    remedy = None if tls is None else _tls_hint(tls, after_response=answered and after_response)
     hint = "" if remedy is None else f"\n\n{remedy}"
     if classifier_text is None:
         raw = _raw_text(exc) or type(exc).__name__
@@ -934,8 +963,12 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
         if raw_cause is not None:
             raw = f"{raw} — {raw_cause}"
         classifier_text = raw + hint
-    repeats = tls is not None and not _strict_relaxation_answers(tls)
-    return with_classifier_text(base + hint, classifier_text, repeats_on_retry=repeats)
+    return with_classifier_text(
+        base + hint,
+        classifier_text,
+        repeats_on_retry=tls is not None and not answered,
+        resend_on_retry=answered and not after_response,
+    )
 
 
 __all__ = [

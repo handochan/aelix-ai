@@ -39,7 +39,7 @@ module cited that 226 ms as the reason the state is reachable; it is closer to t
 reason it is NOT.
 
 The state is reached by a consumer that AWAITS between events, which the harness
-explicitly supports — ``harness/core.py:2632-2634`` does ``raw = listener(event)`` then
+explicitly supports — ``harness/core.py:2636-2638`` does ``raw = listener(event)`` then
 ``if inspect.isawaitable(raw): await raw`` — and which async extension hooks, the
 ``aelix_agents`` RPC channel and any SDK embedder use. So this ``finally`` is not
 closing a live TUI defect; it is closing the one every awaiting consumer already
@@ -56,7 +56,7 @@ READ from their source, not measured here.
 sentence is about stream lifetime and it stays true. It is NOT a statement about
 the CLIENT the stream was opened on, and reading it as one is the mistake #174
 was filed against: ``anthropic-messages`` releases its stream through the
-``async with`` at ``anthropic.py:730`` and still returns the connection to a
+``async with`` at ``anthropic.py:733`` and still returns the connection to a
 pool nobody ever closes. MEASURED on the unfixed build, 15 turns that COMPLETE
 NORMALLY with no abort anywhere: anthropic ends with 15 live clients and 15
 still-established server connections. The client-lifetime half is what

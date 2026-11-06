@@ -1,6 +1,6 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
-Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events — amended 2026-10-22 (#551): aelix's own retries do not resend a TLS certificate verification failure, unless the session's strict relaxation answers it (the OpenAI and Anthropic SDKs' two connection retries inside one request remain - review round 2) — amended 2026-10-28 (#597, PR #614): a Responses stream that ends before its terminal event is retried, as pi retries it, and the Codex adapter frames CRLF SSE as well as LF, beyond pi
+Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events — amended 2026-10-22 (#551): aelix's own retries do not resend a TLS certificate verification failure, unless the session's strict relaxation answers it (the OpenAI and Anthropic SDKs' two connection retries inside one request remain - review round 2) — amended 2026-10-28 (#597, PR #614): a Responses stream that ends before its terminal event is retried, as pi retries it, and the Codex adapter frames CRLF SSE as well as LF, beyond pi — amended 2026-11-06 (#572): the TLS retry verdict is the harness's own record, kept through a `message_end` rebuild, and a failure the session's strict relaxation answers is sent again whatever its text says, the Codex adapter's included
 Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
 for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
@@ -928,3 +928,115 @@ frames on `\n\n` only.
 - **The failed attempt stays in the context the harness builds.** The adapters' message
   transform drops an error assistant before the request, so it is never sent. pi removes it
   from the context instead, a divergence that predates #597.
+
+## Amendment (2026-11-06, #572) — the TLS retry verdict is the harness's record, and it has a second value
+
+Pi reference: `earendil-works/pi@4ffe32c6f`: `isRetryableAssistantError`
+(`packages/ai/src/utils/retry.ts`) reads `errorMessage` against its patterns and nothing
+else, and pi has no strict relaxation (Node does not set OpenSSL's strict flag). Both
+defects below are in what aelix added for #551 and #184; aelix diverges knowingly
+(ADR-0235).
+
+### What was wrong on `679e5e5c`
+
+The #551 amendment's part 2 put the adapter's verdict on the string object of the error
+message (`ClassifiedErrorText.repeats_on_retry`), and its "Not changed" list named the two
+ways that went wrong:
+
+1. *One direction only.* A failure the session's strict relaxation answers was not marked,
+   so the retry pattern decided it. The OpenAI and Anthropic SDKs word it `Connection
+   error.`, which matches; the Codex adapter words it `[SSL: CERTIFICATE_VERIFY_FAILED]
+   certificate verify failed: Missing Authority Key Identifier`, which does not, so that
+   prompt ended in the error and the next one passed.
+2. *Lost on a rebuild.* A `message_end` hook that rebuilds the failed answer (a JSON round
+   trip, a message built anew from its fields) leaves a plain `str`: the mark was gone, and
+   an untrusted certificate's `Connection error.` was retried 2, 4 and 8 s apart again. #186's
+   `classifier_text` was lost the same way, so a `502` or an overflow past the 512-character
+   cut stopped being seen.
+
+Measured in docker (`python:3.13-slim`, Python 3.13.15, OpenSSL 3.5.7), the real CLI
+against a local TLS server whose CA is in the container's trust store and whose leaf has
+no Authority Key Identifier (code 85, strict only), and a second whose root nothing trusts
+(code 20); fake keys, a fake Codex OAuth token in a scratch agent dir:
+
+```text
+679e5e5c  -p codex, strict only            exit 1  0.44 s  3 handshakes (1 + the check's 2), 0 requests
+679e5e5c  -p untrusted root + rebuild hook exit 1 20.37 s 20 handshakes: 4 attempts x (3 SDK + 2 check)
+```
+
+### Decision
+
+1. *Three values.* `describe_provider_error` gives a TLS verification failure one of two
+   verdicts (`aelix_ai.utils.overflow.retry_verdict`): `repeats` when no strict relaxation
+   answers it (#551, not retried) and `resend` when one does (retried, whatever the text
+   matches). Anything else has none and the pattern decides. The verdict still travels from
+   the adapter on the error text (`ClassifiedErrorText.resend_on_retry` beside
+   `repeats_on_retry`; at most one is set): between the adapter and the harness no hook runs.
+2. *The harness keeps it.* At every assistant `message_end`, before the hooks run, the
+   harness copies the adapter's error text - display, `classifier_text` and verdict - into a
+   record of its own (`_ProviderErrorRecord`) and points it at the message the hooks leave,
+   as #379's `_SetupFailure` does for an auth callback's failure. `_is_retryable_error` and
+   the overflow recovery - its first check, the second pop after a compaction that rebuilt
+   the context, and the put-back after one that failed (#391) - classify that message as
+   the adapter described it. Two rules follow, one per kind of error text. A plain-`str`
+   error is not recorded, so a hook that rewrites one is classified on its new words, as pi
+   classifies the message its hooks leave. An error its adapter described - a
+   `ClassifiedErrorText`: every TLS failure with a verdict, every text the 512-character cut
+   shortened - is classified as the adapter described it whatever words a hook gives it: the
+   hook's words are what is shown and stored, and are ignored for the retry and overflow
+   decisions, as #379's `_SetupFailure` decides a setup failure whatever a hook made of its
+   text. Before #572 the hook's words decided both kinds. A message no `message_end` carried
+   - a summary request's (#409), a resumed session's - is read as it is: a summary request's
+   still carries the adapter's text (no hook runs between its adapter and the summary
+   retry), a resumed one is classified on its words.
+
+### Measured after
+
+Same container and servers, the change's tree:
+
+```text
+#572  -p codex, strict only               exit 0  3.08 s  4 handshakes (1 + 2 + the retry), 1 request, answered
+#572  -p codex, strict only + rebuild     exit 0  2.49 s  4 handshakes, 1 request, answered
+#572  -p untrusted root + rebuild hook    exit 1  2.40 s  5 handshakes (3 SDK + 2 check), not retried, advice once
+```
+
+The advice text of the untrusted root is byte-for-byte the text `679e5e5c` prints. Runs:
+`.omc/specs/beta3-polish-2026-11-06/tls/live/`.
+
+### Not changed
+
+- Code 79 under a relaxation measured on 79 is still answered when a relaxed context
+  raised it (the #551 amendment's known limit): now `resend` on every adapter, up to the
+  retry budget.
+- A resumed session's failed answer is classified on its words, as before.
+
+This closes two entries of the #551 amendment's "Not changed (follow-ups)": the rebuilt
+message and the Codex request.
+
+2026-11-06 note (#703, ADR-0294): the four built-in adapters that relax now send a `resend`
+failure again themselves, once, before the turn sees it, so for them this retry is no longer
+the one that answers it (no `auto_retry_*` events, no failed answer). The harness's `resend`
+retry stays for a stream that is not wrapped or uses a caller-owned client; a request the
+adapter sent again that fails the same way comes out as `repeats`. Fix round 1: a TLS failure
+an adapter meets after the provider answered (an `after_provider_response` hook's own request)
+never carries `resend` - `repeats`, or no verdict when the relaxation answers it - so the TLS
+verdict never sends an answered request again; with no verdict the retry pattern decides it on
+its words, as it decides any hook's failure.
+
+### Tests
+
+`tests/providers/test_tls_retry_verdict_572.py` (15 rows): the verdicts; a JSON round-trip
+`message_end` hook over the real Anthropic adapter and SDK against an untrusted server (not
+retried, 1 handshake), over a `resend` failure (retried once), over a `502` and an overflow
+past the cut (retried; compacted); a summary request's message read by its own mark; the
+real Codex adapter against the strict-only server, with and without the hook (sent again
+and answered) and against an untrusted one (sent once). On `679e5e5c` 10 of the 15 fail
+(`.omc/specs/beta3-polish-2026-11-06/tls/572-tests-on-base-679e5e5c.txt`); the other five
+are the `repeats` controls.
+
+Fix round 1 added six rows to the file: a real `compact()` after an overflow past the cut
+that a hook rebuilt (with the second pop reading the message as it is, the context ended
+`[..., error, stop]`); the put-back reading the record; and both sides of the rewrite rule
+above - a plain `str` classified on the hook's words, in both directions (they fail when a
+plain `str` is recorded too), and a `502` past the cut and an untrusted root classified as
+their adapter described them whatever the hook says (they fail with the record disabled).

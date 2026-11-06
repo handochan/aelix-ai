@@ -645,6 +645,32 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **On Python 3.13, a corporate proxy's certificate that only RFC 5280 strict checking rejects
+  is no longer an error on every launch: aelix sends the request again and says so in one dim
+  line (#703, ADR-0294).** When such a certificate (one this machine trusts, missing e.g. an
+  Authority Key Identifier) failed the first request, aelix measured it and relaxed strict for
+  the session, but the user saw the failure first: in red with a four-line note in the TUI, a
+  retry countdown, and for OpenAI Codex an exit 1 in `-p`; the relaxation is not saved, so
+  every launch did it again. Now the adapter sends that request again at once, on a new
+  client, and the answer is all the turn sees - no error, no retry, no failed answer in the
+  session, in the TUI, `-p`, `--mode json`, rpc and a compaction's summary alike. One line
+  says what was done, once per run:
+  `TLS strict relaxed: <host> (Missing Authority Key Identifier) · aelix docs tls` - dim in
+  the TUI under the banner, on stderr in `-p`, `--mode json` and `--mode rpc`, also when an
+  extension's startup made the request; it fits on one 120-column line for the usual hosts,
+  and `aelix docs tls` opens the TLS guide. An
+  expired OAuth login is renewed the same way: the renewal used to end every launch in "OAuth
+  refresh failed ... Run /login". Behind an explicit `HTTPS_PROXY` that intercepts TLS, aelix
+  now checks the certificate through that proxy, as the request goes, so the relaxation is
+  made there too instead of the strict advice on every run (an `http://` proxy, with the
+  password its URL carries). A request the provider already answered is not sent again
+  because an `after_provider_response` hook's own request failed on such a certificate (it
+  was, a second POST). Measured
+  in docker on Python 3.13.15: the TUI's answer came after 2.3 s instead of 4.5 s, the Codex
+  prompt is answered (it was not). A certificate strict did not reject - an untrusted root, a
+  wrong host, an expired one - keeps today's error and advice, byte for byte, and is sent once.
+  `/login` does not send its request again, so its failure keeps `Run /login again` and drops
+  the note the line already says. The relaxation is still measured each run and never saved.
 - **A message you cancel with Esc before the model answers leaves the context and
   comes back to the input box (#654, ADR-0286).** It used to stay: the next request,
   and every one after it, carried what you had just cancelled, reopening the session
@@ -1289,6 +1315,23 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An OpenAI Codex prompt that failed on Python 3.13's strict certificate check is sent
+  again and answered, and a certificate the machine does not trust stays unretried when an
+  extension rebuilds the failed answer (#572, ADR-0128 amendment 2026-11-06).** When a
+  corporate proxy's certificate fails only RFC 5280 strict checking, aelix measures that
+  this machine trusts the chain and relaxes strict for the session (#184). The OpenAI and
+  Anthropic requests were then retried and passed, but a Codex request was not: its error
+  text matched no retry pattern, so the prompt ended in the error (exit 1 in `-p`) and the
+  next one passed. Now it is sent again on a new client and answered. And an extension's
+  `message_end` hook that rebuilt the failed answer (a JSON round trip) made aelix forget
+  #551's "do not retry" verdict: an untrusted certificate's `Connection error.` was retried
+  three times again (20 s instead of 2 s, measured in docker on Python 3.13.15). The harness
+  now keeps the adapter's verdict, and the error text its classifiers read, in a record of
+  its own, so a rebuilt answer is retried exactly as the original would be, and a `502` or
+  a context overflow past the displayed text's 512-character cut is still seen - and, after
+  a successful compaction, no longer stays in the context the prompt is sent again with. A
+  hook that gives such an answer new words does not change its verdict either (the words are
+  what is shown); a plain error a hook rewrites is still classified on its new words.
 - **A `/` command typed while the model answers runs or says why it waits, and never reaches the
   model as text (#701, ADR-0292).** Enter on `/thinking high` mid-turn sent the line to the model as
   a steering message (Alt+Enter as a follow-up), with nothing on screen to say so. Now `/thinking`,

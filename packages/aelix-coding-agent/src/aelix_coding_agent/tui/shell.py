@@ -2326,7 +2326,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4924``) always passes one, so this is
+            # production caller (``entry.py:4926``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2810,7 +2810,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:261``, ``:303``, ``:314``, plus
-    # the abort close-out ``core.py:6056`` and the hook-fail one ``:6107``)
+    # the abort close-out ``core.py:6076`` and the hook-fail one ``:6127``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2948,7 +2948,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:3021``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:3030``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2956,7 +2956,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:3047``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3056``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -3318,11 +3318,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2277``), so the refresh below is
+                # ``_state.messages`` (``core.py:2280``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1840``), so this never discards a figure a running
+                # ``core.py:1843``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3403,7 +3403,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:6123-6124`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:6143-6144`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3431,7 +3431,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:3047``).
+        # the model is already swapped in (``core.py:3056``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3956,6 +3956,39 @@ async def run_tui(
     descriptor_renderer: DescriptorRenderer | None = None
     chrome_task: asyncio.Task[None] | None = None
     pump_task: asyncio.Task[None] | None = None
+    # #703 (ADR-0294) — a request that failed on Python 3.13's strict certificate
+    # check alone is sent again by its adapter; this dim line is all the transcript
+    # says about it, once, when the relaxation is made (never an error and a note).
+    from aelix_ai.providers._tls_strict import Relaxation, add_relaxation_listener
+
+    from aelix_coding_agent.cli.tls_notice import notice_line
+
+    # The relaxation is made on the thread whose request failed: the loop's for every
+    # built-in caller, where the line goes in at once (ahead of whatever that caller
+    # prints next - /login's failure); from any other thread through the loop, since
+    # the output queue is not thread-safe. Until the banner is up the line is held and
+    # goes in under it (fix round 1): a relaxation made before this listener existed
+    # (an extension's ``session_start``, entry.py) is handed to it on registration.
+    held_notices: list[Text] | None = []
+
+    def _commit_notice(line: Text) -> None:
+        if held_notices is not None:
+            held_notices.append(line)
+        else:
+            _commit(line)
+
+    def _note_strict_relaxed(relaxation: Relaxation) -> None:
+        line = Text(notice_line(relaxation), style="dim")
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            _commit_notice(line)
+        else:
+            loop.call_soon_threadsafe(_commit_notice, line)
+
+    relaxation_notice_off = add_relaxation_listener(_note_strict_relaxed)
     try:
         await runtime_host.harness.bootstrap()
         # Bind the real UI BEFORE the first session_start activation so
@@ -4148,6 +4181,10 @@ async def run_tui(
         # opened on another model than the one it last ran on, and why. Here
         # rather than on stderr, which this repaint erases (the #98 note above).
         _commit_model_fallback()
+        # #703 — a relaxation made before the banner, said under it.
+        for held_line in held_notices or ():
+            _commit(held_line)
+        held_notices = None
         # The update notice. Placed HERE — after the banner and any transcript
         # replay, before the first-run wizard — for three measured reasons:
         # stderr written before ``run_tui`` paints is erased by the chrome's
@@ -4196,6 +4233,7 @@ async def run_tui(
                 mtask.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await mtask
+        relaxation_notice_off()
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
         if descriptor_unsub is not None:
@@ -4539,7 +4577,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:5007-5008``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:5016-5017``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

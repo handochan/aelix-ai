@@ -57,6 +57,7 @@ from aelix_ai.providers._stream_close import (
     close_provider_stream,
 )
 from aelix_ai.providers._streaming_json import parse_streaming_json
+from aelix_ai.providers._strict_resend import resend_when_strict_relaxed
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
@@ -1032,6 +1033,7 @@ async def _open_stream(
     return iterator, raw
 
 
+@resend_when_strict_relaxed  # #703: a failure the strict relaxation answered is sent again
 async def stream_openai_completions(
     model: Model,
     context: Context,
@@ -1432,10 +1434,14 @@ async def stream_openai_completions(
         # that can fail Python 3.13's strict RFC-5280 checks even when the OS
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
-        # the harness already retries "Connection error." on its own, so the next
-        # attempt is the one that succeeds.
+        # ``describe_provider_error`` then gives a failure the relaxation answers
+        # the ``resend`` verdict (#572): ``resend_when_strict_relaxed`` sends the
+        # request again on a new client before anyone sees this error (#703), and
+        # the harness retries the verdict whatever its text says if it gets here.
         maybe_relax_strict_for_session(exc)
-        err_msg = describe_provider_error(exc)
+        # #703 fix round 1: a failure once the stream is open (on_response's) is
+        # never this request's handshake, so it is not sent again.
+        err_msg = describe_provider_error(exc, after_response=open_stream is not None)
 
         # Pi parity (M-4): scratch state lives off-block in the
         # ``tool_blocks_by_*`` registries; no per-block stripping needed
@@ -1455,11 +1461,18 @@ async def stream_openai_completions(
             # The provider's words, quoted like the rest of the message (#186),
             # and classified on what they said before the quoting.
             from aelix_ai.providers._error_hints import quote_model_text
-            from aelix_ai.utils.overflow import classifier_text_of, with_classifier_text
+            from aelix_ai.utils.overflow import (
+                classifier_text_of,
+                retry_verdict,
+                with_classifier_text,
+            )
 
+            verdict = retry_verdict(err_msg)  # #572: the verdict carries over too
             err_msg = with_classifier_text(
                 f"{err_msg}\n{quote_model_text(str(raw_meta))}",
                 f"{classifier_text_of(err_msg)}\n{raw_meta}",
+                repeats_on_retry=verdict == "repeats",
+                resend_on_retry=verdict == "resend",
             )
 
         error_output = AssistantMessage(

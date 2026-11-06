@@ -317,9 +317,11 @@ def test_a_502_that_quotes_certificate_words_is_still_retried() -> None:
 def test_a_message_rebuilt_from_its_text_is_classified_on_its_text(
     pki: _Pki, untrusted: _TlsServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The known limit (ADR-0128 #551 amendment): the mark travels with the message
-    object, as #186's ``classifier_text`` does; an extension that rebuilds the
-    message hands the harness a plain ``str``, retried on its words as before."""
+    """The mark travels with the message object, as #186's ``classifier_text`` does: a
+    message the harness never recorded (a resumed session's) with the same words as a
+    plain ``str`` is retried on its words. A ``message_end`` hook's rebuild no longer is:
+    the harness keeps the adapter's text from ``message_end`` on (#572,
+    ``tests/providers/test_tls_retry_verdict_572.py``)."""
 
     _trusting(monkeypatch, pki.trusted_ca, strict=False)
     described = describe_provider_error(_sdk_failure(untrusted.port))
@@ -442,12 +444,13 @@ async def test_one_prompt_to_an_untrusted_server_is_sent_once_and_shows_the_reme
     await harness.dispose()
 
 
-async def test_a_failure_the_strict_relaxation_answers_is_retried_and_answers(
+async def test_a_failure_the_strict_relaxation_answers_is_sent_again_and_answers(
     pki: _Pki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#184's flow stays: a strict-only rejection (code 85) of a chain this machine
-    trusts relaxes strict for the session, and the turn's retry - a new client -
-    is the request that passes."""
+    trusts relaxes strict for the session, and the request sent again - a new client -
+    is the one that passes. Since #703 the adapter sends it again itself, before the
+    turn sees a failure: no retry event, no error in the session (ADR-0294)."""
 
     server = _TlsServer(pki.sloppy_chain, _anthropic_answer())
     _trusting(monkeypatch, pki.sloppy_ca, strict=True)
@@ -461,14 +464,12 @@ async def test_a_failure_the_strict_relaxation_answers_is_retried_and_answers(
 
     relaxation = _tls_strict.session_relaxation()
     assert relaxation is not None and relaxation.verify_code == 85
-    starts = [e for e in events if isinstance(e, AutoRetryStartEvent)]
-    assert [s.attempt for s in starts] == [1]
-    assert "RFC-5280 strict verification relaxed" in str(starts[0].error_message)
-    ends = [(e.success, e.attempt) for e in events if isinstance(e, AutoRetryEndEvent)]
-    assert ends == [(True, 1)]
+    assert [e for e in events if isinstance(e, AutoRetryStartEvent | AutoRetryEndEvent)] == []
+    assert server.accepts == 4  # the failure, the relaxation's two checks, the request sent again
     assert server.requests == 1
-    last = harness._state.messages[-1]
-    assert isinstance(last, AssistantMessage) and last.stop_reason == "end_turn"
+    assert [m.stop_reason for m in harness._state.messages if isinstance(m, AssistantMessage)] == [
+        "end_turn"
+    ]
     await harness.dispose()
 
 

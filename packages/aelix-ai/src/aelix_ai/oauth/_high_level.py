@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from aelix_ai.oauth._registry import get_oauth_provider
 from aelix_ai.oauth.types import OAuthCredentials
@@ -58,7 +59,7 @@ async def get_oauth_api_key_from_credentials(
     now_ms = int(time.time() * 1000)
     if now_ms >= creds.expires:
         try:
-            creds = await provider.refresh_token(creds)
+            creds = await _refresh(provider, creds)
         except Exception as exc:
             # The cause goes in the MESSAGE, not just in ``__cause__``, so the
             # user sees why ("502 Bad Gateway from https://api.github.com", "401
@@ -93,6 +94,45 @@ async def get_oauth_api_key_from_credentials(
 
     api_key = provider.get_api_key(creds)
     return OAuthRefreshResult(new_credentials=creds, api_key=api_key)
+
+
+async def _refresh(provider: Any, creds: OAuthCredentials) -> OAuthCredentials:
+    """``provider.refresh_token(creds)``, sent once more when the strict relaxation answered it (#703).
+
+    On Python 3.13 a TLS-intercepting proxy's certificate can fail RFC 5280
+    strict checking alone. A model request measures that and relaxes strict for
+    the session (:func:`aelix_ai.providers._tls_strict.maybe_relax_strict_for_session`),
+    but a refresh did not: it is the first request of a launch whose login has
+    expired, so it met the wall first, marked it "not transient" (#551) and the
+    launch ended in "OAuth refresh failed ... Run /login" - every launch, since
+    the relaxation is not saved. The refresh now measures and relaxes as the
+    adapters do (the relaxation is announced on the CLI's one line), and when
+    that relaxation answers the failure it asks once more: the built-in
+    refreshes open a new client per call, which builds its SSL context without
+    strict, and a handshake that failed sent nothing, so the refresh token was
+    not spent. Any other failure, and the second one, is raised as before.
+    """
+
+    try:
+        return await provider.refresh_token(creds)
+    except Exception as exc:
+        if not _strict_relaxation_answered(exc):
+            raise
+    return await provider.refresh_token(creds)
+
+
+def _strict_relaxation_answered(exc: BaseException) -> bool:
+    """Did the session's strict relaxation - made now, if it is warranted - answer ``exc``?"""
+
+    # Imported here: _error_hints imports aelix_ai.oauth._helpers.
+    from aelix_ai.providers._error_hints import (
+        is_tls_verification_error,
+        tls_failure_repeats_on_retry,
+    )
+    from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
+
+    maybe_relax_strict_for_session(exc)
+    return is_tls_verification_error(exc) and not tls_failure_repeats_on_retry(exc)
 
 
 __all__ = [

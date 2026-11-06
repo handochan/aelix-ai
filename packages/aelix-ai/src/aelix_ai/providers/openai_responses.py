@@ -86,6 +86,7 @@ from aelix_ai.providers._stream_close import (
     close_provider_client,
     close_provider_stream,
 )
+from aelix_ai.providers._strict_resend import resend_when_strict_relaxed
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import clamp_max_tokens_to_context
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
@@ -429,6 +430,7 @@ async def _open_responses_stream(
     return iterator, raw
 
 
+@resend_when_strict_relaxed  # #703: a failure the strict relaxation answered is sent again
 async def stream_openai_responses(
     model: Model,
     context: Context,
@@ -568,10 +570,14 @@ async def stream_openai_responses(
         # that can fail Python 3.13's strict RFC-5280 checks even when the OS
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
-        # the harness already retries "Connection error." on its own, so the next
-        # attempt is the one that succeeds.
+        # ``describe_provider_error`` then gives a failure the relaxation answers
+        # the ``resend`` verdict (#572): ``resend_when_strict_relaxed`` sends the
+        # request again on a new client before anyone sees this error (#703), and
+        # the harness retries the verdict whatever its text says if it gets here.
         maybe_relax_strict_for_session(exc)
-        err_msg = describe_provider_error(exc)
+        # #703 fix round 1: a failure once the stream is open (on_response's) is
+        # never this request's handshake, so it is not sent again.
+        err_msg = describe_provider_error(exc, after_response=open_stream is not None)
         error_output = AssistantMessage(
             content=list(state.content),
             stop_reason=reason,

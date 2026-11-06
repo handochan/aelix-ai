@@ -1195,6 +1195,55 @@ async def test_a_relaxed_strict_wall_tells_the_user_the_next_login_will_work() -
     assert any("Run /login again" in line for line in lines), lines
 
 
+async def test_a_failure_the_relaxation_answered_drops_the_note_the_notice_line_says(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#703: the relaxation that answered this failure is announced on one dim line
+    (``tui/shell.py``'s listener), so the failure no longer repeats it as a four-line
+    note under the error; the try-again line stays. A failure under a relaxation that
+    does not answer it - an untrusted root on another host - keeps the note, which is
+    what tells that user it is not strictness.
+
+    SABOTAGE: keep the note whatever the verdict. The first half goes RED.
+    """
+
+    import ssl
+
+    import httpx
+    from aelix_ai.providers import _tls_strict
+
+    relaxation = _tls_strict.Relaxation(
+        host="api.business.githubcopilot.com",
+        verify_code=85,
+        verify_message="Missing Authority Key Identifier",
+    )
+    monkeypatch.setattr(_tls_strict, "session_relaxation", lambda: relaxation)
+
+    def failure(code: int) -> BaseException:
+        inner = ssl.SSLCertVerificationError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: probe (_ssl.c:1032)"
+        )
+        inner.verify_code = code  # type: ignore[attr-defined]
+        inner.verify_message = "probe"  # type: ignore[attr-defined]
+        outer = httpx.ConnectError(str(inner))
+        outer.__cause__ = inner
+        return outer
+
+    with patch(
+        "aelix_coding_agent.tui.login_wizard.maybe_relax_strict_for_session",
+        lambda _exc: relaxation,
+    ):
+        answered = [_plain(c) for c in await _drive_oauth_failure(failure(85))]
+        untrusted = [_plain(c) for c in await _drive_oauth_failure(failure(20))]
+
+    failed = next(line for line in answered if "OAuth login failed" in line)
+    assert "RFC-5280 strict verification relaxed" not in failed, answered
+    assert "certificate verify failed" in failed
+    assert any("Run /login again" in line for line in answered), answered
+    kept = next(line for line in untrusted if "OAuth login failed" in line)
+    assert "RFC-5280 strict verification relaxed" in kept, untrusted
+
+
 async def test_a_login_failure_with_no_relaxation_does_not_promise_a_retry() -> None:
     """NEGATIVE CONTROL. "Try again" on an unrelated failure is a false promise.
 

@@ -412,7 +412,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:5205-5207`` explicitly permits a later handler to mutate
+    ``harness/core.py:5214-5216`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -908,7 +908,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1651``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1654``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:5750-5754``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """

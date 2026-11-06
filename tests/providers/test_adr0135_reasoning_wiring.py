@@ -313,7 +313,7 @@ def test_xhigh_raises_request_max_tokens_when_room_allows() -> None:
     # reads the ``min``. No in-tree caller reaches it today: since #506 the
     # compaction summarizer sets ``reasoning`` but no ``max_tokens``
     # (compaction.py:879-886; before #506 it was the other way round), and the
-    # harness sets ``reasoning`` but drops ``max_tokens`` (core.py:5731). The
+    # harness sets ``reasoning`` but drops ``max_tokens`` (core.py:5740). The
     # arithmetic is pinned here for the out-of-tree caller that supplies both.
     # Measured on 0985fcf, before the change: (48384, 16384).
     assert adjust_max_tokens_for_thinking(32000, 128000, "xhigh") == (64768, 32768)
@@ -327,7 +327,7 @@ def test_xhigh_budget_still_leaves_answer_room() -> None:
 
 
 def test_unsat_ceiling_cap_collapses_the_answer_to_the_minimum() -> None:
-    # ``_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000`` (providers/anthropic.py:256) is
+    # ``_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000`` (providers/anthropic.py:257) is
     # the cap a row whose maxTokens >= contextWindow gets. At that cap an xhigh
     # request leaves exactly _MIN_OUTPUT_TOKENS of answer room where "high"
     # leaves 15616. 46 catalog rows are clamped to it, but none of them offers

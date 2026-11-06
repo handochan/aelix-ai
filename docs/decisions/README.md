@@ -36,6 +36,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0294 — A failure the strict relaxation answered is sent again by its adapter and shown as one line](0294-a-failure-the-strict-relaxation-answered-is-sent-again-and-shown-as-one-line.md)
+  (Accepted 2026-11-06; #703). On Python 3.13 a corporate proxy's certificate that fails RFC
+  5280 strict checking alone, which this machine trusts without it, used to reach the user as an
+  error with a four-line note on every launch (the relaxation is measured, not persisted). Now the
+  four built-in adapters that relax send that request again themselves, once, on a new client
+  (`_strict_resend.resend_when_strict_relaxed`, acting on #572's `resend` verdict): no error
+  event, retry or failed answer anywhere. The relaxation is announced once per process on one
+  line, `TLS strict relaxed: <host> (<rule>) · aelix docs tls`, which fits 120 columns for the
+  usual hosts and rules (`_tls_strict.add_relaxation_listener`; one made before a listener is
+  handed to the first): dim in the TUI under the banner, on stderr in `-p`, `--mode json` and
+  rpc. A request sent again that fails the same way goes out as `repeats`; an abort, a
+  caller-owned client, an error after a `start` or a failure after the response (an
+  `on_response` hook's) is not sent again. An OAuth token refresh measures, relaxes and asks
+  once more; the check tunnels through the `HTTPS_PROXY` the clients use. A failure strict did not
+  cause keeps today's error and advice byte for byte, sent once; `/login`'s failure drops the note
+  the line already says. Not persisted (the measure-first rule stands). pi has no relaxation.
+
 - [0292 — A `/` line Entered during a turn is a command, not a steer](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md)
   (Accepted 2026-11-06; #701). Enter and Alt+Enter on a typed `/` line while a turn runs never send
   it to the model: the chrome asks the input loop first. An explicit table in `tui/commands.py`
@@ -604,7 +621,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   range, ADR-0254 §2.3/§3 and ADR-0128's "not covered" (dated notes).
 
 - [0128 — Auto-retry with exponential backoff](0128-sprint-6h20-auto-retry.md)
-  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551; amended 2026-10-28, #597). The retry reads `settings.json` `retry.enabled` /
+  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551; amended 2026-10-28, #597; amended 2026-11-06, #572). The retry reads `settings.json` `retry.enabled` /
   `maxRetries` / `baseDelayMs` / `maxAgentDelayMs` at each decision (pi's cap
   included); rpc `set_auto_retry` writes `retry.enabled` globally as pi does;
   module constants remain the fallback. ADR-0251 §12.3's follow-up note amended.
@@ -632,6 +649,13 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   #597 (PR #614, mikemikimike): a Responses stream that ends before its terminal event is
   retried, as pi retries it, on every Responses adapter; the Codex adapter normalizes CRLF
   before framing (pi frames LF only), one chunk at a time.
+  #572: the TLS verdict has a second value, `resend`, for a failure the session's strict
+  relaxation answers - retried whatever its text says, so a Codex request that failed on
+  strict alone is sent again and answered instead of ending the prompt - and the harness
+  keeps the adapter's error text (verdict and `classifier_text`) in a record of its own from
+  `message_end` on (`_ProviderErrorRecord`, #379's precedent), so a hook that rebuilds the
+  answer changes no retry or overflow decision. A plain-`str` error a hook rewrites is still
+  classified on its new words, as pi does.
 
 - [0263 — Configured request auth before new prompt records](0263-configured-request-auth-before-new-prompt-records.md)
   (Accepted, 2026-10-12; #416). Request-supported headers/token/Vertex source
