@@ -75,6 +75,7 @@ from aelix_ai.providers._github_copilot_headers import (
     has_copilot_vision_input,
 )
 from aelix_ai.providers._stream_close import close_provider_client
+from aelix_ai.providers._strict_resend import resend_when_strict_relaxed
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
@@ -442,6 +443,7 @@ def _effective_output_cap(model: Model, context: Context) -> int:
     )
 
 
+@resend_when_strict_relaxed  # #703: a failure the strict relaxation answered is sent again
 async def stream_anthropic(
     model: Model,
     context: Context,
@@ -537,8 +539,8 @@ async def stream_anthropic(
         output_ceiling = min(output_ceiling, window_room)
     # #250: clamp the requested level against what THIS row offers, the way
     # every sibling adapter already does (google_generative_ai.py:309,
-    # google_vertex.py:443, openai_responses.py:615, openai_completions.py:1529,
-    # openai_codex_responses.py:693). This adapter was the only one passing
+    # google_vertex.py:443, openai_responses.py:620, openai_completions.py:1534,
+    # openai_codex_responses.py:700). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
     # ``thinking:``) verbatim and ``harness/core.py`` snapshots the state level
@@ -591,6 +593,7 @@ async def stream_anthropic(
     # with a fourth arm the way three separate flag assignments could.
     client: Any = None
     owns_client = opts.client is None
+    responded = False  # #703 fix round 1: the provider's response is in hand
 
     try:
         # 1) Build / use SDK client.
@@ -728,6 +731,7 @@ async def stream_anthropic(
         # whose ``response`` attribute carries the HTTP headers.
         stream_mgr = client.messages.stream(**params)
         async with stream_mgr as sdk_stream:
+            responded = True
             # ``sdk_stream.response`` is the underlying httpx response.
             sdk_response = getattr(sdk_stream, "response", None)
             if sdk_response is not None and opts.on_response is not None:
@@ -775,7 +779,7 @@ async def stream_anthropic(
             # anthropic turn as same-model and preserve its signed thinking
             # blocks on replay. Without this the shared transform always
             # treats prior thinking as cross-model → downgrades to text →
-            # signatures never travel back. Mirrors openai_completions.py:1402-1410.
+            # signatures never travel back. Mirrors openai_completions.py:1404-1412.
             output = replace(
                 output,
                 content=list(output_content),
@@ -842,10 +846,13 @@ async def stream_anthropic(
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
         # ``describe_provider_error`` then gives a failure the relaxation answers
-        # the ``resend`` verdict, which the harness retries whatever its text says
-        # (#572), so the next attempt, on a new client, is the one that succeeds.
+        # the ``resend`` verdict (#572): ``resend_when_strict_relaxed`` sends the
+        # request again on a new client before anyone sees this error (#703), and
+        # the harness retries the verdict whatever its text says if it gets here.
         maybe_relax_strict_for_session(exc)
-        error_msg = describe_provider_error(exc)
+        # #703 fix round 1: a failure after the response (on_response's) is never
+        # this request's handshake, so it is not sent again.
+        error_msg = describe_provider_error(exc, after_response=responded)
         # Snapshot whatever we managed to assemble so observers can see
         # partial content alongside the failure.
         error_output = replace(
@@ -855,7 +862,7 @@ async def stream_anthropic(
             error_message=error_msg,
             # ADR-0190: stamp provenance on the error path too so a partial
             # turn surfaced to observers still carries the same-model markers
-            # (mirrors the success build). openai_completions.py:1402-1410.
+            # (mirrors the success build). openai_completions.py:1404-1412.
             api=model.api,
             provider=model.provider,
             model=model.id,

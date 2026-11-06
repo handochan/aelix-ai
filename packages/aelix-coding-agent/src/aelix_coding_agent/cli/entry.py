@@ -4913,6 +4913,8 @@ async def _async_main(argv: list[str]) -> int:
             auto_trust_on_reload_cwd = None
         return saved
 
+    # #703 — headless modes say on stderr, once, when strict TLS checking is relaxed.
+    relaxation_notice_off: Callable[[], None] | None = None
     try:
         if late_route_refusal is not None:
             print(f"Error: {late_route_refusal}", file=sys.stderr)
@@ -5112,6 +5114,14 @@ async def _async_main(argv: list[str]) -> int:
             turn_route = launch_route
         turn_model = turn_route.model
 
+        # #703 (ADR-0294): a request that failed on Python 3.13's strict
+        # certificate check alone is sent again, and this line is all that is
+        # said about it. stderr, never stdout: stdout is the answer (-p), the
+        # event stream (--mode json) or the protocol (--mode rpc).
+        from aelix_coding_agent.cli.tls_notice import announce_on_stderr
+
+        relaxation_notice_off = announce_on_stderr()
+
         if app_mode == "rpc":
             # #371 (owner decision 2026-10-20) — a launch model given on the
             # command line (``--model``, with or without ``--provider``) that
@@ -5244,6 +5254,8 @@ async def _async_main(argv: list[str]) -> int:
         # The launch is over; no child of it can still be built (D9).
         set_launch_mcp_names(None)
         set_launch_extension_off(None)
+        if relaxation_notice_off is not None:
+            relaxation_notice_off()
 
 
 def _stdout_to_devnull() -> None:

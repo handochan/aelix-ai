@@ -9,7 +9,8 @@ have, and what to do about each. Start with `aelix status` — it answers most
 of the question before you try anything.
 
 Nothing here requires network access to read: this guide ships inside the
-wheel, so `aelix docs tls-and-corporate-ca` prints it on a closed network.
+wheel, so `aelix docs tls-and-corporate-ca` (or `aelix docs tls`) prints it on
+a closed network.
 
 ## First: ask the build what it trusts
 
@@ -242,18 +243,34 @@ produce it. Neither does the operating system's verifier: with
 chain at all, so this section does not apply there (measured on macOS with
 Python 3.14: a chain missing its Authority Key Identifier verified with strict
 on).
-`aelix status` showing `RFC 5280 strict  on` tells you the flag is set, not
+`aelix status` showing `RFC 5280 strict  ON` tells you the flag is set, not
 that it is the cause.
 
 `aelix` handles this for you. When a connection fails certificate
 verification on a strict interpreter, it re-tests that host twice — once with
 strict on, once with it off — whatever the verify code, as long as the error
-names the host (the Google adapters do not take this path). Only if the
-handshake **fails with strict and succeeds without it** does it relax that one
-flag for the rest of the session, saying so in place of the advice. The
-automatic retry then sends the request again, now without strict, and a
-request that failed on strict alone passes - for every provider, OpenAI Codex
-included; that retry is the only one a certificate failure gets:
+names the host (the Google adapters do not take this path). The re-tests go
+the way the request went: through the proxy in `HTTPS_PROXY` / `ALL_PROXY`
+(an `http://` one, with the user and password its URL carries) unless
+`NO_PROXY` exempts the host, as the request's own client decides it. Only if
+the handshake **fails with strict and succeeds without it** does it relax that
+one flag for the rest of the session. The request that failed is then sent
+again at once, now without strict - for every provider, OpenAI Codex included,
+and for an OAuth sign-in that is being renewed - and is answered; it is not
+shown as an error. What you see is one line, dim in the TUI and on stderr in
+`-p`, `--mode json` and `--mode rpc`:
+
+```text
+TLS strict relaxed: api.business.githubcopilot.com (Basic Constraints of CA cert not marked critical) · aelix docs tls
+```
+
+It names the host and the rule its certificate failed, and points here. It
+says so once per run, whatever made the request - an extension at startup
+included - and in the TUI it appears under the banner.
+
+That one sending again is the only retry a certificate failure gets. A
+certificate failure later in the same session is not strictness, and its
+error says so in place of the advice:
 
 ```text
 RFC-5280 strict verification relaxed for this session after the host below failed it but verified against this machine's trust store without it.
@@ -262,10 +279,23 @@ RFC-5280 strict verification relaxed for this session after the host below faile
 Certificate verification, hostname checking and expiry are still enforced. If the request still fails, the cause is not certificate strictness.
 ```
 
+When the failure was an extension hook's own request, made after the provider
+had answered, it is strictness all the same and is not sent again - that would
+send the answered request twice - and the last line says so instead.
+
+`/login` does not send its request again: a sign-in that failed this way
+shows the line above, then the error and `Run /login again`, and the next
+sign-in passes.
+
 Everything else about verification stays on: the chain is still checked against
 the same trust store, and the hostname is still matched. Restarting `aelix`
-starts over from strict. `aelix status` reports whether a relaxation is in
-effect.
+starts over from strict, and the first request of each run goes through this
+again: the relaxation is measured each time and never saved. `aelix status`
+runs in a process of its own, so it shows `RFC 5280 strict  ON` and the
+interpreter, not the relaxation a running session made. Behind an `https://`
+or SOCKS proxy, or one that asks for NTLM or Kerberos rather than a password in
+its URL, the re-test cannot go through it, nothing is relaxed, and the advice
+above is what you get: run `aelix` on Python 3.12 (below).
 
 Why this is scoped so narrowly matters if you are reviewing it: the relaxation
 never fires for an untrusted issuer, a hostname mismatch or an expired

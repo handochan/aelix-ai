@@ -2048,7 +2048,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4924``) always passes one, so this is
+            # production caller (``entry.py:4926``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3673,6 +3673,39 @@ async def run_tui(
     descriptor_renderer: DescriptorRenderer | None = None
     chrome_task: asyncio.Task[None] | None = None
     pump_task: asyncio.Task[None] | None = None
+    # #703 (ADR-0294) — a request that failed on Python 3.13's strict certificate
+    # check alone is sent again by its adapter; this dim line is all the transcript
+    # says about it, once, when the relaxation is made (never an error and a note).
+    from aelix_ai.providers._tls_strict import Relaxation, add_relaxation_listener
+
+    from aelix_coding_agent.cli.tls_notice import notice_line
+
+    # The relaxation is made on the thread whose request failed: the loop's for every
+    # built-in caller, where the line goes in at once (ahead of whatever that caller
+    # prints next - /login's failure); from any other thread through the loop, since
+    # the output queue is not thread-safe. Until the banner is up the line is held and
+    # goes in under it (fix round 1): a relaxation made before this listener existed
+    # (an extension's ``session_start``, entry.py) is handed to it on registration.
+    held_notices: list[Text] | None = []
+
+    def _commit_notice(line: Text) -> None:
+        if held_notices is not None:
+            held_notices.append(line)
+        else:
+            _commit(line)
+
+    def _note_strict_relaxed(relaxation: Relaxation) -> None:
+        line = Text(notice_line(relaxation), style="dim")
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            _commit_notice(line)
+        else:
+            loop.call_soon_threadsafe(_commit_notice, line)
+
+    relaxation_notice_off = add_relaxation_listener(_note_strict_relaxed)
     try:
         await runtime_host.harness.bootstrap()
         # Bind the real UI BEFORE the first session_start activation so
@@ -3850,6 +3883,10 @@ async def run_tui(
         # opened on another model than the one it last ran on, and why. Here
         # rather than on stderr, which this repaint erases (the #98 note above).
         _commit_model_fallback()
+        # #703 — a relaxation made before the banner, said under it.
+        for held_line in held_notices or ():
+            _commit(held_line)
+        held_notices = None
         # The update notice. Placed HERE — after the banner and any transcript
         # replay, before the first-run wizard — for three measured reasons:
         # stderr written before ``run_tui`` paints is erased by the chrome's
@@ -3887,6 +3924,7 @@ async def run_tui(
             typed_prompt=typed_prompt,
         )
     finally:
+        relaxation_notice_off()
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
         if descriptor_unsub is not None:

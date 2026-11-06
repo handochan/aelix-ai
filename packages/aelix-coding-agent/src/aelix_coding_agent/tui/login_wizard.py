@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from aelix_ai.providers._error_hints import describe_provider_error
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
+from aelix_ai.utils.overflow import retry_verdict
 from aelix_ai.utils.terminal_text import safe_error_for_terminal, safe_for_terminal
 
 if TYPE_CHECKING:
@@ -342,12 +343,20 @@ async def _run_oauth(
         # trust is still refused — and `describe_provider_error` below then says
         # what was done instead of recommending a CA the user already installed.
         relaxed = maybe_relax_strict_for_session(exc)
-        message = safe_error_for_terminal(describe_provider_error(exc))
+        described = describe_provider_error(exc)
+        if relaxed is not None and retry_verdict(described) == "resend":
+            # #703 (ADR-0294): the relaxation answered this failure, and the TUI's
+            # dim notice line above already says so; the four-line note it used to
+            # repeat here goes. A failure the relaxation does not answer keeps it.
+            described = described.removesuffix("\n\n" + relaxed.remedy())
+        message = safe_error_for_terminal(described)
         commit(Text(f"✖ OAuth login failed: {message}", style="bold red"))
         if relaxed is not None:
-            # The flow that just failed cannot be resumed — a device code is
-            # single-use — but the wall that stopped it is down for the rest of
-            # this session. `describe_provider_error` cannot say this: it is
+            # The wizard does not send the request that failed again, whichever
+            # step it was (#703 fix round 1: measured on the Copilot device-code
+            # request itself, before any code existed) — but the wall that
+            # stopped it is down for the rest of this session.
+            # `describe_provider_error` cannot say this: it is
             # provider-generic and does not know it is being read inside /login.
             # Without this line the user is told what was fixed and not that
             # they can now use it.

@@ -133,6 +133,9 @@ ALIASES: dict[str, str] = {
     "mcp.json": "mcp-servers",
     "catalog": "private-catalog",
     "marketplace": "private-catalog",
+    # #703 fix round 2 — the one line a relaxed strict check prints names the guide
+    # as `aelix docs tls`: its full name made the line wrap at 120 columns.
+    "tls": "tls-and-corporate-ca",
     "install": "getting-started",
     "start": "getting-started",
     "quickstart": "getting-started",

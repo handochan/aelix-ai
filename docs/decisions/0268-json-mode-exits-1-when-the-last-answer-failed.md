@@ -93,6 +93,12 @@ stderr to say why.
    answer that `_select_summary` keeps for an aborted or timed-out run with the words
    `Request aborted`. The same holds when stderr is a terminal. Pi's framing (stdout
    is JSONL, diagnostics go to stderr) does not require a line either way.
+   2026-11-06 note (#703, ADR-0294): one diagnostic line now does reach a JSON run's
+   stderr, `TLS strict relaxed: <host> (<rule>) · aelix docs tls`, once,
+   when the run relaxes Python 3.13's strict certificate check; the failed request it
+   answers is sent again and never reaches the stream. Nothing about the verdict above
+   changes. A delegation parent reads it as it reads any stderr: after the answer on a
+   success, in the child's error on a failure.
 4. **This diverges from pi on purpose** (ADR-0235), twice: pi returns 0 for this case
    in JSON mode and documents it, and pi's text mode exits 1 on a failed answer an
    earlier run left (read, not run: `print-mode.ts:139-147` judges

@@ -444,12 +444,13 @@ async def test_one_prompt_to_an_untrusted_server_is_sent_once_and_shows_the_reme
     await harness.dispose()
 
 
-async def test_a_failure_the_strict_relaxation_answers_is_retried_and_answers(
+async def test_a_failure_the_strict_relaxation_answers_is_sent_again_and_answers(
     pki: _Pki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#184's flow stays: a strict-only rejection (code 85) of a chain this machine
-    trusts relaxes strict for the session, and the turn's retry - a new client -
-    is the request that passes."""
+    trusts relaxes strict for the session, and the request sent again - a new client -
+    is the one that passes. Since #703 the adapter sends it again itself, before the
+    turn sees a failure: no retry event, no error in the session (ADR-0294)."""
 
     server = _TlsServer(pki.sloppy_chain, _anthropic_answer())
     _trusting(monkeypatch, pki.sloppy_ca, strict=True)
@@ -463,14 +464,12 @@ async def test_a_failure_the_strict_relaxation_answers_is_retried_and_answers(
 
     relaxation = _tls_strict.session_relaxation()
     assert relaxation is not None and relaxation.verify_code == 85
-    starts = [e for e in events if isinstance(e, AutoRetryStartEvent)]
-    assert [s.attempt for s in starts] == [1]
-    assert "RFC-5280 strict verification relaxed" in str(starts[0].error_message)
-    ends = [(e.success, e.attempt) for e in events if isinstance(e, AutoRetryEndEvent)]
-    assert ends == [(True, 1)]
+    assert [e for e in events if isinstance(e, AutoRetryStartEvent | AutoRetryEndEvent)] == []
+    assert server.accepts == 4  # the failure, the relaxation's two checks, the request sent again
     assert server.requests == 1
-    last = harness._state.messages[-1]
-    assert isinstance(last, AssistantMessage) and last.stop_reason == "end_turn"
+    assert [m.stop_reason for m in harness._state.messages if isinstance(m, AssistantMessage)] == [
+        "end_turn"
+    ]
     await harness.dispose()
 
 

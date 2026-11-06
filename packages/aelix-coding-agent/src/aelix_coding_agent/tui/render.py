@@ -1116,7 +1116,7 @@ class EventRenderer:
             if index in self._thinking_done:
                 # The wire can REOPEN an index this renderer already committed:
                 # ``openai_completions`` allocates one thinking index per message
-                # (openai_completions.py:1253-1254) and reasoning that resumes after
+                # (openai_completions.py:1255-1256) and reasoning that resumes after
                 # answer text replays on it, so the block was flushed by the
                 # text_delta arm above and then continued. Retiring the index
                 # permanently dropped that continuation on the floor.
@@ -1222,8 +1222,8 @@ class EventRenderer:
         self._thinking_accum = ""
         self._thinking_index = None
         # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
-        # message (anthropic.py:1022, _google_shared.py:1029,
-        # _openai_responses_shared.py:725, openai_completions.py:1279), so
+        # message (anthropic.py:1029, _google_shared.py:1029,
+        # _openai_responses_shared.py:725, openai_completions.py:1281), so
         # keeping the set would retire index 0 for the whole session. The delta
         # arm un-retires a reused index on its own, so what this line actually
         # covers is the block that arrives as ``thinking_end`` ALONE, with no
@@ -1463,7 +1463,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:4455). A provider
+            # write the same last-writer-wins sink (shell.py:4493). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.
@@ -1795,7 +1795,7 @@ class EventRenderer:
                 #
                 # The match is EXACT because an ADAPTER-reported failure carries
                 # the partial text the model really streamed
-                # (``providers/anthropic.py:853`` snapshots ``output_content``
+                # (``providers/anthropic.py:860`` snapshots ``output_content``
                 # onto the error message), and that text must still replay.
                 # ``harness/core.py`` is the only ``[error] `` synthesiser in
                 # ``packages/``, so nothing else produces this shape.

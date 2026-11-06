@@ -1013,6 +1013,16 @@ The advice text of the untrusted root is byte-for-byte the text `679e5e5c` print
 This closes two entries of the #551 amendment's "Not changed (follow-ups)": the rebuilt
 message and the Codex request.
 
+2026-11-06 note (#703, ADR-0294): the four built-in adapters that relax now send a `resend`
+failure again themselves, once, before the turn sees it, so for them this retry is no longer
+the one that answers it (no `auto_retry_*` events, no failed answer). The harness's `resend`
+retry stays for a stream that is not wrapped or uses a caller-owned client; a request the
+adapter sent again that fails the same way comes out as `repeats`. Fix round 1: a TLS failure
+an adapter meets after the provider answered (an `after_provider_response` hook's own request)
+never carries `resend` - `repeats`, or no verdict when the relaxation answers it - so the TLS
+verdict never sends an answered request again; with no verdict the retry pattern decides it on
+its words, as it decides any hook's failure.
+
 ### Tests
 
 `tests/providers/test_tls_retry_verdict_572.py` (15 rows): the verdicts; a JSON round-trip

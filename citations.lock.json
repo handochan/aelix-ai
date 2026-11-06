@@ -745,20 +745,20 @@
    "if same_model:",
    "out.append(block)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:1022-1022": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:1029-1029": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:206-207": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:207-208": [
    "if not (input_tokens or output_tokens or cache_read or cache_write):",
    "return None"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:256-256": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:257-257": [
    "_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:730-730": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:733-733": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:853-853": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:860-860": [
    "content=list(output_content),"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:309-309": [
@@ -775,17 +775,17 @@
    "clamped = clamp_thinking_level(model, options.reasoning)",
    "effort = \"high\" if clamped in (\"off\", None) else clamped"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:693-693": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:700-700": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1253-1254": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1255-1256": [
    "if thinking_index is None:",
    "thinking_index = len(output_content)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1279-1279": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1281-1281": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1402-1410": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1404-1412": [
    "output = AssistantMessage(",
    "content=list(output_content),",
    "stop_reason=stop_reason,",
@@ -795,16 +795,16 @@
    "provider=model.provider,",
    "model=model.id,"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1529-1529": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1534-1534": [
    "reasoning_effort = clamp_thinking_level(model, opts.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:341-341": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:342-342": [
    "transformed = transform_messages("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:507-507": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:508-508": [
    "params = getattr(tool, \"parameters\", None) or {"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:997-1004": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:998-1005": [
    "return {",
    "\"input\": int(prompt),",
    "\"output\": int(completion),",
@@ -814,7 +814,7 @@
    "\"cache_read\": int(cached),",
    "}"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_responses.py:615-615": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_responses.py:620-620": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:110-110": [
@@ -2132,10 +2132,10 @@
    "# advice is actively wrong when ``get_available()`` is empty (the picker",
    "# would open onto nothing). It stays for the configured-but-typo'd user,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4924-4924": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4926-4926": [
    "# The [tui] extra (prompt-toolkit + rich) is not installed."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5192-5192": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5202-5202": [
    "print(format_no_model_selected_message(), file=sys.stderr)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:71-76": [
@@ -3084,16 +3084,16 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3595-3595": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3680-3680": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3713-3713": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4455-4455": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4493-4493": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4594-4594": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4632-4632": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4716-4730": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4754-4768": [
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
    "# args = the text after the command word (Sprint 6h₁₂d). The",

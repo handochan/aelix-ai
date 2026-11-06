@@ -50,7 +50,40 @@ relaxing only the provider that happened to fail first would leave the next one
 broken and produce the same bug report tomorrow.
 
 The relaxation is **session-scoped** — it lasts for this process and is not
-persisted — and it is reported by ``aelix status`` so it is never silent.
+persisted. Persisting it, so that the next run starts relaxed, would relax on a
+measurement made in another process, against a chain that may since have
+changed: it is deliberately not done (#703).
+
+## Never silent, and never an error (#703)
+
+When the relaxation is made, the listeners registered with
+:func:`add_relaxation_listener` are called once with it: the CLI shows
+:meth:`Relaxation.notice`, one line - dim in the TUI, on stderr in ``-p``,
+``--mode json`` and ``--mode rpc``. A relaxation made before any listener was
+registered (an extension's ``session_start`` that sent a request) is given to
+the first one registered after it, so it is still announced once. The failure
+that caused it is not shown as an error at all: it carries the ``resend`` retry
+verdict (#572), and the built-in adapters send that request again themselves,
+once, on a new client (:mod:`aelix_ai.providers._strict_resend`), as an OAuth
+token refresh does (``aelix_ai.oauth._high_level``), so the prompt is answered
+as if nothing had failed. Before #703 the user saw the error and a four-line
+note (:meth:`Relaxation.remedy`) on every launch, and the turn waited out a
+retry. The note is still what a LATER certificate failure gets while the
+relaxation is in force: that failure is not strictness, and the note says so.
+Only this process knows about the relaxation
+(``aelix_ai.providers._trust_store.describe_trust_store`` reports it here): the
+``aelix status`` command runs in a process of its own and shows strict ``ON``,
+so the notice points at the TLS guide (``aelix docs tls``).
+
+The confirmation handshakes go where the clients' requests go: through the
+proxy an ``httpx`` client would use for that host (``HTTPS_PROXY``,
+``ALL_PROXY``, ``NO_PROXY``, read as httpx reads them; :func:`_proxy_for`), as
+an HTTP ``CONNECT`` tunnel. An explicit corporate proxy that intercepts TLS is
+where such a chain comes from, and a direct connection to the host may not
+exist at all; measured direct, that proxy's chain was never relaxed. Only an
+``http://`` proxy is tunnelled (with the Basic credentials its URL carries, as
+httpx sends them); through an ``https://`` or SOCKS proxy the check answers
+"no" and nothing is relaxed.
 
 Per-connection evidence (re-checking every chain rather than flipping once for
 the session) is the stricter design and is deliberately left as follow-up: it
@@ -68,14 +101,19 @@ the same reason. Hence: wrap the factory function.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import socket
 import ssl
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 __all__ = [
     "Relaxation",
     "TlsFailure",
+    "add_relaxation_listener",
     "extract_tls_failure",
     "maybe_relax_strict_for_session",
     "reset_strict_relaxation",
@@ -92,6 +130,10 @@ _STRICT = ssl.VerifyFlags.VERIFY_X509_STRICT
 
 _relaxation: Relaxation | None = None
 _original_factory = None  # set when the wrapper is installed, so it is idempotent
+#: Called once with the relaxation when this process makes it (#703).
+_listeners: list[Callable[[Relaxation], object]] = []
+#: The relaxation was made while no listener was registered: the next one hears it.
+_unannounced = False
 
 
 @dataclass(frozen=True)
@@ -124,8 +166,46 @@ class Relaxation:
             f"machine's trust store without it."
         )
 
-    def remedy(self) -> str:
+    def notice(self) -> str:
+        """The one line the CLI shows when the relaxation is made (#703).
+
+        The host, the strict rule its chain failed, and where to read about it:
+        the TLS guide, whose section 4 says what this is (``aelix docs tls``,
+        the alias of ``tls-and-corporate-ca``). Not ``aelix status``: that
+        command is a process of its own and shows strict ``ON``, never this
+        session's relaxation. Not an error and not advice: aelix measured the
+        cause and dealt with it, and the request is sent again. One line, so it
+        says once what :meth:`remedy` used to say in four after an error, on
+        every launch.
+
+        40 fixed characters plus the host and the rule, so it fits a 120-column
+        terminal for the hosts a proxy usually meets with the strict rules it
+        usually breaks: 118 at the longest, for ``api.business.githubcopilot.com``
+        and ``Basic Constraints of CA cert not marked critical`` (fix round 2;
+        the line was ``TLS: RFC 5280 strict relaxed for this session (...) —
+        aelix docs tls-and-corporate-ca``, 125 for ``localhost`` and 162 there,
+        and the TUI wrapped it). What "strict" and "relaxed" mean is the
+        guide's to say.
+        """
+
+        return f"TLS strict relaxed: {self.host} ({self._detail()}) · aelix docs tls"
+
+    def remedy(self, *, after_response: bool = False) -> str:
         """The note a later TLS error's remedy gives, laid out for the TUI.
+
+        Since #703 the failure that made the relaxation is not shown as an error
+        (:meth:`notice` says it, and the request is sent again), so this is what
+        a certificate failure gets WHILE the relaxation is in force: one strict
+        did not cause, and the last line says so - or the rare one whose request,
+        sent again, failed once more.
+
+        ``after_response`` (fix round 2): a failure the relaxation answers that
+        came after the provider answered - an ``after_provider_response`` hook's
+        own request - never gets the ``resend`` verdict (sending it again would
+        send the answered request a second time), and strict is what rejected
+        it, so "If the request still fails, the cause is not certificate
+        strictness" read as if this failure were not strictness. Its last line
+        says what happened instead (190 characters; the default one is 143).
 
         The TUI keeps 8 lines of an error and cuts each at 200 characters (see
         ``_error_hints``' module docstring); the error line and a blank line
@@ -155,8 +235,13 @@ class Relaxation:
                 "without it.",
                 *host_lines,
                 f"  failed on: {self._detail()}",
-                f"{self.STILL_ENFORCED} If the request still fails, the cause is not "
-                "certificate strictness.",
+                f"{self.STILL_ENFORCED} "
+                + (
+                    "This failure came after the provider had answered (a hook's own "
+                    "request), so the relaxation does not send it again."
+                    if after_response
+                    else "If the request still fails, the cause is not certificate strictness."
+                ),
             ]
         )
 
@@ -240,6 +325,8 @@ def _handshake(host: str, port: int, *, strict: bool) -> bool:
     The context is the one clients would get — i.e. the OS trust store via
     truststore when it is injected — with only the strict flag varied. That is
     what makes a success here mean "this machine already trusts this chain".
+    The connection is the one they would make, too: through the proxy they
+    would use (:func:`_connect`, #703 fix round 1), within the same 5 s.
     """
 
     try:
@@ -248,15 +335,83 @@ def _handshake(host: str, port: int, *, strict: bool) -> bool:
             context.verify_flags |= _STRICT
         else:
             context.verify_flags &= ~_STRICT
-        with (
-            socket.create_connection(
-                (host, port), timeout=_CONFIRM_TIMEOUT_SECONDS
-            ) as raw,
-            context.wrap_socket(raw, server_hostname=host),
-        ):
-            return True
+        deadline = time.monotonic() + _CONFIRM_TIMEOUT_SECONDS
+        with _connect(host, port, deadline) as raw:
+            raw.settimeout(_remaining(deadline))
+            with context.wrap_socket(raw, server_hostname=host):
+                return True
     except Exception:  # noqa: BLE001 — any failure is a "no", never a raise
         return False
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("the confirmation handshake ran out of time")
+    return left
+
+
+def _proxy_for(host: str, port: int) -> Any:
+    """The proxy an ``httpx`` client sends ``https://host:port`` through, or ``None``.
+
+    The clients' own reading of the environment (every built-in client is an
+    ``httpx`` one with ``trust_env`` on): httpx's ``get_environment_proxies`` -
+    ``HTTPS_PROXY``, ``ALL_PROXY`` and their lower-case forms, ``NO_PROXY``, and
+    the system's settings where ``urllib`` reads them - matched most specific
+    first, as ``httpx.Client`` matches its mounts. A private httpx name, pinned
+    by the ``httpx<1.0`` requirement; if it is gone the check connects directly,
+    as it did before.
+    """
+
+    import httpx
+
+    try:
+        from httpx._utils import URLPattern, get_environment_proxies
+    except ImportError:  # pragma: no cover - an httpx without them
+        return None
+    url = httpx.URL(scheme="https", host=host, port=port)
+    mounts = sorted(
+        ((URLPattern(key), proxy) for key, proxy in get_environment_proxies().items()),
+        key=lambda mount: mount[0],
+    )
+    for pattern, proxy in mounts:
+        if pattern.matches(url):
+            return None if proxy is None else httpx.URL(proxy)
+    return None
+
+
+def _connect(host: str, port: int, deadline: float) -> socket.socket:
+    """A TCP connection to ``host:port``: direct, or an HTTP ``CONNECT`` tunnel."""
+
+    proxy = _proxy_for(host, port)
+    if proxy is None:
+        return socket.create_connection((host, port), timeout=_remaining(deadline))
+    if proxy.scheme != "http":
+        raise OSError(f"no tunnel is opened through a {proxy.scheme} proxy")
+    raw = socket.create_connection((proxy.host, proxy.port or 80), timeout=_remaining(deadline))
+    try:
+        target = (f"[{host}]" if ":" in host else host).encode("idna") + f":{port}".encode()
+        head = b"CONNECT " + target + b" HTTP/1.1\r\nHost: " + target + b"\r\n"
+        if proxy.username:
+            basic = base64.b64encode(f"{proxy.username}:{proxy.password}".encode())
+            head += b"Proxy-Authorization: Basic " + basic + b"\r\n"
+        raw.settimeout(_remaining(deadline))
+        raw.sendall(head + b"\r\n")
+        answer = b""
+        while b"\r\n\r\n" not in answer:
+            raw.settimeout(_remaining(deadline))
+            chunk = raw.recv(4096)
+            if not chunk or len(answer) > 65536:
+                raise OSError("the proxy closed or flooded the CONNECT")
+            answer += chunk
+        status, _, rest = answer.partition(b"\r\n\r\n")
+        code = status.split(b"\r\n", 1)[0].split(b" ")
+        if rest or len(code) < 2 or not code[1].startswith(b"2"):
+            raise OSError("the proxy refused the CONNECT")
+        return raw
+    except BaseException:
+        raw.close()
+        raise
 
 
 def _confirm_relaxable(host: str, port: int) -> bool:
@@ -332,13 +487,62 @@ def maybe_relax_strict_for_session(exc: BaseException) -> Relaxation | None:
             verify_code=failure.verify_code,
             verify_message=failure.verify_message,
         )
+        _announce(_relaxation)
         return _relaxation
     except Exception:  # noqa: BLE001 — never turn one failure into two
         return None
 
 
+def add_relaxation_listener(listener: Callable[[Relaxation], object]) -> Callable[[], None]:
+    """Call ``listener`` with the relaxation when this process makes it (#703).
+
+    Once per process, as the relaxation is made once: a failure while one is in
+    force calls nothing. Called synchronously from
+    :func:`maybe_relax_strict_for_session`, on whatever thread made the request
+    that failed (the event loop's, for every built-in caller), before the
+    request is sent again. A relaxation made while no listener was registered -
+    a request an extension's ``session_start`` sent before the CLI registered
+    its listener - is given to the first listener registered after it, here, at
+    once (fix round 1); every later one hears nothing, so it is announced once.
+    A listener that raises is skipped. Returns the function that removes it.
+    """
+
+    global _unannounced
+
+    _listeners.append(listener)
+    if _unannounced and _relaxation is not None:
+        _unannounced = False
+        _announce_to(listener, _relaxation)
+
+    def remove() -> None:
+        with contextlib.suppress(ValueError):
+            _listeners.remove(listener)
+
+    return remove
+
+
+def _announce(relaxation: Relaxation) -> None:
+    global _unannounced
+
+    listeners = list(_listeners)
+    _unannounced = not listeners
+    for listener in listeners:
+        _announce_to(listener, relaxation)
+
+
+def _announce_to(listener: Callable[[Relaxation], object], relaxation: Relaxation) -> None:
+    with contextlib.suppress(Exception):  # a notice must never fail the request
+        listener(relaxation)
+
+
 def session_relaxation() -> Relaxation | None:
-    """What ``aelix status`` reports. ``None`` when nothing was relaxed."""
+    """The relaxation this process made, or ``None`` when nothing was relaxed.
+
+    Only this process knows it: ``describe_trust_store`` reports it, and so
+    does every TLS remedy given here. The ``aelix status`` command runs in a
+    process of its own, where nothing was relaxed, and shows strict ``ON``
+    (#703 fix round 1: this said it was what ``aelix status`` reports).
+    """
 
     return _relaxation
 
@@ -346,8 +550,9 @@ def session_relaxation() -> Relaxation | None:
 def reset_strict_relaxation() -> None:
     """Undo everything this module did. For tests, which must not leak into each other."""
 
-    global _relaxation, _original_factory
+    global _relaxation, _original_factory, _unannounced
     if _original_factory is not None:
         ssl.create_default_context = _original_factory  # type: ignore[assignment]
         _original_factory = None
     _relaxation = None
+    _unannounced = False

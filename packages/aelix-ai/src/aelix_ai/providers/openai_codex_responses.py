@@ -68,6 +68,7 @@ from aelix_ai.providers._openai_responses_shared import (
     process_responses_stream,
 )
 from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
+from aelix_ai.providers._strict_resend import resend_when_strict_relaxed
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 
@@ -543,6 +544,7 @@ def _provider_response(response: Any) -> ProviderResponse:
 # === Stream ===
 
 
+@resend_when_strict_relaxed  # #703: a failure the strict relaxation answered is sent again
 async def stream_openai_codex_responses(
     model: Model,
     context: Context,
@@ -558,6 +560,7 @@ async def stream_openai_codex_responses(
 
     opts = _coerce_options(options)
     state = ResponsesStreamState()
+    responded = False  # #703 fix round 1: the provider's response is in hand
 
     def _snapshot() -> AssistantMessage:
         return AssistantMessage(
@@ -595,6 +598,7 @@ async def stream_openai_codex_responses(
         owns_client = opts.client is None
         try:
             async with _open_codex_stream(client, url, body, headers) as response:
+                responded = True
                 if opts.on_response is not None:
                     await _maybe_await(
                         opts.on_response(_provider_response(response), model)
@@ -649,10 +653,13 @@ async def stream_openai_codex_responses(
         # trusts its root perfectly well. This MEASURES that before relaxing
         # anything — a chain this machine does not trust is still refused — and
         # ``describe_provider_error`` then gives a failure the relaxation answers
-        # the ``resend`` verdict, which the harness retries whatever its text says
-        # (#572), so the next attempt, on a new client, is the one that succeeds.
+        # the ``resend`` verdict (#572): ``resend_when_strict_relaxed`` sends the
+        # request again on a new client before anyone sees this error (#703), and
+        # the harness retries the verdict whatever its text says if it gets here.
         maybe_relax_strict_for_session(exc)
-        err_msg = describe_provider_error(exc)
+        # #703 fix round 1: a failure after the response (on_response's) is never
+        # this request's handshake, so it is not sent again.
+        err_msg = describe_provider_error(exc, after_response=responded)
         error_output = AssistantMessage(
             content=list(state.content),
             stop_reason=reason,

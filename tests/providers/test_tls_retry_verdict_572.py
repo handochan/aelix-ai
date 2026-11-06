@@ -475,8 +475,10 @@ async def test_a_codex_request_that_failed_on_strict_alone_is_sent_again_and_ans
 ) -> None:
     """The issue's first row. A chain this machine trusts whose leaf has no Authority
     Key Identifier (code 85 under strict only): the relaxation measures it (two
-    handshakes) and relaxes, and the turn sends the prompt again on a new client,
-    which passes. On 679e5e5c the prompt ended in the error (exit 1 in ``-p``)."""
+    handshakes) and relaxes, and the request is sent again on a new client, which
+    passes. On 679e5e5c the prompt ended in the error (exit 1 in ``-p``). #572 sent
+    it again from the turn's retry; since #703 the adapter sends it again itself,
+    before the turn - or a hook - sees a failure (ADR-0294)."""
 
     server = _TlsServer(pki.sloppy_chain, _codex_answer())
     _trusting(monkeypatch, pki.sloppy_ca, strict=True)
@@ -492,12 +494,11 @@ async def test_a_codex_request_that_failed_on_strict_alone_is_sent_again_and_ans
 
     relaxation = _tls_strict.session_relaxation()
     assert relaxation is not None and relaxation.verify_code == 85
-    assert server.requests == 1
-    last = harness._state.messages[-1]
-    assert isinstance(last, AssistantMessage) and last.stop_reason == "stop"
-    assert [b.text for b in last.content if isinstance(b, TextContent)] == ["hello"]
-    starts, ends = _retries(events)
-    assert starts == [1] and ends == [(True, 1)]
+    assert server.accepts == 4 and server.requests == 1
+    answers = [m for m in harness._state.messages if isinstance(m, AssistantMessage)]
+    assert [m.stop_reason for m in answers] == ["stop"]
+    assert [b.text for b in answers[0].content if isinstance(b, TextContent)] == ["hello"]
+    assert _retries(events) == ([], [])
     await harness.dispose()
 
 

@@ -36,6 +36,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0294 — A failure the strict relaxation answered is sent again by its adapter and shown as one line](0294-a-failure-the-strict-relaxation-answered-is-sent-again-and-shown-as-one-line.md)
+  (Accepted 2026-11-06; #703). On Python 3.13 a corporate proxy's certificate that fails RFC
+  5280 strict checking alone, which this machine trusts without it, used to reach the user as an
+  error with a four-line note on every launch (the relaxation is measured, not persisted). Now the
+  four built-in adapters that relax send that request again themselves, once, on a new client
+  (`_strict_resend.resend_when_strict_relaxed`, acting on #572's `resend` verdict): no error
+  event, retry or failed answer anywhere. The relaxation is announced once per process on one
+  line, `TLS strict relaxed: <host> (<rule>) · aelix docs tls`, which fits 120 columns for the
+  usual hosts and rules (`_tls_strict.add_relaxation_listener`; one made before a listener is
+  handed to the first): dim in the TUI under the banner, on stderr in `-p`, `--mode json` and
+  rpc. A request sent again that fails the same way goes out as `repeats`; an abort, a
+  caller-owned client, an error after a `start` or a failure after the response (an
+  `on_response` hook's) is not sent again. An OAuth token refresh measures, relaxes and asks
+  once more; the check tunnels through the `HTTPS_PROXY` the clients use. A failure strict did not
+  cause keeps today's error and advice byte for byte, sent once; `/login`'s failure drops the note
+  the line already says. Not persisted (the measure-first rule stands). pi has no relaxation.
+
 - [0290 — A cancelled turn keeps what ran](0290-a-cancelled-turn-keeps-what-ran.md)
   (Accepted 2026-11-04; #672, #673). Whatever cancels a turn, a call that finished keeps its real
   result, and a call the cancel cut gets an error result saying it was stopped and may have partly run,

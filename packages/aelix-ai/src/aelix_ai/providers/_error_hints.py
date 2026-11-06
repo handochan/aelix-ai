@@ -67,7 +67,10 @@ text says - the Codex adapter's words for it, ``[SSL: CERTIFICATE_VERIFY_FAILED]
 ... Missing Authority Key Identifier``, match no retry pattern, so before #572
 that prompt ended in the error. The harness keeps the verdict in a record of
 its own from ``message_end`` on, so a hook that rebuilds the message keeps it
-(#572). Not among these layers: the OpenAI and Anthropic SDKs' own connection
+(#572). The built-in adapters that relax send such a request again themselves,
+once, before the turn sees it (#703, :mod:`aelix_ai.providers._strict_resend`),
+and the relaxation is announced on one line instead of as an error. Not among
+these layers: the OpenAI and Anthropic SDKs' own connection
 retries inside one request (``max_retries``, default 2), so such a request
 still makes 3 handshakes before it fails.
 """
@@ -423,7 +426,7 @@ def _is_strict_only(code: int | None, text: str) -> bool:
     return any(message in text for message in _STRICT_ONLY.values())
 
 
-def _strict_hint(code: int | None, text: str) -> str | None:
+def _strict_hint(code: int | None, text: str, *, after_response: bool = False) -> str | None:
     """The remedy when RFC-5280 strictness — not trust — is what rejected the chain.
 
     WHY THIS BRANCH EXISTS. Without it, a strict-only rejection fell through to
@@ -453,7 +456,7 @@ def _strict_hint(code: int | None, text: str) -> str | None:
 
     relaxation = session_relaxation()
     if relaxation is not None:
-        return relaxation.remedy()
+        return relaxation.remedy(after_response=after_response)
 
     if not strict_is_enabled():
         return None
@@ -785,7 +788,7 @@ def tls_failure_repeats_on_retry(exc: BaseException) -> bool:
     return tls is not None and not _strict_relaxation_answers(tls)
 
 
-def _tls_hint(err: BaseException) -> str | None:
+def _tls_hint(err: BaseException, *, after_response: bool = False) -> str | None:
     """The remedy matching ``err``'s verify code, or :data:`None` when none fits.
 
     ``verify_code`` / ``verify_message`` exist ONLY on a verifier-raised error:
@@ -812,7 +815,7 @@ def _tls_hint(err: BaseException) -> str | None:
     if code in _CLOCK_CODES:
         return _TLS_CLOCK_HINT
 
-    strict = _strict_hint(code, str(err))
+    strict = _strict_hint(code, str(err), after_response=after_response)
     if strict is not None:
         return strict
 
@@ -879,7 +882,9 @@ def _unquoted(exc: BaseException) -> str:
     return _raw_text(exc).strip()
 
 
-def describe_provider_error(exc: BaseException, *, classifier_text: str | None = None) -> str:
+def describe_provider_error(
+    exc: BaseException, *, classifier_text: str | None = None, after_response: bool = False
+) -> str:
     """Base message + the innermost real cause + a TLS remedy when relevant.
 
     Non-TLS errors keep their base message (plus the recovered cause), so this
@@ -929,6 +934,15 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     first - so the failure that caused one is sent again. Like
     :attr:`classifier_text`, it lives on the message object; the harness copies
     both into a record of its own at ``message_end`` (#572).
+
+    ``after_response`` (#703 fix round 1): the adapter had the provider's
+    response to this request in hand when ``exc`` was raised - an
+    ``on_response`` hook (the harness's ``after_provider_response``) that failed,
+    or a failure mid-stream. A TLS failure then is not this request's own
+    connection (a hook's request of its own), and it never gets ``resend``:
+    sending it again would send a request the provider has answered. It gets
+    ``repeats`` when no relaxation answers it, as any TLS failure does, and no
+    verdict when one does, as before #572.
     """
 
     from aelix_ai.utils.overflow import with_classifier_text
@@ -938,7 +952,10 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     if cause is not None:
         base = f"{base} — {cause}"
     tls = _tls_error(exc)
-    remedy = None if tls is None else _tls_hint(tls)
+    answered = tls is not None and _strict_relaxation_answers(tls)
+    # Fix round 2: a failure after the response that the relaxation answers is not
+    # sent again (below), so the note's last line must not say "if it still fails".
+    remedy = None if tls is None else _tls_hint(tls, after_response=answered and after_response)
     hint = "" if remedy is None else f"\n\n{remedy}"
     if classifier_text is None:
         raw = _raw_text(exc) or type(exc).__name__
@@ -946,12 +963,11 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
         if raw_cause is not None:
             raw = f"{raw} — {raw_cause}"
         classifier_text = raw + hint
-    answered = tls is not None and _strict_relaxation_answers(tls)
     return with_classifier_text(
         base + hint,
         classifier_text,
         repeats_on_retry=tls is not None and not answered,
-        resend_on_retry=answered,
+        resend_on_retry=answered and not after_response,
     )
 
 
