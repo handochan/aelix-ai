@@ -1,6 +1,7 @@
 # 0242. Every prefix of a session file is a session, and a new kind of record is a custom entry
 
-Status: Accepted (2026-09-19)
+Status: Accepted (2026-09-19). Amended 2026-11-07 (#721, #611 S1a): rule 5, a write
+whose outcome is unknown is settled before the next parent is chosen.
 Date: 2026-09-19
 Supersedes/relates: ADR-0208 (session durability — **extended**; its
 non-destructive recovery stays exactly as it is), ADR-0022 (the v3 JSONL format
@@ -281,6 +282,14 @@ missing), so it stays as it is — pi v3 does the same.
     happened, the resumed leaf when it was the last write. The caller was told
     it failed and it is on disk anyway — at-least-once, pinned by a test so
     nobody "fixes" it into a truncation.
+    **Narrowed 2026-11-07 (#721), rule 5:** the line is still kept and still
+    never truncated, but the caller is now told `outcome_unknown`, not
+    `storage`, and the next write reads the file back and takes the line in,
+    so an entry `Session` appends next is its child, not its sibling. The
+    off-path sibling remains only for a caller that builds an entry on a leaf
+    it read before that next write and hands it to `append_entry`, which keeps
+    the parent it is given
+    (`test_a_complete_line_whose_newline_was_lost_is_kept_off_the_path`).
 - The fragment is **not** truncated away (`ftruncate` to the pre-append size):
   with a second writer on the file that would cut the other writer's bytes.
 
@@ -343,13 +352,215 @@ missing), so it stays as it is — pi v3 does the same.
   writer to appeal to. Turning it on would also be a destructive operation,
   which is a separate decision from either ADR.
 
+### 5. A write whose outcome is unknown is settled before the next parent is chosen
+
+**Added 2026-11-07 (#721, #611 S1a; Codex round 5 findings 3 and 4).**
+
+`Session` used to read a fresh id and the current leaf, build the entry, and
+only then hand it to `append_entry`. After an append whose line landed and then
+raised, that leaf was the one from before the line, so the next entry became
+the landed line's sibling, and the landed line left the current branch while
+staying in the file. On resume it was neither in the conversation nor written
+again. Measured on `main` `fc8f3048` with the real `Session` and loader and a
+`FileSystem` that writes the whole line and then raises `ENOSPC`, a
+`custom_message` appended that way and one message after it:
+
+```
+main:   raised SessionError:storage          whole_file_notices=1 branch_notices=0 branch=[message, message]
+branch: raised SessionError:outcome_unknown  whole_file_notices=1 branch_notices=1 branch=[message, aelix.job_notice, message]
+```
+
+**The failure classes of one write** (`JsonlSessionStorage._append_line`):
+
+| what happened | the caller gets | pending |
+| --- | --- | --- |
+| an entry that cannot be encoded | `SessionError("invalid_entry")`, before a byte is written (rule 1.7, unchanged) | no |
+| `FileSystem.append_file` raised `NotAttempted`: nothing was written | `SessionError("storage")`; the same write can be retried as it stands | no |
+| any other `OSError` from the write | `SessionError("outcome_unknown")` — `SessionErrorCode` gains it (ADR-0035; this ADR owns it) | yes |
+| anything else, `CancelledError`, `KeyboardInterrupt` and `SystemExit` among them | re-raised as itself, unchanged: a cancel stays a cancel | yes |
+
+`NotAttempted(OSError)` is new in `session/fs.py`. `LocalFileSystem.append_file`
+raises it when the directory, the `open` or the first `os.write` fails, since
+none of those wrote a byte; a failure after the first byte is the plain
+`OSError`. A custom `FileSystem` may raise it; one that raises plain `OSError`
+for both is safe, because the store then reads the file back.
+
+**Pending, and how it is settled.** The store keeps the entry whose outcome is
+unknown, with the line it wrote. Every write — `append_entry`, `set_leaf_id`,
+`append_to_leaf`, `place_entry`, `withdraw_tail` — takes the lock and settles it
+first: the file is read back with the loader's own rule
+(`_parse_jsonl_content`). The line landed when that exact line is whole in the
+file and the loader keeps an entry with its id: it is then taken into memory as
+the newest line and the leaf moves to it, as a reload would move it. If not, it
+is dropped, and the heal flag stays armed, so the next write opens a fresh line
+after any fragment. A read that fails refuses the write that asked with
+`outcome_unknown` ("unresolved"), writes nothing, and leaves the leaf where it
+was until a read succeeds.
+
+What is taken in (fix round 1 of #721, Codex finding 2): the caller's own entry
+while it still encodes to the line written, because the harness tells its
+messages apart by identity (Esc-withdraw's `is_withdrawn`); otherwise the entry
+the loader parsed from the file. So a payload the caller changed before the
+entry is settled does not reach memory: measured on `ed76ea76`, a custom entry
+whose dict was changed from `{"k": 1}` to `{"k": 2}` after its line landed and
+raised read `{"k": 2}` in memory and `{"k": 1}` in the file, and now reads
+`{"k": 1}` in both (`test_a_pending_entry_its_caller_changed_is_adopted_as_the_file_holds_it`;
+changed into a `set` JSON cannot hold, the same,
+`test_a_pending_entry_changed_into_what_json_cannot_hold_is_adopted_from_the_file`;
+the identity case is
+`test_an_unchanged_pending_entry_is_adopted_as_the_callers_own_object`). After
+the settle the caller's own entry is memory's, as after any append that
+succeeded, and a change to it reaches memory and not the file: the verify
+round's `identity.py` (`.omc/specs/721-verify-r2-probes/storage/`) read memory
+`{"v": 2}`, file `{"v": 1}` for a change after a successful append, and memory
+`{"v": 3}`, file `{"v": 1}` for one after the settle; `ed76ea76` gives the same
+values through `identity_settled.py` (its readers do not settle, so `identity.py`
+stops there at `I3`). That aliasing is older than #721 and stays: copying what is taken in
+would break the identity the harness relies on.
+Matching the line, not only the id, is what keeps an `append_entry` that reused
+a stored id, and did not land, from being adopted on the strength of the older
+line: on `ed76ea76` the verify round's `dupid.py` read `"same": false`, memory
+holding an entry a reload does not; now memory equals the reload
+(`test_an_append_that_reused_a_stored_id_and_did_not_land_is_not_adopted`).
+
+**Four Protocol methods** (`SessionStorage` is pi's 10 plus these):
+
+- `append_to_leaf(build)` — under one hold of the lock: settle, call
+  `build(new_id, leaf)`, append what it returns, move the leaf. Every
+  `Session.append_*` goes through it, so the parent is chosen after the
+  outcome is settled. The same hold also chains concurrent appends: of eight
+  `Session.append_message` calls started together on a `FileSystem` that
+  yields mid-line, all eight were children of the seed on `main` and one was
+  on the branch after a reload; now they are one chain of eight.
+- `place_entry(entry_id, build, *, same)` — writes the entry under an id the
+  caller chose, once. If the id is stored, it is returned adopted when
+  `same(existing)` and refused with `PlacementConflict` (code
+  `invalid_entry`) otherwise, writing nothing either way; else it is built on
+  the leaf and appended. A placement whose own write raised `outcome_unknown`
+  is placed again and adopted, with no duplicate line. What it stores and
+  returns is the entry parsed back from the line it wrote (a deep copy in the
+  memory store), never the built object, so `same` compares against what was
+  placed. Measured on `ed76ea76` with Codex's probe: a placement of
+  `{"value": 1}` whose caller then changed that dict and placed `{"value": 2}`
+  was adopted, memory `{"value": 2}`, file `{"value": 1}`, and the same retry
+  after a reopen was a conflict; now it is a conflict in the process too, with
+  `{"value": 1}` in both
+  (`test_a_placement_compares_against_what_was_written_not_the_callers_dict`).
+  A build that returns another id is refused with `ValueError` before anything
+  is written (`test_place_entry_refuses_a_build_that_returns_another_id`, on
+  both backends; only the store itself reaches it, since
+  `Session.place_custom_message` builds the id it places).
+  `Session.place_custom_message` is its `Session` form; #611 S1b's notices
+  are its first producer.
+- `withdraw_tail(target_leaf, is_withdrawn)` — ADR-0286's withdrawal as one
+  store operation (fix round 1 of #721, Codex finding 1). Under one hold of the
+  lock: settle, read the path, write the leaf move, append each entry
+  `is_withdrawn` does not claim with a fresh id on the leaf the one before it
+  left. `Session.withdraw_tail` delegates to it. It used to be `move_to`
+  followed by the survivors' appends from `Session`, and `ed76ea76` made that
+  worse: a leaf move whose line landed and then raised left the survivors
+  unwritten, and the next write adopted the moved leaf — Codex's probe read
+  `[seed, after failure]` where base `fc8f3048` had kept
+  `[seed, must survive, after failure]`. Once the move is written the
+  withdrawal is owed: a write that raises after that keeps the rest, the
+  failed one first, and the next write finishes it before its own; a survivor
+  whose copy landed is taken in, not written twice. A leaf move whose outcome
+  was unknown and that did not land is a withdrawal that did not happen. A
+  survivor that can no longer be encoded is logged and skipped rather than
+  owed for ever. With the path read inside the same hold, an append that comes
+  in meanwhile is no longer left behind on the old branch (Codex's
+  `withdraw-concurrent`: `[seed, survivor]` on `ed76ea76`). Tests: the
+  `withdraw_tail` cases in `tests/session/test_append_resolution_611.py` and
+  three in the conformance suite.
+- `resolve_pending()` — settles what an earlier write left open: a pending
+  outcome, then the rest of an interrupted `withdraw_tail` (the only thing it
+  writes). `Session.move_to` and `append_label` call it first and keep the
+  parent they name: they are never redirected. `move_to` settling before it
+  validates, and `set_leaf_id` doing the same under its lock, are each pinned
+  with a target read from the file
+  (`test_move_to_finds_a_target_read_from_the_file_before_anything_else_settles`,
+  `test_set_leaf_id_finds_a_target_read_from_the_file`).
+
+**The leaf is read settled** (fix round 1 of #721, Codex finding 5).
+`Session.get_leaf_id` and `Session.get_branch` call `resolve_pending` first, best
+effort: a read that cannot settle answers from the store as it stands, as
+before, and the next write raises the reason. So every reader that takes the tip
+through `Session` — the RPC `clone`, the bridge's branch in `rpc/control.py`,
+`/clone` in `tui/shell.py`, the harness's Esc-withdraw point — sees a line that
+landed and then raised. Measured on `ed76ea76`: Codex's `rpc-clone-stale-tip`
+(the real handler, the real JSONL fork) cloned `[seed]` of `[seed, landed
+answer]` (`tests/rpc/test_clone_takes_the_settled_tip_721.py`), and the verify
+round's `harness_safe_leaf.py` left the landed answer twice in the file after an
+Esc-withdraw of the next prompt
+(`test_esc_withdraw_after_a_landed_and_raised_answer_writes_no_copy_of_it`). A
+reader that holds the store itself (`Session.get_storage().get_leaf_id()`) gets
+the store's answer unsettled.
+
+`MemorySessionStorage` never has a pending entry (a write either changed memory
+or raised before it did); its `append_to_leaf`, `place_entry` and
+`withdraw_tail` write through `append_entry`, so a test double that overrides
+`append_entry` covers them, and a withdrawal cut that way stays cut: there is no
+file to settle it from. `ReadOnlySessionStorage` refuses the three new writes
+with `read_only`, and its `resolve_pending` delegates (a store it wraps has
+written nothing and owes nothing). A custom `SessionStorage` must implement the
+four; the conformance suite runs them on every backend. `is_withdrawn` and
+`same` are called under the store's lock and must not call back into it.
+
+One caller branched on `storage`: `_record_session_start_model`
+(`cli/entry.py`) warns and goes on for `storage` and now for `outcome_unknown`
+too. The harness's `message_end` path logs any failed append at DEBUG and goes
+on, as before; the next write settles it.
+
+Tests: `tests/session/test_append_resolution_611.py` (the case above in place,
+each `append_*` kind, labels, `move_to`, `withdraw_tail`, `set_leaf_id`, the
+placements, the four failure classes, an unreadable file, `LocalFileSystem`'s
+`NotAttempted`, the memory and read-only stores, a harness turn, concurrent
+appends, and from fix round 1 the interrupted withdrawals, adoption, readers and
+the settle-before-validate pins) and the `append_to_leaf` / `place_entry` /
+`withdraw_tail` / `resolve_pending` cases in
+`tests/session/test_storage_conformance.py`. Every fault in them is injected
+through a `FileSystem` double or a patched `os`; none is a real full disk.
+
+pi, read from `origin/main` `085c84e98`'s source, not run, takes the other two
+shapes. `packages/durable/src/storage/jsonl/storage.ts` poisons the store once
+a commit applied to memory and its append failed ("JSONL storage is poisoned
+and must be reopened"): every later call raises until a reopen, whose recovery
+truncates torn tails. `packages/coding-agent/src/core/session-manager.ts`
+`_appendEntry` rolls memory back when its synchronous `_persist` throws,
+reading the failure as "not written", so a line that landed and then raised
+becomes the next entry's sibling, as it did here. Aelix keeps writing and
+settles from the file instead (ADR-0235: recorded, not argued).
+
+Limits: the read-back reads the whole file, once per failure. Lines a second
+writer added (a filesystem without `flock`, ADR-0244) do not confuse it, but
+that writer is still #137's problem. An `append_entry` that reuses an id
+already stored is still not rejected (below); when its line lands, memory and a
+reload both resolve that id to the newer entry, so the older entry's
+descendants walk their path through it. An owed withdrawal lives in memory: a
+process that dies between the leaf move and the last survivor leaves a file
+whose reload ends at the move or at the last survivor that landed (the verify
+round's `.omc/specs/721-verify-r2-probes/storage/withdraw_once.py`, re-run on
+fix round 2: of `[seed, a, b, c, d]` withdrawn back to `seed` keeping `a`, `c`
+and `d`, a crash after `a` landed reloads `[seed, a]`; 126 of its 168 cases
+reload short), as before #721. A placement's `same` compares against the line parsed back, so a
+same-payload retry whose payload a JSON round trip changes (a tuple comes back
+a list, an `int` key a string, and `NaN` is not equal to itself) is a
+`PlacementConflict` in the process as after a reopen (`identity.py`'s `I4`
+rows, all three; `test_a_same_payload_retry_that_json_cannot_round_trip_is_a_conflict`,
+the tuple case); no product caller places such a payload, and rule 3 leaves
+JSON values to the caller. `storage` means nothing was
+written for a session append only; publishing a new file (`create`, a fork)
+still reports a failure after its rename as `storage` (`_publish_file`; Codex's
+`storage-after-publish` probe on `ed76ea76`: `raised="storage"`, the file there).
+
 ## The suite: a backend is a fixture
 
 `tests/session/test_storage_conformance.py` is the contract behind the
 Protocol: protocol and metadata, ids, append/get, leaf, labels, `find_entries`,
 path to root, a round trip of every `SessionTreeEntry` member with every
 optional field set and unset, durability across `reopen()`, **every prefix of
-the log is a session**, custom records, and concurrent appends. It runs once per
+the log is a session**, custom records, concurrent appends, and (since #721)
+`append_to_leaf`, `place_entry`, `withdraw_tail` and `resolve_pending`. It runs once per
 backend through one parametrized fixture — Memory and JSONL today — and a new
 backend (SQLite, when the server asks for one) is added by registering its
 factory there, and it must pass unchanged. That is the shape pi uses for its
@@ -423,7 +634,8 @@ one.
   pi's harness v3 wrote `active_tools_change` records (its legacy-v3 importer
   still accepts them), so `/import` of such a pi session prunes today. Follow-up
   candidate.
-- Duplicate-id and missing-parent rejection in `append_entry`.
+- Duplicate-id and missing-parent rejection in `append_entry`. (`place_entry`,
+  #721, writes an id at most once; `append_entry` still takes what it is given.)
 - ~~A cross-process single writer (#137)~~ — **done, 2026-09-20: ADR-0244.**
   A session file now has at most one live writer; the second terminal is asked
   whether to fork it, view it read-only, or stop.

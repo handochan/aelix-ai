@@ -288,6 +288,58 @@ nothing). What stays is a child that nothing walks: its parent SIGKILLed on macO
 3. **A parent that is SIGKILLed walks nothing.** On Linux `pdeathsig` sends the child SIGTERM and its
    own cleanup ends its commands; macOS has no `pdeathsig`, so the child and its commands run on
    (ADR-0197 finding I1, unchanged).
+
+   **Amended 2026-11-07 (#721, #611 S1a; Codex round 5 finding 13): the hook rechecks its parent.**
+   `PR_SET_PDEATHSIG` watches the child's parent at the moment it is armed, between `fork` and `exec`.
+   A parent that died before that had already handed the child to init or to a subreaper, the signal
+   was armed against that process, and the delegated child ran on. `pdeathsig_preexec()` now binds the
+   spawning aelix's pid, read before the fork, and after arming the hook exits the child with
+   `os._exit(143)` when `getppid()` is not that pid — compared with the pid, never with 1, which a
+   subreaper whose pid is not 1 passes (codex-rs `utils/pty/src/process_group.rs:25-37`,
+   `set_parent_death_signal`). It exits rather than raising SIGTERM as codex-rs does: a forked Python
+   child keeps the parent's SIGTERM handler until `exec`, so the raise only trips it (measured on macOS
+   3.12 under a `loop.add_signal_handler(SIGTERM)` parent: a raising hook let `sh -c 'echo EXECED'`
+   exit 0 printing `EXECED`; `os._exit` ended it with 143). Measured on Linux (OrbStack docker,
+   `python:3.12-slim`, `--init`), a middle process SIGKILLed while its child waits in the pre-exec
+   step, then the hook: `main` let the child exec under init (PPID 1) and under a subreaper with pid 7
+   (PPID 7); a recheck against 1 caught init and missed the subreaper; the recheck against the
+   captured pid stopped both before `exec`, and the subreaper reaped exit 143. Today's delegation
+   spawns get it, the print channel and the RPC channel, through `pdeathsig_preexec()`; the `bash`
+   tool's own spawns are #611 S2's. Tests: `tests/agents_ext/test_pdeathsig_611.py` (injected
+   `getppid`, on every host; the real race, Linux only).
+
+   **Fix round 1 of #721 (Codex findings 6 and 7).** Two more things the hook did between `fork`
+   and `exec`:
+   - *A parent dying after the recheck was swallowed.* The child keeps the parent's SIGTERM handler
+     until `exec`, so the kernel's parent-death SIGTERM only tripped it and `exec` ran. The hook now
+     puts a handled SIGTERM back to its default before it arms (an ignored one stays ignored, as
+     `exec` would leave it; `exec` resets a handled one anyway, so the command starts as before).
+     Measured in Linux docker (`python:3.11/3.12/3.14-slim`, `--init`) with Codex's
+     `postcheck_probe.py` — a middle process with an asyncio SIGTERM handler, SIGKILLed after its
+     child armed and rechecked: on `ed76ea76` the child exec'd under the new parent on all three; now
+     the kernel's SIGTERM ends it before Codex's own injected signal can be sent, and it never execs.
+     The same with the spawn made from an event loop on a worker thread and the parent really killed
+     after the recheck (the verify round's `race_r2.py`, path `loopthread`, mode `after`, rows in
+     `.omc/specs/721-verify-r2-probes/docker/race-312.out` and `race-311-314.out`; under pid 1, `--init`
+     and a subreaper): `ed76ea76` exec'd under PPID 1 or 7 (3.12), now it never execs on 3.11, 3.12 or
+     3.14 and is reaped with -15 where the reaper is observed. Tests:
+     `test_a_parent_killed_after_the_recheck_still_ends_the_child` (Linux only, the real kernel path)
+     and `test_a_sigterm_after_the_recheck_ends_a_child_whose_parent_handles_sigterm` (any POSIX
+     host, the signal injected).
+   - *It loaded libc there.* `ctypes.CDLL("libc.so.6")` and the `prctl` lookup ran in the child,
+     where a lock another parent thread held at the fork is held for ever; `fc8f3048` already did
+     this, so it is older than #721. `pdeathsig_preexec()` now loads and looks it up in the spawning
+     process and hands the hook the resolved function. Measured in the same images with Codex's
+     `preexec_probe.py` widened to record the child's audit events (an audit hook that takes a lock a
+     parent thread holds): on `ed76ea76` the child stopped at `ctypes.dlopen` and the parent hung in
+     `Popen` on all three versions; now it raises no `ctypes.dlopen` and execs
+     (`test_the_hook_loads_no_library_after_the_fork`).
+
+   What stays is CPython's own: `preexec_fn` runs Python in the child, which Python documents as
+   unsafe with threads in the parent. The hook still calls `signal.getsignal`/`signal.signal`, the
+   `prctl` foreign function and `os.getppid` there; on 3.14 that `prctl` call raises a
+   `ctypes.call_function` audit event in the child (measured in the probe above), so an audit hook
+   that blocks could still stop it. No native launcher was built.
 4. **The PID-recycling residual of ADR-0238 now has a macOS site too, and a group form.** §3 narrows
    it where the child is known reaped; the window the asyncio child watcher leaves stays. §5 sends a
    group what used to go to one pid, so a recycled number that is also a new group leader's would be

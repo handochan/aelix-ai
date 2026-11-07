@@ -2,17 +2,32 @@
 
 Pi source: ``packages/agent/src/harness/session/session.ts:78-252``. Pi
 ``Session`` is a **concrete class**, NOT a Protocol (P-13). The Protocol
-is :class:`SessionStorage` (10 methods). ``Session`` wraps storage and owns
-timestamp generation, ID generation, and leaf parenting.
+is :class:`SessionStorage` (pi's 10 methods plus Aelix's four). ``Session``
+wraps storage and owns timestamp generation; ID generation and leaf parenting
+happen inside the storage's :meth:`~SessionStorage.append_to_leaf` (#721).
 
-17 public methods + 1 private (``_append_typed_entry``). Critical:
-``append_compaction`` takes **5 params** per P-13.
+Critical: ``append_compaction`` takes **5 params** per P-13.
+
+EVERY ``append_*`` BUILDS ITS ENTRY INSIDE THE STORE (#721, ADR-0242 rule 5).
+They used to read the id and the leaf first and hand a finished entry to
+``append_entry``. After an append whose line landed and then raised, that
+leaf was the one from before the line, so the next entry became its sibling
+and the landed line left the current branch, still in the file. The store now
+settles that outcome and then calls the builder with the leaf it settled on.
+:meth:`move_to` names its parent: it settles first with ``resolve_pending`` and
+keeps the parent it names. :meth:`withdraw_tail` is one store operation.
+
+AND THE LEAF IS READ SETTLED. :meth:`get_leaf_id` and :meth:`get_branch` settle
+first too, so a reader that takes the tip — ``/clone`` in the TUI, the RPC
+``clone`` and the bridge's branch, the harness's Esc-withdraw point — sees a
+line that landed and then raised, not the leaf from before it (Codex review of
+#721, finding 5).
 """
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +44,7 @@ from aelix_agent_core.session.entries import (
     ThinkingLevelChangeEntry,
 )
 from aelix_agent_core.session.storage import (
+    Placement,
     SessionError,
     SessionStorage,
 )
@@ -127,7 +143,21 @@ class Session:
         path = getattr(metadata, "path", None)
         return path or None
 
+    async def _settle(self) -> None:
+        """Settle what an earlier write left open, for a reader of the leaf (#721).
+
+        Best effort: a read that cannot settle — the file cannot be read back,
+        an owed withdrawal's write fails — answers from the store as it stands,
+        exactly as before, and the next write raises the reason.
+        """
+
+        with contextlib.suppress(SessionError):
+            await self._storage.resolve_pending()
+
     async def get_leaf_id(self) -> str | None:
+        """The current leaf, after a pending outcome is settled (#721)."""
+
+        await self._settle()
         return await self._storage.get_leaf_id()
 
     async def get_entry(self, id: str) -> SessionTreeEntry | None:
@@ -142,9 +172,11 @@ class Session:
         """Pi `getBranch` (``session.ts:105-108``).
 
         Returns the entry path from root to either the explicit ``from_id``
-        or the current leaf when ``from_id is None``.
+        or the current leaf when ``from_id is None``, after a pending outcome is
+        settled (#721).
         """
 
+        await self._settle()
         leaf_id = from_id if from_id is not None else await self._storage.get_leaf_id()
         return await self._storage.get_path_to_root(leaf_id)
 
@@ -175,36 +207,49 @@ class Session:
         return stripped or None
 
     async def _append_typed_entry(self, entry: SessionTreeEntry) -> str:
-        """Pi private `appendTypedEntry` (``session.ts:123-126``)."""
+        """Pi private `appendTypedEntry` (``session.ts:123-126``).
+
+        For an entry whose parent is already decided — :meth:`move_to`'s
+        branch summary. Everything that parents on the current leaf goes
+        through :meth:`_append_to_leaf` instead.
+        """
 
         await self._storage.append_entry(entry)
         return entry.id
 
+    async def _append_to_leaf(
+        self, build: Callable[[str, str | None], SessionTreeEntry]
+    ) -> str:
+        """Append the entry ``build(id, leaf)`` returns, inside the store's hold (#721)."""
+
+        entry = await self._storage.append_to_leaf(build)
+        return entry.id
+
     async def append_message(self, message: AgentMessage) -> str:
-        return await self._append_typed_entry(
-            MessageEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: MessageEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 message=message,
             )
         )
 
     async def append_thinking_level_change(self, thinking_level: str) -> str:
-        return await self._append_typed_entry(
-            ThinkingLevelChangeEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: ThinkingLevelChangeEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 thinking_level=thinking_level,
             )
         )
 
     async def append_model_change(self, provider: str, model_id: str) -> str:
-        return await self._append_typed_entry(
-            ModelChangeEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: ModelChangeEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 provider=provider,
                 model_id=model_id,
@@ -221,10 +266,10 @@ class Session:
     ) -> str:
         """Pi `appendCompaction` (``session.ts:159-177``) — 5 params (P-13)."""
 
-        return await self._append_typed_entry(
-            CompactionEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: CompactionEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 summary=summary,
                 first_kept_entry_id=first_kept_entry_id,
@@ -237,10 +282,10 @@ class Session:
     async def append_custom_entry(
         self, custom_type: str, data: Any | None = None
     ) -> str:
-        return await self._append_typed_entry(
-            CustomEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: CustomEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 custom_type=custom_type,
                 data=data,
@@ -254,10 +299,10 @@ class Session:
         display: bool,
         details: Any | None = None,
     ) -> str:
-        return await self._append_typed_entry(
-            CustomMessageEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: CustomMessageEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 custom_type=custom_type,
                 content=content,
@@ -266,19 +311,65 @@ class Session:
             )
         )
 
+    async def place_custom_message(
+        self,
+        entry_id: str,
+        custom_type: str,
+        content: Any,
+        display: bool,
+        details: Any | None = None,
+        *,
+        same: Callable[[SessionTreeEntry], bool] | None = None,
+    ) -> Placement:
+        """Append a ``custom_message`` under ``entry_id``, at most once (#721).
+
+        Through :meth:`SessionStorage.place_entry`: when ``entry_id`` is
+        already stored and ``same`` accepts it, that entry is returned adopted
+        and nothing is written; when ``same`` refuses it,
+        :class:`~aelix_agent_core.session.storage.PlacementConflict`. So a
+        caller whose placement raised ``outcome_unknown`` places it again with
+        the same id. ``same`` defaults to "a ``custom_message`` with this
+        exact payload".
+        """
+
+        def matches(existing: SessionTreeEntry) -> bool:
+            return (
+                isinstance(existing, CustomMessageEntry)
+                and existing.custom_type == custom_type
+                and existing.content == content
+                and existing.display == display
+                and existing.details == details
+            )
+
+        return await self._storage.place_entry(
+            entry_id,
+            lambda parent_id: CustomMessageEntry(
+                id=entry_id,
+                parent_id=parent_id,
+                timestamp=_iso_now(),
+                custom_type=custom_type,
+                content=content,
+                display=display,
+                details=details,
+            ),
+            same=same if same is not None else matches,
+        )
+
     async def append_label(self, target_id: str, label: str | None) -> str:
         """Pi `appendLabel` (``session.ts:208-220``).
 
         Raises :class:`SessionError("not_found")` when ``target_id`` does
-        not resolve to an existing entry.
+        not resolve to an existing entry. Checked after a pending outcome is
+        settled, so a target whose line landed and then raised is found.
         """
 
+        await self._storage.resolve_pending()
         if await self._storage.get_entry(target_id) is None:
             raise SessionError("not_found", f"Entry {target_id} not found")
-        return await self._append_typed_entry(
-            LabelEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: LabelEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 target_id=target_id,
                 label=label,
@@ -286,10 +377,10 @@ class Session:
         )
 
     async def append_session_name(self, name: str) -> str:
-        return await self._append_typed_entry(
-            SessionInfoEntry(
-                id=await self._storage.create_entry_id(),
-                parent_id=await self._storage.get_leaf_id(),
+        return await self._append_to_leaf(
+            lambda entry_id, parent_id: SessionInfoEntry(
+                id=entry_id,
+                parent_id=parent_id,
                 timestamp=_iso_now(),
                 name=name.strip(),
             )
@@ -307,9 +398,11 @@ class Session:
         appended and the return value is ``None``.
 
         Raises :class:`SessionError("not_found")` when ``entry_id`` is not
-        ``None`` and does not resolve.
+        ``None`` and does not resolve. A pending outcome is settled first
+        (#721), and ``entry_id`` stays the parent: the move is never redirected.
         """
 
+        await self._storage.resolve_pending()
         if entry_id is not None and await self._storage.get_entry(entry_id) is None:
             raise SessionError("not_found", f"Entry {entry_id} not found")
         await self._storage.set_leaf_id(entry_id)
@@ -342,26 +435,15 @@ class Session:
 
         Raises :class:`SessionError` when ``target_leaf`` is not on the current
         path, with nothing written.
+
+        One store operation (:meth:`SessionStorage.withdraw_tail`, #721): what
+        an earlier write left open is settled first, so an entry whose line
+        landed and then raised is on the path; nothing else writes between
+        reading the path and the last survivor; and a write that raises part of
+        the way leaves the rest owed, finished by the next write.
         """
 
-        path = await self.get_branch()
-        if target_leaf is None:
-            tail = path
-        else:
-            ids = [entry.id for entry in path]
-            if target_leaf not in ids:
-                raise SessionError("not_found", f"Entry {target_leaf} is not on the current path")
-            tail = path[ids.index(target_leaf) + 1 :]
-        survivors = [entry for entry in tail if not is_withdrawn(entry)]
-        await self.move_to(target_leaf)
-        for entry in survivors:
-            await self._append_typed_entry(
-                replace(
-                    entry,
-                    id=await self._storage.create_entry_id(),
-                    parent_id=await self._storage.get_leaf_id(),
-                )
-            )
+        await self._storage.withdraw_tail(target_leaf, is_withdrawn)
 
 
 __all__ = ["Session", "SessionContext"]

@@ -700,6 +700,24 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # ``aelix_agents`` import, no spawn site, no cap, no consent path, no
         # registry surface — ``test_kernel_has_no_subagent_surface`` still passes.
         "packages/aelix-agent-core/src/aelix_agent_core/runtime/__init__.py",
+        # ADR-0242 rule 5, #721 (#611 S1a). ``session/memory_storage.py`` is NEW
+        # to this list: the in-memory store implements the ``SessionStorage``
+        # methods rule 5 adds — ``append_to_leaf``, ``place_entry`` (storing a
+        # copy of what it placed), ``withdraw_tail`` and a ``resolve_pending``
+        # with nothing to settle — because every backend must pass
+        # ``tests/session/test_storage_conformance.py`` unchanged.
+        # ``session/storage.py``, ``session/jsonl_storage.py``, ``session/fs.py``,
+        # ``session/read_only.py``, ``session/session.py``, ``session/__init__.py``
+        # and ``harness/hooks.py`` (listed above) changed again: a write whose
+        # outcome is unknown is settled from the file before the next parent is
+        # chosen, ``NotAttempted`` tells "nothing written" apart, the leaf a
+        # reader takes is settled, an interrupted withdrawal is finished before
+        # any other write, and ``before_agent_start`` carries a ``source``. A
+        # session line that landed and then raised created the requirement;
+        # delegation did not. No ``aelix_agents`` import, no spawn site, no cap,
+        # no consent path, no registry — ``test_kernel_has_no_subagent_surface``
+        # still passes.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/memory_storage.py",
     }
 )
 

@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:746-751``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:758-763``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -176,7 +176,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
     ``SubagentUsage.tokens`` is documented as a context LEVEL, "last message
     wins" (``subagent_contract.py:98-99``), not a running total. Summing four
     children's context levels reports a number several times the real one — the
-    same mistake ``stream.py:269-272`` already warns about — and it is the number
+    same mistake ``stream.py:284-287`` already warns about — and it is the number
     the statusline and any future cost display read. ``max`` is the honest
     aggregate: the largest context any single child reached.
 

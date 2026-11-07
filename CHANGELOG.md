@@ -1315,6 +1315,61 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A session line that reached the disk and then failed no longer leaves the conversation on a
+  hidden branch (#721, ADR-0242 rule 5).** When a session append wrote its whole line and the
+  write then raised (for example the disk filling exactly at the line's final newline, or a second
+  Ctrl+C just after its last byte), the next entry was attached beside that line instead of after
+  it: the line stayed in the file, but a resume did not show it (measured on `main` `fc8f3048`
+  with an injected file system that writes the line and then raises `ENOSPC`: one
+  `custom_message` in the file, none on the branch). Now the next write reads the file back first,
+  and the entry it writes follows the line that landed; a line that did not land whole is dropped
+  as before. If the file cannot be read back, nothing more is written to the session until it can,
+  and the write that asked fails. Such a failure of a session append now has the code
+  `outcome_unknown`, and for a session append `storage` means nothing was written. Appends from
+  several tasks at once also stay one chain now: eight started together on an injected file
+  system that yields mid-line were eight siblings on `main`
+  (`tests/session/test_append_resolution_611.py`; every fault there is injected, none is a real
+  full disk).
+- **`/clone` and the RPC `clone` copy a final line that landed and then failed, and an Esc that
+  withdraws an unanswered prompt keeps what came after it even when a session write fails part
+  way (#721, ADR-0242 rule 5).** The tip a clone copies is now read after that line is settled:
+  on `main` `fc8f3048`, Codex's probe through the real RPC handler and fork cloned `[seed]` of
+  `[seed, landed answer]` (`tests/rpc/test_clone_takes_the_settled_tip_721.py`). An Esc
+  withdrawal whose write of a kept entry raised used to leave every kept entry off the branch
+  (measured on `main` with an injected `ENOSPC` on the first kept entry: `[seed, after]`); the
+  next session write now finishes the withdrawal first (`[seed, n1, n2, after]`), and a message
+  appended while a withdrawal runs stays on the branch (Codex's probe on `main`: lost). Tests: the
+  `withdraw_tail` cases in `tests/session/test_append_resolution_611.py`.
+- **A delegated agent whose last run was cut off or aborted is no longer reported as finished
+  because an earlier run in the same process had finished (#721, ADR-0276 D4 amendment).** A
+  child that makes a second run, such as an automatic retry, and whose stream ends inside it, came
+  back `ok` with its first run's answer (measured on `main` `fc8f3048` through the print channel
+  with a stub child that exits 0). It is now an error that says the stream ended early, with that
+  answer shown as partial. The stop reason is the latest run's too: a stub child whose first run
+  answered and whose second was aborted, and that then would not exit, came back `ok` on `main`
+  and is now an error; one whose retry answered without a stop reason came back the first run's
+  `error` and is now `ok`. A child whose own last run was aborted, mid-answer, inside a tool or after
+  its answer, is `aborted`, and its cost is then shown as a lower bound, as for a run the parent cut: a real print-mode child aborted either way after a finished run came back `error` on
+  `main` with `exited with code 1` (measured through the print channel). An automatic retry
+  aborted mid-answer after a `429` said `429 rate limited` as its summary on `main`; it is `aborted`
+  with `(no output)` now, and the `429` is kept in the details. One aborted inside a tool already
+  said `(no output)`, and one aborted while it waited to retry still reads `error` with the `429`.
+  A child that finished its last run and then did not exit within 30 s
+  still comes back `ok` with its note (`tests/agents_ext/test_latest_run_611.py`, through the
+  real print channel). This holds for the print channel, the one the bundled runtime uses; the RPC
+  channel still judges a child by its first run (Codex's real RPC child, unchanged from `main`).
+- **On Linux, a delegated agent whose aelix died while the agent was starting no longer runs on
+  under another process (#721, ADR-0291 limit 3 amendment).** If aelix was killed between starting
+  the agent's process and the agent arming its parent-death signal, the signal was armed against
+  whatever adopted the agent, init or a subreaper, and the agent kept running. Now the agent checks
+  that its parent is still the aelix that started it and exits before it runs otherwise (measured
+  in Linux docker under init and under a subreaper whose pid is not 1). An aelix killed just after
+  that check no longer slips through either: the agent's inherited SIGTERM handler swallowed the
+  parent-death signal and the agent ran (measured in Linux docker on Python 3.11, 3.12 and 3.14),
+  and the check no longer loads a library between the fork and the agent starting, where a
+  threaded aelix could hang (Codex's probe with a lock held on another thread, the same images;
+  already so on `main`). Tests: `tests/agents_ext/test_pdeathsig_611.py` (the real kernel cases
+  Linux only). macOS has no parent-death signal, as before.
 - **A program that starts `aelix --mode rpc` through `RpcClient` and is cancelled before
   `start()` returns no longer leaves that child, or what it started, running (#360, ADR-0201
   amendment 2026-11-07).** `start()` spawns the child and then waits 100 ms to see whether

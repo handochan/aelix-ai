@@ -725,3 +725,166 @@ async def test_concurrent_appends_all_land_in_call_order(backend: Backend) -> No
     reopened = await backend.reopen()
     assert [e.id for e in await reopened.get_entries()] == [e.id for e in entries]
     assert await reopened.get_leaf_id() == "m29"
+
+
+# === building on the leaf, and placing under a chosen id (#721) ===================
+
+
+async def test_append_to_leaf_builds_on_the_current_leaf_with_a_fresh_id(backend: Backend) -> None:
+    await backend.storage.append_entry(user("u1", None))
+    seen: list[tuple[str, str | None]] = []
+
+    def build(entry_id: str, parent_id: str | None) -> SessionTreeEntry:
+        seen.append((entry_id, parent_id))
+        return user(entry_id, parent_id)
+
+    entry = await backend.storage.append_to_leaf(build)
+
+    assert seen == [(entry.id, "u1")] and entry.id != "u1"
+    assert await backend.storage.get_leaf_id() == entry.id
+    assert await backend.storage.get_entry(entry.id) == entry
+    reopened = await backend.reopen()
+    assert [e.id for e in await reopened.get_path_to_root(entry.id)] == ["u1", entry.id]
+
+
+async def test_concurrent_append_to_leaf_calls_chain_each_on_the_one_before(
+    backend: Backend,
+) -> None:
+    """The parent is read inside the same step as the write, so thirty callers
+    that start together still form one chain — none of them shares a parent."""
+
+    built = await asyncio.gather(
+        *(backend.storage.append_to_leaf(lambda i, p: user(i, p)) for _ in range(30))
+    )
+
+    parents = [entry.parent_id for entry in built]
+    assert parents == [None, *(entry.id for entry in built[:-1])]
+    reopened = await backend.reopen()
+    leaf = await reopened.get_leaf_id()
+    assert [e.id for e in await reopened.get_path_to_root(leaf)] == [e.id for e in built]
+
+
+async def test_place_entry_writes_once_adopts_the_same_and_refuses_a_different_payload(
+    backend: Backend,
+) -> None:
+    from aelix_agent_core.session import PlacementConflict
+
+    await backend.storage.append_entry(user("u1", None))
+
+    def note(text: str) -> Callable[[str | None], SessionTreeEntry]:
+        return lambda parent_id: CustomMessageEntry(
+            id="nt-1", parent_id=parent_id, timestamp=TS, custom_type="aelix.note",
+            content=text, display=True,
+        )
+
+    def same_text(text: str) -> Callable[[SessionTreeEntry], bool]:
+        return lambda existing: getattr(existing, "content", None) == text
+
+    first = await backend.storage.place_entry("nt-1", note("a"), same=same_text("a"))
+    again = await backend.storage.place_entry("nt-1", note("a"), same=same_text("a"))
+    with pytest.raises(PlacementConflict):
+        await backend.storage.place_entry("nt-1", note("b"), same=same_text("b"))
+
+    assert (first.adopted, again.adopted) == (False, True)
+    assert first.entry.parent_id == "u1" and again.entry == first.entry
+    reopened = await backend.reopen()
+    assert [e.id for e in await reopened.get_entries()] == ["u1", "nt-1"]
+    assert getattr(await reopened.get_entry("nt-1"), "content", None) == "a"
+
+
+async def test_resolve_pending_with_nothing_pending_changes_nothing(backend: Backend) -> None:
+    await backend.storage.append_entry(user("u1", None))
+
+    await backend.storage.resolve_pending()
+
+    assert [e.id for e in await backend.storage.get_entries()] == ["u1"]
+    assert await backend.storage.get_leaf_id() == "u1"
+    reopened = await backend.reopen()
+    assert [e.id for e in await reopened.get_entries()] == ["u1"]
+
+
+async def test_place_entry_refuses_a_build_that_returns_another_id(backend: Backend) -> None:
+    """``place_entry`` writes under the id it was given or not at all. Only reachable
+    through the store itself: ``Session.place_custom_message`` always builds the id
+    it places (the verify round's mutant V27 removed the check unnoticed)."""
+
+    await backend.storage.append_entry(user("u1", None))
+
+    with pytest.raises(ValueError, match="nt-2"):
+        await backend.storage.place_entry(
+            "nt-2", lambda parent_id: user("u-other", parent_id), same=lambda _e: True
+        )
+
+    assert [e.id for e in await backend.storage.get_entries()] == ["u1"]
+    reopened = await backend.reopen()
+    assert [e.id for e in await reopened.get_entries()] == ["u1"]
+
+
+async def test_place_entry_stores_a_copy_its_caller_cannot_change(backend: Backend) -> None:
+    """What ``same`` compares against later is what was placed (Codex review of
+    #721, finding 2): the caller keeps its payload and may change it."""
+
+    details = {"value": 1}
+    built = CustomMessageEntry(
+        id="nt-3", parent_id=None, timestamp=TS, custom_type="aelix.note",
+        content="a", display=True, details=details,
+    )
+
+    placed = await backend.storage.place_entry("nt-3", lambda _p: built, same=lambda _e: True)
+    details["value"] = 2
+
+    stored = await backend.storage.get_entry("nt-3")
+    assert stored is placed.entry and stored is not built
+    assert getattr(stored, "details", None) == {"value": 1}
+
+
+async def test_withdraw_tail_moves_back_and_appends_what_it_keeps(backend: Backend) -> None:
+    """``Session.withdraw_tail``'s operation, now the store's (#721): the leaf goes
+    back to the target and each kept entry is appended again with a fresh id, on
+    the leaf the one before it left. The withdrawn ones stay on the branch behind."""
+
+    for entry in (user("u1", None), user("u2", "u1"), user("n3", "u2"), user("u4", "n3")):
+        await backend.storage.append_entry(entry)
+
+    await backend.storage.withdraw_tail("u1", lambda e: e.id in ("u2", "u4"))
+
+    moves = await backend.storage.find_entries("leaf")
+    assert [(m.parent_id, m.target_id) for m in moves] == [("u4", "u1")], (  # type: ignore[union-attr]
+        "the move is the line set_leaf_id writes: parented on the leaf it left"
+    )
+    leaf = await backend.storage.get_leaf_id()
+    path = await backend.storage.get_path_to_root(leaf)
+    assert [e.id for e in path][0] == "u1" and len(path) == 2
+    copy = path[1]
+    assert copy.id not in ("u2", "n3", "u4") and copy.parent_id == "u1"
+    original = await backend.storage.get_entry("n3")
+    assert getattr(copy, "message", None) == getattr(original, "message", None) is not None
+    reopened = await backend.reopen()
+    assert [e.id for e in await reopened.get_path_to_root(await reopened.get_leaf_id())] == [
+        "u1",
+        copy.id,
+    ]
+    assert await reopened.get_entry("u4") is not None, "withdrawn, still in the log"
+
+
+async def test_withdraw_tail_to_none_starts_a_new_root(backend: Backend) -> None:
+    await backend.storage.append_entry(user("u1", None))
+    await backend.storage.append_entry(user("n2", "u1"))
+
+    await backend.storage.withdraw_tail(None, lambda e: e.id == "u1")
+
+    path = await backend.storage.get_path_to_root(await backend.storage.get_leaf_id())
+    assert len(path) == 1 and path[0].parent_id is None and path[0].id != "n2"
+
+
+async def test_withdraw_tail_to_a_target_off_the_path_writes_nothing(backend: Backend) -> None:
+    await backend.storage.append_entry(user("u1", None))
+    await backend.storage.append_entry(user("u2", "u1"))
+    await backend.storage.set_leaf_id("u1")
+    before = [e.id for e in await backend.storage.get_entries()]
+
+    with pytest.raises(SessionError) as exc:
+        await backend.storage.withdraw_tail("u2", lambda _e: False)
+
+    assert exc.value.code == "not_found"
+    assert [e.id for e in await backend.storage.get_entries()] == before

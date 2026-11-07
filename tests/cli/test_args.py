@@ -702,7 +702,7 @@ def test_print_help_offline_line_does_not_overclaim() -> None:
 
 def test_print_help_says_path_for_skill_and_extension() -> None:
     """ADR-0196 — both lines said ``<name>`` while the implementation
-    resolved a PATH (``entry.py:1499-1542`` for ``--skill``,
+    resolved a PATH (``entry.py:1501-1544`` for ``--skill``,
     ``extensions/loader.py:1192-1283`` for ``-e``). Aelix has no name resolver
     for either, so the old wording sent users to a silently-ignored flag."""
     buf = io.StringIO()

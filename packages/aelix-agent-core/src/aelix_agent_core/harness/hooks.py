@@ -414,13 +414,27 @@ class ContextHookEvent(HookEvent):
     type: Literal["context"] = "context"
 
 
+#: What started the run a ``before_agent_start`` precedes (#611 S1a). Every run
+#: today is ``"interactive"``: a user message, typed or sent by a host — the TUI,
+#: ``-p``, RPC. ``"notice"`` is reserved for the turn the kernel will start to
+#: deliver a background job's result (#611 S1b), which nothing emits yet.
+BeforeAgentStartSource = Literal["interactive", "notice"]
+
+
 @dataclass(frozen=True)
 class BeforeAgentStartHookEvent(HookEvent):
-    """Emitted once before the first turn of an :meth:`AgentHarness.prompt`."""
+    """Emitted once before the first turn of an :meth:`AgentHarness.prompt`.
+
+    ``source`` is additive (#611 S1a): a handler that never reads it sees no
+    change, and one that wants to treat a notice turn differently from a user's
+    message — not reset a per-prompt budget for it, say — has the field to
+    branch on before S1b produces one.
+    """
 
     prompt: str = ""
     system_prompt: str = ""
     images: list[ImageContent] | None = None
+    source: BeforeAgentStartSource = "interactive"
     type: Literal["before_agent_start"] = "before_agent_start"
 
 
@@ -1495,6 +1509,7 @@ async def _reducer_before_agent_start(
             prompt=event.prompt,
             system_prompt=current_prompt,
             images=event.images,
+            source=event.source,
         )
         raw = await _safe_invoke(handler, chained, ctx, mode)
         if isinstance(raw, BeforeAgentStartResult):
@@ -2749,6 +2764,7 @@ __all__ = [
     "BeforeAgentStartHandler",
     "BeforeAgentStartHookEvent",
     "BeforeAgentStartResult",
+    "BeforeAgentStartSource",
     "BeforeProviderPayloadHandler",
     "BeforeProviderPayloadHookEvent",
     "BeforeProviderPayloadResult",

@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2171-2173`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2173-2175`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -218,15 +218,19 @@ class AgentsExtension:
     """The bundled ``aelix-agents`` extension. One instance per process.
 
     Constructed ONCE in ``cli/entry.py`` and threaded by held reference into
-    every harness rebuild — the mirror of ``permission_ext`` — so the child
-    registry and ``stop_all`` both survive ``/new`` / ``/fork`` / ``/resume``.
+    every harness rebuild — the mirror of ``permission_ext``. The INSTANCE
+    survives ``/new`` / ``/fork`` / ``/resume`` / ``/reload``; the runtime it
+    binds does not. Each build calls :meth:`__call__`, which binds a fresh
+    ``_SubagentRuntimeImpl`` with its own child registry, and the old harness's
+    cleanup stops the old runtime's children (:meth:`_release`). This said the
+    child registry survived; #611 S1a corrected it.
 
     Every field is optional so ``AgentsExtension()`` is valid, and every default
     is the conservative one: no posture means :attr:`PermissionMode.DEFAULT`,
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3324-3340`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3326-3342`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -987,7 +991,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1420-1428``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1432-1440``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1274,7 +1278,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1292-1301``).
+        seam is released on teardown, ``extension.py:1296-1305``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1493,7 +1497,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1429``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1441``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1515,7 +1519,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1918-1922``) with no ``await`` between them, so THIS
+            # (``runtime.py:1930-1934``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

@@ -854,7 +854,9 @@ async def _record_session_start_model(
     * the storage refuses with ``read_only`` (``ReadOnlySessionStorage``,
       ADR-0244): swallowed silently, as ``AgentHarness.set_model`` does;
     * the append fails (``SessionError`` code ``storage``: EACCES, ENOSPC, a
-      read-only mount): a ``Warning:`` on stderr and the session goes on. Before
+      read-only mount; or ``outcome_unknown``, a write that failed after it
+      began and may have landed, #721): a ``Warning:`` on stderr and the
+      session goes on. Before
       #413 such a file opened and its prompts ran, writing nothing and saying
       nothing (``-p`` and an RPC prompt on a 0444 file, rc 0, at 7d163232); only
       ``--thinking`` failed on it, at launch, then as now. And a rebuild is
@@ -897,7 +899,7 @@ async def _record_session_start_model(
     except SessionError as exc:
         if exc.code == "read_only":
             return False
-        if exc.code != "storage":
+        if exc.code not in ("storage", "outcome_unknown"):
             raise
         print(
             "Warning: could not record the model this session starts on "
@@ -4120,8 +4122,10 @@ async def _async_main(argv: list[str]) -> int:
             project_explicitly_trusted=project_explicitly_trusted,
             permission_ext=permission_ext,
             # ADR-0197 — same hold-the-ref rule as ``permission_ext``: ONE
-            # instance reaches every (re)build, so the live child registry and
-            # the session consent memo survive /new, /fork, /resume and /reload.
+            # instance reaches every (re)build. Each build calls it, and it
+            # binds a fresh runtime with its own child registry; the old
+            # harness's cleanup stops the old one's children (#611 S1a
+            # corrected "the live child registry survives /new …" here).
             # ``None`` when delegation is off, which is the P2 default.
             agents_ext=agents_ext,
             # #101 — the RESOLVED app mode, so the status tool reports the

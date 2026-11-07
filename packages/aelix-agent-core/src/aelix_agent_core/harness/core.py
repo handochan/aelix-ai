@@ -1622,7 +1622,7 @@ class AgentHarness:
             # convert a handler exception into a raised ``AgentHarnessError``
             # (``_emit_queue_update`` and ``_emit_before_agent_start``, each
             # method's ``except``), while a handler's ``error_mode`` defaults to ``"throw"``
-            # (``hooks.py:2588-2595``). Either raise unwound the frame and the
+            # (``hooks.py:2603-2610``). Either raise unwound the frame and the
             # user's queued text existed on no queue, in no turn and in no
             # exception. The guard covers the region, not those two calls by name,
             # so an await added to this gap later is covered too.

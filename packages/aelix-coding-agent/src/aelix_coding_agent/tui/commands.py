@@ -704,7 +704,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1154-1176``).
+    made ``--tools ''`` enable everything (``entry.py:1156-1178``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -1134,7 +1134,7 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
     ``model``/``provider`` are read off the child's own ``message_end`` verbatim
-    (``stream.py:1046-1050`` → ``envelope.py:1048-1049``), so they are attacker
+    (``stream.py:1081-1085`` → ``envelope.py:1060-1061``), so they are attacker
     controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
     parsing but writes raw content ESC / C1 straight to the terminal — a
     ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its
@@ -2156,11 +2156,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1977-1980``
+    # The double count was the same text twice over: ``cli/entry.py:1979-1982``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:763-769``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1977``.
+    # level up, at ``cli/entry.py:1979``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

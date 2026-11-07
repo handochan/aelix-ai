@@ -17,6 +17,8 @@ is not a regression guard — same reasoning as
 from __future__ import annotations
 
 import contextlib
+import functools
+import os
 
 import pytest
 from aelix_agents import reaper
@@ -47,7 +49,12 @@ def test_posix_still_gets_the_hook(
 
     monkeypatch.setattr(reaper.sys, "platform", platform, raising=True)
 
-    assert pdeathsig_preexec() is pdeathsig
+    # #611 S1a: the hook carries the spawning process's pid, which it rechecks
+    # after arming, and libc's ``prctl`` resolved here, before the fork — ``None``
+    # where libc.so.6 does not load (``test_pdeathsig_611.py``).
+    hook = pdeathsig_preexec()
+    assert isinstance(hook, functools.partial)
+    assert hook.func is pdeathsig and hook.args[0] == os.getpid() and len(hook.args) == 2
 
 
 @pytest.mark.parametrize(

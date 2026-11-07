@@ -363,13 +363,14 @@ async def _torn_turn(
     await storage.append_entry(user("turn-1", None))
 
     fs.arm(keep, error)
-    # Only an OSError is translated; anything else propagates as itself.
+    # Only an OSError is translated; anything else propagates as itself. The
+    # write had begun, so the code is ``outcome_unknown``, not ``storage`` (#721).
     expected = SessionError if isinstance(error, OSError) else type(error)
     with pytest.raises(expected) as exc:
         await storage.append_entry(user("turn-2", await storage.get_leaf_id()))
     if isinstance(exc.value, SessionError):
-        assert exc.value.code == "storage"
-    # Nothing in memory saw turn-2.
+        assert exc.value.code == "outcome_unknown"
+    # Nothing in memory saw turn-2 — until the next write reads the file back.
     assert [e.id for e in await storage.get_entries()] == ["turn-1"]
     assert await storage.get_leaf_id() == "turn-1"
 
@@ -436,8 +437,12 @@ async def test_a_complete_line_whose_newline_was_lost_is_kept_off_the_path(
 ) -> None:
     """The failure hit after the last JSON byte. The entry is on disk although
     the caller was told it failed: at-least-once, and pinned as a decision
-    (ADR-0242) so nobody "fixes" it into a truncation. It loads as an off-path
-    sibling of the entries appended after it."""
+    (ADR-0242) so nobody "fixes" it into a truncation. Here the next entry is
+    built by hand on a leaf read BEFORE that write settled the outcome, and
+    ``append_entry`` keeps the parent it is given, so turn-2 loads as an
+    off-path sibling. ``Session`` builds inside ``append_to_leaf`` instead,
+    which parents the next entry on turn-2 (#721,
+    ``test_append_resolution_611.py``)."""
 
     path, _ = await _torn_turn(tmp_path, lambda content: content[:-1], _enospc())
 

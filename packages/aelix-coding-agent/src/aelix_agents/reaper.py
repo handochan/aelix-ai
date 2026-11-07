@@ -812,7 +812,30 @@ async def reap(
     return int(await asyncio.shield(waiter))
 
 
-def pdeathsig() -> None:
+def _resolve_prctl() -> Callable[..., Any] | None:
+    """``prctl`` from libc, loaded and looked up in THIS process, or ``None``.
+
+    Called by :func:`pdeathsig_preexec` in the spawning aelix, before the fork,
+    so the child only calls a function that is already resolved. Building the
+    ``CDLL`` and looking the symbol up used to happen in the child, between
+    ``fork`` and ``exec``, where a lock another parent thread held at the fork
+    is held for ever (Codex review of #721, finding 7; already so on main
+    ``fc8f3048``). ``None`` off Linux, and wherever libc cannot be loaded
+    (musl has no ``libc.so.6``): the hook then arms nothing, as it always did
+    there.
+    """
+
+    if sys.platform != "linux":
+        return None
+    try:
+        return ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:  # noqa: BLE001 - best effort, as the arming always was
+        return None
+
+
+def pdeathsig(
+    parent_pid: int | None = None, prctl: Callable[..., Any] | None = None
+) -> None:
     """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
 
     Closes finding I1. Without it a child whose parent is SIGKILLed runs to
@@ -828,20 +851,62 @@ def pdeathsig() -> None:
     ``PR_SET_PDEATHSIG`` has no portable equivalent, and the parent-death race is
     accepted elsewhere.
 
+    ``prctl`` is libc's, resolved by :func:`pdeathsig_preexec` before the fork
+    (:func:`_resolve_prctl`); without it nothing is armed, because loading it
+    here is the thing a child between ``fork`` and ``exec`` must not do.
+
+    SIGTERM GOES BACK TO ITS DEFAULT FIRST (Codex review of #721, finding 6).
+    The fork inherits the parent's handler — the TUI and print mode install one,
+    an asyncio one on POSIX — so a SIGTERM that reached the child before
+    ``exec`` only tripped that handler, and ``exec`` then ran: a parent dying
+    after the recheck below was swallowed, and so was the reaper's own SIGTERM
+    in that window. With the default restored the signal ends the child where
+    it stands. ``exec`` resets a caught signal to its default anyway, so the
+    command starts exactly as it did. An ignored SIGTERM is left ignored, as
+    ``exec`` would leave it.
+
+    THE RECHECK (#611 S1a, Codex r5 finding 13). ``PR_SET_PDEATHSIG`` watches the
+    parent the child has WHEN IT IS ARMED. A parent that died between ``fork``
+    and this call has already handed the child to another process — init, or a
+    subreaper whose pid is not 1 — and the signal is then armed against that one,
+    so the child runs on under it. ``parent_pid`` is the spawning aelix's pid,
+    read before the fork (:func:`pdeathsig_preexec`); after arming, a
+    ``getppid()`` that differs from it means that parent is gone, and the child
+    exits before ``exec``. Compared with the pid itself, not with 1, which a
+    subreaper would pass. codex-rs does the same
+    (``utils/pty/src/process_group.rs:25-37``, ``set_parent_death_signal``).
+
+    It exits with ``os._exit(128 + SIGTERM)`` where codex-rs raises ``SIGTERM``,
+    because a raise does not end a forked Python child whose parent handled
+    SIGTERM: the TUI and print mode install a handler (an asyncio one on
+    POSIX), the fork inherits it, the raise only trips it, and ``exec`` then
+    runs. Measured on macOS 3.12 with a ``loop.add_signal_handler(SIGTERM)``
+    parent: a raising hook let ``sh -c 'echo EXECED'`` exit 0 printing
+    ``EXECED``; ``os._exit`` ended it with 143 before ``exec``.
+
     Runs between ``fork`` and ``exec``, so it must not allocate, log or raise:
-    a bare ``except`` is correct here in a way it almost never is.
+    a bare ``except`` is correct here in a way it almost never is. The recheck
+    runs even when arming failed — a parent that is already gone is the same
+    fact either way. What is left is CPython's own: ``preexec_fn`` is Python
+    code, and the ``signal.signal`` and ``prctl`` calls still run the
+    interpreter in the child, which Python documents as unsafe with threads in
+    the parent. No library is loaded and no symbol looked up here any more.
     """
 
     if sys.platform != "linux":  # pragma: no cover - platform guard
         return
     try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(
-            _PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0
-        )
+        if callable(signal.getsignal(signal.SIGTERM)):
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
     except Exception:  # noqa: BLE001 - pragma: no cover - best effort, pre-exec
         pass
+    if prctl is not None:
+        try:  # noqa: SIM105 - not ``suppress``: no context manager between fork and exec
+            prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        except Exception:  # noqa: BLE001 - pragma: no cover - best effort, pre-exec
+            pass
+    if parent_pid is not None and os.getppid() != parent_pid:
+        os._exit(128 + signal.SIGTERM)
 
 
 def pdeathsig_preexec() -> Callable[[], None] | None:
@@ -858,7 +923,12 @@ def pdeathsig_preexec() -> Callable[[], None] | None:
     downstream of it (#200).
 
     A function rather than a module constant so a case can drive the branch by
-    patching ``sys.platform``, per this repo's no-``skipif`` convention.
+    patching ``sys.platform``, per this repo's no-``skipif`` convention — and,
+    since #611 S1a, because it is where the parent's pid is read: called in the
+    spawning process right before the spawn, it binds ``os.getpid()`` into the
+    hook as the ``parent_pid`` :func:`pdeathsig` rechecks after arming, and the
+    already-resolved ``prctl`` (:func:`_resolve_prctl`), so the child loads no
+    library.
 
     Note what this does NOT fix, and who does. The sibling
     ``start_new_session=True`` is accepted on Windows and silently ignored —
@@ -875,7 +945,9 @@ def pdeathsig_preexec() -> Callable[[], None] | None:
     (ADR-0238).
     """
 
-    return None if sys.platform == "win32" else pdeathsig
+    if sys.platform == "win32":
+        return None
+    return functools.partial(pdeathsig, os.getpid(), _resolve_prctl())
 
 
 __all__ = [

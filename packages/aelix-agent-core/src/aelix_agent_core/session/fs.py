@@ -38,6 +38,28 @@ SESSION_DIR_MODE = 0o700
 _O_BINARY = getattr(os, "O_BINARY", 0)
 
 
+class NotAttempted(OSError):
+    """A ``FileSystem`` write that failed before writing anything (#721).
+
+    The one failure after which a writer knows the file is exactly as it was:
+    the JSONL store reports it as ``SessionError("storage")``, records no
+    unknown outcome, and the write can be retried as it stands. Any other
+    exception out of :meth:`FileSystem.append_file` may have left some or all
+    of the bytes behind, so the store treats it as an outcome it has to
+    settle before it writes again (ADR-0242 rule 5). An implementation that
+    cannot tell the two apart raises plain ``OSError``, which is the safe
+    reading.
+    """
+
+
+def _not_attempted(exc: OSError) -> NotAttempted:
+    """``exc`` as :class:`NotAttempted`, with its errno, message and filename."""
+
+    out = NotAttempted(*exc.args)
+    out.filename = exc.filename
+    return out
+
+
 def _tighten(path: str | Path, mode: int) -> None:
     """Best-effort ``chmod``, ignoring failures.
 
@@ -61,15 +83,27 @@ def _write_all(fd: int, data: bytes) -> None:
     all — the next load skipped the line and pruned every entry below it
     (#294). A write that makes no progress raises ``EIO`` instead of letting
     the loop spin.
+
+    A failure before the first byte is :class:`NotAttempted` (#721): an
+    ``os.write`` that raises or makes no progress wrote nothing, so nothing of
+    ``data`` is in the file yet. After that it is the plain ``OSError``.
     """
 
     view = memoryview(data)
+    started = False
     while len(view) > 0:
-        written = os.write(fd, view)
+        try:
+            written = os.write(fd, view)
+        except OSError as exc:
+            if started:
+                raise
+            raise _not_attempted(exc) from exc
         if written <= 0:
-            raise OSError(
-                errno.EIO, f"os.write made no progress with {len(view)} bytes left"
-            )
+            message = f"os.write made no progress with {len(view)} bytes left"
+            if started:
+                raise OSError(errno.EIO, message)
+            raise NotAttempted(errno.EIO, message)
+        started = True
         view = view[written:]
 
 
@@ -126,6 +160,11 @@ class FileSystem(Protocol):
     publishes whole files with it — ``write_file`` to ``<path>.tmp``, then
     ``rename_file`` onto ``<path>`` — so a created or forked session appears
     whole or not at all (ADR-0242). A custom implementation must provide it.
+
+    ``append_file`` raises :class:`NotAttempted` when it failed before writing
+    anything, and anything else when some of the bytes may be in the file
+    (#721, ADR-0242 rule 5). Raising a plain ``OSError`` for both is allowed
+    and safe: the store then settles the outcome by reading the file back.
 
     A write (``write_file``, ``append_file``) is over when the call returns
     or raises, cancellation included. An implementation that hands the bytes
@@ -238,13 +277,19 @@ class LocalFileSystem:
         issue several ``os.write`` syscalls, and a second writer on the same
         file (#137) could land between them: nothing here promises byte-level
         atomicity. Not fsynced.
+
+        A directory or ``open`` that fails, and a first ``os.write`` that
+        fails, raise :class:`NotAttempted`: not a byte was written (#721).
         """
 
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True, mode=SESSION_DIR_MODE)
-        _tighten(p.parent, SESSION_DIR_MODE)
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY
-        fd = os.open(path, flags, SESSION_FILE_MODE)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True, mode=SESSION_DIR_MODE)
+            _tighten(p.parent, SESSION_DIR_MODE)
+            fd = os.open(path, flags, SESSION_FILE_MODE)
+        except OSError as exc:
+            raise _not_attempted(exc) from exc
         try:
             self._tighten_if_loose(fd)
             _write_all(fd, content.encode("utf-8"))
@@ -414,4 +459,5 @@ __all__ = [
     "FileKind",
     "FileSystem",
     "LocalFileSystem",
+    "NotAttempted",
 ]
