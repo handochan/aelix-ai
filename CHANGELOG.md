@@ -1315,6 +1315,42 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A program that starts `aelix --mode rpc` through `RpcClient` and is cancelled before
+  `start()` returns no longer leaves that child, or what it started, running (#360, ADR-0201
+  amendment 2026-11-07).** `start()` spawns the child and then waits 100 ms to see whether
+  it dies at once. A cancel of the task awaiting `start()` in that window raised
+  `CancelledError` with the child still running and nothing left to stop it: measured on
+  macOS and Linux, a real `--mode rpc` child was still alive 10 s later, and a child that
+  does not read its stdin was still running, with the process it had started, after the
+  program had exited. Now, once the child is spawned, every way `start()` ends other than
+  returning kills the child's process group (on Windows, its job), or on macOS and Linux
+  the child alone when that kill itself raises, and releases the client before the error
+  reaches the caller: a cancel in that window, a cancel while the spawn itself is still
+  connecting its pipes, a second cancel, a child that exits in the window
+  (`RpcServerExited`, whose leftover processes and open pipe transport used to stay), and
+  an error while `start()` sets up.
+  Tests pin each of these by pid, the child's and, for all but the setup errors, its
+  grandchild's, on macOS and Linux. Three cases stay outside it: if CPython's own pipe
+  setup fails after the fork, only the child is killed; a spawn still unfinished 5 s after
+  the cancel is killed when it finishes, after `start()` has raised, and if the child has
+  already exited by then, what it started is left running; and on Python 3.11 and 3.12 a
+  program whose `asyncio.run` returns within the first few loop turns of `start()` still
+  never exits, as before, with the child killed (a CPython defect, gh-103847, fixed
+  from 3.13.10 and 3.14.1; here 3.14.5 was measured and 3.13 only read). While `start()` runs, a second `start()` and every command now
+  raise `RuntimeError`, and `stop()` makes `start()` give up: the child's group gets the
+  hard kill (from `stop()`, or from `start()`'s abandon when the stop lands during the
+  spawn), `start()` raises `RpcClientError`, and `stop()` returns once it has. A command blocked writing to a child that
+  reads nothing now fails with `RPC server stopped` when `stop()` runs, as an answered one
+  does, instead of a broken pipe plus asyncio's "Future exception was never retrieved". The
+  rpc delegation channel, which no setting selects yet, had the same leak: a delegation
+  cancelled in that window left its child alive with no registry row, so `stop_all`
+  returned with it running; measured after the change, none was left on macOS or Linux.
+  Still open there: a `stop` or `stop_all` that lands in that window with no cancel returns
+  before the child dies (the delegation kills it when the window ends, 0.10 to 0.17 s later
+  in the runs measured), and a cancel during a finished turn's shutdown leaves the child
+  running (#225). Windows is covered by tests with an injected Windows API, not by a run
+  there; when the job cannot be created or assigned, the kill is `taskkill /T` alone, which
+  reaches only processes whose parent is still alive.
 - **An OpenAI Codex prompt that failed on Python 3.13's strict certificate check is sent
   again and answered, and a certificate the machine does not trust stays unretried when an
   extension rebuilds the failed answer (#572, ADR-0128 amendment 2026-11-06).** When a

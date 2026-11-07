@@ -17,6 +17,17 @@ the wait that races the terminator against the child's death — see
 **Amended 2026-10-21 (ADR-0268, #410): a `--mode json` child whose model errored
 now exits 1, not 0 — see the notes under the turn contract and under the channel
 comparison table.**
+**Amended 2026-11-07 (#360): once `RpcClient.start()` has spawned its child, it owns
+it until it returns, and every other way it ends — a cancel inside its 100 ms grace
+above all, a root that exited first included — kills the child's process group (its
+job on Windows, checked with an injected API only; on POSIX the root alone, through the
+transport, when that kill raises) and releases the client before it raises — but for
+CPython's own pipe setup failing after the fork (the root only), a spawn still
+unfinished 5 s after a cancel (ended when it finishes; if its root was reaped first,
+nothing is signalled and what it left in its group runs on), and, on CPython 3.11 and 3.12, an `asyncio.run` returning within a spawn's first
+loop turns, which never exits (CPython gh-103847; the base too). Until it returns, a
+second `start()` and every command are refused, and `stop()` asks it to give up — see
+`## Amendment (2026-11-07, #360)`.**
 Date: 2026-07-31
 Builds on: ADR-0197 (the subagent-runtime seam and the 3-band rule this ADR
 re-reads rather than amends), ADR-0198 (**this ADR delivers the `rpc` half its
@@ -429,6 +440,8 @@ the #351 turn):
   → #359.
 - A cancel inside `start()`'s 100 ms grace orphans the child: `RpcChannel.run`
   re-raises without `client.stop()`, and `row.proc` is not yet set. → #360.
+  *Closed 2026-11-07, in `start()` itself, with the exceptions it lists:
+  `## Amendment (2026-11-07, #360)`.*
 
 **pi.** JS promises cannot be cancelled, so neither the caller-cancel
 semantics nor death's cleanup exist in pi: this helper, its defect and its fix
@@ -451,6 +464,349 @@ escape; whether an aelix rpc child can accept a `prompt` without an
 `agent_end` — which would cost a delegation its whole budget — is unmeasured
 (#361, which also records the stricter alternative to C2's margin: wait for
 the stdout pump's EOF on the death leg before deciding).
+
+## Amendment (2026-11-07, #360) — a `start()` that does not return takes its child with it
+
+**The defect.** `RpcClient.start()` spawns the child, attaches its tree, starts
+the pumps and the exit watcher, and then waits out pi's 100 ms grace to see whether
+the child dies at once. A cancel landing in that grace raised out of `start` and
+stopped nothing. Its only caller in the product, `RpcChannel.run`, re-raised it,
+and `row.proc` is set only after `start` returns, so `stop`, `stop_all` and session
+teardown had no process to reach: the orphan ADR-0197 forbids. Measured on
+`fc8f3048` by pid, with a driver that cancels the task awaiting `start` either from
+the exit watcher's first step (inside the shipped 100 ms grace) or, with the grace
+made long, once the child has written its tree's pids (`ps` 1.5 s after the driver
+exited; scratch HOME and cwd; no model call, the child is cancelled before it is
+given a prompt):
+
+```text
+                                     base                                    this amendment
+RpcClient, real `--mode rpc` child   alive 3 s / 10 s after the cancel,      dead 10 s after the cancel,
+                                     `client.process` still set; gone 1.5 s  `client.process` None
+                                     after the driver exited (macOS 2/2,     (macOS 2/2, Linux 2/2)
+                                     Linux 1/1)
+RpcClient, scripted child that       child and grandchild alive with PPID 1  no survivor
+starts a grandchild, reads no stdin  after the driver exited (macOS 4/4,     (macOS 2/2, Linux 2/2)
+                                     Linux 3/3)
+runtime + RpcChannel, real child     alive at the CancelledError with        dead before the CancelledError
+                                     `list() == []`, and when `stop_all`     reached the caller
+                                     returned; exited 1 by itself 0.41-0.46 s (macOS 2/2, Linux 2/2)
+                                     later on macOS (4 runs) and 0.44-0.63 s
+                                     on Linux (3), its prompt file removed by
+                                     `run`'s `finally`
+```
+
+The right-hand column is the final change, re-measured with the same driver (macOS
+3.12.13, Linux 3.12.14 in docker).
+
+**Decision: `start()` owns what it spawned until it returns, and ends it on every
+other way out.** The issue offered two layers — every cancel path in the channel
+runs `stop()`, or the channel fills `row.proc` before the grace. A third was taken:
+whatever ends `start` after the spawn ends the child first
+(`RpcClient._abandon_start`), then re-raises.
+
+- Until `start` returns the channel holds nothing it would stop (`RpcChannel`
+  publishes the process only afterwards). `RpcClient` is importable by hosts
+  (`aelix_coding_agent.rpc`); a channel-side fix would leave every other caller with
+  the defect. A host can still read `client.process` while `start` runs — it stays
+  readable, as introspection — but a host's `stop()` is routed to `start` (below), so
+  `start` is the only code that ends the child on this path.
+- **A hard kill, with no soft stage.** `stop()` asks first so a child that has been
+  working can finish and unwind. This one has been given nothing: since this
+  amendment `_send` refuses every command until `start` returns (on the base a
+  command sent inside the grace was answered, Codex's `host_half_started`; now it
+  raises `RuntimeError`, pinned by
+  `test_a_command_sent_before_start_returned_is_refused_and_never_written`). The kill
+  is the tree's `hard_kill()` — `killpg(SIGKILL)` on the child's own group on POSIX,
+  `taskkill /T /F` and `TerminateJobObject` on win32 — or, when `attach` itself
+  raised, `kill_process_tree(pid)`. It goes out before the method's first `await`,
+  so a second cancel cannot keep it from landing (pinned by a cancel on every loop
+  turn of the abandon, which an `await` placed before the kill turns red); the
+  release (`_teardown_tasks`, transport, `tree.close()`, `_proc = None`) is the
+  `finally` of the whole abandon.
+- **Not guarded by the root's `returncode`.** A first draft of this amendment
+  skipped the kill when the root's status was already in, as the premature-exit
+  branch did. Codex measured a same-group grandchild still running after both — a
+  root that exited in the grace, then a cancel; and a plain premature exit — on 3.11,
+  3.12 and 3.14, and verify saw it with PPID 1 on macOS and Linux. The group is now
+  killed either way. `killpg` on that number
+  is `stop()`'s escalation argument (ADR-0238's #220 amendment, ADR-0291 §4): a
+  non-empty group's id cannot be reused while any member lives, an empty one answers
+  `ESRCH`, and the residual — the group empty, its number recycled, and the new holder
+  a group leader — is the one ADR-0238 accepts. On win32 the escalation is unguarded
+  too: the job holds the members, and the root's handle, which the transport keeps in
+  its `subprocess` extra, keeps the pid from being reused (read from CPython's source,
+  not run on Windows). The pid-only kill, for an `attach` that raised and in the late
+  spawn's done-callback (below), has no tree that checked `contained` behind it, so it
+  keeps the guard (a plain `killpg` on the spawn's own group would also reach what a
+  reaped root left; not taken, see open item 3).
+- **The premature exit takes the same path.** `RpcServerExited` is raised inside the
+  guarded block, so the dead child's group is killed and its transport closed. Before,
+  that branch closed the tree and nothing else: the transport stayed open
+  (`ResourceWarning: unclosed transport` and "Event loop is closed" at teardown, macOS
+  and Linux, verify) and the grandchild ran on (Codex).
+- **The spawn is shielded.** `create_subprocess_exec` forks in its first step and then
+  connects the pipes over a few loop turns; a cancel landing there ran CPython's own
+  cleanup, which kills the root (`Popen.kill`) and left a same-group grandchild running
+  (Codex, 3.11, 3.12 and 3.14). The spawn now runs as its own task under
+  `asyncio.shield`; a cancel is answered by waiting for it — absorbing further
+  cancels, for at most `SPAWN_SETTLE_SECONDS` (5 s) — then attaching the tree late and
+  ending the child like any other abandon, then re-raising. At the bound `start`
+  raises and a done-callback on the spawn ends the child when the spawn finishes: the
+  pid-only kill, sent only while the root is unreaped, then the transport's close. A
+  draft without that guard signalled a pid asyncio had already reaped, on macOS and
+  Linux, 3.11, 3.12 and 3.14 (verify's second round), and the pid-only kill routes a
+  reused pid that is not a group leader to a plain `kill`.
+- **A kill that raises still releases.** The kill catches `OSError` only, so in a
+  first draft a host's audit hook refusing `killpg` (Codex) replaced the cancel and
+  left the child, the transport and all three tasks. Now the cleanup error is recorded, the 5 s wait is
+  skipped (nothing was sent to wait for), the release runs, the original failure stays
+  what propagates, and the cleanup error rides on it as a note and goes to the loop's
+  exception handler. Closing the transport is then what ends the root, through
+  asyncio's `Popen.kill`.
+- **A cancel that lands in the abandon is not lost.** `_teardown_tasks` joins with
+  `suppress(BaseException)` (#357's shape), so on a non-cancel abandon — a premature
+  exit, an `attach` that raised — a cancel landing in those joins was eaten and the
+  original error came out. The abandon compares `Task.cancelling()` before and after,
+  and raises `CancelledError` when it grew and the original failure was not a cancel.
+- **While `start` runs (Codex 3 and 4, verify S1).** `_starting` is set before the
+  first `await`: two `start()` calls in one loop turn both passed the `_proc is None`
+  check and both spawned, the second overwriting the first's process and tasks. Now
+  the second raises "already started". A `stop()` issued while `start` runs is a
+  request: it sends the same hard kill, `start` sees `_stopping` and abandons with
+  `RpcClientError("RPC server stopped before start() returned")`, and `stop` returns
+  once `start` has ended. A first draft let `stop` run its own teardown of the same
+  child: verify measured it sitting out both its bounds (6.00 s, macOS and Linux)
+  waiting for an exit event whose watcher the abandon had cancelled, and Codex measured
+  it then tearing down a restarted client's tasks and clearing its fields.
+- **A release frees the child it was handed and no newer one.** `_release` and
+  `_teardown_tasks` touch the client's fields only while they still hold that child and
+  its tasks, so a late releaser of one child — two `stop()` calls, the second finishing
+  after a restart — closes only what it was handed.
+- **Commands while stopping.** `_send` refuses a command once `stop` has begun (`stop`
+  has already failed every pending request with "RPC server stopped"). A command whose
+  `drain()` is blocked on a full pipe is not woken by that failure; when the kill then
+  breaks the pipe, `_send` now raises the failure already set on the request — reading
+  it is what retires the future — instead of `RpcServerExited("RPC server closed
+  stdin")` plus asyncio's "Future exception was never retrieved" (Codex 9, a 2 MB
+  prompt to a child that reads nothing).
+- **Task creation that raises closes its coroutine** (`_own_task`; Codex 10: "coroutine
+  … was never awaited" per refused pump, reader or watcher; the spawn's own task is the
+  same shape).
+- `RpcChannel.run`'s `except asyncio.CancelledError: raise` stays as it is; its comment
+  now names `start`'s two exceptions.
+
+Not taken: a channel-side `stop()` on the cancel path (the host gap above, and
+`stop()`'s soft first stage leaves a non-`setsid` descendant of a child that takes the
+SIGTERM — ADR-0238, review posix2/F2); filling `row.proc` before the grace on its own
+(it needs a spawn callback on `RpcClientOptions`, and a cancel in the grace would still
+need a kill somewhere); verify's one-line fix for the `stop()` stall (set `_exited` when
+the abandon's wait sees the exit) — it leaves the stall whenever a second cancel cuts that
+wait short, which is Codex's sequence, and leaves two teardowns of one child.
+
+**Entry-point sweep.** Callers of `RpcClient.start()`: `RpcChannel.run` (the one
+product caller; no setting selects the channel, #123), any host through the public
+`aelix_coding_agent.rpc.RpcClient`, and the tests. Nothing else in `packages/` or `src/`
+constructs an `RpcClient`. Every await and raising statement from the spawn to the
+normal return, then `stop`, `_release`, `_abandon_start`, `_send`'s write and
+`RpcChannel.run` — "test" names a case in the files under **Tests**, "driver" a row
+measured as described under **Measured**, "reasoned" neither:
+
+```text
+where                                     what ends it                          now
+start: guard, argv/env, kwargs            raises before any spawn               nothing to end (test: 2 concurrent starts)
+_own_task(create_subprocess_exec)         host task factory refuses             coroutine closed, nothing forked (test)
+await shield(spawn)                       spawn's own exception before fork     re-raised, nothing forked (existing channel test)
+                                          a cancel, then that exception         the cancel raised, nothing forked (test)
+                                          cancel (any number) while it runs     wait <= 5 s, late attach, abandon (tests, driver)
+                                            ... while CPython connects pipes    the same (test)
+                                          still running at the 5 s bound        raises; done-callback kills group (test)
+                                            ... root reaped before it lands     no signal sent (test); group left - open
+                                          CPython pipe setup fails after fork   ROOT ONLY (driver: grandchild alive) - open
+                                          late attach raises                    reported (test); pid-only kill (shared, test)
+                                          asyncio.run exits in its 1st turns    3.11/3.12: never exits (driver) - open
+attach (normal path)                      raises                                pid-only kill, released (test)
+pipes check / JsonlLineReader             raise                                 group kill, released (driver)
+_own_task(pump / stderr / watcher)        factory refuses                       coroutine closed, group kill (test, driver)
+grace wait_for                            cancel / second cancel / storm        group kill before 1st await (tests, driver)
+                                          3.11 wait_for loses the cancel        #359's; child still ended (reasoned)
+_stopping check                           a stop() during start                 RpcClientError, group kill (test, driver)
+RpcServerExited (premature exit)          root exited in the grace              group kill, transport closed (test, driver)
+  its stderr snapshot                     raises                                released (driver)
+_abandon_start: kill                      raises non-OSError                    no wait, released, both kept (test, driver)
+  wait_for_exit(5.0)                      cancelled                             release in finally (test, driver)
+  _release -> _teardown_tasks             swallows a cancel                     CancelledError raised (test)
+  _release: transport / tree.close        raises                                fields cleared in finally, reported (reasoned)
+start: finally                            -                                     _starting cleared, waiters woken
+stop() while starting                     -                                     hard kill; returns once start ended (tests, driver)
+  before the tree exists                  -                                     request only; start skips the grace (test)
+  its settled.wait()                      cancelled                             stop raises; start still ends it (reasoned)
+stop() running: soft/hard waits           cancelled                             release skipped - unchanged, see below
+_release / _teardown_tasks, late          a restart in between                  newer child untouched (tests)
+_send                                     while starting / stopping             refused (tests)
+  write / drain                           pipe breaks under a stop              the stop's error, retrieved (test)
+                                          cancelled                             popped (test), answer retrieved (reasoned)
+RpcChannel.run: start() raises            cancel / any error                    start already ended it (tests, driver)
+  start returned -> row.proc              -                                     no await between them
+  row.stopped -> abort_child              cancelled                             child killed, client unreleased - #225
+  _drive -> _shutdown                     first cancel after a finished turn    child left running - #225
+runtime.stop / stop_all in the grace      no cancel                             returns before the child dies - open
+```
+
+**Stays open.**
+
+1. **CPython's own pipe setup failing after the fork.** `create_subprocess_exec` then
+   closes the transport itself (root-only `Popen.kill`) and raises, so `start` never
+   gets a process to end. Codex's probe (an injected failure in the stdlib's pipe
+   connection after the child wrote its pids) still leaves the same-group grandchild
+   running on the final change: macOS 3.11.15, 3.12.13, 3.14.5 and Linux 3.12.14. Not
+   reachable without an injected fault or fd/memory exhaustion; a real `--mode rpc`
+   child had nothing under it at any of 20, 50, 95 ms and 0.5, 2, 5 s (verify, macOS,
+   2 of 2 each).
+2. **An `asyncio.run` that returns within the first loop turns of a spawn never exits,
+   on CPython 3.11 and 3.12** — on the base as on the final change; a CPython limit this
+   amendment leaves as it found it. `asyncio.run` cancels every task, CPython's own
+   `_connect_pipes` task among them, and CPython's cleanup of the cancelled
+   `create_subprocess_exec` then awaits `transp._wait()`, which a transport whose pipes
+   never all connected does not resolve. CPython gh-103847 fixed that wait; the fix is
+   in 3.13.13 and 3.14.5 here and not in 3.11.15 or 3.12.13. Before the hang that
+   cleanup has killed the root, and in no hung case was anything left running (the
+   child had not started anything yet). On the final change `start` itself raises at
+   the 5 s bound and only CPython's `create_subprocess_exec` task stays pending; on the
+   base `start` stays pending. Measured with `main` returning K loop turns (K = 0-9 and
+   12) or K ms (1, 3, 10, 40) after calling `start` on a scripted child that starts a
+   grandchild; "hangs" is still running 7 or 8 s later, "left" is alive 1 s after the
+   process exited (macOS; verify measured 3.12 the same, K = 2 still hanging at 90 s):
+
+   ```text
+               base                                        final change
+   3.11.15     hangs at K = 0-6, 1 and 3 ms; clean at      hangs at K = 1-7 and 1 ms, at 3 ms in some
+                                                           runs (1 of 3 in verify's third); clean at
+               K = 7; child and grandchild left at         K = 0, 8, 9, 12, 10 and 40 ms
+               K = 8, 9, 12, 10 and 40 ms
+   3.12.13     hangs at K = 0-6 and 1 ms; clean at K = 7;  hangs at K = 1-7 and 1 ms; clean at
+               child and grandchild left at K = 8, 9, 12,  K = 0, 8, 9, 12, 3, 10 and 40 ms
+               3, 10 and 40 ms
+   3.14.5      never hangs; child and grandchild left at   never hangs; nothing left at any K
+               K = 8, 9, 12, 10 and 40 ms
+   ```
+
+   Linux 3.11.15, 3.12.14 and 3.14.5 (docker; the base at K = 0, 1, 7, 8, 12 and 40 ms,
+   the final change at K = 1, 7, 8, 12, 1 and 40 ms) gave the same rows, except that
+   1 ms did not hang on 3.12.14. The window is a few loop turns, so its millisecond edge
+   depends on the machine (verify's 3.12 run hung at 3 ms on the final change). Closing it on 3.11 and 3.12
+   would mean cancelling the spawn task once more at the bound when something other
+   than `start` cancelled it (it is shielded, so only an outside cancel-all can), which
+   ends CPython's wait; tried on a copy, it turned K = 1, 4, 7 and 1 ms into an exit
+   after 5.3 s with nothing left (3.12.13). Not taken here.
+3. **A spawn still unfinished 5 s after the cancel** outlives `start` until it finishes;
+   the done-callback then kills the group (pinned with a 0.05 s bound). What is left
+   of a spawn at that point is a pipe connection; it has not been seen to take longer
+   than a few loop turns. The callback's kill is the pid-only one and keeps the guard,
+   so when the root has exited and been reaped by the time the spawn lands, nothing is
+   signalled (pinned) and anything the root left in its group runs on.
+4. **A `stop` or `stop_all` that lands inside the grace returns before the child
+   dies.** Both read `row.proc is None` there, so `abort_child` only marks the row;
+   `run` kills the child when the grace ends (`if row.stopped: abort_child(...)`).
+   Measured from the exit watcher's first step, unchanged by this amendment: on the
+   base `stop_all` returned with the child alive and it died 0.15-0.17 s later (macOS
+   3 runs, Linux 3), and `stop` 0.10-0.17 s (verify: macOS 3, Linux 3, the 0.17 s its
+   second round's on Linux); on the final change `stop_all` 0.10 and 0.15 s (macOS, real
+   child) and 0.15 and 0.16 s (Linux, real child), 0.16 s for each of `stop` and
+   `stop_all` (macOS, stub), and 0.17 s for `stop` and 0.10 s for `stop_all` (Linux,
+   stub, verify's second round). It is not an
+   orphan — `run` still holds it, and a `run` cancelled in what is left of the grace
+   takes this amendment's path. Closing it means putting the process on the row before
+   the grace, which is ADR-0276's other half of the same gap ("a child that exits
+   inside that grace reports `started=False`") and #123's, as ADR-0276 records.
+5. **`RpcChannel.run` after `start` returned: #225.** That issue's first item is this
+   shape, measured by Codex on the final change too (3.11, 3.12, 3.14, Linux): a first
+   cancel in a finished turn's `_shutdown` exit wait leaves the child running, the
+   client unreleased and the row gone; a cancel inside `abort_child` between `start()`
+   returning and `_drive` kills the child through the shielded reaper but never
+   reaches `client.stop()`, so the transport and, on win32, the job handle are
+   released only at GC. It is #225's, not this issue's.
+6. **A descendant that left the child's group on POSIX** (its own `setsid`) is not
+   reached, as with `stop()` (ADR-0291 limit 6). Nothing here takes a descendant
+   snapshot (`descendant_pids`); on win32 `taskkill /T` does follow live parent links.
+7. **Windows** was not run. The injected-API tests pin the call order: `taskkill`,
+   `TerminateJobObject`, `CloseHandle`, no `CTRL_BREAK_EVENT`; and, when the job is
+   refused (`attach` swallows that `OSError` into an uncontained tree), `taskkill /T`
+   alone. That fallback reaches only processes whose parent is still alive, and a
+   descendant created before the job assignment — on a cancelled spawn, before the late
+   attach — is not in the job either. Closing it means creating the child suspended
+   (or with `PROC_THREAD_ATTRIBUTE_JOB_LIST`) so the job is assigned before it runs,
+   failing closed when no job can be had, and native tests for each; out of reach here.
+8. **`stop()` itself is unchanged once `start` has returned.** A cancel inside its soft
+   or hard wait skips its release (the fields stay set, `_stopping` stays true, a
+   second `stop()` finishes it), and two concurrent `stop()` calls both send their
+   signals; only their releases are per-child now.
+9. The 3.11 `wait_for` loss in the grace stays #359's: the cancel is lost, `start`
+   raises `RpcServerExited` for the child that died, and that child's group is still
+   killed and the client released.
+10. A second cancel that cuts the abandon's wait short closes the transport before the
+   child is reaped, so asyncio's debug mode logs "Close running child process: kill"
+   (macOS, 2 of the 99 sweep cases) and Linux can log "exit status already read: will
+   report returncode 255" (verify, 3 of 7 runs). The child is already signalled; the
+   lines are cosmetic. The cancel inside the spawn no longer produces the first of them
+   (17 sweep cases on the first draft), since CPython's cleanup no longer runs there.
+
+**Tests.** `tests/rpc/test_rpc_client_start_cancel_360.py` (29) and
+`tests/agents_ext/test_rpc_channel_start_cancel_360.py` (2). They prove each row they
+name by pid (`tests.process_probe`, polled for up to 5 s after `start` raised — the
+root's exit is awaited inside `start`, the group's other members are signalled before
+it and not awaited), by the client's fields and tasks, and by the transport's
+`is_closing()`; the win32 ones prove call order only. On `fc8f3048` all 31 fail (macOS
+3.12.13 and Linux 3.12.14). On a first draft of this amendment the 16 added in its
+second round fail (macOS and Linux), and 22 of the 29 client tests in all (macOS). On
+the second draft one fails, the late spawn whose root was already reaped. The third round's other
+changes pin second-draft behaviour no test held (verify's second round): the modified
+`stop()`-during-`start` test pins a stop that returned at once or sent a soft kill, and
+the five added tests pin a stop landing in the spawn that waited out the grace, a
+refused late attach left unreported, a cancelled command left pending, a failed spawn
+replacing the cancel, and a cancel landing in CPython's own pipe connection. All 31 pass on the final change under `-X dev` on macOS
+3.11.15, 3.12.13 and 3.14.5 and on Linux 3.11.15, 3.12.14 and 3.14.5, and so do the rpc
+client and channel suites beside them. 21 mutants of the change, and 9 more in its
+third round (verify's survivors N5, N6, N12, N16, N18 and N23, the done-callback's
+guard removed and inverted, the spawn unshielded), each turn at least one of them red.
+
+**Measured** (drivers, not tests; the right-hand column of the table above is the
+first). verify's 99-case sweep (`time`, `turn`, `multi`, `seam`, `exc`, `exit`, `twice`,
+`stoprace`, `stoprace2`, `chtime`, `chstop`, `cmddur`; macOS 3.12.13) on the second
+draft, whose code the third round changed only in the done-callback past the 5 s bound,
+which no sweep case reaches: no survivor in any of the 93 cases where `start` was cancelled or failed, and
+every client whose state the case records released. The five survivors are all after a
+`start` that returned and a normal `stop()` whose soft stage took the root (ADR-0238
+posix2/F2, unchanged). `stop()` racing an abandon took 0.006-0.053 s (9 shapes). verify's
+second-round probes on the final change, macOS and Linux, 3.11, 3.12 and 3.14: a late
+spawn whose root was already reaped is sent no signal; a `stop()` landing in the spawn
+returns only after `start` has ended, both pids gone; a `stop()` in the grace of a child
+that ignores `SIGTERM` returns in 0.016-0.046 s with both pids gone. Codex's probes, on
+macOS 3.11.15, 3.12.13 and 3.14.5 on the final change and on Linux 3.11.15, 3.12.14 and
+3.14.5 on the second draft (verify's second round): dead-root
+cancel, premature exit, cancel inside the spawn and both channel paths — grandchild
+gone; concurrent starts — one spawn, the second refused; `stop` racing an abandon with
+a restart — 0.104-0.113 s, the restarted child kept; a refused `killpg` — the cancel
+kept, the client released; injected setup failures — no "never awaited" warning; the
+premature exit — transport closed before the loop closed; a command inside the grace —
+refused. Its backpressured form now needs a started client and is a test. Two of
+Codex's probes still show their defect: open items 1 and 5.
+
+**pi.** pi's `start` waits its grace on `await new Promise((resolve) =>
+setTimeout(resolve, 100))` (`packages/coding-agent/src/modes/rpc/rpc-client.ts:133`
+@ 085c84e98), and a JS promise cannot be cancelled, so pi has no such path. pi's
+`stop` is root-only (`kill("SIGTERM")`, then `kill("SIGKILL")` after 1 s). Two
+lifecycle rules here diverge from pi on purpose, and a third differs too: pi's
+`this.process` guard (`:75`)
+already refuses a concurrent start because its `spawn` is synchronous, where
+`create_subprocess_exec` suspends; and pi's `send` (`:556-561`) accepts a command as
+soon as the process exists, where here `start` may still end that child; and pi's
+`stop` SIGTERMs the root without waiting for `start`, where here `stop()` during `start`
+asks it to give up and returns once it has (the third read from pi's source, not run).
+
+**Not run.** Windows (the injected tests only; CI runs the real-process cases there).
+A real model — no provider or session path is touched, and the child is cancelled
+before it is given a prompt. Python 3.13.
 
 ---
 

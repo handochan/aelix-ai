@@ -77,6 +77,19 @@ restores, and the distinction belongs in the ADR:
    divergence: pi attaches it (``rpc-client.ts:405``, ``:426``) and aelix
    already did in ``_send``, but the three ``wait_for`` calls were bare.
 
+5. **A ``start`` that does not return ends its child** (#360,
+   :meth:`RpcClient._abandon_start`). pi's ``start`` waits out its grace on a
+   ``setTimeout`` promise (``rpc-client.ts:133`` at ``085c84e98``), which
+   nothing can cancel, so pi has no such path. Here a cancel inside the grace
+   raised out of ``start`` with the child running and no caller holding it.
+   Two lifecycle rules came with it, and both differ from pi on purpose. A
+   second ``start`` is refused while the first runs: pi's ``spawn`` is
+   synchronous, so its ``this.process`` guard (``:75``) already holds, while
+   ``create_subprocess_exec`` suspends before it returns. And a command is
+   refused until ``start`` returns, where pi's ``send`` (``:556-561``) only
+   needs ``this.process``: here ``start`` may still end the child it would
+   have been sent to.
+
 WHAT IS **NOT** FIXED HERE, AND WHY
 -----------------------------------
 
@@ -105,9 +118,9 @@ import os
 import signal as _signal
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
@@ -129,6 +142,8 @@ from aelix_coding_agent.rpc.rpc_types import (
     RpcSuccessResponse,
     parse_rpc_response,
 )
+
+_T = TypeVar("_T")
 
 
 class RpcClientError(RuntimeError):
@@ -307,6 +322,13 @@ class RpcClient:
     # That is CPython up to 3.13.14; from 3.13.15 (gh-119710) ``wait()`` resolves
     # at the exit instead, and polling ``returncode`` is right on both (#192).
     EXIT_POLL_SECONDS: float = 0.05
+    # Aelix-original (#360). How long a :meth:`start` whose caller is cancelled
+    # inside ``create_subprocess_exec`` waits for that spawn to hand back the
+    # child it has already forked, so the child can be ended with its group.
+    # What is left of the spawn is a pipe connection, a few loop turns; the
+    # bound only exists so that a spawn which never finishes cannot hold a
+    # cancelled ``start`` forever (:func:`_end_when_spawned` takes over then).
+    SPAWN_SETTLE_SECONDS: float = 5.0
 
     def __init__(self, options: RpcClientOptions | None = None) -> None:
         self._options = options or RpcClientOptions()
@@ -332,7 +354,17 @@ class RpcClient:
         # races it, which is what turns "the child died" from a timeout into an
         # immediate, diagnosable failure.
         self._exited: asyncio.Event = asyncio.Event()
+        # A :meth:`stop` (or an abandoned :meth:`start`) has begun on this
+        # child. Commands are refused from then on.
         self._stopping = False
+        # True from :meth:`start`'s first suspension until it ends, either way
+        # (#360). Until then ``start`` alone owns the child: a second ``start``
+        # and every command are refused, and :meth:`stop` asks ``start`` to give
+        # up rather than stopping the child under it.
+        self._starting = False
+        # Set when that ``start`` has ended. What a :meth:`stop` issued during
+        # it waits for.
+        self._settled: asyncio.Event = asyncio.Event()
 
     # === Introspection =========================================================
 
@@ -353,10 +385,10 @@ class RpcClient:
         """The containment tree :meth:`start` attached.
 
         ``None`` before :meth:`start` and after :meth:`stop` (and after
-        ``start``'s premature-exit path, ``:513-521``); LIVE for the whole started
-        window, INCLUDING while :meth:`stop` is running — ``stop`` closes it and
-        nulls ``_tree`` only at the very end (``:637-642``), so this property never
-        hands out a closed tree.
+        ``start``'s premature-exit path, or a ``start`` that did not return,
+        #360); LIVE for the whole started window, INCLUDING while :meth:`stop` is
+        running — ``stop`` closes it and nulls ``_tree`` only at the very end
+        (:meth:`_release`), so this property never hands out a closed tree.
 
         Published for the same reason as :attr:`process`: the delegation
         channel's reaper runs DETACHED (finding B1) and must reach the job/group
@@ -437,9 +469,28 @@ class RpcClient:
     # === Lifecycle =============================================================
 
     async def start(self) -> None:
-        """Pi parity: ``rpc-client.ts:60-83`` (``start``)."""
+        """Pi parity: ``rpc-client.ts:60-83`` (``start``).
 
-        if self._proc is not None:
+        AELIX-ORIGINAL, #360: UNTIL THIS RETURNS, IT ALONE OWNS THE CHILD. The
+        caller has no handle yet — ``RpcChannel`` puts the process on its
+        registry row only once ``start`` has returned — so whatever ends ``start``
+        early ends the child first (:meth:`_abandon_start`), and every way this
+        method leaves after the fork other than returning leaves no child, no
+        member of its process group (POSIX), its job ended (win32), and the
+        client released. Measured on the base: a cancel inside the grace below
+        raised out of here with the child running, nobody holding it, and a
+        child that never reads its stdin still running with PPID 1 after the
+        parent had exited. While it runs, a second ``start`` and every command
+        are refused, and :meth:`stop` asks it to give up and waits.
+
+        Two exits do not hold this. CPython's: an exception raised inside
+        ``create_subprocess_exec`` after its fork (its own pipe setup failing)
+        closes the transport there, which ends the ROOT only (``Popen.kill``),
+        and never hands this method a process to end. And a spawn still running
+        5 s after a cancel, which :func:`_settled_spawn` leaves to a done-callback.
+        """
+
+        if self._proc is not None or self._starting:
             raise RuntimeError("RpcClient already started")
 
         argv = self._build_argv()
@@ -466,70 +517,118 @@ class RpcClient:
         spawn_kwargs.update(containment_spawn_kwargs(new_session=True))
 
         self._exited = asyncio.Event()
+        self._settled = asyncio.Event()
         self._stopping = False
-        self._proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=opts.cwd,
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **spawn_kwargs,
-        )
-        # BEFORE the first ``await``, per :meth:`ProcessTree.attach`: on win32
-        # the job is created and assigned here, and only descendants spawned
-        # after the assignment inherit membership. ``handle`` is the one the
-        # transport already retains, so the assignment never has to re-derive
-        # one from the pid and cannot be refused ``ACCESS_DENIED`` (#202).
-        self._tree = ProcessTree.attach(
-            self._proc.pid, kill_on_close=True, handle=_retained_handle(self._proc)
-        )
+        # Before the first ``await``: two ``start`` calls in one loop turn both
+        # passed the ``_proc is None`` check above and both spawned, and the
+        # second overwrote the first's process and tasks (Codex review 3).
+        self._starting = True
+        try:
+            await self._spawn_and_wait_out_the_grace(argv, env, spawn_kwargs)
+        finally:
+            self._starting = False
+            self._settled.set()
 
-        proc_stdout = self._proc.stdout
-        proc_stderr = self._proc.stderr
-        if proc_stdout is None or proc_stderr is None:
-            raise RuntimeError("Subprocess pipes are not connected")
+    async def _spawn_and_wait_out_the_grace(
+        self, argv: list[str], env: dict[str, str], spawn_kwargs: dict[str, Any]
+    ) -> None:
+        """:meth:`start`'s body, from the spawn to the end of pi's grace."""
 
-        # The reader is OWNED here, not built inside the pump, so
-        # ``dropped_lines`` is readable while the pump is still running.
-        self._stdout_reader = JsonlLineReader(
-            self._handle_stdout_line, max_line_bytes=opts.stdout_line_max_bytes
-        )
-        self._stdout_reader_task = asyncio.create_task(
-            pump_jsonl_lines(proc_stdout, self._stdout_reader)
-        )
-        self._stderr_reader_task = asyncio.create_task(
-            self._drain_stderr(proc_stderr)
-        )
-        # Started BEFORE the grace window so the window itself is observed by
-        # the same mechanism as everything after it.
-        self._exit_watcher_task = asyncio.create_task(self._watch_for_exit())
-
-        # Pi parity: 100ms startup grace (``rpc-client.ts:103-108``). It catches
-        # exec-level failures only — a real child's boot is two orders of
-        # magnitude longer than this (~25 s cold, ~18.6 s of it import time), so
-        # anything that fails during startup lands OUTSIDE the window and is
-        # caught by :meth:`_watch_for_exit` instead.
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                self._exited.wait(), timeout=self.STARTUP_GRACE_MS / 1000.0
+        opts = self._options
+        # SHIELDED (#360). ``create_subprocess_exec`` forks in its first step and
+        # spends a few more connecting the pipes; a cancel landing in those runs
+        # CPython's own cleanup, which kills the ROOT and leaves whatever it
+        # started (measured: a same-group grandchild ran on, 3.11, 3.12 and
+        # 3.14). Shielded, the spawn always finishes, and a cancel is answered
+        # once it has, by ending what it produced like any other early exit.
+        spawn = _own_task(
+            asyncio.create_subprocess_exec(
+                *argv,
+                cwd=opts.cwd,
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
             )
-        if self._exited.is_set():
-            returncode = self._proc.returncode
-            stderr_snapshot = self.get_stderr()
-            await self._teardown_tasks()
-            # The child is already gone, but the job handle is not: release it
-            # here or the only thing that ever would is the finalizer.
-            if self._tree is not None:
-                self._tree.close()
-            self._tree = None
-            self._proc = None
-            raise RpcServerExited(
-                f"RPC server exited prematurely with code {returncode}. "
-                f"Stderr: {stderr_snapshot}",
-                returncode=returncode,
-                stderr=stderr_snapshot,
+        )
+        try:
+            proc = await asyncio.shield(spawn)
+        except BaseException as exc:
+            settled = await _settled_spawn(spawn, self.SPAWN_SETTLE_SECONDS)
+            # ``None``: nothing was forked (an exec failure is the spawn's own
+            # exception, raised here), or CPython already ended its root.
+            if settled is not None:
+                self._proc = settled
+                try:
+                    # Late by necessity, a few loop turns after the fork: on
+                    # win32 what the child started before this is not in the
+                    # job, and only ``taskkill /T`` reaches it.
+                    self._tree = ProcessTree.attach(
+                        settled.pid, kill_on_close=True, handle=_retained_handle(settled)
+                    )
+                except Exception as attach_error:  # noqa: BLE001 — the pid-only kill takes over
+                    _report_cleanup_failure(exc, attach_error)
+                await self._abandon_start(exc)
+            raise
+        self._proc = proc
+        try:
+            # BEFORE the first ``await``, per :meth:`ProcessTree.attach`: on win32
+            # the job is created and assigned here, and only descendants spawned
+            # after the assignment inherit membership. ``handle`` is the one the
+            # transport already retains, so the assignment never has to re-derive
+            # one from the pid and cannot be refused ``ACCESS_DENIED`` (#202).
+            self._tree = ProcessTree.attach(
+                proc.pid, kill_on_close=True, handle=_retained_handle(proc)
             )
+
+            proc_stdout = proc.stdout
+            proc_stderr = proc.stderr
+            if proc_stdout is None or proc_stderr is None:
+                raise RuntimeError("Subprocess pipes are not connected")
+
+            # The reader is OWNED here, not built inside the pump, so
+            # ``dropped_lines`` is readable while the pump is still running.
+            self._stdout_reader = JsonlLineReader(
+                self._handle_stdout_line, max_line_bytes=opts.stdout_line_max_bytes
+            )
+            self._stdout_reader_task = _own_task(
+                pump_jsonl_lines(proc_stdout, self._stdout_reader)
+            )
+            self._stderr_reader_task = _own_task(self._drain_stderr(proc_stderr))
+            # Started BEFORE the grace window so the window itself is observed by
+            # the same mechanism as everything after it.
+            self._exit_watcher_task = _own_task(self._watch_for_exit())
+
+            # Pi parity: 100ms startup grace (``rpc-client.ts:103-108``). It catches
+            # exec-level failures only — a real child's boot is two orders of
+            # magnitude longer than this (~25 s cold, ~18.6 s of it import time), so
+            # anything that fails during startup lands OUTSIDE the window and is
+            # caught by :meth:`_watch_for_exit` instead.
+            if not self._stopping:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self._exited.wait(), timeout=self.STARTUP_GRACE_MS / 1000.0
+                    )
+            if self._stopping:
+                # A :meth:`stop` issued while this ran; it is waiting for us.
+                raise RpcClientError("rpc", "RPC server stopped before start() returned")
+            if self._exited.is_set():
+                returncode = proc.returncode
+                stderr_snapshot = self.get_stderr()
+                raise RpcServerExited(
+                    f"RPC server exited prematurely with code {returncode}. "
+                    f"Stderr: {stderr_snapshot}",
+                    returncode=returncode,
+                    stderr=stderr_snapshot,
+                )
+        except BaseException as exc:
+            # ``BaseException``: a cancel is the case that was measured, and
+            # nothing that escapes here is a reason to leave the child behind —
+            # the premature exit above included, since what the child started
+            # can outlive it (Codex review 1 and 7).
+            await self._abandon_start(exc)
+            raise
 
     async def stop(self) -> None:
         """Pi parity: ``rpc-client.ts:88-122`` (``stop``).
@@ -545,17 +644,40 @@ class RpcClient:
         asked for ``kill_on_close``. ``pending_requests`` are cleared so callers
         awaiting :meth:`send` see ``CancelledError`` propagate.
 
+        WHILE :meth:`start` IS STILL RUNNING (#360) this is a request, not a
+        stop: the child is still ``start``'s, and ``start`` ends it the way it
+        ends any child it is not returning, then raises. This sends that hard
+        kill now, so the grace does not have to run out first, and returns once
+        ``start`` has ended. Two teardowns of one child do not agree: in a draft
+        of #360 that let both run, a ``stop`` racing a cancelled ``start`` sat
+        out both of its bounds (6.00 s, macOS and Linux) waiting for an exit
+        event the abandon had cancelled the watcher of, and with a second cancel
+        and a restart in between it then tore down the NEXT child's tasks and
+        fields (verify S1, Codex review 4).
+
         NOT ``proc.terminate()`` / ``proc.kill()``. Both begin with
         ``Popen.send_signal``'s ``self.poll()`` — a ``waitpid(WNOHANG)`` that
         can reap a just-exited child out from under asyncio's watcher, which
         then reports 255 (measured in ``reaper._signal_child``: ``{255: 60}``).
         The soft and hard stages signal by pid/pgid instead. The trailing
-        ``transport.close()`` below still reaches ``Popen.poll()`` and
+        ``transport.close()`` (:meth:`_release`) still reaches ``Popen.poll()`` and
         ``Popen.kill()`` (CPython ``asyncio/base_subprocess.py``), but that is
         asyncio's own last resort rather than this method's escalation: it can
         only fire for a child that outlived BOTH waits, by which point the reap
         race costs nothing (review posix2/F8, MUT-8).
         """
+
+        if self._starting:
+            settled = self._settled
+            self._stopping = True
+            tree = self._tree
+            if tree is not None:
+                # The kill ``start`` sends on its way out (:meth:`_abandon_start`),
+                # for the same reason: a child that has been given nothing,
+                # since no command is accepted before ``start`` returns.
+                tree.hard_kill()
+            await settled.wait()
+            return
 
         proc = self._proc
         if proc is None:
@@ -615,42 +737,143 @@ class RpcClient:
             if tree is not None:
                 tree.hard_kill()
             else:
-                # Reachable only if ``attach`` itself raised out of ``start``,
-                # which leaves ``_proc`` set and no tree behind it. Nothing in
-                # the product can make it raise; the pid-only kill is here so
-                # that shape degrades to a root-and-group kill rather than to
-                # an ``AttributeError`` during teardown.
+                # A started client always has a tree: ``attach`` is the first
+                # statement after the spawn, and since #360 an ``attach`` that
+                # raises is ended inside ``start`` (:meth:`_abandon_start`, the
+                # same pid-only kill), which leaves ``_proc`` unset. Kept so
+                # that shape still degrades to a root-and-group kill rather
+                # than to an ``AttributeError`` during teardown.
                 kill_process_tree(proc.pid)
             # W4 m9 — bound the final reap so a stuck child can't block
             # ``stop()`` forever. 5s is enough for a normal exit and
             # leaves the failure path observable via stderr capture.
             await self._await_exit(5.0)
 
-        await self._teardown_tasks()
-        # Closing the transport is what keeps asyncio from printing
-        # ``Exception ignored in BaseSubprocessTransport.__del__ ...
-        # RuntimeError: Event loop is closed`` at interpreter shutdown — a
-        # traceback for a teardown that went exactly as designed, which in a
-        # TUI is indistinguishable from a real one and which the user cannot
-        # act on. Best-effort: the transport is private and may already be gone.
-        with contextlib.suppress(Exception):
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                transport.close()
-
-        # A RELEASE, not a kill: on POSIX this signals nothing at all (the gap
-        # between a child's reap and this call is seconds at the delegation
-        # caller, which is precisely when an empty group's number is free for
-        # somebody else). On win32 it is ``CloseHandle(job)``, and because this
-        # tree asked for ``kill_on_close`` it also ends whatever is left.
-        if tree is not None:
-            tree.close()
-        self._tree = None
-        self._proc = None
+        await self._release(proc, tree)
         # The reader is deliberately NOT dropped: ``dropped_lines`` has to
         # survive teardown or the delegation envelope, which is built after the
         # child is gone, always reports zero. ``get_stderr()`` already outlives
         # ``stop`` for the same reason, and the two should not disagree.
+
+    async def _abandon_start(self, failure: BaseException) -> None:
+        """End the child of a :meth:`start` that is not returning (#360).
+
+        Nobody else can: the caller gets its handle when ``start`` returns, and
+        this is the path on which it does not. ``failure`` is what is ending
+        ``start``; the caller re-raises it.
+
+        A HARD KILL, WITH NO SOFT STAGE. :meth:`stop` asks first so that a child
+        which has been working can finish and unwind its session. This child has
+        been given nothing — :meth:`_send` refuses every command until ``start``
+        returns — and it has been running for at most about one grace. The kill
+        is the GROUP's on POSIX (``killpg``) and the job's on win32 (``taskkill
+        /T`` and ``TerminateJobObject``, whose ``taskkill`` spawn blocks the loop
+        as :meth:`stop`'s hard stage does), so what the child started in that
+        window goes with it. It is sent before this method's first ``await``, so
+        a second cancel cannot keep it from landing; it only cuts the wait below
+        short.
+
+        NOT GUARDED BY THE ROOT'S ``returncode`` (Codex review 1). A root that
+        exited in the grace — the premature-exit path, or a cancel after its
+        exit — leaves its group behind, and measured, a same-group grandchild ran
+        on with PPID 1 while the old guard skipped the kill. ``killpg`` on that
+        number is :meth:`stop`'s escalation argument: a non-empty group's id
+        cannot be reused while any member lives, an empty one answers ``ESRCH``,
+        and the residual (empty, recycled, and its new holder a group leader) is
+        ADR-0238's. On win32 it is :meth:`stop`'s escalation too, which is not
+        guarded either: the job holds the members, and the root's handle, which
+        the transport keeps in its ``subprocess`` extra, keeps its pid from being
+        reused (read from CPython's source, not run on Windows). The pid-only
+        kill, for an ``attach`` that raised, has no group to lean on and so does
+        keep the guard, as does :func:`_end_when_spawned`'s.
+
+        Like :meth:`stop` it walks nothing (ADR-0291 limit 6): a descendant that
+        left the child's group on POSIX, by its own ``setsid``, is not reached.
+
+        A FAILED KILL STILL RELEASES (Codex review 8): the release is the
+        ``finally`` of everything here, taken at once (closing the transport is
+        then what ends the root, through asyncio's ``Popen.kill``), ``failure``
+        stays what propagates, and the cleanup error is attached to it as a note
+        and handed to the loop's exception handler. A cancel that lands in here
+        is never lost either: ``_teardown_tasks`` swallows one into its joins
+        (#357's shape), so when ``failure`` was not itself a cancel and one
+        arrived meanwhile, this raises ``CancelledError`` instead.
+        """
+
+        proc, tree = self._proc, self._tree
+        if proc is None:
+            return
+        task = asyncio.current_task()
+        cancels = task.cancelling() if task is not None else 0
+        self._stopping = True
+        cleanup_errors: list[Exception] = []
+        try:
+            try:
+                if tree is not None:
+                    tree.hard_kill()
+                elif proc.returncode is None:
+                    # ``attach`` itself raised: there is no tree to kill through.
+                    kill_process_tree(proc.pid)
+            except Exception as exc:  # noqa: BLE001 — reported below, never masks ``failure``
+                cleanup_errors.append(exc)
+            if not cleanup_errors:
+                # Polled rather than awaited on ``_exited``: when ``attach``
+                # raised there is no exit watcher to set it. 5 s is
+                # :meth:`stop`'s own bound on its last reap. Skipped when the
+                # kill raised: nothing was sent to wait for, and the transport
+                # close below is then what ends the root.
+                await self.wait_for_exit(5.0)
+        finally:
+            try:
+                await self._release(proc, tree)
+            except Exception as exc:  # noqa: BLE001 — as above
+                cleanup_errors.append(exc)
+            for exc in cleanup_errors:
+                _report_cleanup_failure(failure, exc)
+        if (
+            task is not None
+            and task.cancelling() > cancels
+            and not isinstance(failure, asyncio.CancelledError)
+        ):
+            raise asyncio.CancelledError
+
+    async def _release(
+        self, proc: asyncio.subprocess.Process, tree: ProcessTree | None
+    ) -> None:
+        """The end of :meth:`stop` and of :meth:`_abandon_start`: tasks, transport, tree.
+
+        ``proc``'s and no newer child's (#360, Codex review 4). Two releasers
+        of one child can overlap — two ``stop`` calls — and once the first has
+        cleared ``_proc`` a ``start`` may already have put the next child there;
+        the late one then closes only what it was handed.
+        """
+
+        current = self._proc is proc
+        try:
+            if current:
+                await self._teardown_tasks()
+            # Closing the transport is what keeps asyncio from printing
+            # ``Exception ignored in BaseSubprocessTransport.__del__ ...
+            # RuntimeError: Event loop is closed`` at interpreter shutdown — a
+            # traceback for a teardown that went exactly as designed, which in a
+            # TUI is indistinguishable from a real one and which the user cannot
+            # act on. Best-effort: the transport is private and may already be gone.
+            with contextlib.suppress(Exception):
+                transport = getattr(proc, "_transport", None)
+                if transport is not None:
+                    transport.close()
+
+            # A RELEASE, not a kill: on POSIX this signals nothing at all (the gap
+            # between a child's reap and this call is seconds at the delegation
+            # caller, which is precisely when an empty group's number is free for
+            # somebody else). On win32 it is ``CloseHandle(job)``, and because this
+            # tree asked for ``kill_on_close`` it also ends whatever is left.
+            if tree is not None:
+                tree.close()
+        finally:
+            if self._proc is proc:
+                self._tree = None
+                self._proc = None
 
     async def close_stdin(self) -> None:
         """Send EOF on the command channel — the GRACEFUL shutdown.
@@ -740,9 +963,14 @@ class RpcClient:
                 continue
             with contextlib.suppress(BaseException):
                 await task
-        self._stdout_reader_task = None
-        self._stderr_reader_task = None
-        self._exit_watcher_task = None
+        # Only the ones joined here: a restart can have put the next child's
+        # tasks in these fields while the joins above were suspended (#360).
+        if self._stdout_reader_task is tasks[0]:
+            self._stdout_reader_task = None
+        if self._stderr_reader_task is tasks[1]:
+            self._stderr_reader_task = None
+        if self._exit_watcher_task is tasks[2]:
+            self._exit_watcher_task = None
 
     # === Event subscription ====================================================
 
@@ -1260,8 +1488,19 @@ class RpcClient:
         the payload so the wire shape matches Pi's TS omits-undefined behavior.
         """
 
+        if self._starting:
+            # Until ``start`` returns the child is still its to end (#360), so a
+            # command sent now could only be lost with it. Measured on the base:
+            # one sent inside the grace was answered (Codex review 3), by a child
+            # a cancel landing next would now end.
+            raise RuntimeError("RpcClient not started: start() has not returned")
         if self._proc is None or self._proc.stdin is None:
             raise RuntimeError("RpcClient not started")
+        if self._stopping:
+            # ``stop`` has already failed every pending request with this; a
+            # command sent after that would only race the kill.
+            raise RpcClientError(str(command.get("type")), "RPC server stopped")
+        stdin = self._proc.stdin
 
         request_id = f"req_{next(self._next_id)}"
         payload: dict[str, Any] = {"id": request_id}
@@ -1277,9 +1516,22 @@ class RpcClient:
 
         line = serialize_json_line(payload).encode("utf-8")
         try:
-            self._proc.stdin.write(line)
-            await self._proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError) as exc:
+            stdin.write(line)
+            await stdin.drain()
+        except BaseException as exc:
+            self._pending_requests.pop(request_id, None)
+            # THE ANSWER MAY ALREADY BE IN (#360, Codex review 9). A ``stop``
+            # or the child's death fails every pending request, and neither
+            # wakes a ``drain`` blocked on a full pipe: measured, a 2 MB prompt
+            # to a child that reads nothing came back as the broken pipe, and
+            # asyncio logged the future's own error as never retrieved. That
+            # error is the more accurate reason, and reading it is what retires
+            # the future.
+            answered = future.exception() if future.done() and not future.cancelled() else None
+            if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                raise
+            if answered is not None:
+                raise answered from exc
             # A closed command channel means the server is gone. Normalised to
             # the SAME exception the slow leg raises: measured, this leg fired
             # in 0.00 s as a plain ``RuntimeError`` while a command issued
@@ -1287,7 +1539,6 @@ class RpcClient:
             # ``TimeoutError`` — one fact about the world, two unrecognisably
             # different failures, and callers handled only whichever they hit
             # first in testing.
-            self._pending_requests.pop(request_id, None)
             stderr_snapshot = self.get_stderr()
             raise RpcServerExited(
                 f"RPC server closed stdin: {exc}",
@@ -1319,6 +1570,87 @@ class RpcClient:
         if isinstance(response, RpcErrorResponse):
             raise RpcClientError(response.command, response.error)
         return response.data
+
+
+def _own_task(coro: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
+    """``asyncio.create_task``, closing ``coro`` when no task takes it (#360).
+
+    A host's task factory can refuse. The coroutine object is then nobody's,
+    and asyncio warns at its collection that it was never awaited (Codex
+    review 10: one warning per refused pump, reader or watcher; the spawn's
+    own coroutine is the same shape, refused before anything is forked).
+    """
+
+    try:
+        return asyncio.create_task(coro)
+    except BaseException:
+        coro.close()
+        raise
+
+
+async def _settled_spawn(
+    spawn: asyncio.Future[asyncio.subprocess.Process], bound: float
+) -> asyncio.subprocess.Process | None:
+    """The process a shielded spawn produced, once it has; ``None`` if none (#360).
+
+    For a :meth:`RpcClient.start` whose wait on the spawn was cancelled. The
+    child is already forked by then, so not waiting would leave it with nobody
+    to end it; the cancel is absorbed while this waits (``start`` re-raises it
+    once the child is ended), and the wait is bounded by ``bound``. A spawn
+    still running at the bound is handed to :func:`_end_when_spawned`.
+    """
+
+    deadline = time.monotonic() + bound
+    while not spawn.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            spawn.add_done_callback(_end_when_spawned)
+            return None
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait([spawn], timeout=remaining)
+    if spawn.cancelled() or spawn.exception() is not None:
+        return None
+    return spawn.result()
+
+
+def _end_when_spawned(spawn: asyncio.Future[asyncio.subprocess.Process]) -> None:
+    """End the child of a spawn that outlived :func:`_settled_spawn`'s bound.
+
+    A done-callback, so synchronous: the group kill, then the transport. The
+    kill is the pid-only one, so it keeps the guard (verify round 2, S-A):
+    unguarded, a root reaped before the spawn landed still had its pid
+    signalled, and ``kill_process_tree`` reads a number another process may
+    hold by then — ``getpgid`` routes a reused, non-leader pid to a plain
+    ``kill``. What a root reaped by then left in its group is not reached
+    (ADR-0201's #360 amendment, open item 3).
+    """
+
+    if spawn.cancelled() or spawn.exception() is not None:
+        return
+    proc = spawn.result()
+    if proc.returncode is None:
+        kill_process_tree(proc.pid)
+    with contextlib.suppress(Exception):
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()
+
+
+def _report_cleanup_failure(failure: BaseException, error: Exception) -> None:
+    """Keep a cleanup ``error`` without letting it replace ``failure`` (#360).
+
+    ``failure`` is what propagates — a cancel must stay a cancel — so the
+    error rides on it as a note, and goes to the loop's exception handler with
+    its traceback.
+    """
+
+    failure.add_note(f"RpcClient: ending the child failed too: {error!r}")
+    asyncio.get_running_loop().call_exception_handler(
+        {
+            "message": "RpcClient: ending the child of a start() that did not return failed",
+            "exception": error,
+        }
+    )
 
 
 # Some platforms (Windows) lack SIGTERM equivalents; expose for symmetry
