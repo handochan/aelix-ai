@@ -299,6 +299,13 @@ nothing). What stays is a child that nothing walks: its parent SIGKILLed on macO
 6. **`RpcClient.stop()` walks nothing on any platform.** A command its `--mode rpc` child's `bash`
    runs survives that client's escalation, on Linux as on macOS. `RpcChannel`'s own legs walk; the
    bundled runtime does not select that channel.
+   *2026-11-07 note (#360): a `RpcClient.start()` that does not return now kills its child's group
+   before it re-raises (ADR-0201, `## Amendment (2026-11-07, #360)`), and that kill takes no walk
+   either: the group or the job, as `stop()`'s escalation (on win32 `taskkill /T` follows live
+   parent links). It is sent whether or not the root's `returncode` is in: §3 keeps a reaped root
+   out of the WALK, and a reaped root's group is §4's, with §4's bound. A real `--mode rpc` child
+   had nothing under it at the grace's first step (macOS, 2 runs) nor at 20, 50 and 95 ms and
+   0.5, 2 and 5 s (macOS, 2 runs each, #360's verification).*
 7. **Windows is unchanged and was not run here.** The win32 arms never consult the walk (§1), there
    are no groups to read there (`group_leaders` is `[]`), and §6's event ends a win32 grace as it
    does a POSIX one; `test_the_walk_on_windows_neither_reads_proc_nor_loads_libproc`,

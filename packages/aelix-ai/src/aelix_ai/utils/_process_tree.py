@@ -794,9 +794,10 @@ class ProcessTree:
 def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
     """Forcibly terminate ``pid`` and every process descended from it (#105).
 
-    The pid-only entry point, down to ONE caller since #222: it is the
-    degradation in ``rpc_client.stop()`` for a client whose ``attach`` itself
-    raised out of ``start``, leaving ``_proc`` set with no tree behind it.
+    The pid-only entry point, down to ONE caller since #222: the rpc client,
+    for a child whose ``attach`` itself raised in ``start`` (since #360
+    ``start`` kills it with this before re-raising; ``stop()`` keeps it too),
+    and for one whose spawn outlived the wait of a cancelled ``start`` (#360).
     The two spawn sites it was kept for — ``tools/bash.py``'s
     ``_LocalBashOperations.exec`` and ``tools/_subprocess.py::run_cancellable``
     — hold a :class:`ProcessTree` now and kill through it, which is what buys
@@ -822,10 +823,11 @@ def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
     reap, ``_subprocess.py::run_cancellable``'s AFTER asyncio's watcher took the
     child (measured) — and neither of them reaches this function since #222.
     The one caller left is at an asyncio spawn site too, so the zombie is not
-    what pins the number here: ``rpc_client.stop()`` reads
-    ``returncode is None`` before it escalates, and this module's own
-    PID/PGID-hazard paragraph records that this does NOT prove the pid is
-    unreaped there. What bounds the fallback anyway is that it only ever
+    what pins the number here: its two calls from ``start`` (the abandon and
+    the late spawn's done-callback) read ``returncode is None`` immediately
+    before, ``stop()`` calls it only once its exit wait has seen no status,
+    and this module's own PID/PGID-hazard paragraph records that neither
+    proves the pid is unreaped there. What bounds the fallback anyway is that it only ever
     addresses the group number the spawn asked for: a non-empty group keeps its
     id while any member lives (POSIX.1 §3.293; Linux
     ``attach_pid(PIDTYPE_PGID)``), and an empty one has nothing to kill —

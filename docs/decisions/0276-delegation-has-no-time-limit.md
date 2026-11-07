@@ -755,6 +755,13 @@ render byte for byte as before.*
   - a cancel during `RpcClient.start()`'s startup grace leaves a live process no
     row tracks (the row's `proc` is set only after `start()` returns), and a child
     that exits inside that grace reports `started=False` with the work it did;
+    *2026-11-07 note (#360): the cancel half is closed — once the child is
+    spawned, a `start()` that does not return kills its process group and releases
+    the client, with the exceptions ADR-0201's `## Amendment (2026-11-07, #360)`
+    lists as open. The row still has no process during the grace, so `started=False`
+    stands, and a `stop` or `stop_all` landing there returns before `run` kills the
+    child when the grace ends: 0.10-0.17 s later for each of them, from the exit
+    watcher's first step, on the base and after the fix, macOS and Linux;*
   - the final reap can wait forever when a `setsid` helper holds the pipes after
     the root died (macOS has no descendant walk to find it; *2026-11-06 note,
     ADR-0291: it has one now, but a helper whose parent already died is outside

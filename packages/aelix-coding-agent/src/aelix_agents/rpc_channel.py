@@ -387,7 +387,7 @@ class RpcChannel:
             #
             # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
             # the event ``prompt_and_wait`` itself waits on
-            # (``rpc_client.py:1029-1032``), so a line after it is by definition
+            # (``rpc_client.py:1257-1260``), so a line after it is by definition
             # not this turn's data — and folding one in is last-write-wins on
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
@@ -546,6 +546,13 @@ class RpcChannel:
             try:
                 await client.start()
             except asyncio.CancelledError:
+                # Nothing is left to stop: ``row.proc`` is not set yet, and a
+                # ``start`` that does not return has already killed the child
+                # it spawned, with its group, and released it (#360). Before
+                # that, a cancel inside the grace left the child running here
+                # with no row to reach it. The exceptions are ``start``'s own
+                # (its docstring): CPython's pipe setup failing after the fork,
+                # and a spawn that outlived the wait for it.
                 raise
             except BaseException as exc:  # noqa: BLE001 — a failed spawn is a RESULT
                 # Covers exec failures AND the child that died inside the
@@ -576,7 +583,7 @@ class RpcChannel:
             # BORROWED, never owned — ``tree_owned=False`` is what stops §A.6's
             # closing rules from touching it: :meth:`RpcClient.stop` still owes
             # this tree a soft -> grace -> hard sequence and closes it itself
-            # (``rpc_client.py:643-648``). Closing it here would disarm both
+            # (``rpc_client.py:868-872``). Closing it here would disarm both
             # legs permanently, since ``soft_kill``/``hard_kill`` early-return
             # on ``closed``.
             #
@@ -846,15 +853,18 @@ class RpcChannel:
         ``killpg`` (``rpc_client.py``), so adding one would pre-empt a teardown
         this channel does not own. The residual — a cancellation that never
         reaches ``client.stop()`` (``_shutdown`` has no ``try/finally``, RPC-5)
-        — is recorded in §A.4 and §I as out of scope; ``RpcChannel`` is not
-        wired into the product (``runtime.py`` builds a ``PrintChannel``).
+        — is recorded in §A.4 and §I as out of scope and filed as #225 (a first
+        cancel in a finished turn's exit wait leaves the child running, the
+        client unreleased and the row gone, measured by #360's Codex review);
+        ``RpcChannel`` is not wired into the product (``runtime.py`` builds a
+        ``PrintChannel``).
 
         Stated cost, because this method is SYNCHRONOUS and every caller is
         inside an ``except asyncio.CancelledError`` on the event-loop thread:
         on win32 ``hard_kill()`` runs ``subprocess.run(taskkill, timeout=5)``
         there, where today's ``os.kill`` was instantaneous. Accepted, and it is
         the stall :meth:`RpcClient.stop` already pays on the loop at the same
-        shape (``rpc_client.py:616``), for the same reason: the alternative to a
+        shape (``rpc_client.py:736-738``), for the same reason: the alternative to a
         bounded stall is a leaked tree. Both obvious remedies are worse — a
         ``terminate_job``-only path for synchronous callers drops the ``/T``
         walk, and moving the kill onto a thread inside ``reap`` would insert an
