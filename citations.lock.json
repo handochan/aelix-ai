@@ -2650,25 +2650,26 @@
    "line = self._buffer[:idx]",
    "self._buffer = self._buffer[idx + 1 :]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1029-1032": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1257-1260": [
    "def _listener(event: dict[str, Any]) -> None:",
    "if collect:",
    "collected.append(event)",
    "if event.get(\"type\") == \"agent_end\" and not done.done():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1172-1172": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1400-1400": [
    "argv = [sys.executable, \"-P\", \"-m\", \"aelix\", \"--mode\", \"rpc\"]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:616-616": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:736-738": [
+   "# ADR-0238 (review posix2/F4).",
+   "if tree is not None:",
    "tree.hard_kill()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:643-648": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:868-872": [
    "# caller, which is precisely when an empty group's number is free for",
    "# somebody else). On win32 it is ``CloseHandle(job)``, and because this",
    "# tree asked for ``kill_on_close`` it also ends whatever is left.",
    "if tree is not None:",
-   "tree.close()",
-   "self._tree = None"
+   "tree.close()"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:1645-1645": [
    "result = await runtime_host.fork(cmd.entry_id)"
