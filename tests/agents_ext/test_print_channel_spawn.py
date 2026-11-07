@@ -1644,7 +1644,10 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
             return 0
 
     monkeypatch.setattr(ctypes, "CDLL", lambda *_a, **_k: _FakeLibc())
-    pdeathsig()
+    # The spawning process resolves ``prctl`` and hands it to the hook (#721):
+    # the hook itself loads nothing between fork and exec, so a bare
+    # ``pdeathsig()`` arms nothing and is not what any spawn passes.
+    pdeathsig(prctl=rp._resolve_prctl())
 
     assert calls, "pdeathsig must actually call prctl"
     option, sig, *_rest = calls[0]
@@ -2126,10 +2129,10 @@ def _pdeathsig_helper(pidfile: Path) -> str:
         + textwrap.dedent(
             f"""
             import subprocess, sys, time
-            from aelix_agents.reaper import pdeathsig
+            from aelix_agents.reaper import pdeathsig_preexec
             kid = subprocess.Popen(
                 [sys.executable, "-c", "import time; time.sleep(120)"],
-                preexec_fn=pdeathsig,
+                preexec_fn=pdeathsig_preexec(),
             )
             announce({str(pidfile)!r}, kid.pid)
             time.sleep(120)
