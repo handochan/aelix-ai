@@ -24,7 +24,7 @@ from aelix_coding_agent.subagent_contract import (
     SubagentUsage,
 )
 
-from aelix_agents.stream import _StreamState, _strip_control
+from aelix_agents.stream import _StreamState, _strip_control, latest_run_closed
 
 # ``AgentProfile.output_cap``'s default (``agents/profile.py:241``), duplicated
 # as a module constant so a caller that has no profile (a spawn that died before
@@ -920,7 +920,7 @@ def build_result(
     129, ``SIGKILL`` -9.)
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:286-290``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:301-305``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -929,7 +929,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:1014-1020``), so a child that read a large file emits a
+    # line (``stream.py:1048-1054``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare
@@ -937,14 +937,26 @@ def build_result(
     # dropped we cannot know whether the terminator was among them, so its
     # absence is not evidence and the run is judged on the exit code and the
     # stream alone.
-    no_terminator = not state.saw_agent_end and state.dropped_lines == 0
+    #
+    # KEYED BY RUN (#611 S1a): the terminator that counts is the LATEST run's
+    # (:func:`latest_run_closed`), not the first ``agent_end`` the stream ever
+    # carried, and so is ``state.stop_reason`` (reset at each ``agent_start``).
+    # A child can make several runs (an auto-retry is a second one), and one
+    # whose last run was cut off is not finished because an earlier run was.
+    # Only as far as the channel folds: the print channel folds every line, and
+    # ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:431``),
+    # so for it the latest run is the first one.
+    closed = latest_run_closed(state)
+    no_terminator = not closed and state.dropped_lines == 0
     # THE LINGERING SPLIT (#604, ADR-0276 D4). Both halves need the TERMINATOR
     # itself, not merely "nothing was missing": a terminator dropped as an
     # oversize line (``dropped_lines``) proves nothing about a child that then
-    # failed to exit, so it is judged as unfinished.
+    # failed to exit, so it is judged as unfinished. The linger success needs a
+    # CLOSED LATEST run; a legacy child that closed it and then lingered stays
+    # ``ok`` with its note, exactly as before (ADR-0276 D4, #611 S1a).
     lingering = lingered and outcome == "ok"
     finished_then_lingered = (
-        lingering and state.saw_agent_end and state.stop_reason not in ("error", "aborted")
+        lingering and closed and state.stop_reason not in ("error", "aborted")
     )
     lingered_unfinished = lingering and not finished_then_lingered
     process_failed = (

@@ -63,12 +63,12 @@ from aelix_coding_agent.subagent_contract import SubagentToolActivity, SubagentT
 MAX_LINE_BYTES = 4 * 1024 * 1024
 
 # Event types this reducer consumes. Everything else — ``message_start``,
-# ``message_update``, ``turn_end``, the auto-retry pair, the compaction pair —
-# is ignored on purpose. ``message_update`` in particular MUST be ignored: its
-# ``partial`` repeats the whole assistant message on every delta (measured
-# stream-to-result ratios of 329x and 2773x), while the outer
-# ``message.content`` stays ``[]`` for the duration, so consuming it costs
-# O(n^2) and yields nothing.
+# ``message_update``, the auto-retry pair, the compaction pair — is ignored on
+# purpose, and ``turn_end`` gives only a stop reason (:func:`_reduce_turn_end`).
+# ``message_update`` in particular MUST be ignored: its ``partial`` repeats the
+# whole assistant message on every delta (measured stream-to-result ratios of
+# 329x and 2773x), while the outer ``message.content`` stays ``[]`` for the
+# duration, so consuming it costs O(n^2) and yields nothing.
 #
 # ``tool_execution_end`` USED to be on that ignored list and no longer is. It
 # carries the only per-tool success/failure signal that ever reaches the parent:
@@ -77,6 +77,7 @@ MAX_LINE_BYTES = 4 * 1024 * 1024
 # back ``ok``.
 _AGENT_START = "agent_start"
 _TURN_START = "turn_start"
+_TURN_END = "turn_end"
 _MESSAGE_END = "message_end"
 _TOOL_EXECUTION_START = "tool_execution_start"
 _TOOL_EXECUTION_END = "tool_execution_end"
@@ -228,6 +229,19 @@ class _StreamState:
     assistant message."""
 
     stop_reason: str | None = None
+    """The stop reason of the LATEST run (#611 S1a): reset at every ``agent_start``.
+
+    Within a run, last NON-EMPTY wins: a message whose ``stop_reason`` is
+    ``None`` does not erase the ``error`` an earlier message of the same run
+    reported. Across runs it does not carry over — a stop reason belongs to the
+    run that reported it. Read from the assistant ``message_end``, and from
+    ``turn_end`` for a turn that printed none or when it says ``aborted``
+    (:func:`_reduce_turn_end`): the harness's abort close-out ends its run with
+    a ``turn_end`` holding an ``aborted`` message of its own, then ``agent_end``
+    (``harness/core.py:6074-6076``). Before this, a run 2 cut that way read as
+    run 1's ``end_turn``, and a run 2 answer that reported no stop reason read
+    as run 1's ``error`` (Codex review of #721, finding 3)."""
+
     error_message: str | None = None
 
     final_error: str | None = None
@@ -241,7 +255,8 @@ class _StreamState:
     limit would be the wrong diagnosis. This field is reset on EVERY assistant
     ``message_end``, so it names an error only while the latest message is that
     error. The stale value stays readable in :attr:`error_message` and in the
-    envelope's ``details``."""
+    envelope's ``details``. Reset at every ``agent_start`` too (#611 S1a): until
+    a run reports its own last message, nothing it did ended in an error."""
 
     input: int = 0
     output: int = 0
@@ -294,8 +309,27 @@ class _StreamState:
     ``agent_end`` not yet? Last event wins, unlike the latched
     :attr:`saw_agent_end`: an auto-retry is a second run (``agent_start`` →
     ``agent_end`` → ``agent_start``), and a stream cut during it must still
-    read as unfinished. Consumed by ``child_session.usage_is_complete``; the
-    two latched flags keep their existing meanings for the channels."""
+    read as unfinished. Consumed by ``child_session.usage_is_complete`` and,
+    since #611 S1a, by :func:`latest_run_closed`, which is what the envelope's
+    status reads; the two latched flags keep their existing meanings for the
+    channels.
+
+    One child process can make several runs — an auto-retry is a second one,
+    and so is the harness's overflow-compaction retry. Each ``agent_start``
+    opens the next, and resets :attr:`stop_reason` and :attr:`final_error`, so
+    the delegation's status follows the latest run. Usage, the summary and
+    :attr:`error_message` stay aggregated across runs."""
+
+    turn_reported: bool = False
+    """Has the current turn had an ASSISTANT ``message_end``? Cleared at every
+    ``turn_start`` and ``agent_start`` (#611 S1a). The user's and a tool
+    result's ``message_end`` do not set it: a real child's abort close-out
+    prints its run's user ``message_end`` and then the ``turn_end`` that holds
+    the verdict. While it is set, ``turn_end`` adds nothing but ``aborted``:
+    the turn's verdict is the one ``message_end`` printed, and a
+    ``message_end`` hook that rewrote the message reaches only ``turn_end``
+    (``tests/agents_ext/test_child_ownership_365.py``'s ``fatal-*`` cases
+    rewrite an ``error`` to ``stop`` that way)."""
 
     turn_starts: int = 0
     """``turn_start`` events seen. Each :class:`ToolCall` records the value at
@@ -1024,6 +1058,7 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
     if message.get("role") != "assistant":
         return
     state.turns += 1
+    state.turn_reported = True
 
     # Last-write-wins, but only for a NON-EMPTY value: a later message whose
     # ``stop_reason`` is ``None`` (still streaming, or an adapter that omits it)
@@ -1125,6 +1160,44 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
     return reduce_event(state, event)
 
 
+def _reduce_turn_end(state: _StreamState, message: Any) -> None:
+    """Take a turn's stop reason from its ``turn_end`` (#611 S1a, fix round 2 of #721).
+
+    Two cases, and only the verdict: ``message_end`` stays the one source of the
+    summary, the usage and the turn count.
+
+    - A turn that printed no ASSISTANT ``message_end``. The harness's abort
+      close-out emits ``turn_end`` with an ``aborted`` message of its own and
+      then ``agent_end`` (``harness/core.py:6074-6076``); a real print-mode
+      child aborted mid-stream prints ``agent_start, turn_start,
+      message_end(user), turn_end(aborted), agent_end``, so without this the
+      run's verdict would be whatever an earlier one left.
+    - ``aborted``, after one. An abort during the turn's tool calls lands after
+      the assistant ``message_end`` (``tool_use``) and the tool result's, and
+      its close-out's ``turn_end`` is the run's last word: a real child exits 1
+      for it (``print_mode.py`` reads that ``aborted``), and it read ``error``
+      with ``tool_use`` before this. Any other verdict on the ``turn_end`` of a
+      turn that printed one is ignored: it carries the message a
+      ``message_end`` hook may have rewritten, which is not the child's own word
+      (``test_child_ownership_365.py``'s ``fatal-*`` cases).
+    """
+
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return
+    stop_reason = message.get("stop_reason")
+    if not isinstance(stop_reason, str) or not stop_reason:
+        return
+    if state.turn_reported and stop_reason != "aborted":
+        return
+    state.stop_reason = stop_reason
+    error_message = message.get("error_message")
+    state.final_error = (
+        error_message
+        if stop_reason == "error" and isinstance(error_message, str) and error_message
+        else None
+    )
+
+
 def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
     """Fold one ALREADY-PARSED event into ``state``; return the same instance.
 
@@ -1157,6 +1230,10 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
     if kind == _AGENT_START:
         state.saw_agent_start = True
         state.run_open = True
+        # The verdict belongs to the run that reports it (#611 S1a).
+        state.stop_reason = None
+        state.final_error = None
+        state.turn_reported = False
     elif kind == _TURN_START:
         # A new turn begins with nothing executing. Clearing here means a
         # statusline row can never be left showing a tool that finished during
@@ -1165,11 +1242,14 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         # panel reads ``recent``'s outcomes instead (#132).
         state.current_tool = None
         state.turn_starts += 1
+        state.turn_reported = False
         # The previous turn's open calls will never end now: they may leave
         # the window.
         _trim_recent(state)
     elif kind == _MESSAGE_END:
         _reduce_message_end(state, event.get("message"))
+    elif kind == _TURN_END:
+        _reduce_turn_end(state, event.get("message"))
     elif kind == _TOOL_EXECUTION_START:
         # ``tool_name``, NOT pi's ``name`` (kernel ``types.py:195-199``).
         tool_name = event.get("tool_name")
@@ -1193,6 +1273,24 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
     return state
 
 
+def latest_run_closed(state: _StreamState) -> bool:
+    """Did the child's LATEST run reach its own ``agent_end``? (#611 S1a)
+
+    The success terminator, keyed by run. :attr:`_StreamState.saw_agent_end`
+    is latched at the FIRST ``agent_end``, so a child whose first run finished
+    and whose second run (an auto-retry, a compaction retry) was then cut off
+    read as finished: measured on main ``fc8f3048``, ``ok=True status='ok'
+    summary='run 1 answer'`` for a stream that ended inside run 2. An
+    ``agent_end`` with no ``agent_start`` before it (only a synthetic stream
+    sends one) still closes, as it always did.
+
+    It sees only what the channel folded: the print channel folds every line,
+    ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:431``).
+    """
+
+    return state.saw_agent_end and not state.run_open
+
+
 __all__ = [
     "ACTIVITY_MAX",
     "LAST_TEXT_MAX_CHARS",
@@ -1208,6 +1306,7 @@ __all__ = [
     "ToolCall",
     "_StreamState",
     "activity_of",
+    "latest_run_closed",
     "path_for_display",
     "reduce_event",
     "reduce_line",

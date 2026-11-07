@@ -126,7 +126,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:184``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:196``) and
 ``progress._TERMINAL_STATES`` (``progress.py:145``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -392,7 +392,7 @@ class RpcChannel:
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:950-956``) is NOT gated on the caller's
+            # disjunct (``envelope.py:962-968``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:

@@ -1602,7 +1602,7 @@ async def run_tui(
             _commit(Text("Clone is unavailable (no session).", style="yellow"))
             return
         # ``Session.get_leaf_id`` is the public accessor for the session tip
-        # (Pi parity ``Session.get_leaf_id`` ``session.py:130``); degrades
+        # (Pi parity ``Session.get_leaf_id`` ``session.py:157``); degrades
         # silently when the session has no entries yet.
         # #413 — a session with no user or assistant message yet is refused
         # too, as before #413, when such a session had no entry and so no leaf:
@@ -2326,7 +2326,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4926``) always passes one, so this is
+            # production caller (``entry.py:4930``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2960,7 +2960,7 @@ async def run_tui(
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
-        ``_safe_invoke`` (``hooks.py:1444-1449``) logs and swallows exactly
+        ``_safe_invoke`` (``hooks.py:1458-1463``) logs and swallows exactly
         ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
         redundant on purpose, not a second class of failure: it catches the same
         class, and it is here so the guarantee survives a future registration
@@ -3399,7 +3399,7 @@ async def run_tui(
         # remains useful after releasing the direct live usage figure.
         #
         # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
-        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1444``; the
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1458``; the
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
@@ -4556,11 +4556,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1977``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1979``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1960`` already printed at startup, and one that
+    #       what ``entry.py:1962`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -5351,7 +5351,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4855-4871 and
+            # Two audiences, discriminated exactly as entry.py:4859-4875 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

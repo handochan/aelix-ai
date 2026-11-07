@@ -7,11 +7,16 @@ Pi source: ``packages/agent/src/harness/session/memory-storage.ts:40-131``
 
 from __future__ import annotations
 
+import copy
 import uuid
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC
 
 from aelix_agent_core.session.entries import LeafEntry, SessionTreeEntry
 from aelix_agent_core.session.storage import (
+    Placement,
+    PlacementConflict,
     SessionError,
     SessionMetadata,
     SessionStorage,
@@ -63,6 +68,13 @@ class MemorySessionStorage(SessionStorage[SessionMetadata]):
 
     Bound to the base :class:`SessionMetadata`. Callers needing extended
     metadata should pass a subclass via the ``metadata`` kwarg.
+
+    Never has a pending outcome (#721): a write here either changed memory
+    or raised before it did, so :meth:`resolve_pending` has nothing to do.
+    :meth:`append_to_leaf`, :meth:`place_entry` and :meth:`withdraw_tail`
+    write through :meth:`append_entry`, so a subclass that overrides it to fail
+    a write fails these too — and a :meth:`withdraw_tail` cut that way is left
+    as it was cut: there is no file to settle it from.
     """
 
     def __init__(
@@ -122,6 +134,61 @@ class MemorySessionStorage(SessionStorage[SessionMetadata]):
         self._by_id[entry.id] = entry
         _update_label_cache(self._labels_by_id, entry)
         self._leaf_id = _leaf_id_after_entry(entry)
+
+    async def append_to_leaf(
+        self, build: Callable[[str, str | None], SessionTreeEntry]
+    ) -> SessionTreeEntry:
+        entry = build(_generate_entry_id(self._by_id), await self.get_leaf_id())
+        await self.append_entry(entry)
+        return entry
+
+    async def place_entry(
+        self,
+        entry_id: str,
+        build: Callable[[str | None], SessionTreeEntry],
+        *,
+        same: Callable[[SessionTreeEntry], bool],
+    ) -> Placement:
+        existing = self._by_id.get(entry_id)
+        if existing is not None:
+            if same(existing):
+                return Placement(existing, adopted=True)
+            raise PlacementConflict(entry_id)
+        entry = build(await self.get_leaf_id())
+        if entry.id != entry_id:
+            raise ValueError(f"place_entry built {entry.id!r} for id {entry_id!r}")
+        # A copy, as the JSONL store keeps the line it wrote: the caller still
+        # holds the payload, and ``same`` must compare against what was placed.
+        stored = copy.deepcopy(entry)
+        await self.append_entry(stored)
+        return Placement(stored, adopted=False)
+
+    async def withdraw_tail(
+        self,
+        target_leaf: str | None,
+        is_withdrawn: Callable[[SessionTreeEntry], bool],
+    ) -> None:
+        path = await self.get_path_to_root(await self.get_leaf_id())
+        if target_leaf is None:
+            tail = path
+        else:
+            ids = [entry.id for entry in path]
+            if target_leaf not in ids:
+                raise SessionError(
+                    "not_found", f"Entry {target_leaf} is not on the current path"
+                )
+            tail = path[ids.index(target_leaf) + 1 :]
+        survivors = [entry for entry in tail if not is_withdrawn(entry)]
+        await self.set_leaf_id(target_leaf)
+        for entry in survivors:
+            await self.append_to_leaf(
+                lambda entry_id, parent_id, entry=entry: replace(
+                    entry, id=entry_id, parent_id=parent_id
+                )
+            )
+
+    async def resolve_pending(self) -> None:
+        return None
 
     async def get_entry(self, id: str) -> SessionTreeEntry | None:
         return self._by_id.get(id)

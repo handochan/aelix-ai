@@ -11,7 +11,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``), or it is a chain step
 waiting for the one before it, and has no spawn id at all, because
 ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:1429``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:1441``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -69,7 +69,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:1442-1443``), which for a chatty child is hundreds per
+stdout line (``runtime.py:1454-1455``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 1
@@ -252,7 +252,7 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:1175-1177``) — and the kernel emits that event with the raw
+    (``stream.py:1255-1257``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
     (``loop.py:889-897``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
@@ -635,7 +635,7 @@ def format_aggregate_status(
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:98-99``, and ``stream.py:269-272``
+    message wins" (``subagent_contract.py:98-99``, and ``stream.py:284-287``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
@@ -2290,7 +2290,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:1429``).
+        (``runtime.py:1441``).
         """
 
         if index < 0:

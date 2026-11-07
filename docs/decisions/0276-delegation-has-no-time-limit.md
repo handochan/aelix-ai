@@ -138,6 +138,73 @@ fed only the member clock; wave admission and the posture floor never read it.
   A stop that lands during the wait stays `aborted`: `lingered` is read only
   beside `outcome="ok"`. The 2 s floor this replaces (`POST_EOF_EXIT_GRACE_SECONDS`,
   P2 review MEDIUM #3) is gone with the deadline it was a floor under.
+
+  **Amended 2026-11-07 (#721, #611 S1a; Codex round 5 finding 6): the terminator is
+  the latest run's.** A child can make several runs (an auto-retry and the overflow
+  recovery each start one), and `saw_agent_end` is latched at the first `agent_end`.
+  So a child whose first run closed and whose second was cut off read as finished:
+  measured on `main` `fc8f3048` through the real reducer and `build_result`,
+  `ok=True status='ok' summary='run 1 answer'` for a stream that ended inside run 2,
+  and through the real print channel a stub child that did the same and exited 0
+  came back `ok`. The reducer now opens a run at each `agent_start`, and
+  `build_result` reads `stream.latest_run_closed` — the latest run reached its own
+  `agent_end` — for both the missing-terminator rule and the first bullet above. The
+  first bullet is otherwise unchanged: a child that closed its LAST run with a clean
+  stop reason and then lingered stays `ok` with the note. The versioned
+  `print_done` that would also be required for a jobs-protocol child is #611 S1c,
+  behind the jobs gate. Tests: `tests/agents_ext/test_latest_run_611.py`.
+
+  **The stop reason is the latest run's too (fix round 1 of #721; Codex finding 3,
+  verify should-fix 1).** `agent_start` resets `stop_reason` and `final_error`,
+  last-non-empty-wins holds within a run, and a `turn_end` gives the stop reason of a
+  turn that printed no ASSISTANT `message_end`, and gives `aborted` wherever it lands
+  (fix round 2 of #721). The harness's abort close-out ends a run with a `turn_end`
+  holding an `aborted` message of its own, then `agent_end` (`harness/core.py`), and
+  it is the one `turn_end` the product emits that no assistant `message_end` of its
+  turn printed (`loop.py` emits both of its own after the turn's message). A real
+  print-mode child aborted mid-stream prints `agent_start, turn_start,
+  message_end(user), turn_end(aborted), agent_end`, so the user's `message_end` does
+  not report the turn; one aborted in a tool prints the assistant's
+  `message_end(tool_use)` and the tool result's before its close-out, and exits 1 for
+  that `aborted` (`print_mode.py`). A turn that printed an assistant `message_end`
+  keeps that verdict for anything but `aborted`: its `turn_end` carries the message a
+  `message_end` hook may have rewritten (`test_child_ownership_365.py`'s `fatal-*`
+  cases rewrite an `error` to `stop` and still fail). Measured on
+  `ed76ea76`, and the same on `main` `fc8f3048`, through the real print channel with
+  stub children: run 1 answers, run 2
+  is aborted, the child lingers — `(ok, status, stop_reason) = (True, 'ok',
+  'end_turn')`, the linger success taking run 1's stop reason for run 2's; run 1
+  errors, run 2 is aborted, exit 0 — `(False, 'error', 'error')`, right only because
+  run 1's `error` was stale; run 1 errors, run 2 answers with no stop reason —
+  `(False, 'error', 'error')`. Now `(False, 'error', 'aborted')`, `(False,
+  'aborted', 'aborted')` and `(True, 'ok', None)`
+  (`test_through_the_print_channel_the_stop_reason_is_the_latest_runs`). Usage, the
+  summary and `error_message` stay aggregated across runs.
+
+  **An abort in a tool is `aborted` too (fix round 2 of #721).** Measured with the
+  verify round's real print-mode child (`.omc/specs/721-verify-r2-probes/latest/real/`,
+  `child.py` through the print channel; run 1 answers, run 2 is aborted from inside
+  its tool, exit 1): `(ok, status, stop_reason) = (False, 'error', 'tool_use')` with
+  `error='exited with code 1'` on `ed76ea76` and on fix round 1 (`93522182`), now
+  `(False, 'aborted', 'aborted')` with the own-abort reason
+  (`test_an_abort_during_a_tool_reads_aborted_after_the_turns_own_message_end`, and
+  the print-channel case `run1-answers_run2-aborted-in-a-tool_exit1`). The same
+  child aborted mid-stream read `aborted` on `93522182` already; its event order is
+  pinned now (`test_a_real_abort_close_out_is_read_past_its_runs_user_message_end`).
+  An auto-retry aborted mid-answer after a 429 reads `aborted` with the summary
+  `(no output)` and no `error` (one aborted inside a tool already read `(no output)`, and
+  one aborted during the backoff wait still reads `error` with the 429, unchanged; verify
+  round 3 of #721, real children): the 429 is the error the harness went on from, so D17 keeps it in
+  `details` only (`test_an_aborted_auto_retry_keeps_the_error_it_retried_in_details_only`;
+  the real child `err-then-abort-stream` read `error` with `429 rate limited` as its
+  summary on `ed76ea76`).
+
+  **The print channel only.** `RpcChannel` stops folding events at its first
+  `agent_end` (`rpc_channel.py:431`), so for it the latest run is the first one:
+  Codex's real RPC child that closed run 1 and exited 0 inside run 2 came back `ok`
+  with run 1's answer, and one whose retry run succeeded came back the first run's
+  `error`. The bundled runtime does not build an `RpcChannel`; widening its fold is
+  left to the lane that owns that file (#360).
 - **An RPC command's answer:** `RPC_COMMAND_TIMEOUT_MS = 180_000`
   (`rpc_channel.py`), the value the real-child pins use. Left unset it would be
   the client's 30 s, which ADR-0201 rejected because a cold child spends ~25 s

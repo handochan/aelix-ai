@@ -4,7 +4,7 @@
 and only hands it to ``_run`` some twenty lines later. Two awaits sit in that
 gap — ``_emit_queue_update`` and ``_emit_before_agent_start`` — and both turn a
 handler exception into a raised ``AgentHarnessError``, while a handler's
-``error_mode`` defaults to ``"throw"`` (``hooks.py:2588-2595``). Before this suite
+``error_mode`` defaults to ``"throw"`` (``hooks.py:2603-2610``). Before this suite
 existed, either raise unwound the frame with the user's queued text in a dead
 local: on no queue, in no turn, in no exception.
 

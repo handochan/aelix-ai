@@ -718,6 +718,9 @@ def usage_is_complete(state: _StreamState, *, status: str | None = None) -> bool
       may have been billed without its ``message_end`` arriving. Not even an
       ``agent_end`` proves otherwise: the child's own abort path emits one
       without a ``message_end`` for the request it abandoned (Codex review).
+      Since #721 a child's OWN abort reads ``aborted`` too, inside a tool or
+      after its answer as well as mid-stream, so those report a lower bound
+      even where no request was in flight: the safe side, not an exact count.
     * **anything else** — complete only when the child's LATEST run closed on its
       own (``run_open`` false). ``run_open`` is last-event-wins, so a stream cut
       during an auto-retry, which is a second run after an ``agent_end``, still

@@ -17,6 +17,12 @@ file (``create``, and a fork built through it) is published atomically:
 staged in ``<path>.tmp`` and renamed into place, so it appears whole or not
 at all. A write that fails part-way re-arms the healing newline, so it never
 costs the entry appended after it.
+
+A write that raised after its ``append_file`` call began has an unknown
+outcome: the line may be whole on disk, cut, or absent. The store keeps that
+entry pending and settles it under its lock, by reading the file back, before
+it writes again — so the next entry's parent is chosen from what the file
+holds, not from a cache that never saw the line (#721, ADR-0242 rule 5).
 """
 
 from __future__ import annotations
@@ -26,8 +32,8 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -37,9 +43,11 @@ from aelix_agent_core.session.entries import (
     entry_from_json,
     entry_to_json,
 )
-from aelix_agent_core.session.fs import FileSystem
+from aelix_agent_core.session.fs import FileSystem, NotAttempted
 from aelix_agent_core.session.storage import (
     JsonlSessionMetadata,
+    Placement,
+    PlacementConflict,
     SessionError,
     SessionStorage,
 )
@@ -147,6 +155,37 @@ def _encode_entry(entry: SessionTreeEntry, what: str) -> str:
             cause=exc,
         ) from exc
     return _encode_line(payload, what)
+
+
+def _encodes_to(entry: SessionTreeEntry, line: str) -> bool:
+    """Does ``entry`` still encode to exactly ``line``? ``False`` if it no longer encodes."""
+
+    try:
+        return _encode_entry(entry, f"entry {entry.id}") == line
+    except SessionError:
+        return False
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A write whose outcome is unknown: the entry, its line, and how to adopt it (#721)."""
+
+    entry: SessionTreeEntry
+    line: str
+    snapshot: bool
+
+
+@dataclass
+class _Replay:
+    """What an interrupted :meth:`JsonlSessionStorage.withdraw_tail` still has to write.
+
+    ``moved`` is whether its leaf move is known to be in the file. Until it is,
+    nothing has happened, and a move that turns out not to have landed ends
+    the withdrawal there. After it, ``survivors`` are owed until written.
+    """
+
+    survivors: list[SessionTreeEntry]
+    moved: bool
 
 
 async def _publish_file(fs: FileSystem, path: str, content: str) -> None:
@@ -538,6 +577,14 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
     returned. A write that fails part-way leaves at most a fragment with no
     newline; the next append opens a fresh line first, so the loader skips
     the fragment alone and prunes nothing (ADR-0242, extending ADR-0208).
+
+    Every write runs under the lock and starts by settling a pending outcome
+    (:meth:`_resolve_locked`, #721). :meth:`append_to_leaf` and
+    :meth:`place_entry` choose the parent after that, inside the same hold,
+    which is what keeps a line that landed and then raised on the path.
+    :meth:`withdraw_tail` reads the path, moves the leaf and appends what
+    survives in one hold, and what an interrupted one still owes is written
+    before any other write.
     """
 
     def __init__(
@@ -573,8 +620,17 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         # case loses already-committed data. Cleared once the healing
         # newline has been written.
         self._needs_newline = not ends_with_newline
+        # The entry whose write raised after ``append_file`` began, until the
+        # next write reads the file back and adopts it or drops it (#721).
+        # One slot is enough: no write starts while it is set.
+        self._pending: _Pending | None = None
+        # What an interrupted :meth:`withdraw_tail` still has to write. Every
+        # write finishes it before it does anything else (#721).
+        self._replay: _Replay | None = None
 
-    async def _append_line(self, entry: SessionTreeEntry, what: str) -> None:
+    async def _append_line(
+        self, entry: SessionTreeEntry, what: str, *, snapshot: bool = False
+    ) -> str:
         """Append ``entry`` as one JSON line in one ``append_file`` call, healing first.
 
         Serialized before the file is touched, so an entry that cannot be
@@ -586,28 +642,180 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         newline, so the flag is re-armed before re-raising and the next append
         opens a fresh line. It used to stay down: the next entry was glued onto
         the fragment, the fused line failed to parse, and every entry parented
-        below it was pruned on the next load (#294, ADR-0242). Only
-        ``OSError`` is translated; anything else propagates as itself. This
-        relies on the ``FileSystem`` contract that the write is over once the
-        call is: the lock is released here, and bytes a background writer
-        added later would land inside the next line.
+        below it was pruned on the next load (#294, ADR-0242). This relies on
+        the ``FileSystem`` contract that the write is over once the call is:
+        the lock is released here, and bytes a background writer added later
+        would land inside the next line.
+
+        The failure classes (#721, ADR-0242 rule 5):
+
+        - :class:`~aelix_agent_core.session.fs.NotAttempted` — nothing was
+          written. ``SessionError("storage")``; nothing pending, the heal flag
+          as it was, and the same write can be retried.
+        - any other ``OSError`` — ``SessionError("outcome_unknown")``, with
+          ``entry`` left pending for the next write to settle.
+        - anything else, ``CancelledError``, ``KeyboardInterrupt`` and
+          ``SystemExit`` among them — re-raised as itself, unchanged, with
+          ``entry`` left pending the same way. A cancel stays a cancel.
+
+        Returns the line as encoded, without the healing newline. ``snapshot``
+        is recorded with a pending entry: :meth:`_settle_locked` then adopts
+        the line it reads back rather than ``entry`` itself.
         """
 
         line = _encode_entry(entry, what)
-        if self._needs_newline:
-            line = "\n" + line
+        written = "\n" + line if self._needs_newline else line
         try:
-            await self._fs.append_file(self._file_path, line)
+            await self._fs.append_file(self._file_path, written)
+        except NotAttempted as exc:
+            raise SessionError(
+                "storage",
+                f"Failed to append session {what}: {exc}",
+                cause=exc,
+            ) from exc
         except BaseException as exc:
             self._needs_newline = True
+            self._pending = _Pending(entry, line, snapshot)
             if isinstance(exc, OSError):
                 raise SessionError(
-                    "storage",
-                    f"Failed to append session {what}: {exc}",
+                    "outcome_unknown",
+                    f"Failed to append session {what}, and it may have reached "
+                    f"the file anyway: {exc}",
                     cause=exc,
                 ) from exc
             raise
         self._needs_newline = False
+        return line
+
+    def _commit_locked(self, entry: SessionTreeEntry) -> None:
+        """Take ``entry`` into memory as the newest line. Caller holds the lock."""
+
+        self._entries.append(entry)
+        self._by_id[entry.id] = entry
+        _update_label_cache(self._labels_by_id, entry)
+        self._current_leaf_id = _leaf_id_after_entry(entry)
+
+    async def _write_locked(self, entry: SessionTreeEntry, what: str) -> None:
+        await self._append_line(entry, what)
+        self._commit_locked(entry)
+
+    async def _resolve_locked(self) -> None:
+        """Settle what an earlier write left open before this one starts. Lock held.
+
+        Two things, in order: the pending outcome (:meth:`_settle_locked`),
+        then the rest of a :meth:`withdraw_tail` it interrupted
+        (:meth:`_finish_replay_locked`). Either can raise, and then the write
+        that asked is refused with nothing of its own written.
+        """
+
+        if self._pending is not None:
+            await self._settle_locked()
+        if self._replay is not None:
+            await self._finish_replay_locked()
+
+    async def _settle_locked(self) -> None:
+        """Settle the pending outcome from the file itself. Lock held.
+
+        The file is read back with the loader's own rule
+        (:func:`_parse_jsonl_content`). The line landed when the exact line
+        that was written is whole in the file and the loader keeps an entry
+        with its id: it is then taken into memory as the newest line, and the
+        leaf moves to it exactly as a reload would move it. If not, it never
+        reached the file whole, and it is dropped; the heal flag stays armed,
+        so the next write opens a fresh line after any fragment it left.
+        Matching the line and not only the id keeps a write that reused a
+        stored id, and did not land, from adopting the older line.
+
+        What is taken in is the caller's own entry while it still encodes to
+        that line — the harness tells its messages apart by identity — and
+        otherwise, or for a placement (``snapshot``), the entry the loader
+        parsed from the file: a payload the caller changed before the entry is
+        settled does not reach memory. Once the caller's own entry is taken in
+        it is memory's, as after any append that succeeded, and a change made
+        after that reaches memory and not the file.
+
+        A read that fails leaves the entry pending and raises
+        ``SessionError("outcome_unknown")``: the write that asked is refused
+        with nothing written, and the leaf stays where it was until a read
+        succeeds. A cancel during the read propagates, pending kept.
+        """
+
+        pending = self._pending
+        assert pending is not None
+        try:
+            content = await self._fs.read_text_file(self._file_path)
+            loaded = _parse_jsonl_content(content, self._file_path)
+        except (OSError, UnicodeError, SessionError) as exc:
+            raise SessionError(
+                "outcome_unknown",
+                f"Previous append of entry {pending.entry.id} unresolved: the "
+                f"session file could not be read back ({exc})",
+                cause=exc,
+            ) from exc
+        self._pending = None
+        landed: SessionTreeEntry | None = None
+        if f"\n{pending.line}" in f"\n{content}\n":
+            landed = next(
+                (entry for entry in reversed(loaded.entries) if entry.id == pending.entry.id),
+                None,
+            )
+        replay = self._replay
+        if landed is None:
+            if replay is not None and not replay.moved:
+                # The withdrawal's leaf move never reached the file: it did not
+                # happen, and the path is the one it started from.
+                self._replay = None
+            return
+        if pending.snapshot or not _encodes_to(pending.entry, pending.line):
+            self._commit_locked(landed)
+        else:
+            self._commit_locked(pending.entry)
+        if replay is not None:
+            if replay.moved:
+                replay.survivors.pop(0)
+            else:
+                replay.moved = True
+
+    async def _finish_replay_locked(self) -> None:
+        """Append what an interrupted :meth:`withdraw_tail` still owes. Lock held.
+
+        Each survivor goes on the leaf the one before it left. A write that
+        raises leaves the rest owed, the failed one first, and the next write
+        finishes it: a survivor whose line landed is taken in by
+        :meth:`_settle_locked` and not written again. A survivor that cannot be
+        encoded never will be, so it is logged and skipped rather than owed
+        for ever.
+        """
+
+        replay = self._replay
+        assert replay is not None and replay.moved
+        while replay.survivors:
+            template = replay.survivors[0]
+            entry = replace(
+                template, id=_generate_entry_id(self._by_id), parent_id=self._leaf_locked()
+            )
+            try:
+                await self._write_locked(entry, f"entry {entry.id}")
+            except SessionError as exc:
+                if exc.code != "invalid_entry":
+                    raise
+                _LOG.warning(
+                    "withdrawal skipped entry %s, which cannot be written again: %s",
+                    template.id,
+                    exc,
+                )
+            replay.survivors.pop(0)
+        self._replay = None
+
+    def _leaf_locked(self) -> str | None:
+        """:meth:`get_leaf_id`'s answer, for a write that is about to parent on it."""
+
+        if self._current_leaf_id is not None and self._current_leaf_id not in self._by_id:
+            raise SessionError(
+                "invalid_session",
+                f"Entry {self._current_leaf_id} not found",
+            )
+        return self._current_leaf_id
 
     @classmethod
     async def open(
@@ -688,30 +896,155 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         return self._current_leaf_id
 
     async def set_leaf_id(self, leaf_id: str | None) -> None:
-        if leaf_id is not None and leaf_id not in self._by_id:
-            raise SessionError("not_found", f"Entry {leaf_id} not found")
-        entry = LeafEntry(
-            id=_generate_entry_id(self._by_id),
-            parent_id=self._current_leaf_id,
-            timestamp=_iso_now(),
-            target_id=leaf_id,
-        )
         async with self._lock:
-            await self._append_line(entry, f"leaf {entry.id}")
-            self._entries.append(entry)
-            self._by_id[entry.id] = entry
-            self._current_leaf_id = leaf_id
+            await self._resolve_locked()
+            if leaf_id is not None and leaf_id not in self._by_id:
+                raise SessionError("not_found", f"Entry {leaf_id} not found")
+            entry = LeafEntry(
+                id=_generate_entry_id(self._by_id),
+                parent_id=self._current_leaf_id,
+                timestamp=_iso_now(),
+                target_id=leaf_id,
+            )
+            await self._write_locked(entry, f"leaf {entry.id}")
 
     async def create_entry_id(self) -> str:
         return _generate_entry_id(self._by_id)
 
     async def append_entry(self, entry: SessionTreeEntry) -> None:
+        """Append ``entry`` exactly as given, parent included.
+
+        A pending outcome is settled first, but ``entry`` was built by its
+        caller and keeps the parent it names: a caller that read the leaf
+        before an outcome was settled gets the parent it read. ``Session``
+        never does that; it builds inside :meth:`append_to_leaf`.
+        """
+
         async with self._lock:
-            await self._append_line(entry, f"entry {entry.id}")
-            self._entries.append(entry)
-            self._by_id[entry.id] = entry
-            _update_label_cache(self._labels_by_id, entry)
-            self._current_leaf_id = _leaf_id_after_entry(entry)
+            await self._resolve_locked()
+            await self._write_locked(entry, f"entry {entry.id}")
+
+    async def append_to_leaf(
+        self, build: Callable[[str, str | None], SessionTreeEntry]
+    ) -> SessionTreeEntry:
+        """Build an entry on the current leaf and append it, in one hold of the lock (#721).
+
+        In order: settle a pending outcome, call ``build(new_id, leaf)``,
+        append what it returns, move the leaf. Building inside the hold is the
+        point: an entry built before an unknown outcome was settled carries
+        the leaf from before it, and appending that one made it a sibling of
+        a line already in the file, which then left the current branch.
+        """
+
+        async with self._lock:
+            await self._resolve_locked()
+            entry = build(_generate_entry_id(self._by_id), self._leaf_locked())
+            await self._write_locked(entry, f"entry {entry.id}")
+            return entry
+
+    async def place_entry(
+        self,
+        entry_id: str,
+        build: Callable[[str | None], SessionTreeEntry],
+        *,
+        same: Callable[[SessionTreeEntry], bool],
+    ) -> Placement:
+        """Write the entry with id ``entry_id`` once; the same payload again is adopted (#721).
+
+        Under one hold of the lock: settle a pending outcome; if ``entry_id``
+        is already stored, return it adopted when ``same(existing)`` and raise
+        :class:`PlacementConflict` otherwise, writing nothing either way;
+        else build it on the current leaf and append it. So a placement whose
+        own write had an unknown outcome is simply placed again: the second
+        call finds the first one's line, or writes it.
+
+        What is stored, and returned, is the entry parsed back from the line
+        written — never the built object, whose payload its caller still
+        holds and may change. So ``same`` always compares against what is in
+        the file, in this process as after a reload (Codex review of #721,
+        finding 2).
+        """
+
+        async with self._lock:
+            await self._resolve_locked()
+            existing = self._by_id.get(entry_id)
+            if existing is not None:
+                if same(existing):
+                    return Placement(existing, adopted=True)
+                raise PlacementConflict(entry_id)
+            entry = build(self._leaf_locked())
+            if entry.id != entry_id:
+                raise ValueError(f"place_entry built {entry.id!r} for id {entry_id!r}")
+            line = await self._append_line(entry, f"entry {entry.id}", snapshot=True)
+            try:
+                stored = _parse_entry_line(line, self._file_path, len(self._entries) + 2)
+            except SessionError:
+                # A line this store's own loader would skip (a ``build`` that
+                # left the timestamp empty). Kept as built, as any append is.
+                stored = entry
+            self._commit_locked(stored)
+            return Placement(stored, adopted=False)
+
+    async def withdraw_tail(
+        self,
+        target_leaf: str | None,
+        is_withdrawn: Callable[[SessionTreeEntry], bool],
+    ) -> None:
+        """Move the leaf back to ``target_leaf`` and append again what ``is_withdrawn`` keeps (#721).
+
+        ``Session.withdraw_tail``'s operation (ADR-0286), as one hold of the
+        lock: settle what is open, read the path, move the leaf, append each
+        survivor with a fresh id on the leaf the one before it left. Nothing
+        else writes in between, so an append that came in meanwhile is not
+        left on the branch behind.
+
+        Raises ``not_found`` when ``target_leaf`` is not on the current path,
+        with nothing written. Once the leaf move is written the withdrawal is
+        owed until it is complete: a write that raises after that keeps the
+        rest, and the next write — or :meth:`resolve_pending` — finishes it
+        before doing its own. A leaf move whose outcome was unknown and that
+        did not land is a withdrawal that did not happen. Before #721 the
+        survivors were appended by the caller after a separate leaf move, and
+        a move whose line landed and then raised left them off the branch.
+        """
+
+        async with self._lock:
+            await self._resolve_locked()
+            path = await self.get_path_to_root(self._leaf_locked())
+            if target_leaf is None:
+                tail = path
+            else:
+                ids = [entry.id for entry in path]
+                if target_leaf not in ids:
+                    raise SessionError(
+                        "not_found", f"Entry {target_leaf} is not on the current path"
+                    )
+                tail = path[ids.index(target_leaf) + 1 :]
+            survivors = [entry for entry in tail if not is_withdrawn(entry)]
+            move = LeafEntry(
+                id=_generate_entry_id(self._by_id),
+                parent_id=self._current_leaf_id,
+                timestamp=_iso_now(),
+                target_id=target_leaf,
+            )
+            try:
+                await self._write_locked(move, f"leaf {move.id}")
+            except BaseException:
+                if self._pending is not None:
+                    self._replay = _Replay(survivors, moved=False)
+                raise
+            self._replay = _Replay(survivors, moved=True)
+            await self._finish_replay_locked()
+
+    async def resolve_pending(self) -> None:
+        """Settle what an earlier write left open, writing only an owed withdrawal (#721).
+
+        See :meth:`_resolve_locked`: a pending outcome is read back from the
+        file, and the rest of an interrupted :meth:`withdraw_tail` is appended.
+        """
+
+        async with self._lock:
+            await self._resolve_locked()
 
     async def get_entry(self, id: str) -> SessionTreeEntry | None:
         return self._by_id.get(id)

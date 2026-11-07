@@ -169,9 +169,21 @@ So the door stays shut past the drain, and reopens only on evidence that the
 SESSION IS ALIVE AGAIN — the next user prompt
 (:meth:`~_SubagentRuntimeImpl.reset_delegation_budget`, called from
 ``AgentsExtension._on_before_agent_start``) or a human typing ``/agents run``
-(:meth:`~_SubagentRuntimeImpl.spawn`). Both matter, because the SAME runtime
-instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:218-220``) and
-every one of those emits ``session_shutdown`` first.
+(:meth:`~_SubagentRuntimeImpl.spawn`).
+
+The door is this runtime's own, and a runtime does not outlive its harness.
+This said the SAME runtime survives ``/new`` / ``/fork`` / ``/resume``; it does
+not (#611 S1a). Every harness build — startup, ``/new``, ``/fork``,
+``/resume``, ``/reload`` and the restore of a failed rebuild — calls
+``AgentsExtension.__call__``, which binds a FRESH runtime
+(``extension.py``, ``self._runtime = _SubagentRuntimeImpl(...)``). Measured
+through ``cli/entry.py``'s ``_build_harness_options`` with one held
+``AgentsExtension``: three builds, three distinct runtimes. The old one is
+stopped by ``session_shutdown`` and by its harness's dispose, and its shut door
+goes with it — which is what keeps the members its ``stop_all`` released from
+spawning. The reopen paths are for a runtime that goes on serving after its
+own ``stop_all``: ``AgentHarness.reload()`` (``harness/core.py``) emits
+``session_shutdown`` on the same harness without rebuilding its extensions.
 
 The check is not an ``await``, so it does not disturb ``_run``'s critical
 section (S5)."""
@@ -694,11 +706,11 @@ class _SubagentRuntimeImpl:
 
         IT ALSO REOPENS THE DELEGATION DOOR (:data:`_SESSION_DRAINING`). A new
         user prompt is the evidence that the session ``stop_all`` tore down is
-        alive again — and it has to be somebody's job, because the same runtime
-        instance survives ``/new`` / ``/fork`` / ``/resume``
-        (``extension.py:218-220``) and each of those emits ``session_shutdown``
-        first, so a permanently-shut door would silently kill delegation for the
-        rest of the process.
+        alive again. A ``/new``, ``/fork``, ``/resume`` or ``/reload`` binds a
+        fresh runtime whose door is open (#611 S1a corrected this, which said
+        the same runtime survived them), so this matters for a runtime that
+        keeps serving after its own ``stop_all`` — see
+        :data:`_SESSION_DRAINING`.
         """
 
         self._delegations_this_prompt = 0
@@ -837,11 +849,11 @@ class _SubagentRuntimeImpl:
         if refusal is not None:
             return _error_result(resolved, refusal)
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
-        # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
-        # emit ``session_shutdown`` on a runtime instance that SURVIVES them
-        # (``extension.py:218-220``), and the user's next act may well be this
-        # command rather than a prompt — refusing it would be a bug the user
-        # cannot diagnose. It is not a bypass: :meth:`_reopen` declines while a
+        # (:data:`_SESSION_DRAINING`), for a runtime that goes on serving after
+        # its own ``stop_all`` — ``/new`` / ``/fork`` / ``/resume`` bind a fresh
+        # one (#611 S1a). The user's next act may well be this command rather
+        # than a prompt, and refusing it would be a bug the user cannot
+        # diagnose. It is not a bypass: :meth:`_reopen` declines while a
         # ``stop_all`` is still executing.
         self._reopen()
         try:
@@ -1888,13 +1900,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:1048-1049``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:1060-1061``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:1048-1050``) — authoritative, because it
+            # ``message_end`` (``stream.py:1083-1085``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -2060,9 +2072,9 @@ _IGNORED_TIMEOUT_WARNED: set[str] = set()
 """Profile files whose ignored ``timeout_ms`` has been logged (ADR-0276 D2).
 
 Module level, so "once" means once per PROCESS and per file, not once per
-runtime: ``/new``, ``/fork`` and ``/resume`` keep the runtime, ``/reload``
-rebuilds it, and the key is no more ignored on the second runtime than on the
-first. Keyed by the profile's path rather than its name, because two files can
+runtime: every harness build — ``/new``, ``/fork``, ``/resume`` and ``/reload``
+alike — binds a fresh runtime (#611 S1a corrected "keep the runtime" here), and
+the key is no more ignored on the second runtime than on the first. Keyed by the profile's path rather than its name, because two files can
 carry one name and only the path tells the user which file to edit."""
 
 

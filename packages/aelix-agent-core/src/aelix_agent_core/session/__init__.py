@@ -55,6 +55,7 @@ from aelix_agent_core.session.fs import (
     FileKind,
     FileSystem,
     LocalFileSystem,
+    NotAttempted,
 )
 from aelix_agent_core.session.jsonl_repo import (
     ForkOptions,
@@ -88,6 +89,8 @@ from aelix_agent_core.session.session_lock import (
 )
 from aelix_agent_core.session.storage import (
     JsonlSessionMetadata,
+    Placement,
+    PlacementConflict,
     SessionError,
     SessionErrorCode,
     SessionMetadata,
@@ -128,6 +131,9 @@ __all__ = [
     "MemorySessionStorage",
     "MessageEntry",
     "ModelChangeEntry",
+    "NotAttempted",
+    "Placement",
+    "PlacementConflict",
     "READ_ONLY_MESSAGE",
     "ReadOnlySessionStorage",
     "Session",

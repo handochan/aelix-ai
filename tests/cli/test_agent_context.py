@@ -213,7 +213,7 @@ def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
     ``extensions/loader.py:1184-1186`` scans ``get_agent_dir()/extensions`` and
-    ``cli/entry.py:2205`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
+    ``cli/entry.py:2207`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
     nothing ever reads.
