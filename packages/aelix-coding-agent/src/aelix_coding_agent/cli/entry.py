@@ -1955,7 +1955,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:763-764``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:781-782``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     from .system_prompt_files import discover_system_prompt_file
 
@@ -2013,6 +2013,9 @@ async def _build_harness_options(
     project_explicitly_trusted: bool = False,
     permission_ext: PermissionExtension | None = None,
     agents_ext: Any | None = None,
+    # #722 (ADR-0293) — the job service's bridge extension; ``None`` while
+    # background jobs are off (``jobs/activation.py``), which adds nothing.
+    jobs_ext: Any | None = None,
     captured_extensions: list[Any] | None = None,
     captured_extension_errors: list[Any] | None = None,
     # #25 (ADR-0284) — filled with ``{"inventory": …, "records": …}``: every
@@ -2196,7 +2199,7 @@ async def _build_harness_options(
                 # A CALLABLE over the RESOLVED decision, never
                 # ``ctx.is_project_trusted()``: that getter's unbound default is
                 # ``True`` (``extensions/api.py`` ``is_project_trusted or
-                # (lambda: True)`` / ``harness/core.py:323``), so a harness that
+                # (lambda: True)`` / ``harness/core.py:341``), so a harness that
                 # nobody told about trust reports itself trusted.
                 project_trusted=lambda: project_trusted,
                 # The SAME holder ``/extension``'s viewer reads, by reference, so
@@ -2204,6 +2207,11 @@ async def _build_harness_options(
                 extensions=captured_extensions,
             )
         )
+    # #722 (ADR-0293) — the ``job`` tool, ``/jobs`` and the stop of a session's
+    # jobs at its ``session_shutdown``. It subscribes to no ``tool_call``, so its
+    # place after the gates decides nothing. Built only while jobs are active.
+    if jobs_ext is not None:
+        prepend_extensions.append(jobs_ext)
     loaded = await discover_and_load_extensions(
         [str(p) for p in parsed.extensions],
         cwd=Path(cwd),
@@ -2381,7 +2389,7 @@ async def _build_harness_options(
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:284 / :806-807), so wiring it
+        # ``AgentState.thinking_level``, core.py:295 / :824-825), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -2405,6 +2413,9 @@ async def _build_harness_options(
         # ``permission_ext`` / ``model_registry`` — one shared instance reaches
         # every rebuild so reload survives ``/new`` / ``/fork`` / ``/resume``.
         settings_manager=settings_manager,
+        # #722 (ADR-0293) — the kernel's notice inbox, on only while background
+        # jobs are (``jobs_ext`` is built then and only then).
+        notice_inbox=jobs_ext is not None,
     )
 
     options.append_system_prompt = _resolve_append_chunks(
@@ -3310,6 +3321,25 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
+    # #722 (ADR-0293) — the process's one job service and its bridge extension,
+    # built only while background jobs are active (``jobs/activation.py``:
+    # ``ACTIVE`` is off until #611 S3, so on main neither exists, the
+    # ``backgroundJobs`` settings are never read, and nothing below runs).
+    jobs_service: Any = None
+    jobs_ext: Any = None
+    from aelix_coding_agent.jobs import activation as jobs_activation
+
+    if jobs_activation.is_active():
+        from aelix_coding_agent.jobs.extension import JobsExtension
+        from aelix_coding_agent.jobs.service import JobService
+
+        jobs_service = JobService(
+            settings=settings_manager.get_background_jobs_settings,
+            warn=lambda text: print(f"Warning: {text}", file=sys.stderr),
+        )
+        jobs_activation.install_service(jobs_service)
+        jobs_ext = JobsExtension(jobs_service)
+
     # === Agent delegation (ADR-0197 §(a)/§(b), P2) ============================
     # The bundled ``aelix-agents`` extension. Constructed ONCE and threaded by
     # held reference into every harness rebuild (the mirror of ``permission_ext``)
@@ -4128,6 +4158,8 @@ async def _async_main(argv: list[str]) -> int:
             # corrected "the live child registry survives /new …" here).
             # ``None`` when delegation is off, which is the P2 default.
             agents_ext=agents_ext,
+            # #722 — same hold-the-ref rule; ``None`` while jobs are off.
+            jobs_ext=jobs_ext,
             # #101 — the RESOLVED app mode, so the status tool reports the
             # mode this process acted on rather than re-deriving one.
             app_mode=app_mode,
@@ -4212,7 +4244,7 @@ async def _async_main(argv: list[str]) -> int:
             opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:862``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:880``, AFTER
         # the registry merge at ``:755``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What
@@ -4795,8 +4827,13 @@ async def _async_main(argv: list[str]) -> int:
         start_record.clear()
         if deferred.get("harness") is rebuilt and deferred.get("created_empty"):
             await _record_session_start_model(rebuilt, created_empty=True)
+        # #722 — the rebuilt harness is the job service's now (only while jobs are on).
+        if jobs_service is not None:
+            await jobs_service.bind(rebuilt, reason=reason)
 
     runtime.set_after_session_start(_after_session_start)
+    if jobs_service is not None:
+        await jobs_service.bind(runtime.harness, reason="startup")
     startup_model = harness.current_model
     # #367 Codex pass 7, C-P3 — the resolver's line describes the LAUNCH ROUTE;
     # it is printed only while the harness is still on it after
@@ -5073,6 +5110,8 @@ async def _async_main(argv: list[str]) -> int:
                 # ADR-0196 — the /agents service (see its construction above for
                 # why this is conditional rather than a plain kwarg).
                 **agent_service_kwarg,
+                # #722 — only while background jobs are active; absent otherwise.
+                **({"jobs": jobs_service} if jobs_service is not None else {}),
                 # #367 — the post-login pick is the TUI's one automatic model
                 # choice; it does not land on a late provider, and a turn on the
                 # held placeholder repeats the hold's reason (``LateRoute``).
@@ -5244,6 +5283,8 @@ async def _async_main(argv: list[str]) -> int:
             # credential it may have failed on. The TUI gets this through
             # ``CommandContext``; print mode has no such object.
             model_registry=model_registry,
+            # #722 — only while background jobs are active; absent otherwise.
+            **({"jobs": jobs_service} if jobs_service is not None else {}),
         )
     finally:
         # run_print_mode already disposes the runtime, but we also dispose
@@ -5251,6 +5292,12 @@ async def _async_main(argv: list[str]) -> int:
         # error here is swallowed because the run already completed.
         with contextlib.suppress(Exception):
             await runtime.dispose()
+        # #722 — the dispose's ``session_shutdown`` stopped the session's jobs;
+        # this ends the liveness loop and whatever outlived that bound.
+        if jobs_service is not None:
+            with contextlib.suppress(Exception):
+                await jobs_service.shutdown()
+            jobs_activation.install_service(None)
         # Tear down MCP connections (LIFO via each connection's AsyncExitStack).
         if mcp_manager is not None:
             with contextlib.suppress(Exception):

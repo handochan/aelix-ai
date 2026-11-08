@@ -33,7 +33,7 @@ concern):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 #: Pi parity ``defaults.ts``: ``DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium"``.
 DEFAULT_THINKING_LEVEL: Final[str] = "medium"
@@ -237,16 +237,17 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 45 optional fields — every field defaults to ``None`` so unset →
+# 46 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, render_max_width, session_dir, default_project_trust,
 # hide_compaction_summary, features, respect_gitignore, check_model_catalog) —
-# all 45 are covered by SETTINGS_PY_TO_JSON.
+# all 46 are covered by SETTINGS_PY_TO_JSON.
 # (This count has been wrong before — it read 42 while the dataclass held 41,
 # then 42 while it held 43. Re-measured 2026-09-07 under #238: 43 before this
 # field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same; 45 after #609's
-# ``check_model_catalog``. Recount before trusting it.)
+# ``check_model_catalog``; 46 after #722's ``background_jobs``. Recount before
+# trusting it.)
 
 
 @dataclass
@@ -373,6 +374,14 @@ class Settings:
     # file is global (``_DOTENV_LOCKED``, ADR-0203).
     # Defaults applied in the getters.
     features: FeaturesSettings | None = None
+    # AELIX-ORIGINAL (#722, ADR-0293): background-job admission bounds,
+    # ``{"limits": {"<kind settings key>": int}, "maxTotal": int | null}``.
+    # A plain dict, not a nested class: the keys under ``limits`` are the
+    # settings keys kinds register, which this module cannot list. Read from the
+    # GLOBAL scope only (``SettingsManager.get_background_jobs_settings``), as
+    # ``features`` is — a trusted repo must not raise its own limits — and only
+    # while background jobs are active (``jobs/activation.py``).
+    background_jobs: dict[str, Any] | None = None
 
 
 SettingsScope = Literal["global", "project"]
@@ -449,6 +458,8 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     # because ``_json_dict_to_settings`` (settings_manager.py:110) drops any JSON
     # key absent from this table SILENTLY.
     "features": "features",
+    # Aelix-original (#722, ADR-0293): a plain dict, see the field.
+    "background_jobs": "backgroundJobs",
 }
 
 

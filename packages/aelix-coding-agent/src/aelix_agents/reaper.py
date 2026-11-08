@@ -157,6 +157,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aelix_ai.utils import _process_walk as _walk
 from aelix_ai.utils._process_tree import wait_released
 
 if TYPE_CHECKING:
@@ -182,21 +183,21 @@ _PR_SET_PDEATHSIG = 1
 
 _PROC = Path("/proc")
 
-_LIBPROC_PATH = "/usr/lib/libproc.dylib"
+_LIBPROC_PATH = _walk.LIBPROC_PATH
 """Where macOS exports ``proc_listpids``. There is no such file on disk since
 macOS 11; ``dlopen`` resolves the path from the dyld shared cache, which is how
 ``ctypes.util.find_library("proc")`` answers it too."""
 
-_PROC_PPID_ONLY = 6
+_PROC_PPID_ONLY = _walk.PROC_PPID_ONLY
 """``proc_listpids``'s filter from ``<sys/proc_info.h>``: the processes whose
 parent is the ``typeinfo`` argument."""
 
-_FIRST_CAPACITY = 64
+_FIRST_CAPACITY = _walk.FIRST_CAPACITY
 """Pids :func:`_darwin_children` asks for first. The kernel fills the buffer and
 drops the rest without saying so, so a full answer is asked again at twice the
 size."""
 
-_MAX_CAPACITY = 1 << 17
+_MAX_CAPACITY = _walk.MAX_CAPACITY
 """Where that doubling stops: above any ``kern.maxproc``, so an answer this large
 is the whole answer."""
 
@@ -229,15 +230,9 @@ def descendant_pids(pid: int) -> list[int]:
     only", never to "kill nothing".
     """
 
-    if _PROC.is_dir():
-        children = _proc_children()
-        return _deepest_first(pid, lambda parent: children.get(parent, ()))
-    if _is_darwin():
-        libproc = _libproc()
-        if libproc is None:
-            return []
-        return _deepest_first(pid, lambda parent: _darwin_children(libproc, parent))
-    return []
+    # #722 — the walk lives in ``aelix_ai.utils._process_walk`` now (the job
+    # service reads it too); this module's names stay the seams its tests patch.
+    return _walk.descendant_pids(pid, proc=_PROC, is_darwin=_is_darwin, libproc=_libproc)
 
 
 def _deepest_first(pid: int, children_of: Callable[[int], Iterable[int]]) -> list[int]:
@@ -248,20 +243,7 @@ def _deepest_first(pid: int, children_of: Callable[[int], Iterable[int]]) -> lis
     snapshot.
     """
 
-    ordered: list[int] = []
-    seen: set[int] = {pid}
-    frontier = list(children_of(pid))
-    while frontier:
-        nxt: list[int] = []
-        for candidate in frontier:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            ordered.append(candidate)
-            nxt.extend(children_of(candidate))
-        frontier = nxt
-    ordered.reverse()
-    return ordered
+    return _walk.deepest_first(pid, children_of)
 
 
 def _is_darwin() -> bool:
@@ -278,14 +260,7 @@ def _libproc() -> ctypes.CDLL | None:
     ``None`` makes the walk empty, which is the answer it gave before #691.
     """
 
-    try:
-        lib = ctypes.CDLL(_LIBPROC_PATH, use_errno=True)
-        listpids = lib.proc_listpids
-    except (OSError, AttributeError):
-        return None
-    listpids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
-    listpids.restype = ctypes.c_int
-    return lib
+    return _walk.load_libproc()
 
 
 def _darwin_children(libproc: Any, pid: int) -> list[int]:
@@ -297,46 +272,13 @@ def _darwin_children(libproc: Any, pid: int) -> list[int]:
     signalling one is harmless.
     """
 
-    width = ctypes.sizeof(ctypes.c_int)
-    capacity = _FIRST_CAPACITY
-    while True:
-        buffer = (ctypes.c_int * capacity)()
-        filled = libproc.proc_listpids(_PROC_PPID_ONLY, pid, buffer, capacity * width)
-        if filled <= 0:
-            return []
-        count = min(filled // width, capacity)
-        if count < capacity or capacity >= _MAX_CAPACITY:
-            return [child for child in buffer[:count] if child > 0]
-        capacity *= 2
+    return _walk.darwin_children(libproc, pid)
 
 
 def _proc_children() -> dict[int, list[int]]:
     """The ``/proc`` ``PPid`` index: parent pid → its children's pids."""
 
-    parents: dict[int, int] = {}
-    try:
-        entries = list(_PROC.iterdir())
-    except OSError:
-        return {}
-    for entry in entries:
-        name = entry.name
-        if not name.isdigit():
-            continue
-        try:
-            status = (entry / "status").read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            # The process exited between the listing and the read — normal.
-            continue
-        for line in status.splitlines():
-            if line.startswith("PPid:"):
-                with contextlib.suppress(ValueError):
-                    parents[int(name)] = int(line.split()[1])
-                break
-
-    children: dict[int, list[int]] = {}
-    for child, parent in parents.items():
-        children.setdefault(parent, []).append(child)
-    return children
+    return _walk.proc_children(_PROC)
 
 
 def group_leaders(pids: Iterable[int]) -> list[int]:
@@ -368,14 +310,7 @@ def group_leaders(pids: Iterable[int]) -> list[int]:
     through it. ``[]`` on Windows, where the job is the tree.
     """
 
-    if sys.platform == "win32":
-        return []
-    leaders: list[int] = []
-    for pid in pids:
-        with contextlib.suppress(OSError):
-            if os.getpgid(pid) == pid:
-                leaders.append(pid)
-    return leaders
+    return _walk.group_leaders(pids, platform=sys.platform)
 
 
 def _signal_child(proc: Any, sig: int) -> None:
@@ -839,7 +774,7 @@ def pdeathsig(
     """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
 
     Closes finding I1. Without it a child whose parent is SIGKILLed runs to
-    completion, reparented to init: ``modes/print_mode.py:324-331``'s ``_emit``
+    completion, reparented to init: ``modes/print_mode.py:331-338``'s ``_emit``
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
     ``break`` (``:385-390``) plus the ``raise BrokenPipeError`` (``:399-402``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``

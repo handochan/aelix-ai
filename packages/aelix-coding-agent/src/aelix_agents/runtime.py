@@ -1260,7 +1260,7 @@ class _SubagentRuntimeImpl:
             while self._children:
                 # ABORT THE WHOLE WAVE, THEN JOIN IT — not abort-join per child.
                 # ``abort_child`` signals and ``reap`` waits out a 5 s grace
-                # (``reaper.py:175``), so joining child *k* before child *k+1* has
+                # (``reaper.py:176``), so joining child *k* before child *k+1* has
                 # even been signalled would serialise N graces into N × 5 s of
                 # teardown.
                 wave = list(self._children.values())
@@ -1469,7 +1469,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:1618-1621``) and wave 2 may start half an hour after
+            # (``chrome.py:1633-1636``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).

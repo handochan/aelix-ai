@@ -53,6 +53,25 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   cause keeps today's error and advice byte for byte, sent once; `/login`'s failure drops the note
   the line already says. Not persisted (the measure-first rule stands). pi has no relaxation.
 
+- [0293 — Background work is a job its session owns: product-core runs it, the kernel delivers its notice once, clients render it](0293-background-work-is-a-job-its-session-owns.md)
+  (Accepted 2026-11-08; #722, #611 S1b; inert until #611 S3). A generic job service in
+  product-core (`aelix_coding_agent/jobs/`) runs background work of kinds its clients register —
+  delegation, `bash`, an extension — and nothing in it names a kind (an AST scan and a synthetic
+  third kind prove it). A terminal state only after a barrier confirms the job's processes gone;
+  win32 collects the Job's member handles before any kill and calls `TerminateJobObject` last; a
+  restart never signals and marks a job `lost` only on OS evidence; every stop collects its
+  evidence (win32 members, the POSIX walk) before its first signal. The kernel's notice inbox —
+  off unless the host turns it on — places each notice once under an id derived from it, before
+  the model sees it and never after an input an Esc could withdraw, 64 KiB per boundary with each
+  notice's placement line charged, 16 KiB per framed notice with every supplied part capped,
+  untouched by abort or Esc. Admission bounds are global settings (`backgroundJobs.limits.<key>`
+  from 1 to 16, `maxTotal` from 1 to 32 or off), counted by kind. A 5 s liveness loop, a footer
+  segment, `/jobs`, the read-only `job` tool and the permission-gated `job_stop` watch the
+  current session's jobs only; `-p` drains, keeps the first failure of one user prompt and its
+  notice turns, and on SIGINT stops the jobs and flushes what the model was not given; the TUI
+  wakes an idle parent only with no dialog open and no reload running, and a restored result
+  starts no turn. Replaces ADR-0008's review gate.
+
 - [0292 — A `/` line Entered during a turn is a command, not a steer](0292-a-slash-line-entered-during-a-turn-is-a-command-not-a-steer.md)
   (Accepted 2026-11-06; #701). Enter and Alt+Enter on a typed `/` line while a turn runs never send
   it to the model: the chrome asks the input loop first. An explicit table in `tui/commands.py`

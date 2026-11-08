@@ -192,6 +192,7 @@ async def run_print_mode(
     initial_message: str | None,
     initial_images: list[Any] | None = None,
     model_registry: Any = None,
+    jobs: Any = None,
 ) -> int:
     """Pi parity: ``runPrintMode`` (``modes/print-mode.ts``).
 
@@ -208,6 +209,12 @@ async def run_print_mode(
     once per registry load since #240 — can be re-minted. Passing :data:`None`
     (every test that predates #240) simply skips that recovery. See
     :func:`~aelix_coding_agent.model_registry.clear_command_value_cache`.
+
+    ``jobs`` is the process's job service, passed only while background jobs
+    are active (#722, ADR-0293; off until #611 S3). With it, the run drains
+    before its verdict (:func:`_drain_background`) and the verdict latches the
+    first failed answer among one user prompt and the notice turns after it
+    (:class:`_FirstFailure`); without it nothing here differs from #410.
     """
 
     loop = asyncio.get_running_loop()
@@ -371,12 +378,19 @@ async def run_print_mode(
         except Exception:  # noqa: BLE001 — a stub harness need not carry state
             messages_before = []
 
+        # #722 — the first-failure latch, only while background jobs are active.
+        latch = _FirstFailure(messages_before) if jobs is not None else None
+
         # === Pi step 6 — initial message =====================================
         if initial_message is not None:
+            if latch is not None:
+                latch.user_prompt()
             await runtime_host.harness.prompt(
                 initial_message,
                 images=initial_images,
             )
+            if latch is not None:
+                latch.note(runtime_host.harness)
             # #240 — the headless twin of the TUI's end-of-turn recovery. A
             # ``-p`` run is ONE user turn but many API requests over unbounded
             # wall time, and the canonical reason to use a credential helper is
@@ -397,11 +411,30 @@ async def run_print_mode(
                 # tools) emitting into a dead pipe; the post-loop raise
                 # surfaces the EPIPE now.
                 break
+            if latch is not None:
+                latch.user_prompt()
             await runtime_host.harness.prompt(message)
+            if latch is not None:
+                latch.note(runtime_host.harness)
             # #240 — same recovery per residual message, so a run of several
             # messages does not spend the rest of them on a rejected token.
             if _last_turn_errored():
                 clear_command_value_cache(model_registry)
+
+        # #722 (ADR-0293) — the background drain: notice turns for what the inbox
+        # holds, waits for tracked jobs, a re-check before the run may end.
+        if jobs is not None and latch is not None:
+            try:
+                await _drain_background(
+                    runtime_host, jobs, latch, stop=lambda: stdout_dead["v"] or signal_exit["code"] is not None
+                )
+            except asyncio.CancelledError:
+                # A Ctrl+C (``asyncio.run`` cancels the main task on SIGINT): stop
+                # every job, then say what the model was not given — no turn is
+                # started for it — and let the interrupt end the run as it would
+                # have without jobs (verify S6, Codex #19).
+                await _interrupt_flush(runtime_host, jobs, mode, write_stdout=_write_raw_stdout)
+                raise
 
         # Issue #57: a consumer that vanished mid-run (JSON mode) was recorded
         # by ``_emit``; surface it now so the process exits 141 instead of 0.
@@ -417,10 +450,26 @@ async def run_print_mode(
         # message, and its stderr stays as it was (see the module docstring).
         state_messages = list(runtime_host.harness.state.messages)
         failure = _final_failure(state_messages, before=messages_before)
+        if latch is not None and latch.failure is not None:
+            # #722 — the first failure of the last user prompt and its notice
+            # turns stands, whatever answered after it (owner, 2026-11-07).
+            failure = latch.failure
         if failure is not None:
             exit_code = 1
             if mode == "text":
                 print(failure, file=sys.stderr)
+                # #722 — and the last answer, when one that did not fail came
+                # after the latched failure (a notice turn's).
+                if latch is not None and state_messages:
+                    last = state_messages[-1]
+                    if (
+                        isinstance(last, AssistantMessage)
+                        and last.stop_reason not in _FAILED_STOP_REASONS
+                        and not any(last is earlier for earlier in messages_before)
+                    ):
+                        for block in last.content:
+                            if isinstance(block, TextContent):
+                                _write_raw_stdout(f"{block.text}\n")
         elif mode == "text" and state_messages:
             last = state_messages[-1]
             # A failed answer is never printed as an answer: the one left by
@@ -490,6 +539,140 @@ async def run_print_mode(
         exit_code = signal_code
 
     return exit_code
+
+
+class _FirstFailure:
+    """The first failed answer of one user prompt and the notice turns after it (#722, ADR-0268 amended).
+
+    Owner, 2026-11-07: ``-p`` keeps the first failure's exit code, but only
+    within one user prompt and the notice turns it caused; across several user
+    messages ADR-0268 is unchanged. So each user prompt starts a scope, and
+    after every call (the prompt, each notice turn) the call's own answer is
+    judged by :func:`_final_failure` — the first failure of the scope is kept.
+    A later user prompt clears it: its scope decides. Exceptions, signals and a
+    broken pipe keep their rules (the callers above).
+    """
+
+    def __init__(self, before: list[Any]) -> None:
+        self._before = before
+        self.failure: str | None = None
+
+    def user_prompt(self) -> None:
+        self.failure = None
+
+    def note(self, harness: Any) -> None:
+        if self.failure is not None:
+            return
+        try:
+            messages = list(harness.state.messages)
+        except Exception:  # noqa: BLE001 — a stub harness need not carry state
+            return
+        self.failure = _final_failure(messages, before=self._before)
+
+
+async def _drain_background(
+    runtime_host: AgentSessionRuntime,
+    jobs: Any,
+    latch: _FirstFailure,
+    *,
+    stop: Callable[[], bool],
+) -> None:
+    """Wait for this session's tracked jobs and give the model what they leave (#722, ADR-0293 §drain).
+
+    Each pass, in the S1 contract's order: a pending notice, or one unanswered
+    at the leaf, gets a notice turn; otherwise, while a tracked job is
+    unsettled, it waits for a change; otherwise it yields once and leaves only
+    if neither appeared meanwhile (Kimi's re-check before leaving). A job leaves
+    "unsettled" only once its notice is posted, so checking the inbox first
+    cannot miss a result. Only jobs of kinds that block ``-p`` are waited for
+    (``blocks_print_exit``); what a top-level session released is not tracked
+    (#232). A notice turn that leaves the same notice unanswered (an abort) or
+    that the harness refuses ends the drain rather than spinning.
+    """
+
+    async def either(*waits: Any, timeout: float) -> None:
+        tasks = [asyncio.ensure_future(w) for w in waits]
+        try:
+            await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+
+    while not stop():
+        harness = runtime_host.harness
+        if harness.pending_notices or await harness.unanswered_notice_at_leaf():
+            unanswered_before = harness.pending_notices == 0
+            result = await harness.prompt_notices()
+            if result.started:
+                latch.note(harness)
+                if unanswered_before and result.placed == 0 and await harness.unanswered_notice_at_leaf():
+                    return  # nothing answered it; another turn would do the same
+                continue
+            if result.reason in ("disposed", "refused"):
+                return
+            await either(harness.notice_changed(), jobs.changed(), timeout=1.0)
+            continue
+        if jobs.unsettled():
+            await either(jobs.changed(), harness.notice_changed(), timeout=1.0)
+            continue
+        await asyncio.sleep(0)
+        if (
+            jobs.unsettled()
+            or harness.pending_notices
+            or await harness.unanswered_notice_at_leaf()
+        ):
+            continue
+        return
+
+
+async def _interrupt_flush(
+    runtime_host: AgentSessionRuntime,
+    jobs: Any,
+    mode: str,
+    *,
+    write_stdout: Callable[[str], None],
+) -> None:
+    """On SIGINT during the drain: stop the session's jobs, then flush what the model was not given (#722).
+
+    #611's rule: on SIGINT everything stops and the notices are flushed. The
+    jobs are stopped through the service (bounded by its ``CLEANUP_BOUND``), so
+    a stopped job's own notice is among those flushed; then every notice still
+    undelivered — pending, claimed by a turn the interrupt cut, or held — is
+    written out, and no turn is started for any of them. Text mode writes a
+    header line and then one line per notice to stderr (stdout is the
+    answer's); JSON mode writes one
+    ``background_notice_undelivered`` event per notice to stdout, with its body.
+    The caller re-raises the interrupt, so the exit is the interrupt's.
+    """
+
+    with contextlib.suppress(Exception):
+        await jobs.owner_ended(jobs.owner, "signal")
+    try:
+        notices = list(runtime_host.harness.undelivered_notices())
+    except Exception:  # noqa: BLE001 — a torn-down harness has nothing left to say
+        notices = []
+    if not notices:
+        return
+    if mode == "json":
+        for notice in notices:
+            with contextlib.suppress(Exception):
+                write_stdout(
+                    json.dumps(
+                        {
+                            "type": "background_notice_undelivered",
+                            "notice_id": notice.notice_id,
+                            "brief": notice.brief,
+                            "body": notice.body,
+                        }
+                    )
+                    + "\n"
+                )
+        return
+    noun = "result was" if len(notices) == 1 else "results were"
+    lines = [f"aelix: interrupted — {len(notices)} background {noun} not given to the model:"]
+    lines.extend(f"  ◆ {notice.brief or notice.notice_id}" for notice in notices)
+    with contextlib.suppress(Exception):
+        print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 async def _signal_cleanup_and_exit(

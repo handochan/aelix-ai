@@ -140,7 +140,7 @@ import time
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import IO, Any, Protocol, cast
+from typing import IO, Any, Literal, Protocol, cast
 
 # The private names are exported deliberately (#222): ``tools/bash.py`` builds
 # the same drain this module runs for :func:`run_contained` — the reader, the
@@ -157,6 +157,7 @@ from typing import IO, Any, Protocol, cast
 # imports would make the list a wish.
 __all__ = [
     "AbortHandle",
+    "Confirmed",
     "DRAIN_CAP_SECONDS",
     "EXIT_DRAIN_SECONDS",
     "INTERRUPT_REAP_SECONDS",
@@ -164,6 +165,8 @@ __all__ = [
     "ProcessTree",
     "REAP_GRACE_SECONDS",
     "RELEASE_POLL_SECONDS",
+    "StopReceipt",
+    "Unconfirmed",
     "_PipeReader",
     "_ReadState",
     "_end_the_tree",
@@ -188,6 +191,12 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _PROCESS_TERMINATE = 0x0001
 _PROCESS_SET_QUOTA = 0x0100
+# #722 (ADR-0293) — the evidence a service-owned tree's stop collects.
+_JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+_JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+_SYNCHRONIZE = 0x0010_0000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WAIT_OBJECT_0 = 0
 
 
 def containment_spawn_kwargs(
@@ -294,6 +303,29 @@ class _Win32Api(Protocol):
     def taskkill(self, pid: int) -> None: ...
 
 
+class _Win32EvidenceApi(Protocol):
+    """The win32 reads and kills :meth:`ProcessTree.stop_and_collect` needs (#722).
+
+    Apart from :class:`_Win32Api` so that an injected api built for the older
+    legs keeps type-checking; :class:`_KernelApi` implements both. A handle is
+    an opaque int this api opened and :meth:`close_process` closes.
+    """
+
+    def job_member_pids(self, job: int) -> list[int]: ...
+
+    def active_count(self, job: int) -> int: ...
+
+    def open_member(self, pid: int) -> int: ...
+
+    def in_job(self, handle: int, job: int) -> bool: ...
+
+    def terminate_process(self, handle: int) -> None: ...
+
+    def wait_handle(self, handle: int, timeout_ms: int) -> bool: ...
+
+    def close_process(self, handle: int) -> None: ...
+
+
 class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
     """64 bytes on x64, ``LimitFlags`` at offset 16 (verified with ctypes)."""
 
@@ -369,6 +401,21 @@ def _load_kernel32() -> tuple[Any, Callable[[], int]]:
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.CloseHandle.restype = ctypes.c_int
+    # #722 — the evidence legs (:class:`_Win32EvidenceApi`).
+    kernel32.QueryInformationJobObject.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.QueryInformationJobObject.restype = ctypes.c_int
+    kernel32.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.IsProcessInJob.restype = ctypes.c_int
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.TerminateProcess.restype = ctypes.c_int
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
     return kernel32, ctypes.get_last_error  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -453,6 +500,77 @@ class _KernelApi:
 
     def taskkill(self, pid: int) -> None:
         _taskkill_tree(pid)
+
+    # --- #722: the evidence legs ------------------------------------------
+
+    def job_member_pids(self, job: int) -> list[int]:
+        # ``JOBOBJECT_BASIC_PROCESS_ID_LIST``: two DWORDs, then ULONG_PTRs.
+        # Asked again at twice the room while the job holds more than fits.
+        capacity = 64
+        while True:
+
+            class _IdList(ctypes.Structure):
+                _fields_ = [  # noqa: RUF012
+                    ("assigned", ctypes.c_uint32),
+                    ("listed", ctypes.c_uint32),
+                    ("ids", ctypes.c_size_t * capacity),
+                ]
+
+            ids = _IdList()
+            ok = self._kernel32.QueryInformationJobObject(
+                job, _JOB_OBJECT_BASIC_PROCESS_ID_LIST, ctypes.byref(ids), ctypes.sizeof(ids), None
+            )
+            if ok and ids.assigned <= ids.listed:
+                return [int(ids.ids[i]) for i in range(ids.listed)]
+            if not ok and self._last_error() != 234:  # ERROR_MORE_DATA
+                raise self._last_os_error("QueryInformationJobObject")
+            if capacity >= 1 << 16:
+                raise OSError("QueryInformationJobObject: member list too large")
+            capacity *= 2
+
+    def active_count(self, job: int) -> int:
+        class _Accounting(ctypes.Structure):
+            _fields_ = [  # noqa: RUF012
+                ("total_user", ctypes.c_int64),
+                ("total_kernel", ctypes.c_int64),
+                ("period_user", ctypes.c_int64),
+                ("period_kernel", ctypes.c_int64),
+                ("page_faults", ctypes.c_uint32),
+                ("total_processes", ctypes.c_uint32),
+                ("active_processes", ctypes.c_uint32),
+                ("terminated", ctypes.c_uint32),
+            ]
+
+        info = _Accounting()
+        if not self._kernel32.QueryInformationJobObject(
+            job, _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            raise self._last_os_error("QueryInformationJobObject")
+        return int(info.active_processes)
+
+    def open_member(self, pid: int) -> int:
+        handle = self._kernel32.OpenProcess(
+            _SYNCHRONIZE | _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            raise self._last_os_error("OpenProcess")
+        return int(handle)
+
+    def in_job(self, handle: int, job: int) -> bool:
+        result = ctypes.c_int(0)
+        if not self._kernel32.IsProcessInJob(handle, job, ctypes.byref(result)):
+            raise self._last_os_error("IsProcessInJob")
+        return bool(result.value)
+
+    def terminate_process(self, handle: int) -> None:
+        if not self._kernel32.TerminateProcess(handle, 1):
+            raise self._last_os_error("TerminateProcess")
+
+    def wait_handle(self, handle: int, timeout_ms: int) -> bool:
+        return self._kernel32.WaitForSingleObject(handle, max(0, int(timeout_ms))) == _WAIT_OBJECT_0
+
+    def close_process(self, handle: int) -> None:
+        self._kernel32.CloseHandle(handle)
 
     def _last_os_error(self, call: str) -> OSError:
         return OSError(f"{call} failed (GetLastError={self._last_error()})")
@@ -551,6 +669,41 @@ def _release_job(api: _Win32Api, job: int) -> None:
 
     with contextlib.suppress(OSError):
         api.close_handle(job)
+
+
+# ---------------------------------------------------------------------------
+# the stop evidence (#722)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StopReceipt:
+    """What :meth:`ProcessTree.stop_and_collect` collected before it killed anything.
+
+    POSIX: the descendants walked while the root lived (``pids``, with their
+    start times) and the groups they led (``groups``). win32: the handles of
+    the job's members, each opened and confirmed a member before any kill
+    (``handles``, by pid). ``errors`` says what could not be collected; a
+    receipt with errors never confirms.
+    """
+
+    policy: str
+    root: int
+    pids: tuple[int, ...] = ()
+    started: tuple[tuple[int, float | None], ...] = ()
+    groups: tuple[int, ...] = ()
+    handles: tuple[tuple[int, int], ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Confirmed:
+    """Every collected member was waited on and the job (win32) or every group (POSIX) is empty."""
+
+
+@dataclass(frozen=True)
+class Unconfirmed:
+    reason: str
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +942,301 @@ class ProcessTree:
             finalizer.detach()
         if job is not None and self._api is not None:
             _release_job(self._api, job)
+
+    # --- #722 (ADR-0293): stop with evidence, for service-owned trees --------
+
+    def active_processes(self) -> int | None:
+        """win32: the job's ``ActiveProcesses`` count (monitoring only). ``None`` elsewhere."""
+
+        if not self._win32 or self._job is None:
+            return None
+        api = cast("_Win32EvidenceApi", self._api)
+        try:
+            return api.active_count(self._job)
+        except (OSError, AttributeError):
+            return None
+
+    def collect(
+        self,
+        *,
+        policy: Literal["stop", "stop_descendants"] = "stop",
+        walk: Callable[[int], list[int]] | None = None,
+        leaders: Callable[[list[int]], list[int]] | None = None,
+        started: Callable[[int], float | None] | None = None,
+        prior: StopReceipt | None = None,
+    ) -> StopReceipt:
+        """The evidence alone: nothing is signalled. Synchronous; never raises.
+
+        What :meth:`stop_and_collect` gathers before it kills, for a caller that
+        must signal something else first — a soft stop, a ``CTRL_BREAK`` — and
+        so must hold the evidence before it does (Codex #3, #4): the job's
+        members on win32 (each opened and confirmed a member), the walk with its
+        start times and the groups its pids lead on POSIX, taken while the root
+        still lives. ``prior`` is an earlier receipt of this tree: what it holds
+        is kept (a member already opened is not opened again, a pid walked
+        before the root died stays named, with the start time it had then), and
+        what is new is added. The groups pids lead are read only for pids that
+        are still the process walked (``started`` unchanged).
+        """
+
+        if self._win32:
+            return self._collect_win32(policy, prior)
+        return self._collect_posix(policy, walk, leaders, started, prior)
+
+    def stop_and_collect(
+        self,
+        *,
+        policy: Literal["stop", "stop_descendants"] = "stop",
+        walk: Callable[[int], list[int]] | None = None,
+        leaders: Callable[[list[int]], list[int]] | None = None,
+        started: Callable[[int], float | None] | None = None,
+        prior: StopReceipt | None = None,
+        same: Callable[[int, float | None], bool | None] | None = None,
+    ) -> StopReceipt:
+        """Collect the evidence first (:meth:`collect`), then kill. Synchronous; never raises.
+
+        win32 (codex-rs ``terminate_and_wait``'s order, Codex r5 #1): every
+        member the job lists is opened and kept only when ``IsProcessInJob``
+        confirms it, and **only then** does anything die — ``taskkill /T /F``
+        while the root lives, so it reaches what escaped the assignment window,
+        then ``TerminateProcess`` on each collected handle. No
+        ``TerminateJobObject`` here: that comes last, in :meth:`confirm`, once
+        every collected member has been waited on. An empty listing after a kill
+        is therefore never read as "all stopped".
+
+        POSIX: the walk and the groups its pids lead, read while the root lives
+        (``walk`` and ``leaders`` are injected by the caller; without them the
+        root's own group is the evidence), then SIGKILL to each pid deepest
+        first and to each group, in ADR-0291's order. A pid walked by an earlier
+        collection (``prior``) is signalled only while ``same`` says it is still
+        the process that was walked, so a number freed since is not hit by
+        its own SIGKILL; a group the earlier collection recorded is still
+        killed whole (ADR-0293 §5).
+
+        ``stop_descendants`` is the normal-exit policy: the root is gone and only
+        what is left in the tree is collected and stopped.
+        """
+
+        receipt = self.collect(
+            policy=policy, walk=walk, leaders=leaders, started=started, prior=prior
+        )
+        if self._win32:
+            self._kill_win32(receipt)
+        else:
+            fresh = set(receipt.pids) - set(prior.pids if prior is not None else ())
+            self._kill_posix(receipt, fresh, same)
+        return receipt
+
+    def _collect_win32(self, policy: str, prior: StopReceipt | None) -> StopReceipt:
+        api = cast("_Win32EvidenceApi", self._api)
+        held = list(prior.handles) if prior is not None else []
+        if self._job is None:
+            # The fallback tree (no job): taskkill is all there is.
+            return StopReceipt(policy, self.pid, handles=tuple(held), errors=("no job",))
+        have = {pid for pid, _handle in held}
+        handles: list[tuple[int, int]] = list(held)
+        errors: list[str] = []
+        try:
+            members = api.job_member_pids(self._job)
+        except (OSError, AttributeError) as exc:
+            members = []
+            errors.append(f"member query failed: {exc}")
+        for pid in members:
+            if pid in have:
+                continue
+            try:
+                handle = api.open_member(pid)
+            except OSError as exc:
+                errors.append(f"open {pid} failed: {exc}")
+                continue
+            try:
+                member = api.in_job(handle, self._job)
+            except OSError as exc:
+                member = False
+                errors.append(f"membership of {pid} unknown: {exc}")
+            if member:
+                handles.append((pid, handle))
+            else:
+                api.close_process(handle)
+        return StopReceipt(policy, self.pid, handles=tuple(handles), errors=tuple(errors))
+
+    def _kill_win32(self, receipt: StopReceipt) -> None:
+        api = cast("_Win32EvidenceApi", self._api)
+        win = cast("_Win32Api", self._api)
+        if receipt.policy == "stop":
+            with contextlib.suppress(OSError):
+                win.taskkill(self.pid)
+        for _pid, handle in receipt.handles:
+            # A member that already exited refuses; the wait in :meth:`confirm` decides.
+            with contextlib.suppress(OSError):
+                api.terminate_process(handle)
+
+    def _collect_posix(
+        self,
+        policy: str,
+        walk: Callable[[int], list[int]] | None,
+        leaders: Callable[[list[int]], list[int]] | None,
+        started: Callable[[int], float | None] | None,
+        prior: StopReceipt | None,
+    ) -> StopReceipt:
+        errors: list[str] = list(prior.errors) if prior is not None else []
+        stamped: dict[int, float | None] = dict(prior.started) if prior is not None else {}
+        order: list[int] = list(prior.pids) if prior is not None else []
+        if walk is not None:
+            try:
+                fresh = [p for p in walk(self.pid) if p != self.pid and p not in stamped]
+            except Exception as exc:  # noqa: BLE001 — a walk that fails is an error, not a stop
+                fresh = []
+                errors.append(f"walk failed: {exc}")
+            for pid in fresh:
+                stamped[pid] = started(pid) if started is not None else None
+            # Deepest first: what this walk found goes ahead of what an earlier one did.
+            order = [*fresh, *order]
+        groups: list[int] = list(prior.groups) if prior is not None else []
+        if self.contained and self._pgid is not None and self._pgid not in groups:
+            groups.append(self._pgid)
+        if leaders is not None:
+            earlier = set(prior.pids) if prior is not None else set()
+            try:
+                # Read now, so only for what is still what was walked: an earlier
+                # walk's pid whose start time changed is a number reused, and the
+                # group a new process leads with it is not this tree's.
+                named = [
+                    p
+                    for p in order
+                    if p not in earlier
+                    or (started is not None and stamped.get(p) is not None and started(p) == stamped[p])
+                ]
+                groups.extend(g for g in leaders([self.pid, *named]) if g not in groups)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"group read failed: {exc}")
+        return StopReceipt(
+            policy,
+            self.pid,
+            pids=tuple(order),
+            started=tuple((p, stamped.get(p)) for p in order),
+            groups=tuple(groups),
+            errors=tuple(dict.fromkeys(errors)),
+        )
+
+    def _kill_posix(
+        self,
+        receipt: StopReceipt,
+        fresh: set[int],
+        same: Callable[[int, float | None], bool | None] | None,
+    ) -> None:
+        stamps = dict(receipt.started)
+        for pid in receipt.pids:
+            if pid not in fresh and (same is None or same(pid, stamps.get(pid)) is not True):
+                continue  # walked earlier and not proven the same process now
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+        if receipt.policy == "stop" and not receipt.groups:
+            with contextlib.suppress(OSError):
+                os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+        for group in receipt.groups:
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+
+    async def confirm(
+        self,
+        receipt: StopReceipt,
+        deadline: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        poll: float = 0.05,
+        same: Callable[[int, float | None], bool | None] | None = None,
+    ) -> Confirmed | Unconfirmed:
+        """Wait until the collected evidence says the tree is gone, or ``deadline`` (``clock``) passes.
+
+        win32: wait on every collected handle; rescan the job and collect,
+        verify and terminate any member it lists that is not collected yet;
+        repeat until a rescan finds nothing new, then ``TerminateJobObject``
+        and :class:`Confirmed`. A failed member query or open, or the deadline,
+        is :class:`Unconfirmed`. POSIX: every recorded group answers ``ESRCH``
+        and every walked pid is gone (``same`` compares pid and start time).
+        The root's own reap is the caller's.
+        """
+
+        if receipt.errors:
+            return Unconfirmed("; ".join(receipt.errors))
+        if self._win32:
+            return await self._confirm_win32(receipt, deadline, clock, poll)
+        while True:
+            left = [g for g in receipt.groups if _group_alive(g)]
+            walked = [
+                pid
+                for pid, stamp in receipt.started
+                if (same(pid, stamp) if same is not None else _group_alive(-pid)) is not False
+            ]
+            if not left and not walked:
+                return Confirmed()
+            if clock() >= deadline:
+                what = [f"group {g}" for g in left] + [f"pid {p}" for p in walked]
+                return Unconfirmed("still present: " + ", ".join(what))
+            await asyncio.sleep(poll)
+
+    async def _confirm_win32(
+        self, receipt: StopReceipt, deadline: float, clock: Callable[[], float], poll: float
+    ) -> Confirmed | Unconfirmed:
+        api = cast("_Win32EvidenceApi", self._api)
+        if self._job is None:
+            return Unconfirmed("no job")
+        collected: dict[int, int] = dict(receipt.handles)
+        try:
+            while True:
+                waiting = dict(collected)
+                while waiting:
+                    for pid, handle in list(waiting.items()):
+                        if api.wait_handle(handle, 0):
+                            del waiting[pid]
+                    if not waiting:
+                        break
+                    if clock() >= deadline:
+                        return Unconfirmed(f"members not stopped: {sorted(waiting)}")
+                    await asyncio.sleep(poll)
+                try:
+                    listed = api.job_member_pids(self._job)
+                except OSError as exc:
+                    return Unconfirmed(f"member query failed: {exc}")
+                fresh = [pid for pid in listed if pid not in collected]
+                if not fresh:
+                    break
+                for pid in fresh:
+                    try:
+                        handle = api.open_member(pid)
+                    except OSError as exc:
+                        return Unconfirmed(f"open {pid} failed: {exc}")
+                    if not api.in_job(handle, self._job):
+                        api.close_process(handle)
+                        continue
+                    collected[pid] = handle
+                    with contextlib.suppress(OSError):
+                        api.terminate_process(handle)
+                if clock() >= deadline:
+                    return Unconfirmed("members still joining the job")
+            with contextlib.suppress(OSError):
+                cast("_Win32Api", self._api).terminate_job(self._job)
+            return Confirmed()
+        finally:
+            for handle in collected.values():
+                with contextlib.suppress(OSError):
+                    api.close_process(handle)
+
+
+def _group_alive(group: int) -> bool:
+    """POSIX: whether process group ``group`` still has a member (``-pid`` asks one pid)."""
+
+    try:
+        if group < 0:
+            os.kill(-group, 0)
+        else:
+            os.killpg(group, 0)  # pyright: ignore[reportAttributeAccessIssue]
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def kill_process_tree(pid: int, *, platform: str | None = None) -> None:

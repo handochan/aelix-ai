@@ -410,7 +410,7 @@ def test_a_turn_end_of_a_turn_that_printed_no_answer_gives_its_verdict(before: s
     close-out ends a turn that way, and it says ``aborted``, which is read
     wherever it lands; every other ``turn_end`` follows its turn's assistant
     ``message_end`` (``loop.py:260``, ``:283``; the hook-fail close-out,
-    ``harness/core.py:6124-6128``). So this pins the reducer's rule and is
+    ``harness/core.py:6213-6217``). So this pins the reducer's rule and is
     what the verify round's mutants R15 (``turn_start`` keeps the flag), R17 (a
     user ``message_end`` sets it) and R19 (no error message) break."""
 

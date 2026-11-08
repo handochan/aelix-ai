@@ -849,6 +849,7 @@ async def run_tui(
     skill_control: SkillControl | None = None,
     tool_control: ToolControl | None = None,
     extension_control: ExtensionControl | None = None,
+    jobs: Any = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -1093,6 +1094,9 @@ async def run_tui(
     # synchronous tail-clear would race the async (in_terminal) commit flush and
     # the just-finalized text could vanish before it reaches scrollback.
     output_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+    # #722 (ADR-0293) — background jobs' waker, footer segment and restored
+    # line; built below only when the CLI handed over a job service.
+    jobs_ui: Any = None
 
     # #701 (ADR-0292) — while a command Entered mid-turn is open (its task, and
     # the picker or panel it awaits), what it commits goes under the answer
@@ -2326,7 +2330,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4930``) always passes one, so this is
+            # production caller (``entry.py:4967``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2810,7 +2814,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:261``, ``:303``, ``:314``, plus
-    # the abort close-out ``core.py:6076`` and the hook-fail one ``:6127``)
+    # the abort close-out ``core.py:6165`` and the hook-fail one ``:6216``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2948,7 +2952,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:3030``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:3107``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2956,7 +2960,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:3056``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3133``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -3318,11 +3322,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2280``), so the refresh below is
+                # ``_state.messages`` (``core.py:2357``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1843``), so this never discards a figure a running
+                # ``core.py:1903``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3403,7 +3407,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:6143-6144`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:6232-6233`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3431,7 +3435,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:3056``).
+        # the model is already swapped in (``core.py:3133``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3519,6 +3523,22 @@ async def run_tui(
         await _refresh_context_usage()
 
     runtime_host.set_rebind_session(_rebind)
+
+    # #722 (ADR-0293) — only while background jobs are active (``jobs`` is
+    # passed then and only then). The waker follows the harness through every
+    # rebuild by itself, so ``_rebind`` above is unchanged.
+    if jobs is not None:
+        from aelix_coding_agent.tui.jobs_ui import JobsUi
+
+        jobs_ui = JobsUi(
+            jobs,
+            chrome=out_chrome,
+            runtime_host=runtime_host,
+            commit=lambda line: _commit(Text(line, style="cyan")),
+        )
+        out_chrome.on_modal_change = jobs_ui.maybe_wake
+        out_chrome.jobs_segment = jobs_ui.footer
+        jobs.send_hook = jobs_ui.send_now
 
     async def _ask_session_contended(path: str) -> SessionContendedChoice:
         """#137 / ADR-0244 — ``/resume`` (or ``/import``) onto an owned file.
@@ -4185,6 +4205,10 @@ async def run_tui(
         for held_line in held_notices or ():
             _commit(held_line)
         held_notices = None
+        # #722 — a restored session's waiting results, said under the transcript.
+        if jobs_ui is not None:
+            jobs_ui.ready = True
+            jobs_ui.on_service_change()
         # The update notice. Placed HERE — after the banner and any transcript
         # replay, before the first-run wizard — for three measured reasons:
         # stderr written before ``run_tui`` paints is erased by the chrome's
@@ -4223,8 +4247,13 @@ async def run_tui(
             mid_turn_state=mid_turn_state,
             mid_turn_tasks=mid_turn_tasks,
             queue_line=lambda kind, line, expanded: _enqueue(kind, line, expanded=expanded),
+            jobs_ui=jobs_ui,
         )
     finally:
+        # #722 — the waker stops listening before anything it reads is torn down.
+        if jobs_ui is not None and jobs is not None:
+            jobs_ui.close()
+            jobs.send_hook = None
         # #701 (Codex 701-handler-survives-quit) — a command run mid-turn and
         # still open (a picker, a setter still awaiting, an extension's command)
         # ends with the TUI, first, while what it holds is still bound.
@@ -4577,7 +4606,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:5016-5017``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:5093-5094``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4862,6 +4891,7 @@ async def _input_loop(
     mid_turn_state: dict[str, int] | None = None,
     mid_turn_tasks: set[asyncio.Task[None]] | None = None,
     queue_line: Callable[[str, SubmittedLine, str], None] | None = None,
+    jobs_ui: Any = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -5062,16 +5092,60 @@ async def _input_loop(
 
     chrome.on_mid_turn_command = _mid_turn_command
 
+    async def _notice_turn() -> None:
+        """#722 (ADR-0293) — the turn the notice waker asked for, run as a typed line's is."""
+
+        harness = runtime_host.harness
+        await lane.settle(from_loop=True)
+        renderer.take_run_end()
+        chrome.set_running(True)
+        turn_active["v"] = True
+        jobs_ui.busy = True
+        raised = False
+        try:
+            jobs_ui.after_turn(await harness.prompt_notices())
+        except Exception as exc:  # noqa: BLE001 — surface + survive, as a typed turn does
+            raised = True
+            renderer.finalize()
+            if renderer.take_reported_error() != str(exc):
+                output_queue.put_nowait(("commit", Text(f"✖ {exc}", style="bold red")))
+        finally:
+            jobs_ui.busy = False
+            turn_active["v"] = False
+            output_queue.put_nowait(("release", None))
+            chrome.set_running(False)
+        await lane.settle(from_loop=True)
+        run_seen, run_stop = renderer.take_run_end()
+        seconds = chrome.last_run_seconds
+        if (run_seen or raised) and seconds is not None:
+            outcome = "failed" if raised or run_stop == "error" else "stopped" if run_stop == "aborted" else "done"
+            output_queue.put_nowait(("commit", turn_end_line(outcome, seconds, time.time())))
+
     while True:
         # #596 — the ``!`` blocks a command (``/compact``, ``/reload``, …) or a
         # turn held reach the transcript and the model now, before the next
         # line — before Ctrl+D too (Codex 596-04).
         lane.command_running = False
         await lane.settle(from_loop=True)
+        # #722 — parked: the notice waker may queue its item now (G1).
+        if jobs_ui is not None:
+            jobs_ui.parked = True
+            jobs_ui.maybe_wake()
         try:
             line = await chrome.get_input()
         except EOFError:
             return  # Ctrl+D exits
+        finally:
+            if jobs_ui is not None:
+                jobs_ui.parked = False
+        if jobs_ui is not None and jobs_ui.is_wake(line):
+            # Its gates again, as the loop takes it: a dialog that opened (or a
+            # turn that started) since it was queued drops it (G2, G1).
+            if jobs_ui.take():
+                await _notice_turn()
+                if quit_after_turn["v"]:
+                    return
+            continue
 
         # W-review HIGH-1 (Sprint 6h₂₃, ADR-0131): if the external editor is
         # still applying its result, any line that was buffered/pasted into
@@ -5351,7 +5425,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4859-4875 and
+            # Two audiences, discriminated exactly as entry.py:4896-4912 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

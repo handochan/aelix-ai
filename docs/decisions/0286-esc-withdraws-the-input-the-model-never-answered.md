@@ -384,3 +384,18 @@ Tests: `tests/runtime/test_queued_lines_across_rebuilds_681.py`,
 `tests/rpc/test_queued_lines_rpc_681.py`, `tests/tui/test_queued_line_after_an_error_681.py`
 (the #345 path: a line steered into a turn that ends in a `400` survives `/reload` and comes
 back to the input box on `/new`).
+
+## Note (2026-11-08, ADR-0293, #722)
+
+A background job's notice is never withdrawn. It is not in the steer, follow-up or next-turn
+queues, so neither an Esc withdrawal nor a give-back nor a reload's hand-over touches it
+(`tests/harness/test_notice_inbox_722.py::test_nothing_that_clears_the_users_queues_touches_a_notice`).
+A notice is never placed after an input the user typed while that input is unanswered: one
+waiting when the user types is placed ahead of the line, and inside a run one waits for the
+boundary after the answer; once placed it becomes the point a withdrawal returns to, so the
+withdrawal's replay never appends it again
+(`::test_a_notice_waiting_when_the_user_types_goes_first_and_an_esc_keeps_one_delivery`). A placed
+notice is not counted among the turn's inputs (`message_end` skips it), so a withdrawal neither
+removes it nor gives its text back to the user
+(`::test_a_notice_placed_after_an_answer_is_never_withdrawn_or_given_back`); and a notice turn has
+no typed input, so an Esc there withdraws nothing.

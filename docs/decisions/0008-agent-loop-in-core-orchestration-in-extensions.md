@@ -8,6 +8,9 @@ Status: Accepted — **Decision ¶2의 "runtime core에는 multi-agent 개념을
 **추가로 ADR-0197 (P2 subagent-runtime seam)이 아래 `## Amendment (2026-07-26)`
 로 리뷰 게이트 인용문의 두 조항(`caps` 범위 · consent policy)을 조정합니다.**
 원 Decision과 2026-07-19 amendment는 둘 다 **그대로 유효**합니다.
+**2026-11-08 ADR-0293 (#722)이 리뷰 게이트 인용문을 교체합니다** (아래
+`## Amendment (2026-11-08)`): 백그라운드 실행은 범용 product-core 작업 기구이고,
+위임 전용 감독자만 extension policy로 남습니다.
 
 ## Context
 
@@ -184,3 +187,20 @@ fork bomb 방지입니다 (ADR-0197 §(c)). 반대로 `output_cap` / `timeout_ms
 CONTRACT (types + binding slot) only"** 절까지 가지며, 그 이상은 가지지
 않습니다.
 
+## Amendment (2026-11-08)
+
+**Amended by:** ADR-0293 (#722, #611 S1b). **Trigger:** the owner's decision of 2026-11-07 —
+background execution is a GENERIC core facility; the kernel holds the notice inbox and the wake
+boundary, product-core holds the job service, and delegation, `bash` and extensions are its
+clients; this gate narrows to a delegation-specific supervisor.
+
+The quoted review gate above (and its 2026-07-26 refinement) is **replaced** by the text in
+ADR-0293 §13. In short: product-core may own a kind-agnostic, owner-scoped job mechanism and its
+surfaces, the kernel a kind-agnostic notice inbox; agent spawn implementation, delegation's
+identity maps, child-session and resume semantics, consent and grant policy, and topology remain
+extension policy; no line of the mechanism may depend on a particular client kind (enforced by
+`tests/jobs/test_core_is_kind_agnostic_611.py`); the expressly allowed host-safety invariants are
+one hard maximum per kind and one across kinds. Amendment (c) now reads: concurrency limits are
+client defaults the user may configure, under core's hard maxima. Amendment (d) — consent is
+extension policy, product-core only surfaces a refusal — is carried into the new text unchanged.
+Inert until #611 S3 (ADR-0293 §12).

@@ -148,7 +148,7 @@ def test_recovered_provider_error_does_not_become_the_answer() -> None:
 
     ``_reduce_message_end`` (``stream.py:1063-1071``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
-    auto-retry (``harness/core.py:578-579``, default ON) already recovered from.
+    auto-retry (``harness/core.py:596-597``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
     ``stop_reason='stop'``, exit 0.
 

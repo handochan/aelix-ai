@@ -640,3 +640,15 @@ one.
   A session file now has at most one live writer; the second terminal is asked
   whether to fork it, view it read-only, or stop.
 - fsync of appends; `move_to` as one line; rejecting `NaN`.
+
+## Note (2026-11-08, ADR-0293, #722)
+
+Two first-party record kinds follow §1 (rules 1.3 and 1.5, an `aelix.` custom type carrying everything in its data): `aelix.job` facts
+(`start`, `process`, `cleanup`, `supervision`, `outcome`; `v: 1`, each complete, placed with
+rule 5's `place_entry` under an id derived from the fact's own `fid` — `jr-` + 16 hex of its sha256,
+through `Session.place_custom_entry` — so a retry adopts a line that landed instead of writing it
+again), and the
+notice delivery, a `custom_message` placed with rule 5's `place_entry` under the id `nt-` + 12 hex
+of `sha256(notice_id)`, so a notice is written at most once and its delivery is one `get_entry`.
+A reader that does not know them skips them (`build_session_context` turns the delivery into the
+user-role text the model read). Inert until #611 S3.
