@@ -1,7 +1,8 @@
 # 0268. `--mode json` exits 1 when the run's last answer failed, as `-p` does
 
 Status: Accepted (2026-10-20, the owner's decision on #410; §1's second half added in
-review round 2, 2026-10-21)
+review round 2, 2026-10-21). Amended 2026-11-08 by ADR-0293 (#722): within one user prompt
+and the notice turns after it the first failure stands (gated until #611 S3).
 Date: 2026-10-20
 Issue: #410 (this change); #379 (the OAuth refresh retry whose exhaustion the issue
 came from); #391 (`-p` that ends with no output and exit 0, B4, not this decision)
@@ -166,3 +167,17 @@ stderr to say why.
   judges the answer as any other. Text mode also writes the compaction's `Auto-compaction failed:
   …` line to stderr (pi writes nothing); JSON mode writes nothing extra, as §3 has it - the
   event is on its stdout. ADR-0126's #546 amendment has the decision.
+
+## Amendment (2026-11-08, ADR-0293, #722)
+
+The owner's decision of 2026-11-07: `-p` keeps the first failure's exit code, **but only within
+one user prompt and the notice turns it caused**; across several user messages this ADR is
+unchanged. While background jobs are active (ADR-0293 §12; off until #611 S3) the run latches the
+first failed answer of the current user prompt and of the notice turns after it, and exits 1 if
+one is latched; the next user message starts a new scope. Text mode writes the latched failure on
+stderr and still prints a later successful answer on stdout; JSON mode writes nothing extra.
+Exceptions (1), signals (128+sig) and a broken pipe (141) keep their rules. With the gate off the
+verdict is §1's, byte for byte. Tests: `tests/cli/test_print_verdict_611.py` —
+`test_first_user_failure_then_user_success_exits_0` (this ADR unchanged across user messages),
+`test_notice_failure_after_success_exits_1`, `test_successful_notice_after_failure_exits_1`,
+`test_json_mode_latches_too_and_writes_nothing_extra`, `test_signal_and_epipe_override`.

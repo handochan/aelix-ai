@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1583``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1587``,
 # ``rpc/rpc_mode.py:1645``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -118,6 +118,18 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "DEFAULT_WAIT_FOR_IDLE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "SHUTDOWN_SIGTERM_TIMEOUT_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "STARTUP_GRACE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        # ADR-0293, #722 (#611 S1b). ADR-0008's gate as ADR-0293 amends it names
+        # these two as "the expressly allowed host-safety invariants": one
+        # immutable hard maximum per kind and one across kinds, which no
+        # ``backgroundJobs`` setting can exceed. They bound EVERY kind the
+        # kind-agnostic job service admits — not delegation's own default, which
+        # stays its client's declaration (``KindCapabilities.default_bound``).
+        "HARD_MAX_PER_KIND",  # jobs/admission.py
+        "HARD_MAX_TOTAL",  # jobs/admission.py
+        # The bound on one fully framed notice (16 KiB, ADR-0293): a framing
+        # bound on what the model reads, of the same category as the RPC
+        # framing budgets ADR-0201 discusses below, applied to every kind alike.
+        "NOTICE_MAX_BYTES",  # jobs/notice.py
         # ADR-0201 added NO entry here, deliberately. The RPC sprint needed a
         # per-line framing budget and a reader limit, and every idiomatic name
         # for either trips ``_CAP_NAME_RE``. Both workarounds are wrong: a name
@@ -718,6 +730,22 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # no consent path, no registry — ``test_kernel_has_no_subagent_surface``
         # still passes.
         "packages/aelix-agent-core/src/aelix_agent_core/session/memory_storage.py",
+        # ADR-0293, #722 (#611 S1b). ``harness/inbox.py`` is NEW to this list:
+        # the kind-agnostic notice inbox ADR-0008's amended gate lets the kernel
+        # own — a notice is placed as a ``custom_message`` under an id derived
+        # from its ``notice_id`` (``place_entry``, ADR-0242 rule 5) before the
+        # model sees it, at most 64 KiB of bodies per boundary, and nothing that
+        # clears the user's queues touches it. ``harness/core.py`` (listed above)
+        # changed again: ``post_notice``, ``prompt_notices`` (a turn with
+        # ``source="notice"``), ``unanswered_notice_at_leaf`` and the inbox's
+        # listeners, the steering and follow-up boundaries taking pending
+        # notices, ``message_end`` neither appending a placed notice again nor
+        # counting it as the user's input, and the prompt's run tail and release
+        # moved unchanged into two methods both turns share. Background work in
+        # product-core created the requirement; the inbox names no kind of work,
+        # has no ``aelix_agents`` import, no spawn site, no cap, no consent path
+        # and no registry — ``test_kernel_has_no_subagent_surface`` still passes.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/inbox.py",
     }
 )
 

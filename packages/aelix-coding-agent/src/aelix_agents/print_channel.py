@@ -26,7 +26,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:443-444`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:492-493`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -1476,8 +1476,8 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2543-2560``) nor child
-                    # (``modes/print_mode.py:234-293``) installs a SIGINT
+                    # neither parent (``tui/shell.py:2547-2564``) nor child
+                    # (``modes/print_mode.py:241-300``) installs a SIGINT
                     # handler to convert that into a result.
                     #
                     # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,

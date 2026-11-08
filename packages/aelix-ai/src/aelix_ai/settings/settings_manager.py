@@ -1665,6 +1665,28 @@ class SettingsManager:
             return False
         return bool(features.agents)
 
+    def get_background_jobs_settings(self) -> dict[str, Any]:
+        """``backgroundJobs`` from the GLOBAL scope only (#722, ADR-0293): admission bounds.
+
+        A copy of the raw ``{"limits": {...}, "maxTotal": ...}`` object, or
+        ``{}``. Validation is the reader's (``jobs/admission.py``), which reads
+        this at every reservation so a change applies to the next one. Global
+        only for the reason :meth:`get_features_agents` gives: a trusted
+        repository must not raise its own limits by shipping
+        ``.aelix/settings.json``. Called only while background jobs are active.
+        """
+
+        value = self._global_settings.background_jobs
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, Any] = {}
+        limits = value.get("limits")
+        if isinstance(limits, dict):
+            out["limits"] = dict(limits)
+        if "maxTotal" in value:
+            out["maxTotal"] = value["maxTotal"]
+        return out
+
     def set_features_agents(self, enabled: bool) -> None:
         """Persist the agent-delegation kill switch to the GLOBAL scope.
 

@@ -445,7 +445,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2456``) and render it
+    the harness's own auto-compaction guard at ``core.py:2533``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
 
     #347 — through ``run_cancellable``, so Esc and Ctrl+C reach it and the row's
@@ -530,7 +530,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5747-5753`` intersects ``_state.tools`` with
+    (``harness/core.py:5834-5840`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -917,7 +917,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5195-5209`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5269-5283`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1048,7 +1048,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3996`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4016`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1063,7 +1063,7 @@ async def _confirm_project_agent_for_run(
     # The three ``getattr`` hops are deliberate — a missing or mid-rebuild runtime
     # must degrade to a decline, never raise — but they cost the static type:
     # ``AgentHarness.runtime`` is the KERNEL's ``_ExtensionRuntime | None``
-    # (``harness/core.py:268``), so the chain widens to ``object`` and ``callable()``
+    # (``harness/core.py:279``), so the chain widens to ``object`` and ``callable()``
     # then narrows THAT to ``(...) -> object``, which makes the guarded ``await``
     # below a type error. The annotation states the seam's real shape
     # (``extensions/ext_ui.py:186-193``) so the narrowing lands on it instead;
@@ -2157,7 +2157,7 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
     # The double count was the same text twice over: ``cli/entry.py:1979-1982``
-    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:763-769``
+    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:781-787``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
     # level up, at ``cli/entry.py:1979``.

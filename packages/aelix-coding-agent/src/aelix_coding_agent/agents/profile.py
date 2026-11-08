@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4846-4863``."""
+``cli/entry.py:4883-4900``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -212,7 +212,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:2138-2140``)."""
+    paths still load (``cli/entry.py:2141-2143``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's

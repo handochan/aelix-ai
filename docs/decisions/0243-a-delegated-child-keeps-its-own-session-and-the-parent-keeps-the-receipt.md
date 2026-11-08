@@ -784,3 +784,9 @@ clamped); aelix has neither the per-model setting nor the `medium` fallback
 (ADR-0239's #286 divergences). A profile on a model that cannot switch
 reasoning off still states `thinking:` unless the user's default gives the
 model a level it accepts.
+
+## Note (2026-11-08, ADR-0293, #722)
+
+S1b adds the generic job facts (`aelix.job`, ADR-0293 §7) a delegated run will be linked to; the
+`job_id` link on `aelix.child_session` and confirmed appends for service-owned runs are #611 S1c.
+Nothing in this ADR changed in S1b.

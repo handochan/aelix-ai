@@ -23,6 +23,29 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Background jobs, built and switched off (#722, #611 S1b, ADR-0293).** A generic job
+  service in product-core (`aelix_coding_agent/jobs/`), the kernel's notice inbox
+  (`AgentHarness.post_notice`, `prompt_notices`), monitoring (a 5 s liveness loop, a footer
+  segment, `/jobs`, the `job` and `job_stop` tools), the `-p` drain and the TUI's waker are in the
+  tree **behind `jobs/activation.py` `ACTIVE = False`**, and the kernel inbox behind
+  `AgentHarnessOptions.notice_inbox`, which is off by default
+  (`tests/harness/test_notice_inbox_722.py::test_with_the_inbox_off_the_kernel_is_what_it_was`)
+  and which the CLI turns on only while `ACTIVE`, for `-p`, RPC and the harness a `new_session`
+  rebuilds (`tests/cli/test_notice_inbox_wiring_722.py`).
+  With the gate off there is no `/jobs`, no job tool and no footer segment, the `backgroundJobs`
+  settings are not read (`tests/jobs/test_synthetic_kind_611.py::test_the_gate_off_refuses_the_facade`),
+  and an extension probing `ExtensionAPI.jobs` or `ExtensionAPI.post_notice` sees what it saw
+  before: `hasattr` is `False`, `getattr(…, None)` is `None`, `inspect.getmembers` lists neither,
+  and reading one raises the interpreter's own `AttributeError` — type, message, `.name` and
+  `.obj` (`tests/jobs/test_facade_611.py::test_with_the_gate_off_jobs_and_post_notice_read_as_absent`).
+  The two names do appear in `dir()` and on the class, as properties.
+  `-p`, RPC and TUI runs compared against the build before it with a scripted model and a real
+  one showed no difference (the #722 fix round's gate-off diff). #611 S3 turns it on with the
+  delegation client (#723) and its guide. Tests: `tests/jobs/`,
+  `tests/harness/test_notice_inbox_722.py`, `tests/cli/test_print_verdict_611.py`,
+  `tests/cli/test_print_mode_background_611.py`, `tests/cli/test_notice_inbox_wiring_722.py`,
+  `tests/tui/test_wake_611.py`, `tests/tui/test_restore_611.py`,
+  `tests/tui/test_notice_never_touches_dialogs_611.py`.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

@@ -1098,7 +1098,7 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
     once per call, inside ``_grant_for`` (``extension.py:1210``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
-    self.is_modal_open())`` (``chrome.py:1618-1621``). Under P2 the resulting window
+    self.is_modal_open())`` (``chrome.py:1633-1636``). Under P2 the resulting window
     was one child and milliseconds; here wave 2 may start any time later —
     no clock bounds wave 1 since #604. A user who watches the first four children do
     something alarming and tightens must reach members 5-8.
@@ -1542,7 +1542,7 @@ async def test_l2_stop_all_mid_batch_leaves_no_process_behind(
     ``list`` / ``status`` / ``stop`` and a second ``stop_all`` could never reach
     them again. Those children hold the parent's API keys, which is precisely
     what ADR-0197 forbids, and on the ``AgentHarness.reload()`` path
-    (``harness/core.py:4442``, which emits ``session_shutdown`` and never aborts
+    (``harness/core.py:4519``, which emits ``session_shutdown`` and never aborts
     or disposes) they survive indefinitely.
 
     The in-process fake cannot show it: with no real child, ``abort_child``

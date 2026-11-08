@@ -2393,6 +2393,69 @@ class ExtensionAPI:
 
         return self._runtime.event_bus
 
+    # --- #722 (ADR-0293) — background jobs, inert until #611 S3 ---
+
+    def _jobs_absent(self, name: str) -> None:
+        """While background jobs are off, ``name`` is not there: the interpreter's own error for it.
+
+        A plain ``AttributeError`` with Python's own wording, so that an
+        extension that probes for the feature sees exactly what it saw before
+        #722 — ``hasattr`` ``False``, ``getattr(…, None)`` ``None``, and the same
+        exception class and message on a call (verify S1).
+        """
+
+        from aelix_coding_agent.jobs.activation import is_active
+
+        if not is_active():
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}", name=name, obj=self
+            )
+
+    @property
+    def jobs(self) -> Any:
+        """The process's job service, for registering a kind and running its jobs.
+
+        While background jobs are off (``jobs/activation.py``) this attribute is
+        not there: reading it raises the interpreter's own ``AttributeError``,
+        so ``hasattr`` and ``getattr(…, None)`` answer as they did before #722. The whole feature is unreachable until #611 S3
+        turns it on. The facade is bound to this extension and to this
+        runtime: it refuses every call once a reload or a session change has
+        invalidated the runtime. See :class:`~aelix_coding_agent.jobs.facade.JobsFacade`.
+        """
+
+        self._jobs_absent("jobs")
+        self._runtime.assert_active()
+        from aelix_coding_agent.jobs.activation import current_service
+        from aelix_coding_agent.jobs.facade import JobsFacade
+
+        return JobsFacade(
+            current_service(),
+            source=self._extension.name,
+            lifetime=self._runtime.assert_active,
+        )
+
+    @property
+    def post_notice(self) -> Callable[..., bool]:
+        """``post_notice(notice_id, body, *, title="", brief="")``: leave the model a notice, once per ``notice_id``.
+
+        Framed as background output. Absent (the interpreter's own
+        ``AttributeError``) while background jobs are off, as :attr:`jobs` is.
+        The call answers ``False`` when the id was already posted in this
+        session.
+        """
+
+        self._jobs_absent("post_notice")
+        return self._post_notice
+
+    def _post_notice(self, notice_id: str, body: str, *, title: str = "", brief: str = "") -> bool:
+        self._jobs_absent("post_notice")
+        self._runtime.assert_active()
+        from aelix_coding_agent.jobs.activation import current_service
+
+        return current_service().post_extension_notice(
+            self._extension.name, notice_id, body, title=title, brief=brief
+        )
+
     # --- Internal helpers ---
 
     @property

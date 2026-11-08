@@ -133,7 +133,7 @@ class Session:
 
         Mirrors the cached-metadata access pattern used by
         :attr:`AgentSessionRuntime.cwd`
-        (``runtime/agent_session_runtime.py:374-384``).
+        (``runtime/agent_session_runtime.py:386-396``).
         """
 
         storage = self._storage
@@ -351,6 +351,43 @@ class Session:
                 content=content,
                 display=display,
                 details=details,
+            ),
+            same=same if same is not None else matches,
+        )
+
+    async def place_custom_entry(
+        self,
+        entry_id: str,
+        custom_type: str,
+        data: Any | None = None,
+        *,
+        same: Callable[[SessionTreeEntry], bool] | None = None,
+    ) -> Placement:
+        """Append a ``custom`` entry under ``entry_id``, at most once (#722).
+
+        :meth:`place_custom_message`'s twin for a ``custom`` entry: a record a
+        caller may write again after a failure — a job's fact retried by its
+        outbox — is placed under an id derived from its own identity, so a
+        retry that finds the earlier line (landed, or adopted once a pending
+        outcome is settled) writes nothing (Codex review of #722, finding 13).
+        ``same`` defaults to "a ``custom`` entry with this exact payload".
+        """
+
+        def matches(existing: SessionTreeEntry) -> bool:
+            return (
+                isinstance(existing, CustomEntry)
+                and existing.custom_type == custom_type
+                and existing.data == data
+            )
+
+        return await self._storage.place_entry(
+            entry_id,
+            lambda parent_id: CustomEntry(
+                id=entry_id,
+                parent_id=parent_id,
+                timestamp=_iso_now(),
+                custom_type=custom_type,
+                data=data,
             ),
             same=same if same is not None else matches,
         )

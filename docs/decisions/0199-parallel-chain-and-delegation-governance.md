@@ -1467,3 +1467,15 @@ product-core. §(n) is now the machine gate for that clause.
 * **The widening rung and `role` remain the two places where a declared value
   outruns what is reachable.** `SubagentMode`'s `"parallel"` / `"chain"` are now
   live at the tool; they remain — correctly — refused at the seam.
+
+## Note (2026-11-08, ADR-0293, #722)
+
+(d)'s bound is to become delegation's **client default** under the generic job service's
+admission (ADR-0293 §9): `backgroundJobs.limits.agents`, an integer from 1 to 16 in the global
+settings, default 4, with all live delegated agents — foreground and background — counting, a call
+reserving its fan-out before consent and refused at none free — each consented spawn then takes
+its slot out of that reservation (`JobService.reserve`, `start(…, reservation=…)`), and slots are
+counted by the kind's name. S1b (#722) built the admission (`jobs/admission.py`) and the setting's
+reader; it registers no delegation kind,
+so `MAX_LIVE_CHILDREN` and `_SEM_BY_LOOP` are unchanged in code until #611 S1c, and the whole of
+it is inert until S3.

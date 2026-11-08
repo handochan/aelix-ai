@@ -104,6 +104,17 @@ from aelix_agent_core.harness.hooks import (
     make_tool_call_event,
     make_tool_result_event,
 )
+from aelix_agent_core.harness.inbox import (
+    NOTICE_DRAIN_BUDGET,
+    NOTICE_ID_KEY,
+    Notice,
+    NoticeChange,
+    NoticeInbox,
+    PromptNoticesResult,
+    cut_utf8,
+    is_notice_details,
+    notice_entry_id,
+)
 from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.loop import agent_loop
 from aelix_agent_core.types import (
@@ -289,6 +300,13 @@ class AgentHarnessOptions:
     # everything, which is what an SDK caller and every test that builds a
     # harness directly get.
     tool_policy: ToolPolicy | None = None
+    # #722 (ADR-0293) — the notice inbox (:mod:`aelix_agent_core.harness.inbox`).
+    # Off by default, and then it is not there: posting a notice and
+    # :meth:`AgentHarness.prompt_notices` raise, the readers answer empty, and
+    # every boundary drains exactly the queues it drained before #722. The host
+    # that delivers background results turns it on (product-core, only while
+    # its background jobs are active).
+    notice_inbox: bool = False
     # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571. A raise
     # fails the turn as AgentHarnessError("auth"), unless the exception carries a
     # non-empty str ``retry_reason`` (#379, ADR-0251 §4): that one becomes an error
@@ -888,6 +906,23 @@ class AgentHarness:
         # Sprint 3b — next_turn queue + pending_session_writes (Pi parity,
         # agent-harness.ts:172 + 466-472).
         self._next_turn_queue: list[AgentMessage] = []
+        # #722 (ADR-0293) — the notice inbox, beside the queues and never
+        # touched by what clears them: an abort, an Esc withdrawal, a give-back
+        # or a reload's hand-over (:mod:`aelix_agent_core.harness.inbox`).
+        # ``_notice_messages`` holds, by identity, the messages a boundary made
+        # from placed notices: their entry is already written, so ``message_end``
+        # neither appends them again nor counts them as the user's input.
+        self._notices_enabled = bool(options.notice_inbox)
+        self._inbox = NoticeInbox()
+        self._notice_messages: dict[int, AgentMessage] = {}
+        # The notice ids whose entries were on the path the running ``_run``
+        # built its context from: an entry a boundary adopts (its line landed
+        # and then raised) is shown unless it is one of these (Codex #2).
+        self._context_notice_ids: set[str] = set()
+        # Set by :meth:`prompt_notices` for the boundary its run starts with:
+        # the batch it placed before the run is that boundary's, so one request
+        # never carries two drains.
+        self._notices_drained_for_run = False
         self._pending_session_writes: list[PendingSessionWrite] = []
         # #334 — held by :meth:`_drain_pending_session_writes`, so a write that
         # goes behind the queue cannot be flushed ahead of items another drain
@@ -1221,6 +1256,9 @@ class AgentHarness:
         """
 
         self._turn_gate = reason
+        if reason is None and self._notices_enabled:
+            # #722 — a notice that waited for the gate can be taken now.
+            self._inbox.notify("released")
 
     def set_prompt_check(self, check: Callable[[Model], str | None] | None) -> None:
         """Aelix-additive (#376): what :meth:`prompt` asks before it writes anything.
@@ -1585,6 +1623,15 @@ class AgentHarness:
                 # so at the next suspension, which comes before ``agent_start``
                 # (``test_the_response_precedes_the_turns_first_event``).
                 on_accept("started")
+            if self._notices_enabled and _refused_by is None and self._inbox.pending:
+                # #722 (ADR-0293, Codex #8) — notices waiting when the user types
+                # go to the model ahead of the line, in the same request: placed
+                # here, before the point an Esc returns to (``safe_leaf`` below),
+                # so withdrawing the line never replays a notice. Before anything
+                # of this prompt is detached, so a cancel here loses nothing.
+                placed_first = await self._place_notices()
+                self._state.messages.extend(placed_first)
+                self._notices_drained_for_run = bool(placed_first)
             # ``images`` REACHES THE MODEL HERE, and until this line it did not.
             #
             # Pi builds every user message through one helper —
@@ -1681,240 +1728,270 @@ class AgentHarness:
                 system_prompt=system_prompt,
                 pending_inputs=[*drained_next, user_msg],
             )
-            # Issue #4 Lane B — outer recovery loop. pi parity
-            # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
-            # agent.continue()``). Each pass first drains the auto-retry loop
-            # (retriable provider errors), then attempts ONE overflow-driven
-            # compact-and-retry. The loop re-enters after an overflow re-run so a
-            # retriable error on the recovered turn is still retried while a
-            # second overflow is refused by ``_overflow_recovery_attempted`` —
-            # guaranteeing no infinite retry.
+            return await self._settle_runs(result, system_prompt, claim)
+        finally:
+            await self._release_prompt()
+
+    async def _settle_runs(
+        self, result: list[AgentMessage], system_prompt: str, claim: object
+    ) -> list[AgentMessage]:
+        """What follows a prompt's first run: retries, overflow recovery, the closing checks.
+
+        #722 — moved out of :meth:`prompt` unchanged, so :meth:`prompt_notices`
+        settles its run the same way. Runs under the caller's claim.
+        """
+
+        # Issue #4 Lane B — outer recovery loop. pi parity
+        # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
+        # agent.continue()``). Each pass first drains the auto-retry loop
+        # (retriable provider errors), then attempts ONE overflow-driven
+        # compact-and-retry. The loop re-enters after an overflow re-run so a
+        # retriable error on the recovered turn is still retried while a
+        # second overflow is refused by ``_overflow_recovery_attempted`` —
+        # guaranteeing no infinite retry.
+        while True:
+            # Sprint 6h₂₀ (ADR-0128) — auto-retry loop. pi parity
+            # ``agent-session.ts:572-585`` ``_processAgentEvent``: the retry
+            # check fires after every ``agent_end`` BEFORE compaction. While
+            # the last assistant message is a retriable error, sleep with
+            # backoff and re-run the turn from the existing context (the user
+            # message is already in ``_state.messages``;
+            # ``_handle_retryable_error`` pops the error assistant). Empty
+            # ``prompts=[]`` means ``_run`` appends no new user message —
+            # equivalent to pi's ``agent.continue()``.
             while True:
-                # Sprint 6h₂₀ (ADR-0128) — auto-retry loop. pi parity
-                # ``agent-session.ts:572-585`` ``_processAgentEvent``: the retry
-                # check fires after every ``agent_end`` BEFORE compaction. While
-                # the last assistant message is a retriable error, sleep with
-                # backoff and re-run the turn from the existing context (the user
-                # message is already in ``_state.messages``;
-                # ``_handle_retryable_error`` pops the error assistant). Empty
-                # ``prompts=[]`` means ``_run`` appends no new user message —
-                # equivalent to pi's ``agent.continue()``.
-                while True:
-                    last_assistant = None
-                    for msg in reversed(self._state.messages):
-                        if isinstance(msg, AssistantMessage):
-                            last_assistant = msg
-                            break
-                    if last_assistant is None or not self._is_retryable_error(
-                        last_assistant
-                    ):
+                last_assistant = None
+                for msg in reversed(self._state.messages):
+                    if isinstance(msg, AssistantMessage):
+                        last_assistant = msg
                         break
-                    # #334 — an ``abort()`` made after the last run started is a
-                    # request to stop THIS prompt, and the claim now spans the
-                    # tail, so ``dispose()`` (abort, then wait for idle) waits for
-                    # whatever the tail still does. ``_run`` clears the flag only
-                    # at its entry, so here it still says whether one came since.
-                    # pi checks ``_agentRunAbortRequested`` after every await of
-                    # its post-run loop and neither retries, compacts nor
-                    # continues once it is set (``agent-session.ts:1473-1480``,
-                    # ``:1497-1528`` @ a328aa89a). An extension's ``ctx.abort()``
-                    # (and the default ``ctx.shutdown()``) sets the same flag, so
-                    # one made in a ``turn_end`` or ``settled`` handler of a
-                    # failed run stops its retry too — pi's ``ctx.abort()`` is
-                    # ``this.abort()`` (``agent-session.ts:3101-3106``). The
-                    # overflow recovery and the threshold check read the flag
-                    # themselves after their branch reads, their only await
-                    # before the compaction.
-                    if self._abort_requested:
-                        break
-                    # #379 review round 2: a raise from the backoff or the re-run
-                    # (a hook, an adapter's token rejection, a cancelled
-                    # ``prompt()``) would skip the #147 arm below and leave the
-                    # sequence open - no ``auto_retry_end``, the TUI's widget up,
-                    # and the counter carried into the next prompt, which then
-                    # started mid-budget. Every way out closes it.
-                    try:
-                        did_retry = await self._handle_retryable_error(last_assistant)
-                        if not did_retry:
-                            break  # max retries / disabled / aborted
-                        # W-review MEDIUM-2: invariant — the user message must
-                        # still be in state for ``agent_loop`` to have something
-                        # to continue from. ``_handle_retryable_error`` pops only
-                        # the trailing error assistant, so a preceding
-                        # ``UserMessage`` is preserved.
-                        assert any(
-                            isinstance(m, UserMessage) for m in self._state.messages
-                        ), "retry continue requires a pending user message in state"
-                        result = await self._run([], system_prompt=system_prompt)
-                    except BaseException as exc:
-                        await self._close_retry_sequence_on_raise(exc)
-                        raise
-
-                # Reset the retry counter and close out the retry sequence. pi
-                # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
-                # ported only the first (#147):
-                #
-                #   success  — pi ``agent-session.ts:671-678``
-                #   error    — pi ``agent-session.ts:1088-1096``  ← was MISSING
-                #
-                # The missing arm is not cosmetic. ``auto_retry_end`` is the only
-                # signal the TUI restores its interrupt handler on
-                # (``tui/shell.py`` ``_end_retry_countdown``), because
-                # ``_start_retry_countdown`` swaps ``on_interrupt`` to one that
-                # calls ``abort_retry()`` — a documented no-op once no retry is in
-                # flight. So a retry sequence that ended on a NON-retryable error
-                # left Esc and Ctrl+C wired to a no-op **for the rest of the
-                # session**, including later turns containing no retry at all, and
-                # left the "Retrying (N/M)…" widget on screen.
-                #
-                # The triggering sequence is mundane, not exotic: a rate limit
-                # (retryable, so the loop engages) followed by an expired token
-                # (not retryable, so the loop breaks). Measured before this arm
-                # existed: 1 ``auto_retry_start``, 0 ``auto_retry_end``,
-                # ``_retry_attempt`` left at 1 — which also made the NEXT turn's
-                # first retryable error resume mid-sequence instead of at 1.
-                if self._retry_attempt > 0:
-                    terminal_assistant = None
-                    for msg in reversed(self._state.messages):
-                        if isinstance(msg, AssistantMessage):
-                            terminal_assistant = msg
-                            break
-                    if terminal_assistant is not None:
-                        from aelix_agent_core.types import AutoRetryEndEvent
-
-                        final_attempt = self._retry_attempt
-                        # ``"aborted"`` is NOT a success. The pre-#147 arm used a
-                        # bare ``!= "error"``, so a user who interrupted a retry
-                        # was congratulated with a green "✓ Retry succeeded" —
-                        # observed live in the tmux gate for this very fix. The
-                        # comparison predates #147, but this change is what made
-                        # the path reachable often enough to see, and shipping a
-                        # fix that thanks the user for cancelling would be worse
-                        # than the defect it replaces.
-                        failure = self._setup_failure  # #379: authoritative record
-                        succeeded = terminal_assistant.stop_reason not in ("error", "aborted") and (
-                            failure is None or terminal_assistant is not failure.message
-                        )
-                        # Reset BEFORE emitting: a subscriber that reads the
-                        # counter must not observe the stale value. (One that
-                        # prompts again from here is refused ``busy`` since
-                        # #334 — the claim is held until ``prompt()`` returns.)
-                        self._retry_attempt = 0
-                        await self._emit_to_subscribers(
-                            AutoRetryEndEvent(
-                                success=succeeded,
-                                attempt=final_attempt,
-                                final_error=(
-                                    None
-                                    if succeeded
-                                    else getattr(
-                                        terminal_assistant, "error_message", None
-                                    )
-                                ),
-                            )
-                        )
-
-                # Issue #4 Lane B — overflow-driven compaction recovery. pi
-                # parity ``agent-session.ts:_checkCompaction`` Case 1: a provider
-                # context-overflow on the last assistant triggers a compaction
-                # with reason="overflow" and a single re-run of the failed turn.
-                # Returns ``True`` only when a re-run is warranted (will_retry).
-                # #334 — not after an abort: it checks the flag itself after
-                # its branch read (see the retry loop above), and the flag is
-                # checked again here after the compaction's awaits: an
-                # ``abort()`` landing in them used to be cleared by the re-run's
-                # own ``_run`` entry, and the re-run went to the provider anyway.
-                if not await self._try_overflow_recovery(system_prompt, claim=claim):
+                if last_assistant is None or not self._is_retryable_error(
+                    last_assistant
+                ):
                     break
+                # #334 — an ``abort()`` made after the last run started is a
+                # request to stop THIS prompt, and the claim now spans the
+                # tail, so ``dispose()`` (abort, then wait for idle) waits for
+                # whatever the tail still does. ``_run`` clears the flag only
+                # at its entry, so here it still says whether one came since.
+                # pi checks ``_agentRunAbortRequested`` after every await of
+                # its post-run loop and neither retries, compacts nor
+                # continues once it is set (``agent-session.ts:1473-1480``,
+                # ``:1497-1528`` @ a328aa89a). An extension's ``ctx.abort()``
+                # (and the default ``ctx.shutdown()``) sets the same flag, so
+                # one made in a ``turn_end`` or ``settled`` handler of a
+                # failed run stops its retry too — pi's ``ctx.abort()`` is
+                # ``this.abort()`` (``agent-session.ts:3101-3106``). The
+                # overflow recovery and the threshold check read the flag
+                # themselves after their branch reads, their only await
+                # before the compaction.
                 if self._abort_requested:
                     break
-                result = await self._run([], system_prompt=system_prompt)
+                # #379 review round 2: a raise from the backoff or the re-run
+                # (a hook, an adapter's token rejection, a cancelled
+                # ``prompt()``) would skip the #147 arm below and leave the
+                # sequence open - no ``auto_retry_end``, the TUI's widget up,
+                # and the counter carried into the next prompt, which then
+                # started mid-budget. Every way out closes it.
+                try:
+                    did_retry = await self._handle_retryable_error(last_assistant)
+                    if not did_retry:
+                        break  # max retries / disabled / aborted
+                    # W-review MEDIUM-2: invariant — the user message must
+                    # still be in state for ``agent_loop`` to have something
+                    # to continue from. ``_handle_retryable_error`` pops only
+                    # the trailing error assistant, so a preceding
+                    # ``UserMessage`` is preserved.
+                    assert any(
+                        isinstance(m, UserMessage) for m in self._state.messages
+                    ), "retry continue requires a pending user message in state"
+                    result = await self._run([], system_prompt=system_prompt)
+                except BaseException as exc:
+                    await self._close_retry_sequence_on_raise(exc)
+                    raise
 
-            # #654 (ADR-0286) — an abort made between runs (the retry wait, or one
-            # that stopped overflow recovery) has no close-out to take the input
-            # out. Before the threshold check, which must not summarise it.
+            # Reset the retry counter and close out the retry sequence. pi
+            # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
+            # ported only the first (#147):
+            #
+            #   success  — pi ``agent-session.ts:671-678``
+            #   error    — pi ``agent-session.ts:1088-1096``  ← was MISSING
+            #
+            # The missing arm is not cosmetic. ``auto_retry_end`` is the only
+            # signal the TUI restores its interrupt handler on
+            # (``tui/shell.py`` ``_end_retry_countdown``), because
+            # ``_start_retry_countdown`` swaps ``on_interrupt`` to one that
+            # calls ``abort_retry()`` — a documented no-op once no retry is in
+            # flight. So a retry sequence that ended on a NON-retryable error
+            # left Esc and Ctrl+C wired to a no-op **for the rest of the
+            # session**, including later turns containing no retry at all, and
+            # left the "Retrying (N/M)…" widget on screen.
+            #
+            # The triggering sequence is mundane, not exotic: a rate limit
+            # (retryable, so the loop engages) followed by an expired token
+            # (not retryable, so the loop breaks). Measured before this arm
+            # existed: 1 ``auto_retry_start``, 0 ``auto_retry_end``,
+            # ``_retry_attempt`` left at 1 — which also made the NEXT turn's
+            # first retryable error resume mid-sequence instead of at 1.
+            if self._retry_attempt > 0:
+                terminal_assistant = None
+                for msg in reversed(self._state.messages):
+                    if isinstance(msg, AssistantMessage):
+                        terminal_assistant = msg
+                        break
+                if terminal_assistant is not None:
+                    from aelix_agent_core.types import AutoRetryEndEvent
+
+                    final_attempt = self._retry_attempt
+                    # ``"aborted"`` is NOT a success. The pre-#147 arm used a
+                    # bare ``!= "error"``, so a user who interrupted a retry
+                    # was congratulated with a green "✓ Retry succeeded" —
+                    # observed live in the tmux gate for this very fix. The
+                    # comparison predates #147, but this change is what made
+                    # the path reachable often enough to see, and shipping a
+                    # fix that thanks the user for cancelling would be worse
+                    # than the defect it replaces.
+                    failure = self._setup_failure  # #379: authoritative record
+                    succeeded = terminal_assistant.stop_reason not in ("error", "aborted") and (
+                        failure is None or terminal_assistant is not failure.message
+                    )
+                    # Reset BEFORE emitting: a subscriber that reads the
+                    # counter must not observe the stale value. (One that
+                    # prompts again from here is refused ``busy`` since
+                    # #334 — the claim is held until ``prompt()`` returns.)
+                    self._retry_attempt = 0
+                    await self._emit_to_subscribers(
+                        AutoRetryEndEvent(
+                            success=succeeded,
+                            attempt=final_attempt,
+                            final_error=(
+                                None
+                                if succeeded
+                                else getattr(
+                                    terminal_assistant, "error_message", None
+                                )
+                            ),
+                        )
+                    )
+
+            # Issue #4 Lane B — overflow-driven compaction recovery. pi
+            # parity ``agent-session.ts:_checkCompaction`` Case 1: a provider
+            # context-overflow on the last assistant triggers a compaction
+            # with reason="overflow" and a single re-run of the failed turn.
+            # Returns ``True`` only when a re-run is warranted (will_retry).
+            # #334 — not after an abort: it checks the flag itself after
+            # its branch read (see the retry loop above), and the flag is
+            # checked again here after the compaction's awaits: an
+            # ``abort()`` landing in them used to be cleared by the re-run's
+            # own ``_run`` entry, and the re-run went to the provider anyway.
+            if not await self._try_overflow_recovery(system_prompt, claim=claim):
+                break
+            if self._abort_requested:
+                break
+            result = await self._run([], system_prompt=system_prompt)
+
+        # #654 (ADR-0286) — an abort made between runs (the retry wait, or one
+        # that stopped overflow recovery) has no close-out to take the input
+        # out. Before the threshold check, which must not summarise it.
+        if self._withdraw_requested:
+            await self._withdraw_unanswered_inputs()
+        # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
+        # pi order is retry-then-compact (``agent-session.ts:577-582``).
+        # #334 — after an abort it compacts nothing, as pi's post-run loop
+        # does: it reads the flag after its branch read, before the
+        # summariser (an earlier check here would only skip that read).
+        await self._check_auto_compaction(claim=claim)
+        return result
+
+    async def _release_prompt(self) -> None:
+        """The release at the end of :meth:`prompt` (#334), shared with :meth:`prompt_notices` (#722)."""
+
+        # #334 — THE one release. The claim is this call's from the flip
+        # above to here and nothing else can flip the phase meanwhile: every
+        # other flipper refuses a non-idle phase, ``_run`` flips nothing, and
+        # the tail's own compactions nest under the claim and hand "turn"
+        # back in their own ``finally``. So this is unconditional, and it is
+        # the only place a prompt goes idle — a return, a raise, a cancel
+        # and an ``InputHandled`` all leave through it.
+        #
+        # Writes queued while the tail said "turn" (a ``set_model``,
+        # ``set_thinking_level`` or ``append_message`` during the backoff or
+        # a closing check's branch read — the mid-turn rule sends them to
+        # the pending queue; while a nested compaction runs the phase says
+        # "compaction", where ``append_message`` still queues,
+        # ``set_model`` records nothing and ``set_thinking_level`` appends
+        # at once only while nothing is queued or being drained — otherwise
+        # it goes behind the queue) are flushed before the phase says idle,
+        # so they are on disk when ``prompt()`` returns and
+        # ``wait_for_idle()`` wakes. pi's
+        # ``finally`` flushes its own pending messages before
+        # ``_emitAgentSettled()`` in the same order
+        # (``agent-session.ts:1483-1489`` @ a328aa89a). The drain loops: a
+        # write made while a flush awaited a session append still meets
+        # phase "turn" and lands on the fresh queue, and one pass would
+        # leave it pending on an idle harness (measured on the one-pass
+        # version: ``set_model`` + ``append_message`` made during the flush
+        # were still pending after the return). A cancelled flush hands its
+        # un-attempted tail back and leaves through the inner ``finally``,
+        # so a cancel still releases; the drain returns without awaiting
+        # when nothing is pending and no drain is running, so that release
+        # is as synchronous as #321's ``except`` clause was. pi's flush is
+        # synchronous and has no such cancel point, so what a cancel leaves
+        # queued here is kept in order by
+        # :meth:`_drain_pending_session_writes`: the next ``prompt()``, an
+        # idle ``set_thinking_level``, a public ``compact()`` /
+        # ``navigate_tree()`` and ``dispose()`` drain it before they write.
+        #
+        # The release drains through the same lock, even with its own queue
+        # empty. A drain another caller started can still be appending: an
+        # idle setter's, begun before this prompt's entry, when this
+        # prompt's entry drain was CANCELLED while it waited for it. It
+        # holds items it has detached, this call's tail writes maybe among
+        # them, and an unlocked flush wrote a tail write ahead of them (#334
+        # verification P1: on disk ``['x', 'medium', 'low']``). So the
+        # release waits for that drain. The cost: one cancel does not
+        # release until it ends (an append that never returns keeps the
+        # phase "turn"); a second cancel leaves through the inner ``finally``
+        # — what is still queued stays queued, and the next drain writes it
+        # in order: nothing lost or reordered.
+        try:
+            # #654 — the exits that skipped the check above: a raise, or an
+            # abort made during the threshold check. Ahead of the drain, so
+            # that what the tail queued lands on the path the input left.
             if self._withdraw_requested:
                 await self._withdraw_unanswered_inputs()
-            # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
-            # pi order is retry-then-compact (``agent-session.ts:577-582``).
-            # #334 — after an abort it compacts nothing, as pi's post-run loop
-            # does: it reads the flag after its branch read, before the
-            # summariser (an earlier check here would only skip that read).
-            await self._check_auto_compaction(claim=claim)
-            return result
+            await self._drain_pending_session_writes()
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "flush_pending_session_writes raised at the prompt's release "
+                "— the broken entry was dropped; the un-attempted tail was requeued",
+                exc_info=True,
+            )
         finally:
-            # #334 — THE one release. The claim is this call's from the flip
-            # above to here and nothing else can flip the phase meanwhile: every
-            # other flipper refuses a non-idle phase, ``_run`` flips nothing, and
-            # the tail's own compactions nest under the claim and hand "turn"
-            # back in their own ``finally``. So this is unconditional, and it is
-            # the only place a prompt goes idle — a return, a raise, a cancel
-            # and an ``InputHandled`` all leave through it.
-            #
-            # Writes queued while the tail said "turn" (a ``set_model``,
-            # ``set_thinking_level`` or ``append_message`` during the backoff or
-            # a closing check's branch read — the mid-turn rule sends them to
-            # the pending queue; while a nested compaction runs the phase says
-            # "compaction", where ``append_message`` still queues,
-            # ``set_model`` records nothing and ``set_thinking_level`` appends
-            # at once only while nothing is queued or being drained — otherwise
-            # it goes behind the queue) are flushed before the phase says idle,
-            # so they are on disk when ``prompt()`` returns and
-            # ``wait_for_idle()`` wakes. pi's
-            # ``finally`` flushes its own pending messages before
-            # ``_emitAgentSettled()`` in the same order
-            # (``agent-session.ts:1483-1489`` @ a328aa89a). The drain loops: a
-            # write made while a flush awaited a session append still meets
-            # phase "turn" and lands on the fresh queue, and one pass would
-            # leave it pending on an idle harness (measured on the one-pass
-            # version: ``set_model`` + ``append_message`` made during the flush
-            # were still pending after the return). A cancelled flush hands its
-            # un-attempted tail back and leaves through the inner ``finally``,
-            # so a cancel still releases; the drain returns without awaiting
-            # when nothing is pending and no drain is running, so that release
-            # is as synchronous as #321's ``except`` clause was. pi's flush is
-            # synchronous and has no such cancel point, so what a cancel leaves
-            # queued here is kept in order by
-            # :meth:`_drain_pending_session_writes`: the next ``prompt()``, an
-            # idle ``set_thinking_level``, a public ``compact()`` /
-            # ``navigate_tree()`` and ``dispose()`` drain it before they write.
-            #
-            # The release drains through the same lock, even with its own queue
-            # empty. A drain another caller started can still be appending: an
-            # idle setter's, begun before this prompt's entry, when this
-            # prompt's entry drain was CANCELLED while it waited for it. It
-            # holds items it has detached, this call's tail writes maybe among
-            # them, and an unlocked flush wrote a tail write ahead of them (#334
-            # verification P1: on disk ``['x', 'medium', 'low']``). So the
-            # release waits for that drain. The cost: one cancel does not
-            # release until it ends (an append that never returns keeps the
-            # phase "turn"); a second cancel leaves through the inner ``finally``
-            # — what is still queued stays queued, and the next drain writes it
-            # in order: nothing lost or reordered.
-            try:
-                # #654 — the exits that skipped the check above: a raise, or an
-                # abort made during the threshold check. Ahead of the drain, so
-                # that what the tail queued lands on the path the input left.
-                if self._withdraw_requested:
-                    await self._withdraw_unanswered_inputs()
-                await self._drain_pending_session_writes()
-            except Exception:  # noqa: BLE001
-                _log.warning(
-                    "flush_pending_session_writes raised at the prompt's release "
-                    "— the broken entry was dropped; the un-attempted tail was requeued",
-                    exc_info=True,
-                )
-            finally:
-                self._unanswered = None
-                self._claim = None
-                self._turn_state = None
-                self._turn_refusal = None
-                self._phase = "idle"
-                self._idle_event.set()
-            # #654 — queued lines nothing has said yet: an abort made before ``_run``
-            # cleared its flag, or one during the drain above, which found this prompt
-            # alive. Does not suspend when there are none, so the release stays as it was.
-            await self._emit_withdrawn_queue()
+            self._unanswered = None
+            self._claim = None
+            self._turn_state = None
+            self._turn_refusal = None
+            self._notices_drained_for_run = False
+            if self._notice_messages:
+                # #722 (verify N6) — the identities a run needed for its
+                # ``message_end``; past it only a session-less harness reads
+                # them (``unanswered_notice_at_leaf``), for what live state holds.
+                live = {id(m) for m in self._state.messages} if self._session is None else set()
+                self._notice_messages = {
+                    k: m for k, m in self._notice_messages.items() if k in live
+                }
+            self._phase = "idle"
+            self._idle_event.set()
+            # #722 — a notice that arrived after the turn's last boundary can be
+            # taken now, by whoever waits for an idle harness.
+            if self._notices_enabled:
+                self._inbox.notify("idle")
+        # #654 — queued lines nothing has said yet: an abort made before ``_run``
+        # cleared its flag, or one during the drain above, which found this prompt
+        # alive. Does not suspend when there are none, so the release stays as it was.
+        await self._emit_withdrawn_queue()
+
 
     async def steer(
         self,
@@ -5327,13 +5404,14 @@ class AgentHarness:
         return out
 
     async def _emit_before_agent_start(
-        self, prompt: str
+        self, prompt: str, *, source: Literal["interactive", "notice"] = "interactive"
     ) -> BeforeAgentStartResult | None:
         try:
             result = await self._hooks.emit(
                 BeforeAgentStartHookEvent(
                     prompt=prompt,
                     system_prompt=self._state.system_prompt,
+                    source=source,
                 )
             )
         except Exception as exc:
@@ -5688,6 +5766,15 @@ class AgentHarness:
                 session_ctx = await self._session.build_context()
                 turn_messages: list[AgentMessage] = list(session_ctx.messages)
                 turn_session_id = self._state.session_id
+                if self._notices_enabled:
+                    # #722 (Codex #2) — which placed notices this context holds,
+                    # so a boundary that adopts an entry shows it unless it is here.
+                    self._context_notice_ids = {
+                        entry.details[NOTICE_ID_KEY]  # type: ignore[union-attr]
+                        for entry in await self._session.get_branch()
+                        if entry.type == "custom_message"
+                        and is_notice_details(getattr(entry, "details", None))
+                    }
             else:
                 turn_messages = list(self._state.messages)
                 turn_session_id = self._state.session_id
@@ -5819,10 +5906,12 @@ class AgentHarness:
                     # what led to it, whether or not its entry made it to the file.
                     unanswered = self._unanswered
                     answered = unanswered is not None and _answers_input(final_message)
+                    # #722 — a placed notice: already written, and not the user's input.
+                    notice = self.is_notice_message(event.message)
                     if unanswered is not None:
                         if answered:
                             unanswered.committed.clear()
-                        elif not isinstance(final_message, AssistantMessage):
+                        elif not isinstance(final_message, AssistantMessage) and not notice:
                             unanswered.committed.append((event.message, final_message))
                     # #379 review round 3: the setup failure's record follows the
                     # message the hooks leave (the loop swaps it into state).
@@ -5850,7 +5939,7 @@ class AgentHarness:
                     #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
                     #    When no session is attached we skip — the no-session
                     #    path has already committed it to ``_state.messages``.
-                    if self._session is not None:
+                    if self._session is not None and not notice:
                         try:
                             entry_id = await self._session.append_message(final_message)
                             if answered and unanswered is not None:
@@ -6282,10 +6371,290 @@ class AgentHarness:
             _log.debug("input_withdrawn hook handler raised: %r", exc, exc_info=True)
 
     async def _drain_steering(self) -> list[AgentMessage]:
-        return self._steering_queue.drain()
+        # #722 — a boundary takes pending notices too, ahead of the lines it
+        # drains: they are written now and those at their ``message_end``, so
+        # the file and the model see them in the same order. With the inbox off
+        # (``notice_inbox``) this is the drain it was before #722.
+        steering = self._steering_queue.drain()
+        if not self._notices_enabled:
+            return steering
+        return [*await self._place_notices(), *steering]
 
     async def _drain_follow_up(self) -> list[AgentMessage]:
-        return self._follow_up_queue.drain()
+        follow_up = self._follow_up_queue.drain()
+        if not self._notices_enabled:
+            return follow_up
+        return [*await self._place_notices(), *follow_up]
+
+    # === #722 (ADR-0293) — the notice inbox ====================================
+
+    def post_notice(
+        self,
+        notice: Notice,
+        *,
+        on_placed: Callable[[Notice, str], None] | None = None,
+    ) -> bool:
+        """Queue ``notice`` for the model; ``False`` when its id is already known here.
+
+        Never starts a turn: a running one takes it at its next boundary, and
+        an idle harness waits for its host to call :meth:`prompt_notices` (the
+        TUI's waker, the print drain). ``on_placed(notice, entry_id)`` is called
+        once the entry is in the session, synchronously, from the placing task.
+        Raises ``AgentHarnessError("invalid_state")`` when the inbox is off
+        (``AgentHarnessOptions.notice_inbox``).
+        """
+
+        self._require_notices()
+        return self._inbox.post(notice, on_placed)
+
+    @property
+    def notices_enabled(self) -> bool:
+        """Whether this harness has the notice inbox (``AgentHarnessOptions.notice_inbox``)."""
+
+        return self._notices_enabled
+
+    def _require_notices(self) -> None:
+        if not self._notices_enabled:
+            raise AgentHarnessError(
+                "invalid_state", "this harness has no notice inbox (notice_inbox is off)"
+            )
+
+    @property
+    def pending_notices(self) -> int:
+        """Notices posted and not yet claimed by a boundary."""
+
+        return self._inbox.pending
+
+    def undelivered_notices(self) -> list[Notice]:
+        """Every notice this harness holds that is not placed: claimed, pending or held."""
+
+        return self._inbox.undelivered()
+
+    def held_notices(self) -> dict[str, str]:
+        """``notice_id`` → why it is held out of every drain (``placement_conflict``)."""
+
+        return self._inbox.held()
+
+    def add_notice_listener(self, listener: Callable[[NoticeChange], None]) -> Callable[[], None]:
+        """Call ``listener`` when a notice is queued, placed or held, turns are released, or the harness goes idle.
+
+        Synchronous and from the changing task; returns the unsubscribe. The
+        TUI's waker re-checks its gates on each call. Raises as
+        :meth:`post_notice` does when the inbox is off.
+        """
+
+        self._require_notices()
+        return self._inbox.add_listener(listener)
+
+    async def notice_changed(self) -> None:
+        """Return at the next inbox change (see :meth:`add_notice_listener`)."""
+
+        self._require_notices()
+        await self._inbox.changed()
+
+    def is_notice_message(self, message: object) -> bool:
+        """Whether ``message`` is one a boundary made from a placed notice (by identity)."""
+
+        return self._notice_messages.get(id(message)) is message
+
+    async def unanswered_notice_at_leaf(self) -> bool:
+        """Whether the last message on the current path is a placed notice nothing answered.
+
+        A notice placed by a turn that then ended before the model answered (an
+        abort, a crash, a ``-p`` run cut short) is still the leaf's last message.
+        :meth:`prompt_notices` runs a turn for it with nothing new placed.
+        ``False``, with nothing read, when the inbox is off.
+        """
+
+        if not self._notices_enabled:
+            return False
+        if self._session is None:
+            for message in reversed(self._state.messages):
+                if isinstance(message, AssistantMessage):
+                    return False
+                if self.is_notice_message(message):
+                    return True
+            return False
+        for entry in reversed(await self._session.get_branch()):
+            kind = entry.type
+            if kind == "custom_message":
+                return is_notice_details(getattr(entry, "details", None))
+            if kind in ("message", "compaction", "branch_summary"):
+                return False
+        return False
+
+    async def prompt_notices(self, *, source: Literal["notice"] = "notice") -> PromptNoticesResult:
+        """Run a turn for what the inbox holds: pending notices, or one unanswered at the leaf.
+
+        The turn a host starts for an idle harness. It claims the turn as
+        :meth:`prompt` does (refused, not raised, when held, disposed or busy),
+        places what is pending before the run so the model's context is read
+        from the session with it already there, emits ``before_agent_start``
+        with ``source="notice"``, and settles the run through the same retry,
+        overflow and compaction tail. Nothing here is an input the user typed,
+        so an Esc withdraws nothing (ADR-0286) and the notices stay placed.
+        Raises as :meth:`post_notice` does when the inbox is off.
+        """
+
+        self._require_notices()
+        if self._turn_gate is not None:
+            return PromptNoticesResult(started=False, reason="held")
+        if self._disposed:
+            return PromptNoticesResult(started=False, reason="disposed")
+        if self._phase != "idle":
+            return PromptNoticesResult(started=False, reason="busy")
+        # The claim, synchronously, as :meth:`prompt` takes it (#334).
+        self._phase = "turn"
+        self._idle_event.clear()
+        claim = self._claim = object()
+        self._turn_refusal = None
+        self._abort_requested = self._withdraw_requested = False
+        self._overflow_recovery_attempted = False
+        try:
+            await self._drain_pending_session_writes()
+            if self._prompt_check is not None and self._prompt_check(self._state.model) is not None:
+                return PromptNoticesResult(started=False, reason="refused")
+            placed = await self._place_notices()
+            if not placed and not await self.unanswered_notice_at_leaf():
+                return PromptNoticesResult(started=False, reason="nothing")
+            # Live state follows the session (``_run`` reads the context from it).
+            self._state.messages.extend(placed)
+            self._notices_drained_for_run = bool(placed)
+            prompt_before_hook = self._state.system_prompt
+            injected = await self._emit_before_agent_start("", source=source)
+            prompts: list[AgentMessage] = (
+                list(injected.messages) if injected and injected.messages else []
+            )
+            system_prompt = (
+                _rechain_system_prompt(
+                    injected.system_prompt, prompt_before_hook, self._state.system_prompt
+                )
+                if injected and injected.system_prompt is not None
+                else self._state.system_prompt
+            )
+            result = await self._run(prompts, system_prompt=system_prompt)
+            await self._settle_runs(result, system_prompt, claim)
+            return PromptNoticesResult(started=True, placed=len(placed))
+        finally:
+            await self._release_prompt()
+
+    async def _place_notices(self) -> list[AgentMessage]:
+        """Claim pending notices within the drain budget and place each; the messages the model is to see.
+
+        Nothing is claimed for a refused turn or once an abort is asked, and
+        nothing while an input the user typed is still unanswered: such an input
+        can still be withdrawn by an Esc (ADR-0286), and a notice placed after
+        it would then be appended again under a fresh id by the withdrawal's
+        replay — two deliveries of one notice (Codex #8). The notice waits for
+        the boundary after the answer, and once placed it becomes the point a
+        later withdrawal returns to, so no withdrawal ever replays one.
+
+        A notice whose entry was already in the file (adopted: an earlier
+        attempt's line landed and then raised) is marked placed, and its message
+        is still given to the model unless the context this run was built from
+        already holds that entry (Codex #2). An id held by a different payload is
+        held out of every drain (an availability residual, never a second copy).
+        A write that fails is released to the front of the queue for the next
+        boundary; a cancel releases what this call had not placed and propagates.
+        """
+
+        if self._notices_drained_for_run:
+            self._notices_drained_for_run = False
+            return []
+        if not self._inbox.pending or self._turn_refusal is not None or self._abort_requested:
+            return []
+        unanswered = self._unanswered
+        if unanswered is not None and unanswered.committed:
+            return []
+        claimed = self._inbox.claim(NOTICE_DRAIN_BUDGET)
+        messages: list[AgentMessage] = []
+        done = 0
+        try:
+            for posted in claimed:
+                message = await self._place_one(posted)
+                done += 1
+                if message is not None:
+                    messages.append(message)
+        except BaseException:
+            self._inbox.release(claimed[done:])
+            raise
+        return messages
+
+    async def _place_one(self, posted: Any) -> AgentMessage | None:
+        from aelix_agent_core.session.entries import CustomMessageEntry
+        from aelix_agent_core.session.storage import PlacementConflict, SessionError
+
+        notice: Notice = posted.notice
+        body = notice.body
+        if notice.finalize is not None and notice.finalize_max > 0:
+            try:
+                extra = await notice.finalize()
+            except Exception:  # noqa: BLE001 — a hint that cannot be made adds nothing
+                _log.warning("a notice's finalize raised; placed without its line", exc_info=True)
+                extra = None
+            # Cut to what the drain charged for it (Codex #10): the line and its
+            # newline fit in ``finalize_max`` bytes, at a character boundary.
+            extra = cut_utf8(extra, notice.finalize_max - 1) if extra else None
+            if extra:
+                body = f"{body}\n{extra}"
+        entry_id = notice_entry_id(notice.notice_id)
+        message = UserMessage(content=[TextContent(text=body)], timestamp=time.time() * 1000)
+        if self._session is None:
+            self._inbox.mark_placed(posted, entry_id)
+            self._notice_messages[id(message)] = message
+            return message
+        details = {**notice.details, NOTICE_ID_KEY: notice.notice_id}
+
+        def same(existing: Any) -> bool:
+            return isinstance(existing, CustomMessageEntry) and (
+                isinstance(existing.details, dict)
+                and existing.details.get(NOTICE_ID_KEY) == notice.notice_id
+            )
+
+        placement = None
+        for attempt in (1, 2):
+            try:
+                placement = await self._session.place_custom_message(
+                    entry_id, notice.custom_type, body, True, details, same=same
+                )
+                break
+            except PlacementConflict:
+                self._inbox.hold(posted, "placement_conflict")
+                return None
+            except SessionError as exc:
+                # #721 — an unknown outcome is settled by the next placement of
+                # the same id, under the store's lock: adopted if it landed.
+                if exc.code == "outcome_unknown" and attempt == 1:
+                    continue
+                _log.warning("placing notice %s failed: %s", notice.notice_id, exc)
+                self._inbox.release([posted])
+                return None
+            except Exception:  # noqa: BLE001 — a write that failed waits for the next boundary
+                _log.warning("placing notice %s failed", notice.notice_id, exc_info=True)
+                self._inbox.release([posted])
+                return None
+        if placement is None:  # pragma: no cover — the loop above returns or breaks
+            self._inbox.release([posted])
+            return None
+        self._inbox.mark_placed(posted, entry_id)
+        at_leaf = not placement.adopted or await self._session.get_leaf_id() == entry_id
+        unanswered = self._unanswered
+        if unanswered is not None and at_leaf:
+            # Nothing typed is unanswered here (:meth:`_place_notices`): a later
+            # withdrawal returns to this notice and never replays it.
+            unanswered.safe_leaf = entry_id
+        if placement.adopted:
+            if self._turn_state is None or notice.notice_id in self._context_notice_ids:
+                # Before a run (:meth:`prompt_notices`), the context about to be
+                # read from the session holds it; inside one, this run's did.
+                return None
+            # Inside a run whose context was read before the line landed: shown now.
+            stored = getattr(placement.entry, "content", None)
+            text = stored if isinstance(stored, str) else body
+            message = UserMessage(content=[TextContent(text=text)], timestamp=time.time() * 1000)
+        self._context_notice_ids.add(notice.notice_id)
+        self._notice_messages[id(message)] = message
+        return message
 
     async def _close_recovered_retry(self, message: AgentMessage) -> None:
         """#197 / ADR-0260 — success closes at the recovered assistant response.

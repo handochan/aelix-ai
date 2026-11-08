@@ -170,6 +170,16 @@ class _Eof:
 
 _EOF = _Eof()
 
+
+class NoticeWake:
+    """#722 (ADR-0293) — the item the notice waker puts in the input queue.
+
+    ``get_input`` hands it to the input loop like a line, so the loop — and
+    nothing else — starts the notice turn, at a moment it was parked there.
+    """
+
+    __slots__ = ()
+
 # Sprint 6h₂₅ (ADR-0153, WP-3) — live input affordances.
 _INPUT_PREFIX = "❯ "
 _INPUT_PLACEHOLDER = "Type your message or @path/to/file"
@@ -885,7 +895,12 @@ class AelixChrome:
         self.buffer.on_text_changed += self._drop_command_refusal
         # Submitted lines flow through a queue (loop-agnostic at construction;
         # robust to input arriving before/after a get_input() call).
-        self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
+        self._input_queue: asyncio.Queue[str | _Eof | NoticeWake] = asyncio.Queue()
+        # #722 — called after a modal is mounted or unmounted (the notice waker
+        # re-checks its "no dialog open" gate), and the footer's jobs segment
+        # (width → text, or ``None``), drawn ahead of the footer line.
+        self.on_modal_change: Callable[[], None] | None = None
+        self.jobs_segment: Callable[[int], str | None] | None = None
         # Issue #81 — pasted-text collapse. ``_paste_registry`` maps a live
         # ``[Pasted text #N +M lines]`` placeholder → its original text; the
         # placeholder is what the editor shows, and ``_expand_pastes`` substitutes
@@ -1011,7 +1026,7 @@ class AelixChrome:
         def _footer_row() -> ConditionalContainer:
             return ConditionalContainer(
                 Window(
-                    FormattedTextControl(lambda: ANSI(self._footer_line)),
+                    FormattedTextControl(lambda: ANSI(self._footer_with_jobs())),
                     height=Dimension(min=1),
                     dont_extend_height=True,
                     style=self._footer_style,
@@ -2216,12 +2231,38 @@ class AelixChrome:
             return False
 
     async def get_input(self) -> str:
-        """Await one submitted input line. Raises ``EOFError`` on Ctrl+D."""
+        """Await one submitted input line. Raises ``EOFError`` on Ctrl+D.
+
+        #722 — or the :class:`NoticeWake` the notice waker queued (only while
+        background jobs are active); the caller checks for it.
+        """
 
         item = await self._input_queue.get()
         if isinstance(item, _Eof):
             raise EOFError
-        return item
+        return item  # type: ignore[return-value]
+
+    def queue_wake(self, wake: NoticeWake) -> None:
+        """#722 — put the notice waker's item in the input queue."""
+
+        self._input_queue.put_nowait(wake)
+
+    def _footer_with_jobs(self) -> str:
+        """#722 — the footer line, with the jobs segment ahead of its first row."""
+
+        producer = self.jobs_segment
+        if producer is None:
+            return self._footer_line
+        try:
+            segment = producer(self._terminal_width())
+        except Exception:  # noqa: BLE001 — a broken segment never breaks the footer
+            segment = None
+        if not segment:
+            return self._footer_line
+        if not self._footer_line:
+            return segment
+        first, sep, rest = self._footer_line.partition("\n")
+        return f"{segment}  ·  {first}{sep}{rest}"
 
     def drop_queued_input(self) -> None:
         """Forget lines waiting for the input loop: a signal ends the session ahead of them."""
@@ -2567,6 +2608,7 @@ class AelixChrome:
             self._modal_stack.append((self._modal, self._modal_focus))
         self._modal = content
         self._modal_focus = focus
+        self._modal_changed()
         # #671 — prompt_toolkit caches the merged key bindings by the focused
         # window and the set of controls, and finds a window's parents in a map
         # it rebuilds at each render. A key handled after the modal took focus
@@ -2605,7 +2647,16 @@ class AelixChrome:
         else:
             self._modal = None
             self._modal_focus = None
+        self._modal_changed()
         self.invalidate()
+
+    def _modal_changed(self) -> None:
+        """#722 — tell the notice waker a dialog opened or closed."""
+
+        callback = self.on_modal_change
+        if callback is not None:
+            with contextlib.suppress(Exception):  # never breaks a modal
+                callback()
 
     def is_modal_open(self) -> bool:
         """Whether an in-flow modal is currently mounted (ADR-0159)."""

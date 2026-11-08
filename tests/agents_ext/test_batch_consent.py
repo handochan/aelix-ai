@@ -3,7 +3,7 @@
 The P2 gate asked once per spawn. A ``mode="parallel"`` / ``mode="chain"`` call
 starts up to eight children from ONE tool call, and decision S4 says that is one
 dialog rendering every member's task and the single cwd they share — not one
-dialog per child (two modals from one call collide on ``tui/chrome.py:941``'s
+dialog per child (two modals from one call collide on ``tui/chrome.py:956``'s
 single ``_modal`` slot) and emphatically not a remembered grant (the session memo
 this module removed covered LATER calls, whose tasks nobody had seen).
 
@@ -208,7 +208,7 @@ def _tall_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_an_eight_task_batch_opens_exactly_one_dialog() -> None:
     """S4's headline: one tool call, one decision, one modal.
 
-    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:941``'s single
+    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:956``'s single
     ``_modal`` slot unconditionally, so a second dialog from the same call
     orphans the first Future and hangs the turn (until #701, which stacks the
     slot; eight dialogs in a row are still seven too many).

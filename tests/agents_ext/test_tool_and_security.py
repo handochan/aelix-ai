@@ -413,7 +413,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:1073-1139`` materialises the ``None`` sentinel into a real list),
+    (``core.py:1108-1174`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.
@@ -1842,7 +1842,7 @@ def test_execution_mode_survives_dataclasses_replace() -> None:
     The kernel downgrades the WHOLE BATCH to sequential when any tool in it
     declares ``execution_mode="sequential"`` (``types.py:47-56``,
     ``loop.py:848-858``), which is what stops two ``agent`` calls in one
-    assistant message racing two modals onto ``tui/chrome.py:941``'s single
+    assistant message racing two modals onto ``tui/chrome.py:956``'s single
     ``_modal`` slot. Because the description is re-stamped with
     :func:`dataclasses.replace` on every ``before_agent_start``, losing the
     field there would silently reopen the hazard.

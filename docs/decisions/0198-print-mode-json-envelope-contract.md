@@ -290,3 +290,10 @@ delivers the `json` half, which is the half P2 consumes. Named as P3 follow-ups:
 - **The header line is best-effort by construction** (D3). Making it mandatory
   would mean failing a run because session metadata could not be read, which is
   the wrong trade.
+
+## Note (2026-11-08, ADR-0293, #722)
+
+While background jobs are active (off until #611 S3), a `-p` / `--mode json` run drains before
+its verdict: it waits for the session's tracked jobs and runs a notice turn for what they leave.
+A notice turn's events reach this stream as any turn's do; S1b adds no event type and changes no
+envelope. The versioned `aelix_print_done` event belongs to #611 S1c (ADR-D).
