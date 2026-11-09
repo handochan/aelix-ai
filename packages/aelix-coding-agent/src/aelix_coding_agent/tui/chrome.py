@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
@@ -78,7 +78,7 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.layout.screen import WritePosition
 from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.utils import get_cwidth
-from rich.console import Console
+from rich.console import Console, RenderableType
 
 from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.input_marks import (
@@ -2126,7 +2126,7 @@ class AelixChrome:
         self._sync_update(True)
         try:
             async with in_terminal():
-                _print_to(self._console, renderable)
+                self._print_one(renderable)
             await self._settle_pinned(seq)
         finally:
             self._sync_update(False)
@@ -2173,7 +2173,7 @@ class AelixChrome:
         try:
             async with in_terminal():
                 for renderable in renderables:
-                    _print_to(self._console, renderable)
+                    self._print_one(renderable)
                 if apply_before_redraw is not None:
                     apply_before_redraw()
             await self._settle_pinned(seq)
@@ -2969,6 +2969,24 @@ class AelixChrome:
         self._pin_failed = True
         self.invalidate()
 
+    # #732 — the last scrollback write, which a ``BlankRowAbove`` after it reads.
+    _last_printed: object = None
+
+    def _print_one(self, renderable: object) -> None:
+        """One scrollback write (:func:`_print_to`), remembered for the next one.
+
+        #732 — a :class:`BlankRowAbove` draws its blank row only when the last
+        row the scrollback got is not blank already: the user's echo ends on
+        one, so a turn that committed nothing after it would have drawn two.
+        """
+
+        if isinstance(renderable, BlankRowAbove):
+            if not _ends_on_blank_row(self._console, self._last_printed):
+                self._console.print()
+            renderable = renderable.renderable
+        _print_to(self._console, renderable)
+        self._last_printed = renderable
+
 
 class SoftWrapped:
     """A scrollback commit whose long lines the TERMINAL wraps, not Rich (#386).
@@ -2988,6 +3006,21 @@ class SoftWrapped:
         self.renderable = renderable
 
 
+class BlankRowAbove:
+    """A scrollback commit drawn one blank row under what is above it (#732).
+
+    The row is drawn only when the scrollback's last row is not blank already
+    (:meth:`AelixChrome._print_one`), so it is one row under an answer and
+    under the user's echo, which ends on a blank row, alike. ``renderable`` is
+    the attribute name the commit spies already unwrap.
+    """
+
+    __slots__ = ("renderable",)
+
+    def __init__(self, renderable: object) -> None:
+        self.renderable = renderable
+
+
 def _print_to(console: Console, renderable: object) -> None:
     """One scrollback write; a :class:`SoftWrapped` one is not hard-wrapped."""
 
@@ -2997,4 +3030,34 @@ def _print_to(console: Console, renderable: object) -> None:
         console.print(renderable)
 
 
-__all__ = ["AelixChrome", "SoftWrapped"]
+def _ends_on_blank_row(console: Console, renderable: object) -> bool:
+    """#732 — whether *renderable*, printed, leaves a last row that looks blank.
+
+    Rendered again at the console's width, once per :class:`BlankRowAbove`.
+    Nothing printed yet, a renderable that draws no row, or a render that
+    raises reads as not blank: the row is drawn. On a console that paints, a
+    space with a background (or reversed) is not blank: an answer that ends in
+    a code block ends on its padding row, spaces on the block's colour.
+    """
+
+    if renderable is None:
+        return False
+    if isinstance(renderable, SoftWrapped):
+        renderable = renderable.renderable
+    try:
+        lines = console.render_lines(cast(RenderableType, renderable), pad=False)
+    except Exception:  # noqa: BLE001 — a probe must never cost the write
+        return False
+    if not lines:
+        return False
+    paints = console.color_system is not None and not console.no_color
+    for segment in lines[-1]:
+        if segment.text.strip():
+            return False
+        style = segment.style
+        if paints and segment.text and style is not None and (style.bgcolor or style.reverse):
+            return False
+    return True
+
+
+__all__ = ["AelixChrome", "BlankRowAbove", "SoftWrapped"]

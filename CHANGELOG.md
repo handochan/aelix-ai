@@ -668,6 +668,11 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **The dim `✓ done · 4.2s · 14:05` line a turn leaves sits one blank row under the answer
+  (#732, ADR-0153).** Flush under the answer's last line it read as one more line of the
+  answer. One empty row now separates them, for `done`, for `stopped` under Esc's
+  `✖ Operation aborted` line and for a failure's time under its red `✖` line alike - and
+  one, not two, under the prompt's echo when the answer was empty.
 - **On Python 3.13, a corporate proxy's certificate that only RFC 5280 strict checking rejects
   is no longer an error on every launch: aelix sends the request again and says so in one dim
   line (#703, ADR-0294).** When such a certificate (one this machine trusts, missing e.g. an

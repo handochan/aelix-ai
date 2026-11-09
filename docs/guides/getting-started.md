@@ -470,7 +470,8 @@ to stop it. `Alt+Enter` on a command does the same as Enter. What a command prin
 the answer streams appears under it, once that message is done.
 
 When a turn is over, the `Working…` row leaves one dim line behind in the
-transcript: `✓ done · 4.2s · 14:05` — how long the turn took and the time it ended.
+transcript, one blank row under what the turn left: `✓ done · 4.2s · 14:05` — how
+long the turn took and the time it ended.
 A turn you stopped reads `stopped · 2.9s · 14:05` (one stopped while it waited to
 retry too), and one that failed shows the time alone under its red `✖` line. A reply
 that came in under a second reads in milliseconds (`✓ done · 840ms · 14:05`).

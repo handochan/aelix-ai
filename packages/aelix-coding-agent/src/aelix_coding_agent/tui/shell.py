@@ -68,7 +68,7 @@ from aelix_coding_agent.tui.activity_tracker import (
     SessionActivityTracker,
     derive_resumed_activity,
 )
-from aelix_coding_agent.tui.chrome import AelixChrome, SoftWrapped
+from aelix_coding_agent.tui.chrome import AelixChrome, BlankRowAbove, SoftWrapped
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
@@ -435,8 +435,8 @@ def reload_success_line(
     return head if more_below else f"{head} · no changes"
 
 
-def turn_end_line(outcome: str, seconds: float, ended_at: float) -> Text:
-    """#702 — the dim line a typed turn leaves when it is over.
+def turn_end_line(outcome: str, seconds: float, ended_at: float) -> BlankRowAbove:
+    """#702 — the dim line a typed turn leaves when it is over, a blank row above it (#732).
 
     ``✓ done · 4.2s · 14:05`` for a turn that ended normally; ``stopped · …``
     for Esc, Ctrl+C or a signal, under the yellow "Operation aborted" line;
@@ -456,7 +456,7 @@ def turn_end_line(outcome: str, seconds: float, ended_at: float) -> Text:
         text = f"stopped · {tail}"
     else:
         text = tail
-    return Text(text, style="dim")
+    return BlankRowAbove(Text(text, style="dim"))
 
 
 def _reload_rebuild_enabled() -> bool:
