@@ -228,7 +228,12 @@ async def test_an_answer_ending_in_a_code_block_gets_its_row_on_a_colour_termina
     rows = _rows(buf)
     i = next(k for k, row in enumerate(rows) if _LINE in row)
     if colour:
-        assert rows[i - 1] == "" and "\x1b[48;" in rows[i - 2], rows[i - 4 : i + 1]
+        # Painted at any depth: Rich keeps a style's codes from the first console
+        # that drew it (``Style._ansi``), so after an 8-colour render earlier in
+        # the run (CI has no COLORTERM) the block's colour comes out ``40``.
+        pad = rows[i - 2]
+        assert rows[i - 1] == "" and "\x1b[" in pad, rows[i - 4 : i + 1]
+        assert not re.sub(r"\x1b\[[0-9;]*m", "", pad).strip(), rows[i - 4 : i + 1]
     else:
         assert rows[i - 1] != "" and not rows[i - 1].strip(), rows[i - 4 : i + 1]
         assert "print(1)" in rows[i - 2], rows[i - 4 : i + 1]
