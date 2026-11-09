@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted — amended 2026-11-03 (#654, ADR-0286): decision 8's conversation is asked of the branch, not the file — amended 2026-11-04 (#679): `/reload` keeps the live model and level, as pi's does (decision 3, Limits)
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted — amended 2026-11-03 (#654, ADR-0286): decision 8's conversation is asked of the branch, not the file — amended 2026-11-04 (#679): `/reload` keeps the live model and level, as pi's does (decision 3, Limits) — amended 2026-11-09 (#709, owner decision): `--continue` opens only a session with a conversation, as pi's does; a level changed in a launch that never prompted comes back through `--session` or `defaultThinkingLevel`, not `--continue` (decision 6's note)
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -15,6 +15,20 @@ Design spec: `.omc/specs/198-design-2026-09-08.md`.
 `/thinking high`, `/quit`, `aelix --continue` — and you are back at `off`. Two
 independent faults produced that, and either one alone was enough to reproduce
 it.
+
+> **Dated note 2026-11-09 (#709).** Since #709, `--continue` opens only the
+> most recent session that has a conversation, as pi does, so the sequence
+> above — a launch in which no prompt was sent — is no longer reached through
+> `--continue` at all: it opens the conversation before that launch, or a new
+> session. The owner's decision on #709 against this ADR (2026-11-09): "pi 방식
+> 유지" (keep pi's way). A level changed in a launch that never sent a prompt
+> comes back when that session is opened with `--session <file>`, and
+> `defaultThinkingLevel` is the way to keep a level across launches. Measured
+> with a reasoning-capable scripted model in the real TUI
+> (`.omc/probes/709/fix-r1/709live/level-*.txt`): `/thinking high`, `/quit`,
+> `-c -p hi` sent `reasoning_effort: high` on `6caaae09` and none now;
+> `--session <that file> -p hi` sends `high`; `/thinking high`, a prompt,
+> `/quit`, `-c -p hi` sends `high` on both.
 
 ## What was actually broken, measured on `main` 0985fcf
 
@@ -540,6 +554,105 @@ at a local mock; driver and outputs in `.omc/probes/413-live/impl/`):
    file at launch (header only) where pi defers it to the first message; the
    record lands in a file that was already there. No session file is created to
    hold the record.
+   - **Dated note 2026-11-09 (#709).** A file written at launch is also the
+     newest file in the folder when nothing is ever said in it, and
+     `--continue` took the newest file. Measured with the session code of
+     `6caaae09` and a scripted model (real TUI in a pty; RPC for the third
+     run): after `hello` → `/quit` → a launch quit without a prompt, after
+     `hello` → `/new` → `/quit`, after an RPC `prompt` then `new_session`, and
+     after a launch whose only prompt was withdrawn with Esc,
+     `aelix -c -p "continued?"` sent the model `["continued?"]`. Now
+     `JsonlSessionRepo.find_most_recent` skips a file whose branch carries no
+     turn the model would get back when it is opened, and the same four runs
+     send the earlier prompt too: `["hello", "continued?"]`, and
+     `["first-talk", "continued?"]` for the Esc run
+     (`.omc/probes/709/fix-r1/709live/m709v-*.txt`). When no file has a
+     conversation, `--continue` starts a new session, as in a folder with
+     none. The file a launch writes is unchanged; only which file `--continue`
+     opens. Pinned by `tests/session/test_find_most_recent_conversation_709.py`.
+     - **What counts** is asked of the branch, as decision 8 asks it since
+       #654: a user or assistant `message` (pi's `_hasConversation` rule), or
+       a `compaction` or `branch_summary` whose summary is not blank —
+       `build_session_context` turns each into a message, so a branch moved
+       back to the start with a summary, or a fork made at one, opens with a
+       turn to continue (a hand-built `navigate_tree` file now opens and sends
+       the summary). A summary that is empty or only whitespace does not
+       count: opening still sends its template (a compaction's always, a
+       branch summary's when the text is not empty), but nothing of an earlier
+       conversation sits between its `<summary>` tags
+       (`test_a_summary_with_no_text_is_not_a_conversation`,
+       `test_a_blank_summary_newer_than_a_conversation_is_skipped`). Nor does
+       a summary that is not a string: the loader keeps it and building the
+       context from it raises `TypeError`
+       (`test_a_summary_that_is_not_text_is_not_a_conversation`). A
+       `custom_message` reaches the model too, but pi's rule does not count
+       it, and neither does this. A model or thinking-level change, a custom
+       record, a label or a name does not count; a prompt with no answer
+       does.
+     - **The answer is what opening the file restores.** The file is read as
+       the loader reads it (strict UTF-8 and universal newlines, so a `\r`
+       ends a line as it does on open) and decoded by the loader's own reader.
+       So a torn line and what hangs off it drop out, a file with `\r` line
+       endings is counted as it opens, and a file of at most 1 MiB that is not
+       UTF-8 — on which opening raises, and `-c` exited with a
+       `UnicodeDecodeError` traceback on `6caaae09` — is skipped. A larger
+       one counts unread (below), so when it is the newest `-c` opens it and
+       still exits with that traceback, as on `6caaae09` (measured with a
+       1,127,396-byte file, `.omc/probes/709/verify-r2/hand-fix.txt`). A
+       `message` whose `content` is a plain
+       string, which pi accepts, is dropped by the loader (before #709 too)
+       and so is not counted: `-c` opens the older conversation rather than a
+       file that would open with no turn. Fixing the loader is a separate
+       issue.
+     - **Bounded reads.** A file larger than 1 MiB counts as a conversation
+       without being read. `find_most_recent` still reads the start of every
+       candidate's header line (the sniff) and the header of the file it
+       returns; the header read stops after the header line instead of reading
+       the whole line after it, though it still takes up to one read buffer of
+       that line (`read_text_lines(max_lines=1)` read a 2 MiB second line in
+       full on `6caaae09`: 2,105,636 bytes for a 134-byte header; now 16,384
+       bytes on Python 3.12, one 8 KiB buffer for the sniff and one for the
+       header, and 139,264 on 3.14, whose default buffer is 128 KiB — measured
+       on macOS with the test's counting reader). Where the old read returned,
+       `read_text_lines` returns the same lines; where it raised
+       `UnicodeDecodeError` on a line it would not return (a bad byte past the
+       first buffer, or a cut multibyte character) or on a bad first line with
+       `max_lines=0`, it now returns — 9 of 99 cells of the verify's grid
+       (`.omc/probes/709/verify-r2/unit/rtl-*.json`), pinned by
+       `test_read_text_lines_no_longer_raises_on_a_line_it_does_not_return`.
+       `--session` and `--export` read the whole file and still exit 1 on such
+       a file, as on `6caaae09`. The scan of every
+       newer file without a conversation is the cost: a file up to 1 MiB is
+       read and parsed, so the cost is linear in the number of such files.
+       Measured on macOS (median of 5, two rounds;
+       `.omc/probes/709/fix-r1/perf/`): one conversation under 20 files of
+       just under 1 MiB with none took 25–27 ms against 0.5–0.6 ms on
+       `6caaae09` (the first verify measured 35–43 ms against 0.9–1.3 ms
+       under load); under 199 header-only files 6.7–8.9 ms against
+       3.3–3.5 ms; 200 sessions with a 50 MB one newest 3.3–3.6 ms against
+       3.2–3.4 ms. The worst shape measured is 20 such files made of many
+       small entries: 333–358 ms against 0.8–1.2 ms on `6caaae09` (median of 7,
+       two rounds, load average 10–12; 60 files of the first shape took
+       103–108 ms; `.omc/probes/709/verify-r2/perf/`).
+     - **The thinking level.** A level recorded in a session left without a
+       prompt no longer comes back through `--continue`; it does when that
+       session is opened by `--session`, and `defaultThinkingLevel` keeps a
+       level across launches — the owner's decision of 2026-11-09 (note at
+       the top). Pinned for the TUI's applied default in
+       `tests/cli/test_default_thinking_every_mode_286.py`.
+     - **Known limits.** Each `aelix -c` in a folder with no conversation,
+       quit without a prompt, leaves one more header-and-model file: three
+       such launches leave three files where `6caaae09` left one (measured,
+       `m709v-*.txt`). The `/resume` list and the `aelix -r` menu still list
+       a file without a conversation as `(no messages)`, first when it is the
+       newest; that needs `tui/shell.py` and `cli/entry.py`. Not writing the
+       file until a conversation exists, or removing an empty one on exit,
+       would address both; neither is this change. The answer is the one for
+       the bytes the scan read: a prompt appended to the newest file after
+       that read, by another aelix writing it at the same moment, is not seen,
+       and `-c` opens an older file (Codex's review, a coordinated
+       second-process append; `.omc/probes/710/codex/race709.py`). Nothing
+       re-reads a file after a negative answer.
 7. **Appended, never inserted.** A delegated child's file starts with
    `aelix.child_origin` (ADR-0243 §2); the child's launch appends its record
    after it, so the origin stays first and §8's warning still finds it.
@@ -850,6 +963,14 @@ with `defaultThinkingLevel=xhigh` on a model that tops out at `high` sent `none`
    `--continue -p` sends `low` (`3d1bc5fa`: `high`); an RPC
    `set_thinking_level low` with no prompt, then `--continue -p`, sends `low`
    (`3d1bc5fa`: `none`).
+   - **Dated note 2026-11-09 (#709).** The last row no longer holds: that RPC
+     launch sent no prompt, and since #709 `--continue` skips a session with no
+     conversation (decision 6's note; the owner kept pi's way). Measured on the
+     #709 fix with a reasoning-capable scripted model
+     (`.omc/probes/709/fix-r1/709live/level-fix.txt`): `--continue -p` sends no
+     `reasoning_effort` and opens a new session; `--session <that file> -p`
+     sends `low`. The row stands as measured on `6caaae09`
+     (`level-base.txt`: `low`).
 
 ### What this retires above
 

@@ -1367,6 +1367,34 @@ unwritten. Add them with the next release.
   rejects. Tests: `tests/builtin/test_bash_fd_dup_710.py`, for the classifier under the UNKNOWN
   and POSIX dialects, for the gate with bash, zsh or sh and for RPC with bash, zsh or ksh as the
   resolved shell; PowerShell and cmd are unchanged (cmd's `dir 2>&1` still asks).
+- **`aelix -c` continues the last conversation, not an empty session left after it (#709,
+  ADR-0239).** aelix writes a session file when a session starts, so a launch closed without a
+  prompt, a `/new` or RPC `new_session` never used, or a launch whose only prompt was withdrawn
+  with Esc left the newest file in the folder, and `-c` opened that one: the model was sent only
+  the new prompt (`["continued?"]` instead of `["hello", "continued?"]`, measured with a scripted
+  model in the real TUI and over RPC on `6caaae09`, and again after the fix). `-c` now opens the
+  most recent session whose branch carries a turn the model gets back when it is opened — a user
+  or assistant message, or a compaction or branch summary whose text is not blank; a custom
+  message alone does not count, as in pi — and starts a new session when there is none. What
+  counts is what opening the file restores: a file with `\r` line endings counts as it opens, and
+  a file of at most 1 MiB that is not UTF-8, on which `-c` exited with a `UnicodeDecodeError`
+  traceback, is skipped. A larger one counts without being read, so when it is the newest `-c`
+  still exits with that traceback, as on `6caaae09` (measured with a 1,127,396-byte file). So, as
+  with pi, a level changed in a launch that never sent a prompt does not come back through `-c`
+  (it did on `6caaae09`); it does through `--session <file>`, and `defaultThinkingLevel` keeps a
+  level across launches (the owner's decision, ADR-0239). Reading a session's header stops after
+  the header line, at most one read buffer into the line after it, instead of reading that whole
+  line: for a 134-byte header in front of a 2 MiB first prompt, the sniff and the header read took
+  2,105,636 bytes on `6caaae09` and take 16,384 now on Python 3.12 (139,264 on 3.14), counted by
+  the test's reader. Each newer file of up to 1 MiB
+  without a conversation is read and parsed, so the cost grows with the number of such files:
+  one conversation under 20 of them, each just under 1 MiB, took about 25 ms against 0.5 ms
+  before, and 333–358 ms against about 1 ms when those files are made of many small entries
+  (macOS, medians of 5 and 7). Known limits: each `aelix -c` quit without a prompt in a folder
+  with no conversation leaves one more empty session file; the `/resume` list and the `aelix -r`
+  menu still show such sessions as `(no messages)`; and a prompt appended to the newest file
+  after `-c` has read it is missed, so `-c` opens an older file. Tests:
+  `tests/session/test_find_most_recent_conversation_709.py`.
 - **A session line that reached the disk and then failed no longer leaves the conversation on a
   hidden branch (#721, ADR-0242 rule 5).** When a session append wrote its whole line and the
   write then raised (for example the disk filling exactly at the line's final newline, or a second

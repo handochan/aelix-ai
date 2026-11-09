@@ -232,12 +232,22 @@ class LocalFileSystem:
         if max_lines is None:
             with open(path, encoding="utf-8") as f:
                 return [line.rstrip("\n") for line in f]
+        # #709: stop once the last wanted line is in, before the next is read.
+        # Asking for the line after it first read that whole line, however
+        # long — the second line of a session (2 MiB, measured) to return its
+        # header. The read still takes up to one buffer past that line. Where
+        # the old read returned, the lines are the same; where it raised
+        # UnicodeDecodeError on a line it would not return (a bad byte past
+        # the first buffer, or a cut multibyte character), the lines asked for
+        # come back now, and ``max_lines <= 0`` opens nothing.
         out: list[str] = []
+        if max_lines <= 0:
+            return out
         with open(path, encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i >= max_lines:
-                    break
+            for line in f:
                 out.append(line.rstrip("\n"))
+                if len(out) >= max_lines:
+                    break
         return out
 
     async def write_file(self, path: str, content: str) -> None:

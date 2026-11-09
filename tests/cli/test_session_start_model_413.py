@@ -587,7 +587,12 @@ async def test_an_empty_session_records_only_what_its_latest_record_does_not_nam
     prompt ran on the first, and the launch inputs decide an empty session's model).
     Cross-review S3: back on haiku after sonnet the LATEST record is sonnet, so haiku is
     recorded again, and a failed haiku turn reopens on haiku — the skip asking whether
-    ANY record names the model left the file on sonnet."""
+    ANY record names the model left the file on sonnet.
+
+    Reopened with ``--session``: since #709 ``--continue`` skips a session with no
+    user or assistant message (``test_find_most_recent_conversation_709.py``), so
+    it would start a new one here. The failed turn gives the file a conversation,
+    and the last reopen goes through ``--continue`` again."""
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-fake")
     _stub_modes(monkeypatch)
@@ -595,15 +600,16 @@ async def test_an_empty_session_records_only_what_its_latest_record_does_not_nam
     sonnet = ["--provider", "anthropic", "--model", "claude-sonnet-4-5"]
 
     assert await entry_mod._async_main([*argv, *_LAUNCH]) == 0
-    assert await entry_mod._async_main(["--continue", *argv, *_LAUNCH]) == 0
+    reopen = ["--session", str(_only_file(env))]
+    assert await entry_mod._async_main([*reopen, *argv, *_LAUNCH]) == 0
     assert _records(_only_file(env)) == [_HAIKU]
 
-    code = await entry_mod._async_main(["--continue", *argv, *sonnet])
+    code = await entry_mod._async_main([*reopen, *argv, *sonnet])
     assert code == 0, capsys.readouterr().err
     assert _records(_only_file(env)) == [_HAIKU, _SONNET]
 
     _drive(monkeypatch, _fail_one_turn)
-    assert await entry_mod._async_main(["--continue", *argv, *_LAUNCH]) == 0
+    assert await entry_mod._async_main([*reopen, *argv, *_LAUNCH]) == 0
     assert _records(_only_file(env)) == [_HAIKU, _SONNET, _HAIKU]
     assert await _reopened_model(env, monkeypatch) == _HAIKU
 

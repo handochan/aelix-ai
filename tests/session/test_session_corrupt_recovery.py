@@ -276,6 +276,8 @@ async def test_find_most_recent_then_open_recovers(tmp_path: Path) -> None:
     repo = JsonlSessionRepo(fs=fs, sessions_root=str(root))
 
     session = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    # A conversation first: #709 skips a session without one.
+    await session.append_message(UserMessage(content=[TextContent(text="hi")]))
     metadata = await session.get_metadata()
     path = Path(metadata.path)
 
