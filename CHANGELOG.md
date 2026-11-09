@@ -2996,6 +2996,20 @@ unwritten. Add them with the next release.
   drops one delivered chunk failed 10 of 10 runs on attempt 1, and 2 of 2
   runs on attempt 2 when reads were slowed past the first 20 s. Users see no
   change.
+- **Tests: a test that hangs is named in the 240 s timeout dump (#689).** Three
+  CI dumps (2026-10-20, 11-04 and 11-05, all py3.11) showed the main thread
+  idle in the event loop with no test frame, and the hung test had to be found
+  by counting progress dots. The count in the issue's comment missed the 57
+  dots that were printed after the dump. All three were
+  `test_run_tui_ctrl_g_external_editor_round_trips_through_subprocess`. An idle
+  thread in `tests/conftest.py` now has a top frame named after the running
+  test. The dump reads `line N in <nodeid>` under
+  `<pytest: the test running now (#689)>`, and after the last test it reads
+  `no test running; the last one was <nodeid>`. It was measured on macOS
+  py3.11, 3.12 and 3.14 and in Linux docker py3.11 with a test parked on an
+  event that is never set. The thread writes nothing: a passing run's `-q`
+  output is unchanged. On 3,000 trivial tests the median time was 1.58 s with
+  it and 1.56 s without (five runs each). Users see no change.
 - **Quitting during file completion no longer leaves aelix running (#428).**
   The `@file` menu is collected in one background job, so repeated cancellation
   during shutdown cannot leave a second worker waiting forever on a queue.
