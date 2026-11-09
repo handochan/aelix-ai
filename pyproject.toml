@@ -129,11 +129,24 @@ aelix = "aelix_coding_agent.cli.entry:main_sync"
 # nothing else. Note that the older fixtures in that test DELETE `.gitignore`, so
 # they cannot see this interaction at all — `test_the_team_config_negation_does_
 # not_reopen_the_claude_hole` is the one that builds with the belt in place.
+#
+# #733 (ADR-0303) — `.claude/skills`, `.claude/agents` and `.agents`. The first
+# two are committed now (the skill mirror and the subagents), negated in
+# `.gitignore` as directories. A directory negation did NOT outrank `.claude`
+# the way the file one did: measured, a belted sdist with only `.claude` here
+# shipped neither a planted `.claude/skills/x/SKILL.md` nor `.claude/agents/x.md`.
+# They are named exactly anyway, so each list keeps them out without `.claude`
+# too (measured). `.agents` is the canonical skill tree, which `.gitignore` does
+# not ignore at all, so this entry is the only thing keeping it out of every
+# artifact: without it, it shipped in the sdist and a nested copy in the wheel.
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]
 exclude = [
   ".claude",
   ".claude/settings.json",
+  ".claude/skills",
+  ".claude/agents",
+  ".agents",
   ".uv-cache",
   ".omc",
   "__pycache__",
@@ -157,6 +170,9 @@ exclude = [
 exclude = [
   ".claude",
   ".claude/settings.json",
+  ".claude/skills",
+  ".claude/agents",
+  ".agents",
   ".uv-cache",
   ".omc",
   "__pycache__",

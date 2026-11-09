@@ -36,6 +36,21 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0303 — The way this repository is worked on is committed: agent skills, a verifier agent, a session hook and one gate runner](0303-the-way-this-repository-is-worked-on-is-committed-skills-a-verifier-and-a-session-hook.md)
+  (Accepted 2026-11-09; #733). Seven Agent Skills (`aelix-preflight`, `aelix-live-check`,
+  `aelix-tests-that-bite`, `aelix-close-out`, `aelix-issue-run`, `aelix-handoff`, `aelix-land`)
+  live in `.agents/skills/`, which aelix reads in a trusted project, with a byte-identical mirror in
+  `.claude/skills/` for Claude Code that `scripts/sync_agent_skills.py` writes and
+  `tests/test_agent_skills.py` gates, beside the `aelix-verifier` subagent. A tracked
+  `.claude/settings.json` runs `scripts/session_brief.py` at session start: read-only
+  (`--no-optional-locks`, the index watched by a test), no network, no `uv run`, bounded,
+  Python 3.9, always exit 0. `scripts/preflight.py` runs the gates a change can fail from a
+  one-row-per-gate table, `--plan` says which and why, `--claims` writes the PR's verification
+  block, and it never runs the full suite. The coarse-clock pytest plugin is promoted to
+  `tests/plugins/`. `.agents`, `.claude/skills` and `.claude/agents` are in every exclude list
+  (measured with real builds). The owner's 2026-11-09 decisions: everything committed, and the
+  one-session-one-task rule removed. `AGENTS.md` and `CLAUDE.md` stay local.
+
 - [0294 — A failure the strict relaxation answered is sent again by its adapter and shown as one line](0294-a-failure-the-strict-relaxation-answered-is-sent-again-and-shown-as-one-line.md)
   (Accepted 2026-11-06; #703). On Python 3.13 a corporate proxy's certificate that fails RFC
   5280 strict checking alone, which this machine trusts without it, used to reach the user as an

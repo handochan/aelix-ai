@@ -62,6 +62,12 @@ uv run pytest -p no:cacheprovider -q   # the full suite, ~6 min on a laptop
 hand-laid formatting that `ruff format` would collapse. Match the surrounding
 code; do not reformat files you are not changing.
 
+`uv run --frozen python scripts/preflight.py` runs the first two above, then the
+gates below and the tests that the files you touched can fail. `--plan` shows
+which, and why, without running anything, and `--claims -` prints the block for
+the PR's "How it was verified". It never runs the full suite, so that one is
+still yours.
+
 ### Four gates that are easy to miss
 
 **1. The citation lock.** Comments and tests in this repo cite source locations
@@ -182,6 +188,19 @@ Some paths cannot be unit-tested and have to be exercised for real:
 - **Provider, streaming, session or tool-execution changes** — run against a
   real model, not a mock.
 
+## Agent skills
+
+`.agents/skills/` holds how this repository is worked on, as Agent Skills: the
+gates a change needs, running the TUI or a real model in a scratch home, tests
+that fail without the fix, what moves before an issue closes, and landing a
+branch. aelix reads it in a trusted project, so do other Agent Skills tools, and
+Claude Code reads its byte-identical copy in `.claude/skills/`. Edit
+`.agents/skills/`, then run `uv run python scripts/sync_agent_skills.py`;
+`tests/test_agent_skills.py` fails while the two differ (ADR-0303). Because of
+them, aelix asks once whether to trust a checkout, a new worktree or a fresh
+clone of this repository: trusting loads the skills, and "Trust parent folder"
+covers every worktree under that folder (`docs/guides/project-trust.md`).
+
 ## Fork CI needs the maintainer to press a button
 
 This is the thing no outside contributor could have known, and all three hit it.
@@ -221,7 +240,10 @@ see yourself are not measurements.
 
 ## Commits and PRs
 
-- One issue, one branch, one PR. Do not mix unrelated changes.
+- One issue, one branch, one PR — or one branch and PR for a group of related
+  issues that have to be designed together. Do not mix unrelated changes. In a
+  group, make one commit per issue when the changes separate and one for the
+  group (`Fixes #a #b`) when they do not, and say which in the PR.
 - Write commit messages that say *what you measured*, not just what you changed.
   `git log` here is the project's memory; skim a few before writing yours.
 - Link the issue (`Fixes #123`).

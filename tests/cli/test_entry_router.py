@@ -181,6 +181,16 @@ async def test_rpc_plus_file_arg_returns_1(
 
 
 class _FakeTTYStdin:
+    """A TTY with no ``fileno``: anything that opens a prompt_toolkit prompt on it fails.
+
+    #733: so every interactive launch below runs in a cwd of its own
+    (``monkeypatch.chdir(tmp_path)``). The launch resolves project trust from
+    the cwd, and from a checkout holding project resources (``.agents/skills``,
+    a contributor's own ``.aelix/``) it asks the trust question first, on this
+    stdin. Run from the repository root, these tests used to measure the
+    repository instead of the router.
+    """
+
     def isatty(self) -> bool:
         return True
 
@@ -363,6 +373,7 @@ async def test_auth_callback_wired_without_api_key(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     # #497: ``_async_main`` loads ``<agent dir>/auth.json`` before it dispatches.
     sandbox_home(monkeypatch, tmp_path / "home")
 
@@ -403,6 +414,7 @@ async def test_interactive_seeds_model_from_persisted_default(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     # Isolate the agent dir and pre-seed the global settings.json with a default.
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
@@ -450,6 +462,7 @@ async def test_interactive_seeds_provider_when_only_model_flag_given(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     (agent_dir / "settings.json").write_text(
@@ -493,6 +506,7 @@ async def test_interactive_slash_shorthand_beats_persisted_default_provider(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     (agent_dir / "settings.json").write_text(
@@ -537,6 +551,7 @@ async def test_interactive_guard_2_beats_persisted_default_provider(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     (agent_dir / "settings.json").write_text(
@@ -579,6 +594,7 @@ async def test_interactive_persisted_pair_outranks_openrouter_env(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     (agent_dir / "settings.json").write_text(
@@ -615,6 +631,7 @@ async def test_interactive_explicit_model_flag_overrides_persisted_default(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     (agent_dir / "settings.json").write_text(
@@ -656,6 +673,7 @@ async def test_interactive_missing_tui_extra_returns_1(
     import aelix_coding_agent.modes as modes_mod
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     # #497: the auth load runs before the ``run_tui`` import fails.
     sandbox_home(monkeypatch, tmp_path / "home")
 
@@ -792,6 +810,7 @@ async def test_interactive_warns_but_still_launches_on_unrunnable_model(
 
     _force_supported_apis(monkeypatch, "anthropic-messages")
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     sandbox_home(monkeypatch, tmp_path / "home")
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
@@ -826,6 +845,7 @@ async def test_interactive_stays_silent_for_a_runnable_model(
 
     _force_supported_apis(monkeypatch, "anthropic-messages")
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)  # #733: a cwd with no project resources
     sandbox_home(monkeypatch, tmp_path / "home")
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()

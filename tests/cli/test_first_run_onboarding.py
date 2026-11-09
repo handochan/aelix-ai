@@ -416,6 +416,13 @@ async def _run_tui_kwargs(
     from aelix_coding_agent.cli.entry import _async_main
 
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path))
+    # #733: a cwd of its own. The launch resolves project trust from the cwd,
+    # and from a checkout holding project resources (``.agents/skills``, a
+    # contributor's own ``.aelix/``) it asks the trust question on this fake
+    # TTY first, which has no ``fileno`` for prompt_toolkit.
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     monkeypatch.setattr(sys, "stdin", _FakeTTY())
     monkeypatch.setattr(sys, "stdout", _FakeTTY())
 
