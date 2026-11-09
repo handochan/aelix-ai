@@ -749,7 +749,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2547-2564``) nor child (``modes/print_mode.py:241-300``)
+    (``tui/shell.py:2547-2564``) nor child (``modes/print_mode.py:248-307``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -897,7 +897,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:1048-1054``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:1062-1068``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -2146,7 +2146,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:331-338``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:338-345``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
@@ -2388,7 +2388,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1302-1306``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1352-1356``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2440,11 +2440,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1440``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1509``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:225``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:265``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2656,7 +2656,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1053`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1362`` and
     ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 

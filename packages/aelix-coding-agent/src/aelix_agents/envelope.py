@@ -876,6 +876,7 @@ def build_result(
     session_recorded: bool = False,
     lingered: bool = False,
     reason: str | None = None,
+    print_done_required: bool = False,
 ) -> SubagentResult:
     """Fold a finished (or abandoned) child run into its envelope.
 
@@ -900,6 +901,14 @@ def build_result(
     :data:`LINGERED_REASON`. Read only beside ``outcome="ok"``: a stop that
     landed during the wait is the caller's ``aborted``, and that wins.
 
+    ``print_done_required`` is the channel's statement that the parent asked
+    this child for the versioned ``aelix_print_done`` line
+    (``AELIX_JOBS_PROTOCOL=1``, #611 S1c, ADR-0295) — today only a background
+    job's run. For such a run the lingering success also needs that line
+    (:attr:`~aelix_agents.stream._StreamState.print_done`): a child that closed
+    its latest run and then wedged before its print run drained is not finished.
+    Every other run is judged as before (ADR-0276 D4), with or without the line.
+
     ``session_recorded`` is the channel's statement that the child ran with a
     session file its parent allocated (``SpawnPlan.session_path``, #199). It is
     necessary but not sufficient for :attr:`SubagentResult.output_recorded`:
@@ -920,7 +929,7 @@ def build_result(
     129, ``SIGKILL`` -9.)
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:301-305``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:306-310``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -929,7 +938,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:1048-1054``), so a child that read a large file emits a
+    # line (``stream.py:1062-1068``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare
@@ -955,8 +964,14 @@ def build_result(
     # CLOSED LATEST run; a legacy child that closed it and then lingered stays
     # ``ok`` with its note, exactly as before (ADR-0276 D4, #611 S1a).
     lingering = lingered and outcome == "ok"
+    #
+    # A run whose parent asked for the versioned ``print_done`` (#611 S1c) needs
+    # it as well: only that line says its print run drained before it wedged.
     finished_then_lingered = (
-        lingering and closed and state.stop_reason not in ("error", "aborted")
+        lingering
+        and closed
+        and state.stop_reason not in ("error", "aborted")
+        and (state.print_done or not print_done_required)
     )
     lingered_unfinished = lingering and not finished_then_lingered
     process_failed = (

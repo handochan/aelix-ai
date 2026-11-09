@@ -68,6 +68,7 @@ ending.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -806,6 +807,20 @@ class SpawnReceipt:
     resumes: str | None = None
     """The first run's ``key`` when this run is a resume of it, else ``None``
     (#610 D15). On every start and settle, so one record shape serves both."""
+    job_id: str | None = None
+    """The background job this run is (#611 S1c, ADR-0295), else ``None``.
+
+    Set only for a SERVICE-OWNED run, and then on its start and settle as
+    ``job_id`` — the link the job service's restart reads its client records by
+    (``jobs/records.client_records_of``), so a restart recovers the job from
+    this run's own settle first. Absent from every other run's records, which
+    are byte for byte what they were."""
+    writer: Any = None
+    """For a service-owned run, how its opening records are written: CONFIRMED,
+    each placed once under an id derived from it, raising when it did not land
+    (``jobs_client``). A job's start record that could not be written refuses
+    its launch, as the job's own ``start`` fact does (ADR-0293 §7). ``None`` —
+    every other run — is :func:`append_records`, which logs and swallows."""
     aelix_version: str = VERSION
     session: Any | None = None
     """The parent ``Session`` every record goes to, or ``None`` (nothing is
@@ -866,7 +881,10 @@ class SpawnReceipt:
 
     async def _write_opening(self) -> None:
         for record in self.opening_records():
-            await append_records(self.session, [record])
+            if self.writer is not None and self.session is not None:
+                await self.writer(self.session, [record])
+            else:
+                await append_records(self.session, [record])
             self.opening_attempted += 1
 
     async def _describe_parent(self, session: Any) -> None:
@@ -972,6 +990,8 @@ class SpawnReceipt:
             "aelix_version": self.aelix_version,
             "limits": self.limits,
             "resumes": self.resumes,
+            # Only on a service-owned run's records (#611 S1c).
+            **({"job_id": self.job_id} if self.job_id is not None else {}),
         }
 
     def start_record(self) -> dict[str, Any]:
@@ -1407,6 +1427,34 @@ async def session_id_of(session: Any) -> str | None:
     return session_id if isinstance(session_id, str) and session_id else None
 
 
+def resume_lineage_refusal(branch: Sequence[Any], child_id: str) -> str | None:
+    """Steps 2–5 of :func:`find_resume_target` on ``branch``'s records alone; ``None`` = they pass.
+
+    For a hint written when a background agent's result is placed (#611 S1c,
+    Codex #9): it names ``agent(action="resume")`` only when the branch then
+    current holds what that resume's own lookup requires — a first run whose
+    START is on it, runs that chain to it, the model's, with valid limits. No
+    file is opened; the resume checks the file itself.
+    """
+
+    runs = _group_by_child(_fold_runs(branch)).get(child_id)
+    if runs is None:
+        return RESUME_UNKNOWN_ID
+    lineage = _lineage(runs)
+    if isinstance(lineage, str):
+        return lineage
+    data = lineage[0].identity
+    if not _by_the_model(data):
+        return RESUME_NOT_YOURS
+    if data.get("limits") is None:
+        return RESUME_BEFORE_LIMITS
+    try:
+        ChildLimits.from_record(data.get("limits"))
+    except LimitsError as exc:
+        return resume_damaged(f"its recorded limits are invalid: {exc.reason}")
+    return None
+
+
 async def _branch_runs(session: Any) -> dict[str, list[_Run]] | None:
     """The parent's CURRENT branch, folded and grouped — the records ``/stats``
     reads too (``harness/core.py``'s branch walk). ``None`` when unreadable."""
@@ -1534,7 +1582,13 @@ async def find_resume_target(session: Any | None, child_id: str | None) -> Resum
 
 
 def _check_child_file(
-    path: str, directory: str, *, child_id: str, first_key: str, parent_id: str
+    path: str,
+    directory: str,
+    *,
+    child_id: str,
+    first_key: str,
+    parent_id: str,
+    fd: int | None = None,
 ) -> str | None:
     """Steps 6–8 of :func:`find_resume_target` on the derived file. ``None`` = fine.
 
@@ -1552,6 +1606,12 @@ def _check_child_file(
     The header is read by the session loader's own parser (F6), so a file the
     child would refuse to open — a version it does not know, a header with no
     timestamp — is refused here, before the resume spends anything.
+
+    ``fd``, when given, is a descriptor the caller opened on ``path`` and will
+    READ (#611 S1c, Codex #3): the checks are then of THAT file — the name must
+    still lead to its inode, its own link count must be one, and its header and
+    origin are read from it — so a file swapped in under the name before or
+    after the check is never what is read.
     """
 
     try:
@@ -1574,8 +1634,19 @@ def _check_child_file(
     unlinked = os.path.join(os.path.realpath(parent_dir), children, os.path.basename(path))
     if os.path.normcase(os.path.realpath(path)) != os.path.normcase(unlinked):
         return resume_damaged("its session file is reached through a link")
+    if fd is not None:
+        try:
+            held = os.fstat(fd)
+        except OSError:
+            return resume_damaged("its session file cannot be read")
+        if (held.st_dev, held.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(
+            held.st_mode
+        ):
+            return resume_damaged("its session file was replaced while it was read")
+        if held.st_nlink > 1:
+            return resume_damaged("its session file has another name (a hard link)")
     try:
-        lines = _head_lines(*_read_head(path))
+        lines = _head_lines(*(_read_head(path) if fd is None else _read_head_fd(fd)))
     except OSError:
         return resume_damaged("its session file cannot be read")
     header = None
@@ -1616,22 +1687,31 @@ def _read_head(path: str) -> tuple[bytes, bool]:
     refused rather than followed.
     """
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    fd = os.open(path, flags)
+    fd = os.open(path, _READ_FLAGS)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError("not a regular file")
-        chunks: list[bytes] = []
-        size = 0
-        while size < CHILD_SCAN_BYTES:
-            chunk = os.read(fd, min(65536, CHILD_SCAN_BYTES - size))
-            if not chunk:
-                return b"".join(chunks), True
-            chunks.append(chunk)
-            size += len(chunk)
-        return b"".join(chunks), not os.read(fd, 1)
+        return _read_head_fd(fd)
     finally:
         os.close(fd)
+
+
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+
+
+def _read_head_fd(fd: int) -> tuple[bytes, bool]:
+    """:func:`_read_head` of an open descriptor, from its first byte."""
+
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    size = 0
+    while size < CHILD_SCAN_BYTES:
+        chunk = os.read(fd, min(65536, CHILD_SCAN_BYTES - size))
+        if not chunk:
+            return b"".join(chunks), True
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks), not os.read(fd, 1)
 
 
 _LINE_BREAK = re.compile(rb"\r\n|\r|\n")
@@ -1685,6 +1765,214 @@ def _is_user_message(entry: Any) -> bool:
         return False
     message = entry.get("message")
     return isinstance(message, dict) and message.get("role") == "user"
+
+
+# === The second reader: a background run's last answer (#611 S1c, ADR-0295) ======
+#
+# A restart that finds a background job started and not ended, and no settle of
+# the parent's for it, may read the child's own file — CONSERVATIVELY. A child
+# file records no run boundaries (``harness/core.py``: neither ``agent_start``
+# nor ``agent_end`` is persisted), so its last answer is a RUN's only when that
+# run is the latest of the file: no later start for the same child session
+# anywhere in the parent's records (another branch, a resume). And it is never a
+# ``done``: the caller says "its last answer, read from its session; aelix could
+# not confirm it finished". The file is derived and checked exactly as a
+# resume's is (:func:`_check_child_file`), never read off the record.
+
+CANNOT_BIND_RUN = "cannot_bind_run"
+"""The reason a run's answer cannot be read from its child file: a later run of
+that file exists, so the file's last answer may be that run's."""
+
+RECOVERY_SCAN_BYTES = 32 * 1024 * 1024
+"""How much of a child file's TAIL the last answer is looked for in."""
+
+
+@dataclass(frozen=True)
+class RecoveredAnswer:
+    text: str
+    session_id: str
+    path: str
+    rel: str
+
+
+async def recover_run_answer(session: Any | None, key: str) -> RecoveredAnswer | str:
+    """The last answer of run ``key``, read from its child's file; or why it cannot be.
+
+    The reason is a short code, :data:`CANNOT_BIND_RUN` among them, or for a
+    file that fails its checks what is wrong with it (:func:`_as_read`). ``session``
+    is the parent's; its WHOLE file is read (every branch), because a later
+    start on another branch makes this run's answer no longer the file's last.
+    """
+
+    if session is None:
+        return "no_session_file"
+    parent_path = _session_file_of(session)
+    placement = place_children(parent_path) if parent_path is not None else None
+    parent_id = await session_id_of(session) if placement is not None else None
+    if placement is None or parent_id is None:
+        return "no_session_file"
+    try:
+        entries = list(await session.get_entries())
+    except Exception:  # noqa: BLE001 — unreadable records bind nothing
+        return "unreadable"
+    starts: list[tuple[int, dict[str, Any]]] = []
+    for position, entry in enumerate(entries):
+        data = getattr(entry, "data", None)
+        if (
+            getattr(entry, "type", None) == "custom"
+            and getattr(entry, "custom_type", None) == CHILD_SESSION_TYPE
+            and isinstance(data, dict)
+            and data.get("v") == RECORD_VERSION
+            and data.get("phase") == "start"
+        ):
+            starts.append((position, data))
+    mine = next(((at, data) for at, data in starts if data.get("key") == key), None)
+    if mine is None:
+        return "no_start_record"
+    at, data = mine
+    child = data.get("child")
+    child_id = child.get("session_id") if isinstance(child, dict) else None
+    if not isinstance(child_id, str) or not _SESSION_ID.fullmatch(child_id):
+        return "no_child_file"
+    for later, other in starts:
+        other_child = other.get("child")
+        if (
+            later > at
+            and other.get("key") != key
+            and isinstance(other_child, dict)
+            and other_child.get("session_id") == child_id
+        ):
+            return CANNOT_BIND_RUN
+    first_key = data.get("resumes") or key
+    if not isinstance(first_key, str) or not SPAWN_KEY.fullmatch(first_key):
+        return "damaged"
+    name = f"{first_key}{_SESSION_SUFFIX}"
+    rel = f"{placement.rel_dir}/{name}"
+    if child.get("rel") != rel:  # type: ignore[union-attr]
+        return "damaged"
+    path = os.path.join(placement.directory, name)
+    try:
+        answer = await asyncio.to_thread(
+            _checked_answer,
+            path,
+            placement.directory,
+            child_id=child_id,
+            first_key=first_key,
+            parent_id=parent_id,
+        )
+    except OSError:
+        return "unreadable"
+    if isinstance(answer, _Refused):
+        return answer.reason
+    if not answer:
+        return "no_answer"
+    return RecoveredAnswer(text=answer, session_id=child_id, path=path, rel=rel)
+
+
+@dataclass(frozen=True)
+class _Refused:
+    reason: str
+
+
+def _checked_answer(
+    path: str, directory: str, *, child_id: str, first_key: str, parent_id: str
+) -> str | _Refused | None:
+    """The child file's last answer, checked and read through ONE descriptor (Codex #3).
+
+    Opened first, then :func:`_check_child_file` checks that very file — the
+    name still leads to it, it has one name, its header and origin are this
+    child's — and the answer is read from the same descriptor. A file swapped
+    in under the name at any point is refused or never read.
+    """
+
+    try:
+        fd = os.open(path, _READ_FLAGS)
+    except OSError:
+        # Gone, a link, not a file: the path's own checks name why.
+        refusal = _check_child_file(
+            path, directory, child_id=child_id, first_key=first_key, parent_id=parent_id
+        )
+        if refusal is not None:
+            return _Refused(_as_read(refusal))
+        raise
+    try:
+        refusal = _check_child_file(
+            path, directory, child_id=child_id, first_key=first_key, parent_id=parent_id, fd=fd
+        )
+        if refusal is not None:
+            return _Refused(_as_read(refusal))
+        return _last_answer_fd(fd)
+    finally:
+        os.close(fd)
+
+
+_READ_REFUSALS = {
+    RESUME_FILE_GONE: "its session file no longer exists",
+    RESUME_FORKED: "it belongs to the conversation this one was forked from",
+    RESUME_NEVER_STARTED: "it never started; its session holds no task",
+}
+
+
+def _as_read(refusal: str) -> str:
+    """A :func:`_check_child_file` refusal as a READ of the file states it (#611 S1c, verify-r2 N7).
+
+    Those sentences are a resume's — "Resume refused: …", then the resume's
+    advice. ``agent(action="result")`` says only what is wrong with the file.
+    """
+
+    known = _READ_REFUSALS.get(refusal)
+    if known is not None:
+        return known
+    head, _, tail = RESUME_DAMAGED.partition("{detail}")
+    if refusal.startswith(head) and refusal.endswith(tail):
+        return f"its session record is damaged ({refusal[len(head) : len(refusal) - len(tail)]})"
+    return "its session file did not pass aelix's checks"
+
+
+def _last_answer(path: str) -> str | None:
+    """The text of the last assistant message in ``path``'s tail, or ``None``."""
+
+    fd = os.open(path, _READ_FLAGS)
+    try:
+        return _last_answer_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def _last_answer_fd(fd: int) -> str | None:
+    """:func:`_last_answer` of an open descriptor."""
+
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError("not a regular file")
+    start = max(0, info.st_size - RECOVERY_SCAN_BYTES)
+    os.lseek(fd, start, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(fd, 1 << 20):
+        chunks.append(chunk)
+    pieces = _LINE_BREAK.split(b"".join(chunks))
+    if start > 0:
+        pieces = pieces[1:]  # the first piece may be a cut line
+    for raw in reversed(pieces):
+        try:
+            entry = _parse_line(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        texts = [
+            block.get("text")
+            for block in (content if isinstance(content, list) else [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text = "\n".join(t for t in texts if isinstance(t, str) and t)
+        if text:
+            return text
+    return None
 
 
 async def resumable_agents(session: Any | None) -> str:
@@ -1813,6 +2101,7 @@ __all__ = [
     "find_resume_target",
     "resumable_agents",
     "resume_damaged",
+    "resume_lineage_refusal",
     "session_id_of",
     "usage_is_complete",
     "place_children",

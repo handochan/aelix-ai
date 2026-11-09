@@ -230,3 +230,73 @@ async def test_a_kind_registered_again_under_another_settings_key_keeps_its_coun
     for job_id in ids:
         await service.stop(job_id)
     await service.shutdown()
+
+
+def test_a_kinds_noun_counts_what_runs_with_its_plural() -> None:
+    """#611 S1c (verify S3): a kind that names what it runs is counted by that noun.
+
+    The service stays kind-agnostic — the noun is ``KindCapabilities.noun``,
+    passed through — and a kind with none keeps the generic sentence. Fails on
+    ``b387b4b5``: ``reserve`` takes no ``noun``.
+    """
+
+    noun = ("delegated agent", "delegated agents")
+    admission = _admission({"limits": {"a": 1, "b": 2}})
+    admission.reserve("a", 4)
+    with pytest.raises(AdmissionRefused) as one:
+        admission.reserve_up_to("a", 4, wanted=1, noun=noun)
+    assert str(one.value).startswith("1 delegated agent already runs; ")
+    admission.reserve("b", 4)
+    admission.reserve("b", 4)
+    with pytest.raises(AdmissionRefused) as two:
+        admission.reserve("b", 4, noun=noun)
+    assert str(two.value).startswith("2 delegated agents already run; ")
+    with pytest.raises(AdmissionRefused) as generic:
+        admission.reserve("b", 4)
+    assert str(generic.value).startswith("2 background jobs of this kind already run; ")
+
+
+def test_the_total_limit_names_no_kind_and_calls_nothing_a_background_job() -> None:
+    """Verify-r2 N5: ``backgroundJobs.maxTotal`` counts every kind together, and a
+    kind may count what runs in the foreground (delegation counts every live
+    agent), so its refusal names no kind's noun and no "background jobs".
+
+    Fails on ``fa742f77``: "3 background jobs already run; …".
+    """
+
+    noun = ("delegated agent", "delegated agents")
+    admission = _admission({"limits": {"a": 4, "b": 4}, "maxTotal": 3})
+    admission.reserve("a", 4)
+    admission.reserve("b", 4)
+    admission.reserve("b", 4)
+    with pytest.raises(AdmissionRefused) as refused:
+        admission.reserve("a", 4, noun=noun)
+    assert str(refused.value) == (
+        "3 run across every kind, and settings backgroundJobs.maxTotal allows 3. "
+        "Stop one or wait; do not retry."
+    )
+
+
+async def test_a_start_with_no_reservation_counts_by_the_kinds_noun(tmp_path: Path) -> None:
+    """Verify-r2 N03: ``JobService.start`` reserving its own slot passes the kind's
+    noun, as ``JobService.reserve`` does.
+
+    A guard on ``fa742f77``: kills verify-r2's N03 (that reserve without
+    ``noun``), under which it reads "1 background jobs of this kind already run".
+    """
+
+    from dataclasses import replace
+
+    from aelix_coding_agent.jobs.service import JobStartRefused
+
+    service = fast_service()
+    adapter = _sleeper.SleeperAdapter(bound=1)
+    adapter.capabilities = replace(adapter.capabilities, noun=("sleeper", "sleepers"))
+    service.register_kind(adapter, _sleeper.Sleeper)
+    await service.bind(make_harness(await make_session(tmp_path)))
+    job_id = await service.start(_sleeper.KIND, title="one", params={"seconds": 30})
+    with pytest.raises(JobStartRefused) as refused:
+        await service.start(_sleeper.KIND, title="two")
+    assert str(refused.value).startswith("1 sleeper already runs; ")
+    await service.stop(job_id)
+    await service.shutdown()

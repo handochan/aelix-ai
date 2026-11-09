@@ -555,3 +555,152 @@ async def test_through_the_print_channel_a_child_cut_inside_its_second_run_is_an
     assert result.exit_code == 0
     assert (result.ok, result.status) == (False, "error")
     assert result.error == STREAM_ENDED_EARLY
+
+
+# === #611 S1c — the versioned ``print_done`` (contract §2.4, Codex r5 finding 6) ===
+#
+# A run the parent asked for the line (``AELIX_JOBS_PROTOCOL=1`` — today only a
+# background job's) needs it before a linger counts as finished; a legacy run is
+# judged as above whatever it printed. Fails on ``6caaae09``: ``build_result``
+# takes no ``print_done_required`` and the reducer ignores the line.
+
+_PRINT_DONE: dict[str, Any] = {"type": "aelix_print_done"}
+
+
+def test_protocol_run_lingering_without_print_done_fails() -> None:
+    """The latest run closed, then the child wedged BEFORE its print run drained: not finished."""
+
+    state = _fold(*_run_one_closed())
+
+    result = build_result(
+        id="c1",
+        profile="p",
+        state=state,
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+        print_done_required=True,
+    )
+
+    assert (result.ok, result.status, result.reason) == (False, "error", LINGERED_REASON)
+    assert result.note is None
+
+
+def test_protocol_run_lingering_after_print_done_is_finished() -> None:
+    state = _fold(*_run_one_closed(), _PRINT_DONE)
+
+    assert state.print_done is True
+    result = build_result(
+        id="c1",
+        profile="p",
+        state=state,
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+        print_done_required=True,
+    )
+
+    assert (result.ok, result.status, result.note) == (True, "ok", LINGERED_NOTE)
+
+
+def test_legacy_linger_is_judged_as_before_with_or_without_the_line() -> None:
+    """Finding 6 closed: the ungated linger success never depends on the gated line."""
+
+    for events in ((*_run_one_closed(),), (*_run_one_closed(), _PRINT_DONE)):
+        result = build_result(
+            id="c1", profile="p", state=_fold(*events), outcome="ok", exit_code=-15, lingered=True
+        )
+        assert (result.ok, result.status, result.note) == (True, "ok", LINGERED_NOTE)
+
+
+def test_a_protocol_run_that_exits_on_its_own_does_not_need_the_line() -> None:
+    """``print_done`` decides only a linger: a child that exited 0 is judged by its stream."""
+
+    result = build_result(
+        id="c1",
+        profile="p",
+        state=_fold(*_run_one_closed()),
+        outcome="ok",
+        exit_code=0,
+        print_done_required=True,
+    )
+
+    assert (result.ok, result.status) == (True, "ok")
+
+
+def test_reduce_line_reads_the_print_done_line_from_raw_stdout() -> None:
+    state = _fold(*_run_one_closed())
+    reduce_line(state, json.dumps(_PRINT_DONE))
+    assert state.print_done is True
+
+
+def test_an_earlier_runs_print_done_never_vouches_for_a_later_run() -> None:
+    """Codex #11: a later ``agent_start`` takes the marker back; the later run lingered without one.
+
+    Fails on ``b387b4b5``: ``print_done=True status=ok ok=True``.
+    """
+
+    state = _fold(*_run_one_closed(), _PRINT_DONE, *_START, _answer("run 2 answer"), _END)
+    assert state.print_done is False
+    result = build_result(
+        id="c1",
+        profile="p",
+        state=state,
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+        print_done_required=True,
+    )
+    assert (result.ok, result.status, result.reason) == (False, "error", LINGERED_REASON)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        {"type": "aelix_print_done", "v": 999, "unexpected": True},
+        {"type": "aelix_print_done", "v": 1},
+    ],
+    ids=["unknown-keys", "a-version-field"],
+)
+def test_a_print_done_of_another_shape_is_not_the_marker(line: dict[str, Any]) -> None:
+    """Codex #11: only the producer's exact line counts, and a bad one takes a good one back.
+
+    Fails on ``b387b4b5``: ``accepted=True``.
+    """
+
+    assert _fold(*_run_one_closed(), line).print_done is False
+    assert _fold(*_run_one_closed(), _PRINT_DONE, line).print_done is False
+
+
+def test_a_print_done_inside_an_open_run_is_not_the_marker() -> None:
+    """The producer writes it only after the run drained: one before ``agent_end`` breaks the order."""
+
+    assert _fold(*_START, _PRINT_DONE).print_done is False
+    assert _fold(_PRINT_DONE).print_done is False
+    assert _fold(*_START, _PRINT_DONE, _answer("x"), _END).print_done is False
+
+
+def test_a_print_done_inside_a_later_run_is_not_the_marker() -> None:
+    """An earlier run's ``agent_end`` is latched: a line written inside the run
+    after it is still inside an open run, and does not vouch for that run once
+    it closes and lingers.
+
+    A guard on ``fa742f77``: kills verify-r2's P03 (dropping ``not
+    state.run_open`` from the check), under which the second run lingers
+    "finished" on a line it wrote before its own ``agent_end``.
+    """
+
+    state = _fold(*_run_one_closed(), *_START, _PRINT_DONE)
+    assert state.print_done is False
+    state = _fold(*_run_one_closed(), *_START, _PRINT_DONE, _answer("run 2 answer"), _END)
+    assert state.print_done is False
+    result = build_result(
+        id="c1",
+        profile="p",
+        state=state,
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+        print_done_required=True,
+    )
+    assert (result.ok, result.status, result.reason) == (False, "error", LINGERED_REASON)

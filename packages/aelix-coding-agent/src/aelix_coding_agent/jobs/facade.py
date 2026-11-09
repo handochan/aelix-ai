@@ -19,9 +19,10 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.jobs.activation import require_active
-from aelix_coding_agent.jobs.contract import JobKindAdapter, JobSnapshot, RunnerFactory
+from aelix_coding_agent.jobs.contract import JobKindAdapter, JobSnapshot, RunnerFactory, StopReason
 
 if TYPE_CHECKING:
+    from aelix_coding_agent.jobs.admission import Reservation
     from aelix_coding_agent.jobs.registry import Registration
     from aelix_coding_agent.jobs.service import JobService
 
@@ -52,6 +53,21 @@ class JobsFacade:
             adapter, runner_factory, source=self.source, lifetime=self._lifetime
         )
 
+    def reserve(self, kind: str, wanted: int = 1) -> Reservation:
+        """Up to ``wanted`` slots of ``kind``, at least one, before the client asks consent (#611 S1c).
+
+        ``JobService.reserve``, for a kind this extension registered. Hand the
+        reservation to each :meth:`start`; release what is left. Refused with
+        ``JobStartRefused`` (the admission's sentence) when none is free.
+        """
+
+        from aelix_coding_agent.jobs.service import JobStartRefused
+
+        self._check()
+        if not self._mine(kind):
+            raise JobStartRefused(f"job kind {kind!r} is not one this extension registered")
+        return self._service.reserve(kind, wanted)
+
     async def start(
         self,
         kind: str,
@@ -59,15 +75,22 @@ class JobsFacade:
         title: str,
         params: Mapping[str, Any] | None = None,
         notify: bool | None = None,
+        reservation: Reservation | None = None,
     ) -> str:
-        """Start a job of ``kind`` for the current session; its id. See ``JobService.start``."""
+        """Start a job of ``kind`` for the current session; its id. See ``JobService.start``.
+
+        ``reservation`` is one :meth:`reserve` returned (#611 S1c): the job's
+        slot is taken out of it, so a consented start is never refused.
+        """
 
         from aelix_coding_agent.jobs.service import JobStartRefused
 
         self._check()
         if not self._mine(kind):
             raise JobStartRefused(f"job kind {kind!r} is not one this extension registered")
-        return await self._service.start(kind, title=title, params=params, notify=notify)
+        return await self._service.start(
+            kind, title=title, params=params, notify=notify, reservation=reservation
+        )
 
     def list(self) -> list[JobSnapshot]:
         self._check()
@@ -78,12 +101,25 @@ class JobsFacade:
         snap = self._service.snapshot(job_id)
         return snap if snap is not None and self._mine(snap.kind) else None
 
-    async def stop(self, job_id: str) -> JobSnapshot | None:
+    # The service's reading names, for a client that reads through the facade
+    # what a host reads off the service (#611 S1c).
+    snapshot = status
+    snapshots = list
+
+    async def changed(self) -> None:
+        """Wait for the next change to any job (``JobService.changed``)."""
+
+        self._check()
+        await self._service.changed()
+
+    async def stop(
+        self, job_id: str, *, reason: StopReason = "user", wait: float | None = None
+    ) -> JobSnapshot | None:
         self._check()
         snap = self._service.snapshot(job_id)
         if snap is None or not self._mine(snap.kind):
             return None
-        return await self._service.stop(job_id, reason="user")
+        return await self._service.stop(job_id, reason=reason, wait=wait)
 
 
 __all__ = ["JobsFacade"]

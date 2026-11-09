@@ -46,6 +46,23 @@ unwritten. Add them with the next release.
   `tests/cli/test_print_mode_background_611.py`, `tests/cli/test_notice_inbox_wiring_722.py`,
   `tests/tui/test_wake_611.py`, `tests/tui/test_restore_611.py`,
   `tests/tui/test_notice_never_touches_dialogs_611.py`.
+- **Background delegation, built and switched off (#723, #611 S1c, ADR-0295).** Delegation is
+  the job service's first client: `agent(action="spawn")` runs one task as a job of the session,
+  and `wait`, `status`, `stop` and `result` answer for the session's own agents — all **behind
+  `jobs/activation.py` `ACTIVE = False`**, so nothing of it is visible yet. With the gate off the
+  `agent` tool's schema and description are what they were, a `spawn` is refused exactly as
+  before, `/agents run` reserves nothing, and the live-children count and batch semaphore decide
+  as before (`tests/agents_ext/test_agent_background_611.py::test_with_the_gate_off_the_tool_is_what_it_was`).
+  With the gate off a `--mode json` run writes no `aelix_print_done` line, even when
+  `AELIX_JOBS_PROTOCOL=1` is inherited
+  (`tests/cli/test_print_done_protocol_611.py::test_with_the_gate_off_an_inherited_request_changes_nothing`),
+  and a delegated child no longer inherits that variable or `AELIX_JOB` from whatever launched
+  aelix (`tests/agents_ext/test_agent_background_611.py::test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not`);
+  a delegated run's envelope reads the line only when its parent asked for it
+  (`tests/agents_ext/test_latest_run_611.py`). #611 S3 turns it on. Tests:
+  `tests/agents_ext/test_agent_background_611.py`,
+  `tests/agents_ext/test_agent_background_ownership_611.py`,
+  `tests/agents_ext/test_child_recovery_611.py`, `tests/cli/test_print_done_protocol_611.py`.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

@@ -27,7 +27,7 @@ implementable at all.
 
 WHY THE FIELD MAP IS SNAKE_CASE (ADR-0198). ``--mode json`` emits raw kernel
 :class:`~aelix_agent_core.types.AgentEvent` dataclasses through
-``dataclasses.asdict`` (``modes/print_mode.py:102-111`` → ``rpc/rpc_mode.py``),
+``dataclasses.asdict`` (``modes/print_mode.py:109-118`` → ``rpc/rpc_mode.py``),
 so the wire names are the Python attribute names: ``stop_reason``,
 ``error_message``, ``tool_name``, ``total_tokens``. A line-for-line port of
 pi's camelCase parser reads ``None`` for every field, and every failure then
@@ -51,6 +51,7 @@ from typing import Any
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_coding_agent.builtin.guardrail import _WRITE_TOOLS
+from aelix_coding_agent.jobs.contract import PRINT_DONE_EVENT
 from aelix_coding_agent.subagent_contract import SubagentToolActivity, SubagentToolStatus
 
 # Per-line budget. A line longer than this is DISCARDED and counted, never
@@ -82,6 +83,10 @@ _MESSAGE_END = "message_end"
 _TOOL_EXECUTION_START = "tool_execution_start"
 _TOOL_EXECUTION_END = "tool_execution_end"
 _AGENT_END = "agent_end"
+#: The versioned end-of-run line a child writes only when its parent asked for
+#: it (``AELIX_JOBS_PROTOCOL=1``, #611 S1c, ADR-0295): its print run drained and
+#: is about to exit. A parent that did not ask never sees one.
+_AELIX_PRINT_DONE = PRINT_DONE_EVENT
 
 
 class LineAssembler:
@@ -303,6 +308,15 @@ class _StreamState:
     """``agent_end`` is the child's own terminator. Its absence in a stream
     that reached EOF is how a mid-flight death is distinguished from a clean
     finish that merely produced no text."""
+
+    print_done: bool = False
+    """The child wrote :data:`_AELIX_PRINT_DONE` (#611 S1c, ADR-0295) after its
+    LATEST run closed: its print run drained and it was about to exit. A later
+    ``agent_start`` takes it back, and a line of another shape is not it
+    (Codex #11). Only a child the parent asked through
+    ``AELIX_JOBS_PROTOCOL`` writes it, and only such a run's envelope reads it
+    (``envelope.build_result(print_done_required=True)``): a legacy run never
+    requires it, so its lingering success is what it was (ADR-0276 D4)."""
 
     run_open: bool = False
     """Is the child's LATEST run still open — ``agent_start`` seen, its
@@ -1123,7 +1137,7 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
 
     1. The FIRST line is the session-metadata header — a bare
        ``{"id": ..., "created_at": ...}`` object with **no** ``type`` key
-       (``modes/print_mode.py:355-367``). It is emitted best-effort inside its
+       (``modes/print_mode.py:362-374``). It is emitted best-effort inside its
        own ``try/except``, so neither its presence nor its absence may be
        relied on. Hence ``event.get("type")``, never ``event["type"]``.
     2. Anything in the child can ``print()`` straight into the same stdout —
@@ -1234,6 +1248,9 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         state.stop_reason = None
         state.final_error = None
         state.turn_reported = False
+        # So does the end-of-run line: an earlier run's never vouches for this
+        # one (Codex #11).
+        state.print_done = False
     elif kind == _TURN_START:
         # A new turn begins with nothing executing. Clearing here means a
         # statusline row can never be left showing a tool that finished during
@@ -1270,6 +1287,16 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         state.run_open = False
         state.current_tool = None
         _trim_recent(state)
+    elif kind == _AELIX_PRINT_DONE:
+        # STRICT (Codex #11): exactly the producer's line — ``{"type": ...}``
+        # and nothing else (``modes/print_mode.py``) — and only once the latest
+        # run has closed, which is when the producer writes it. A line of any
+        # other shape, or one inside a run, is not the marker, and it takes back
+        # one seen before it: a stream that breaks the protocol vouches for
+        # nothing.
+        state.print_done = (
+            set(event) == {"type"} and state.saw_agent_end and not state.run_open
+        )
     return state
 
 

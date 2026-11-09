@@ -179,19 +179,31 @@ class Admission:
         return max(0, kind_free)
 
     def reserve(
-        self, kind: str, default: int, slots: int = 1, *, settings_key: str | None = None
+        self,
+        kind: str,
+        default: int,
+        slots: int = 1,
+        *,
+        settings_key: str | None = None,
+        noun: tuple[str, str] | None = None,
     ) -> Reservation:
         """Exactly ``slots`` counted under ``kind``, or :class:`AdmissionRefused`."""
 
         if slots < 1:
             raise ValueError("a reservation takes at least one slot")
         if self.free(kind, default, settings_key=settings_key) < slots:
-            raise AdmissionRefused(self._refusal(kind, default, settings_key))
+            raise AdmissionRefused(self._refusal(kind, default, settings_key, noun))
         self._counts[kind] = self.count(kind) + slots
         return Reservation(self, kind, slots)
 
     def reserve_up_to(
-        self, kind: str, default: int, wanted: int, *, settings_key: str | None = None
+        self,
+        kind: str,
+        default: int,
+        wanted: int,
+        *,
+        settings_key: str | None = None,
+        noun: tuple[str, str] | None = None,
     ) -> Reservation:
         """``min(wanted, free)`` slots, at least one, or :class:`AdmissionRefused`.
 
@@ -202,7 +214,7 @@ class Admission:
 
         free = self.free(kind, default, settings_key=settings_key)
         if free < 1:
-            raise AdmissionRefused(self._refusal(kind, default, settings_key))
+            raise AdmissionRefused(self._refusal(kind, default, settings_key, noun))
         slots = max(1, min(int(wanted), free))
         self._counts[kind] = self.count(kind) + slots
         return Reservation(self, kind, slots)
@@ -213,18 +225,35 @@ class Admission:
         self._counts[kind] = self.count(kind) + slots
         return Reservation(self, kind, slots)
 
-    def _refusal(self, kind: str, default: int, settings_key: str | None = None) -> str:
+    def _refusal(
+        self,
+        kind: str,
+        default: int,
+        settings_key: str | None = None,
+        noun: tuple[str, str] | None = None,
+    ) -> str:
+        """Why nothing is free. ``noun`` is the kind's own ``(one, many)`` for what runs
+        (``KindCapabilities.noun``); without one it is "background jobs of this kind"."""
+
         key = kind if settings_key is None else settings_key
         running = self.count(kind)
         limit = self.limit_for(key, default)
         total = self.total_limit()
         if total is not None and self.total() >= total and running < limit:
+            # Counted across every kind, and a kind may count what runs in the
+            # foreground too (delegation counts every live agent): no kind's
+            # noun, and not "background jobs" (#611 S1c, verify-r2 N5).
             return (
-                f"{self.total()} background jobs already run; this limit is set in settings "
-                "backgroundJobs.maxTotal. Stop one or wait; do not retry."
+                f"{self.total()} run across every kind, and settings "
+                f"backgroundJobs.maxTotal allows {total}. Stop one or wait; do not retry."
             )
+        if noun is not None:
+            one, many = noun
+            what = f"{running} {one} already runs" if running == 1 else f"{running} {many} already run"
+        else:
+            what = f"{running} background jobs of this kind already run"
         return (
-            f"{running} background jobs of this kind already run; this limit is set in settings "
+            f"{what}; this limit is set in settings "
             f"backgroundJobs.limits.{key}. Stop one or wait; do not retry."
         )
 

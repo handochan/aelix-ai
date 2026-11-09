@@ -992,6 +992,7 @@ class ProcessTree:
         started: Callable[[int], float | None] | None = None,
         prior: StopReceipt | None = None,
         same: Callable[[int, float | None], bool | None] | None = None,
+        root_started: float | None = None,
     ) -> StopReceipt:
         """Collect the evidence first (:meth:`collect`), then kill. Synchronous; never raises.
 
@@ -1015,6 +1016,14 @@ class ProcessTree:
 
         ``stop_descendants`` is the normal-exit policy: the root is gone and only
         what is left in the tree is collected and stopped.
+
+        ``root_started`` is the root's start time as the caller recorded it while
+        the root lived (#611 S1c). With it and ``started``, a group — or the root
+        itself — whose leader's number now reads as a process that started at
+        ANOTHER time is not signalled: the number was reused, which the kernel
+        allows only once the old group is empty, so what leads it now is not
+        this tree's. That closes, for these callers, the residual ADR-0238
+        accepts. A walked pid's group is judged by its walked start time.
         """
 
         receipt = self.collect(
@@ -1024,7 +1033,7 @@ class ProcessTree:
             self._kill_win32(receipt)
         else:
             fresh = set(receipt.pids) - set(prior.pids if prior is not None else ())
-            self._kill_posix(receipt, fresh, same)
+            self._kill_posix(receipt, fresh, same, started=started, root_started=root_started)
         return receipt
 
     def _collect_win32(self, policy: str, prior: StopReceipt | None) -> StopReceipt:
@@ -1124,17 +1133,42 @@ class ProcessTree:
         receipt: StopReceipt,
         fresh: set[int],
         same: Callable[[int, float | None], bool | None] | None,
+        *,
+        started: Callable[[int], float | None] | None = None,
+        root_started: float | None = None,
     ) -> None:
         stamps = dict(receipt.started)
+
+        def moved(leader: int) -> bool:
+            """Whether ``leader``'s number now belongs to a process that started at another time.
+
+            A group a walked pid leads is judged by that pid's walked start time
+            whenever ``started`` is given, with or without ``root_started``; the
+            root itself, and the group it leads, only with ``root_started``.
+            ``jobs/evidence.py`` is the one caller of :meth:`stop_and_collect`,
+            and it passes both (#611 S1c).
+            """
+
+            stamp = root_started if leader == self.pid else stamps.get(leader)
+            if started is None or stamp is None:
+                return False
+            try:
+                now = started(leader)
+            except Exception:  # noqa: BLE001 — unreadable is no evidence of a reuse
+                return False
+            return now is not None and now != stamp
+
         for pid in receipt.pids:
             if pid not in fresh and (same is None or same(pid, stamps.get(pid)) is not True):
                 continue  # walked earlier and not proven the same process now
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
-        if receipt.policy == "stop" and not receipt.groups:
+        if receipt.policy == "stop" and not receipt.groups and not moved(self.pid):
             with contextlib.suppress(OSError):
                 os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
         for group in receipt.groups:
+            if moved(group):
+                continue  # its number leads another process now: not this tree's group
             with contextlib.suppress(OSError):
                 os.killpg(group, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
 

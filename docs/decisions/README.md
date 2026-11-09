@@ -36,6 +36,20 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0295 — A delegated agent can run in the background as a job of its session](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)
+  (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3). Delegation is the job service's
+  first client (ADR-0293): `agent(action="spawn")` runs ONE task as a job of the session and
+  returns once it launched; `wait` (30 s to 30 min, default 120 s, never stops it, the third
+  empty wait in a prompt refused), `status`, `stop` and `result` (the whole result again, paged)
+  answer for the session's own agents; its result comes back once, as a notice cut at 12 KiB with
+  the rest pointed at `agent(action="result")` and the child's session file by its id. Every live
+  delegated agent counts against `backgroundJobs.limits.agents`, reserved before the dialog; a
+  background run keeps only what the spawn read, its tree, kills and prompt directory are the
+  job's, its records carry `job_id` and are confirmed, its child is asked for a versioned
+  `aelix_print_done`, and a restart recovers it conservatively — `recovered`, never `done`, and
+  only once its processes are confirmed gone. Supersedes ADR-0197's background prohibition;
+  RPC/ACP refuse the actions until #612; POSIX helpers `unverified` until S2.
+
 - [0294 — A failure the strict relaxation answered is sent again by its adapter and shown as one line](0294-a-failure-the-strict-relaxation-answered-is-sent-again-and-shown-as-one-line.md)
   (Accepted 2026-11-06; #703). On Python 3.13 a corporate proxy's certificate that fails RFC
   5280 strict checking alone, which this machine trusts without it, used to reach the user as an

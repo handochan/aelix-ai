@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
@@ -73,7 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 )
 
 from aelix_agents.aggregate import render_batch_result, render_cancel_report
-from aelix_agents.batch import run_batch
+from aelix_agents.batch import MAX_CONCURRENCY, run_batch
 from aelix_agents.child_session import RESUME_PROFILE_CHANGED
 from aelix_agents.consent import (
     SpawnGrant,
@@ -100,8 +101,10 @@ from aelix_agents.runtime import (
     _SubagentRuntimeImpl,
 )
 from aelix_agents.tool import (
+    EMPTY_WAITS_REFUSED_AT,
     AgentCallError,
     PendingSpawn,
+    agent_tool_parameters,
     build_description,
     build_roster,
     call_literal,
@@ -119,6 +122,7 @@ if TYPE_CHECKING:
         BeforeAgentStartHookEvent,
         SessionShutdownHookEvent,
         ToolCallHookEvent,
+        ToolExecutionEndHookEvent,
     )
     from aelix_ai.tools import ToolExecutionContext
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
@@ -126,6 +130,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.subagent_contract import SubagentMode, SubagentProgress
 
     from aelix_agents.child_session import ResumeTarget
+    from aelix_agents.jobs_client import DelegationJobs
     from aelix_agents.tool import AgentCall
 
 logger = logging.getLogger(__name__)
@@ -377,6 +382,15 @@ class AgentsExtension:
     smuggled through ``event.args`` even though ``harness/core.py:5291-5293``
     permits mutation — that would put an unvalidated key in the transcript."""
 
+    background_host: Callable[[], bool] | None = None
+    """Can this host carry the background actions? (#611 S1c, ADR-0295.)
+
+    Wired in ``cli/entry.py`` to "not an RPC host": RPC and ACP refuse the
+    background actions until #612, so there the tool keeps the schema it had
+    before #611. ``None`` — the bare form the tests build — means yes. Read
+    only while background jobs are on (``jobs/activation.py``); while they are
+    off nothing here is asked."""
+
     _api: Any | None = field(default=None, init=False)
     _ctx: Any | None = field(default=None, init=False)
     _runtime: Any | None = field(default=None, init=False)
@@ -387,6 +401,19 @@ class AgentsExtension:
     runtime already owns it. The extension then registers NOTHING: a tool that
     cannot spawn is worse than no tool, because the model would keep calling
     it."""
+    _jobs_facade: Any | None = field(default=None, init=False)
+    """THIS build's ``ExtensionAPI.jobs`` when the ``agent`` kind is registered
+    (#611 S1c), else ``None`` — always ``None`` while background jobs are off.
+    Its being set is what offers the background actions and what puts every
+    delegation of the build under the job service's admission."""
+    _controls: dict[str, AgentCall] = field(default_factory=dict, init=False)
+    """``tool_call_id`` → an approved ``wait`` / ``status`` / ``stop`` /
+    ``result`` (#611 S1c). They need no grant, but they go through the hook
+    like every ``agent`` call, so ``execute()`` still finds nothing for a call
+    that skipped it."""
+    _delegation_jobs: DelegationJobs | None = field(default=None, init=False)
+    """This process's background agents (``jobs_client``), made on the first
+    build that registers the kind and kept across every build after it."""
 
     # ── setup ─────────────────────────────────────────────────────
 
@@ -428,13 +455,25 @@ class AgentsExtension:
         # fail a startup.
         with contextlib.suppress(Exception):
             sweep_stale_prompt_dirs()
+        # #611 S1c — the ``agent`` kind, registered with this build's job
+        # facade only while background jobs are on and the host can carry them.
+        # Off, nothing is asked and the tool is what it was before #611.
+        background = self._register_kind(aelix)
         self._tool = create_agent_tool(
-            description=build_description(""), execute=self._execute
+            description=build_description("", background=background),
+            execute=self._execute,
+            parameters=agent_tool_parameters(background=background),
         )
         aelix.register_tool(self._tool)
         aelix.on("tool_call", self._on_tool_call)
         aelix.on("before_agent_start", self._on_before_agent_start)
         aelix.on("session_shutdown", self._on_session_shutdown)
+        if background:
+            # #611 S1c (Codex #8): a call this hook approved and another
+            # extension's hook then blocked never reaches ``execute()``; its end
+            # gives its slots back. Only while the kind is registered — off, no
+            # call holds a slot and the extension registers what it did.
+            aelix.on("tool_execution_end", self._on_tool_execution_end)
 
         # The cleanup CLOSES OVER this build's api and runtime rather than
         # reading ``self`` later. One instance is threaded through every harness
@@ -449,6 +488,86 @@ class AgentsExtension:
             return self._release(aelix, own_runtime)
 
         aelix.add_cleanup(_cleanup)
+
+    def _register_kind(self, aelix: ExtensionAPI) -> bool:
+        """Register the ``agent`` job kind for this build; whether it is registered (#611 S1c).
+
+        Only while background jobs are on (``jobs/activation.py``) and the host
+        is not RPC/ACP (:attr:`background_host`, #612). The adapter and the
+        runner factory are this client's (``jobs_client``); a registration
+        made through ``aelix.jobs`` lives as long as this build's runtime, and
+        every build registers it again — a new generation (ADR-0293 §2).
+
+        Registered, it also puts this build's delegations under the service's
+        admission (ADR-0199 (d) as amended): the runtime's ``reserve`` is the
+        facade's, so ``/agents run`` takes its slot there too.
+        """
+
+        self._jobs_facade = None
+        from aelix_coding_agent.jobs.activation import is_active
+
+        if not is_active():
+            return False
+        if self.background_host is not None:
+            try:
+                if not self.background_host():
+                    return False
+            except Exception:  # noqa: BLE001 — an unanswerable host carries nothing new
+                return False
+        from aelix_agents.jobs_client import (
+            KIND,
+            DelegationJobs,
+            DelegationKindAdapter,
+            DelegationRunner,
+        )
+
+        if self._delegation_jobs is None:
+            self._delegation_jobs = DelegationJobs()
+        jobs = self._delegation_jobs
+        try:
+            facade = aelix.jobs
+            facade.register_kind(
+                DelegationKindAdapter(jobs, session=self._host_session),
+                lambda params: DelegationRunner(params["launch"], jobs),
+            )
+        except Exception:  # noqa: BLE001 — no background delegation, never no delegation
+            logger.warning("the agent job kind could not be registered", exc_info=True)
+            return False
+        self._jobs_facade = facade
+        runtime = self._runtime
+        if runtime is not None:
+
+            def reserve(wanted: int) -> Any:
+                try:
+                    return facade.reserve(KIND, wanted)
+                except Exception as exc:
+                    raise RuntimeError(f"Delegation refused: {exc}") from exc
+
+            runtime.host = dataclasses.replace(runtime.host, reserve=reserve)
+        return True
+
+    def _reserve(self, wanted: int) -> tuple[Any, str | None]:
+        """The call's slots before its dialog, or the refusal (#611 S1c). ``(None, None)`` while jobs are off."""
+
+        facade = self._jobs_facade
+        if facade is None:
+            return None, None
+        from aelix_agents.jobs_client import KIND
+
+        try:
+            return facade.reserve(KIND, max(1, wanted)), None
+        except Exception as exc:  # noqa: BLE001 — the refusal is the call's result
+            return None, f"Delegation refused: {exc}"
+
+    def _drop_pending(self) -> None:
+        """Forget every approved call ``execute()`` never ran, and give back its slots."""
+
+        for pending in self._pending.values():
+            if pending.reservation is not None:
+                with contextlib.suppress(Exception):
+                    pending.reservation.release()
+        self._pending.clear()
+        self._controls.clear()
 
     @property
     def runtime(self) -> Any | None:
@@ -898,7 +1017,13 @@ class AgentsExtension:
         """
 
         self._ctx = ctx
-        self._pending.clear()
+        self._drop_pending()
+        notice_turn = getattr(event, "source", "interactive") == "notice"
+        if self._delegation_jobs is not None and not notice_turn:
+            # D1's count is per prompt: a new one starts with no empty wait. A
+            # notice turn is not a prompt (below), so it keeps the count of the
+            # prompt that caused it (Codex #10).
+            self._delegation_jobs.empty_waits = 0
         bridge = self._progress
         if bridge is not None:
             # THE NEXT PROMPT TAKES DOWN WHAT AN ESC LEFT (ADR-0278 D7): a
@@ -907,7 +1032,11 @@ class AgentsExtension:
             with contextlib.suppress(Exception):
                 bridge.dismiss()
         runtime = self._runtime
-        if runtime is not None:
+        # A NOTICE TURN IS NOT A PROMPT (#611 S1c, ADR-0295): the turn a
+        # background job's result starts (``source="notice"``) keeps the budget
+        # of the user's prompt that caused it. Reset there, an agent's result
+        # could buy the next twelve delegations, and their results the next.
+        if runtime is not None and not notice_turn:
             # ``suppress`` because the seam is structural: a P4 host that swapped
             # in its own runtime need not implement a budget, and a missing
             # method must not cost the parent its prompt.
@@ -916,7 +1045,9 @@ class AgentsExtension:
         api, tool = self._api, self._tool
         if api is None or tool is None:
             return
-        description = build_description(self._roster())
+        description = build_description(
+            self._roster(), background=self._jobs_facade is not None
+        )
         if description == tool.description:
             return
         self._tool = with_description(tool, description)
@@ -958,10 +1089,18 @@ class AgentsExtension:
         if subagent_depth() >= MAX_SUBAGENT_DEPTH:
             return ToolCallResult(block=True, reason=_DEPTH_REFUSAL)
 
+        background = self._jobs_facade is not None
         try:
-            call = parse_agent_call(event.args)
+            call = parse_agent_call(event.args, background=background)
         except AgentCallError as exc:
             return ToolCallResult(block=True, reason=str(exc))
+
+        if call.action in ("wait", "status", "stop", "result"):
+            # #611 S1c — about an agent already spawned: nothing starts, so no
+            # dialog and no budget. Filed like a grant so ``execute()`` runs
+            # only what this hook saw.
+            self._controls[event.tool_call_id] = call
+            return None
 
         if call.action == "resume":
             # #610: a resume is checked and consented on its own path — its
@@ -991,7 +1130,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1432-1440``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1514-1524``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1016,14 +1155,37 @@ class AgentsExtension:
                 block=True, reason=_over_budget(len(call.tasks), remaining)
             )
 
+        # THE SLOTS BEFORE THE DIALOG (#611 S1c, ADR-0199 (d) as amended): while
+        # background jobs are on, every live delegation — foreground or
+        # background — counts against ``backgroundJobs.limits.agents``, and a
+        # call takes ``F = min(MAX_CONCURRENCY, tasks, free)`` now, so nothing
+        # it was consented for is refused afterwards (Codex r1 #17). None free
+        # refuses here, with no dialog. Off, ``_reserve`` answers nothing.
+        # A ``spawn`` and a ``chain`` run one child at a time: one slot (verify N2).
+        wanted = (
+            1
+            if call.action == "spawn" or call.mode == "chain"
+            else min(MAX_CONCURRENCY, len(call.tasks))
+        )
+        reservation, refusal = self._reserve(wanted)
+        if refusal is not None:
+            return ToolCallResult(block=True, reason=refusal)
+
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:360-362``), so the single and batch doors are
+        # always non-empty (``tool.py:473-475``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
-        grant = await self._grant_for(
-            ctx, resolved, call.tasks, cwd=child_cwd, mode=call.mode
-        )
+        try:
+            grant = await self._grant_for(
+                ctx, resolved, call.tasks, cwd=child_cwd, mode=call.mode
+            )
+        except BaseException:
+            if reservation is not None:
+                reservation.release()
+            raise
         if not grant.consented:
+            if reservation is not None:
+                reservation.release()
             # ``reason`` is set by exactly ONE branch — a batch whose dialog would
             # not fit the terminal (``consent.py:224-228``, ``:281-290``) — where no
             # human was asked at all and the model CAN act on the refusal by
@@ -1035,7 +1197,11 @@ class AgentsExtension:
         # THE WHOLE CALL IS FROZEN HERE, and ``_execute`` reads nothing else.
         # ``event.args`` stays the mutable dict the tool will receive.
         self._pending[event.tool_call_id] = PendingSpawn(
-            grant=grant, resolved=resolved, call=call, cwd=child_cwd
+            grant=grant,
+            resolved=resolved,
+            call=call,
+            cwd=child_cwd,
+            reservation=reservation,
         )
         return None
 
@@ -1099,15 +1265,26 @@ class AgentsExtension:
         remaining = runtime.remaining_delegation_budget()
         if remaining < 1:
             return ToolCallResult(block=True, reason=_over_budget(1, remaining))
-        grant = await self._grant_for(
-            ctx,
-            resolved,
-            call.tasks,
-            cwd=target.limits.cwd,
-            mode="single",
-            resume=target,
-        )
+        # The slot before the dialog, as a ``run`` takes it (#611 S1c).
+        reservation, refusal = self._reserve(1)
+        if refusal is not None:
+            return ToolCallResult(block=True, reason=refusal)
+        try:
+            grant = await self._grant_for(
+                ctx,
+                resolved,
+                call.tasks,
+                cwd=target.limits.cwd,
+                mode="single",
+                resume=target,
+            )
+        except BaseException:
+            if reservation is not None:
+                reservation.release()
+            raise
         if not grant.consented:
+            if reservation is not None:
+                reservation.release()
             return ToolCallResult(block=True, reason=grant.reason or _DECLINED)
         self._pending[event.tool_call_id] = PendingSpawn(
             grant=grant,
@@ -1115,6 +1292,7 @@ class AgentsExtension:
             call=call,
             cwd=target.limits.cwd,
             resume=target,
+            reservation=reservation,
         )
         return None
 
@@ -1278,7 +1456,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1296-1305``).
+        seam is released on teardown, ``extension.py:1495-1504``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1291,6 +1469,27 @@ class AgentsExtension:
             return child_model_id(resolved.profile, self._host_model(), self._host_model_registry())
         except Exception:  # noqa: BLE001 — a missing row never blocks consent
             return None
+
+    async def _on_tool_execution_end(
+        self, event: ToolExecutionEndHookEvent, ctx: ExtensionContext
+    ) -> None:
+        """An ``agent`` call that ended without ``execute()`` gives back its slots (Codex #8).
+
+        A later extension's ``tool_call`` hook may block a call this one
+        approved: the kernel ends it at once (``loop.py``'s immediate path) and
+        ``execute()`` never pops its approval. Its end is the first moment it
+        is known to be over. A call that did run popped its approval in
+        :meth:`_execute`, so nothing is left here for it and nothing is given
+        back twice; ``Reservation.release`` is idempotent besides.
+        """
+
+        if event.tool_name != AGENT_TOOL_NAME:
+            return
+        self._controls.pop(event.tool_call_id, None)
+        pending = self._pending.pop(event.tool_call_id, None)
+        if pending is not None and pending.reservation is not None:
+            with contextlib.suppress(Exception):
+                pending.reservation.release()
 
     async def _on_session_shutdown(
         self, event: SessionShutdownHookEvent, ctx: ExtensionContext
@@ -1335,7 +1534,7 @@ class AgentsExtension:
         already gone and draws nothing on the next session's screen.
         """
 
-        self._pending.clear()
+        self._drop_pending()
         target = runtime if runtime is not None else self._runtime
         if target is not None:
             with contextlib.suppress(Exception):
@@ -1425,7 +1624,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:403-420``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:523-540``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1444,9 +1643,29 @@ class AgentsExtension:
         ``resume_refusal`` still passes.
         """
 
+        control = self._controls.pop(ctx.tool_call_id, None)
+        if control is not None:
+            return await self._control(control)
         pending = self._pending.pop(ctx.tool_call_id, None)
         if pending is None or not pending.grant.consented:
+            if pending is not None and pending.reservation is not None:
+                pending.reservation.release()
             return _error(_NOT_APPROVED)
+        try:
+            return await self._execute_pending(pending, ctx)
+        finally:
+            # The call's slots (#611 S1c): a ``run``'s or ``resume``'s were held
+            # while its children lived; a ``spawn``'s one went to the job, and
+            # what is left of it — nothing, or all of it after a refusal — goes
+            # back now. Idempotent.
+            if pending.reservation is not None:
+                pending.reservation.release()
+
+    async def _execute_pending(
+        self, pending: PendingSpawn, ctx: ToolExecutionContext
+    ) -> ToolResult:
+        """:meth:`_execute` once the approval was found (split out for the slots' ``finally``)."""
+
         if subagent_depth() >= MAX_SUBAGENT_DEPTH:
             # Third and last layer of the depth guard (§(d)): build-time
             # suppression, the seam's own refusal, and this. Returns, never
@@ -1485,6 +1704,11 @@ class AgentsExtension:
             still_the_same = False
         if not still_the_same:
             return _error(_IDENTITY_MISMATCH)
+        if pending.call.action == "spawn":
+            # #611 S1c — a job of this session, not a child of this call: no
+            # panel group, no envelopes for an Esc, and the tool returns once
+            # the child has launched.
+            return await self._spawn(pending, ctx)
         # ``recheck`` IS DISCARDED, AND THAT IS THE POINT. What runs below is
         # ``pending.resolved`` — the object the grant was taken against and whose
         # ``source_path`` this check has just proved is still what the name
@@ -1497,7 +1721,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1441``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1525``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1519,7 +1743,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1930-1934``) with no ``await`` between them, so THIS
+            # (``runtime.py:2031-2035``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a
@@ -1605,6 +1829,7 @@ class AgentsExtension:
                         index=0,
                         envelopes=envelopes,
                     ),
+                    reservation=pending.reservation,
                 )
                 return render_subagent_result(result)
             if pending.call.mode == "single":
@@ -1626,6 +1851,7 @@ class AgentsExtension:
                         index=0,
                         envelopes=envelopes,
                     ),
+                    reservation=pending.reservation,
                 )
                 return render_subagent_result(result)
 
@@ -1660,6 +1886,7 @@ class AgentsExtension:
                 record=SpawnRecordMeta(
                     tool_call_id=key, mode=pending.call.mode, envelopes=envelopes
                 ),
+                reservation=pending.reservation,
             )
             return render_batch_result(
                 pending.resolved.name,
@@ -1704,6 +1931,176 @@ class AgentsExtension:
             # is.
             if pending.grant.disclosure:
                 self._publish_disclosure(key, None)
+
+    # ── the background actions (#611 S1c, ADR-0295) ───────────────
+
+    async def _spawn(self, pending: PendingSpawn, ctx: ToolExecutionContext) -> ToolResult:
+        """``agent(action="spawn")``: one agent as a job of this session.
+
+        Everything the run will read is read HERE, once (``jobs_client._Launch``):
+        the runner keeps nothing that reaches this extension's API, which a
+        ``/reload`` invalidates while the child may still be finishing. The
+        per-prompt budget is charged here once the service admitted the job —
+        a start it refused costs nothing (verify N3) — and the job's own run
+        does not charge it; the job takes its slot out of the call's
+        reservation. The call
+        returns once the child has LAUNCHED, so a launch failure is this call's
+        error and no notice follows it (ADR-0293 §3).
+
+        THE DISCLOSURE ROW (#196) lives as the call does: written before any
+        child exists, taken down when this returns. From then on the footer's
+        jobs segment and ``/jobs`` show the agent running, with its posture in
+        this call's result.
+        """
+
+        from aelix_coding_agent.jobs.service import JobLaunchFailed, JobStartRefused
+
+        from aelix_agents.jobs_client import (
+            KIND,
+            _Launch,
+            frozen_channel,
+            frozen_host,
+        )
+
+        facade, runtime = self._jobs_facade, self._runtime
+        if facade is None or runtime is None:
+            return _error(_UNAVAILABLE)
+        model_registry = self._host_model_registry()
+        model = self._host_model()
+        launch = _Launch(
+            grant=pending.grant,
+            resolved=pending.resolved,
+            task=pending.call.task,
+            cwd=pending.cwd,
+            tool_call_id=ctx.tool_call_id,
+            host=frozen_host(
+                cwd=self._host_cwd(),
+                posture=self._host_posture(),
+                active_tools=self._host_active_tools(),
+                exclude_tools=self._host_exclude_tools(),
+                context_files=self._host_context_files(),
+                model_registry=model_registry,
+                model=model,
+                thinking=self._host_thinking(),
+                session=self._host_session(),
+            ),
+            channel=frozen_channel(runtime.channel, model_registry=model_registry, model=model),
+        )
+        # The per-prompt ceiling (ADR-0199 §3.5.2.1). The hook found room for
+        # one, but every hook of an assistant message runs before any execute,
+        # so two spawns in one message both found it: the belt is here, as
+        # ``_run``'s is for a run. The job's own run is not charged again.
+        remaining = runtime.remaining_delegation_budget()
+        if remaining < 1:
+            return _error(_over_budget(1, remaining))
+        key = ctx.tool_call_id
+        if pending.grant.disclosure:
+            self._publish_disclosure(key, pending.grant.disclosure)
+        title = f"{pending.resolved.name}: {_one_line(pending.call.task, 60)}"
+        try:
+            job_id = await facade.start(
+                KIND,
+                title=title,
+                params={"launch": launch},
+                reservation=pending.reservation,
+            )
+        except JobLaunchFailed as exc:
+            # Admitted, and a launch was tried: charged, as ``_run`` charges a
+            # child that died at once — never refunded, so a task that reliably
+            # fails cannot loop on it (ADR-0199 §3.5.2.1). A refusal is not
+            # (verify N3).
+            runtime._delegations_this_prompt += 1
+            return _error(f"The background agent did not start: {exc}")
+        except JobStartRefused as exc:
+            return _error(f"Delegation refused: {exc}")
+        finally:
+            if pending.grant.disclosure:
+                self._publish_disclosure(key, None)
+        runtime._delegations_this_prompt += 1
+        jobs = self._delegation_jobs
+        entry = jobs.info.get(job_id) if jobs is not None else None
+        agent_id = entry.agent_id if entry is not None and entry.agent_id else job_id
+        return ToolResult(
+            content=[
+                TextContent(
+                    text=(
+                        f"Started agent {call_literal(pending.resolved.name)} in the "
+                        f"background at {pending.grant.mode.value} (id {agent_id}; its "
+                        f"job is {job_id}). Do not wait, sleep or poll for it: its "
+                        "result comes back to you once, as a system notice, when it "
+                        'finishes. Go on with other work. agent(action="status", '
+                        f'id="{agent_id}") shows how it is doing.'
+                    )
+                )
+            ]
+        )
+
+    async def _control(self, call: AgentCall) -> ToolResult:
+        """``wait`` / ``status`` / ``stop`` / ``result``, for this session's background agents."""
+
+        from aelix_agents.jobs_client import (
+            result_text,
+            session_agents,
+            status_text,
+            stop_text,
+            wait_for_agents,
+        )
+
+        facade, jobs = self._jobs_facade, self._delegation_jobs
+        if facade is None or jobs is None:
+            return _error(_UNAVAILABLE)
+        session = self._host_session()
+        job_id: str | None = None
+        if call.id is not None:
+            job_id = await jobs.resolve(facade, call.id, session=session)
+            if job_id is None:
+                return _error(
+                    f"No background agent with id {call_literal(call.id)} in this "
+                    "session. agent(action=\"status\") lists them."
+                )
+        if call.action == "status":
+            ids = [job_id] if job_id is not None else session_agents(facade)
+            return ToolResult(content=[TextContent(text=status_text(facade, jobs, ids))])
+        if call.action == "wait":
+            if jobs.empty_waits >= EMPTY_WAITS_REFUSED_AT - 1:
+                return _error(
+                    "Wait refused: two waits in a row ended with nothing finished. "
+                    "Each agent's result comes back as a notice when it finishes — "
+                    "go on with other work, or end your turn; you do not need to "
+                    "wait for it."
+                )
+            if job_id is not None:
+                ids = [job_id]
+            else:
+                ids = [
+                    j
+                    for j in session_agents(facade)
+                    if (snap := facade.snapshot(j)) is not None
+                    and snap.state in ("starting", "running", "stopping")
+                ]
+                if not ids:
+                    return ToolResult(
+                        content=[TextContent(text="No background agent is running.")]
+                    )
+            text, empty = await wait_for_agents(facade, jobs, ids, requested=call.timeout)
+            jobs.empty_waits = jobs.empty_waits + 1 if empty else 0
+            return ToolResult(content=[TextContent(text=text)])
+        assert job_id is not None  # the parser requires one for stop and result
+        if call.action == "stop":
+            before = facade.snapshot(job_id)
+            snap = await facade.stop(job_id, reason="model")
+            if snap is None:
+                return _error(f"No background agent with id {call_literal(call.id)} in this session.")
+            return ToolResult(content=[TextContent(text=stop_text(before, snap, jobs))])
+        text, failed = await result_text(
+            facade, jobs, job_id, offset=call.offset or 0, session=session
+        )
+        return ToolResult(content=[TextContent(text=text)], is_error=failed)
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 def _error(message: str) -> ToolResult:

@@ -1919,3 +1919,33 @@ same in each):
   dialog's deny-on-error answers it as a silent decline; that child's
   `aelix_subagent` events are dropped by `EventBus.emit` for the same reason.
   Nothing crashes, and the RPC decline spends nothing.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+- **The agent id.** A background agent's id is its child session id — the id `resume` takes — or
+  its spawn key when its parent has no session file; `wait`/`status`/`stop`/`result` also take the
+  job id its notice shows, after a restart too, through the service's snapshot of the current
+  session (`tests/agents_ext/test_agent_background_611.py::test_agent_id_session_or_key`,
+  `tests/agents_ext/test_child_recovery_611.py::test_a_notices_job_id_resolves_after_a_restart`).
+- **`agent(action="result")`** re-reads a finished background agent's whole result, paged.
+- **Conservative recovery.** After a restart, a background run's answer is read from its child's
+  file — the file derived and checked exactly as this ADR's resume reader does — only when that run
+  is the LATEST run of the file: no later start for the same child session anywhere in the
+  parent's records, a resume on another branch included (limit 2's case). Without the parent's own
+  settle it is `recovered`, never `done`, on every surface and after a second restart, and only
+  once its recorded processes are confirmed gone
+  (`tests/agents_ext/test_child_recovery_611.py::test_a_restart_records_recovered_not_done_and_result_reads_it`,
+  `::test_a_live_recorded_root_is_never_recovered_and_keeps_its_slot`). The file is checked and
+  read through one open descriptor — §F3/F4's checks of THAT file — so a name swapped for a hard
+  link to another file is refused or never read
+  (`::test_result_reads_the_file_it_checked_never_one_swapped_in`).
+- **Branch-scoped hints.** The resume hint a background agent's notice carries is decided when the
+  notice is placed, against the branch then current: offered only where that branch passes
+  `find_resume_target`'s own record steps 2–5 (`child_session.resume_lineage_refusal`) — the first
+  run's start on it, a lineage that chains to it — so a branch that holds only the settle gets no
+  resume call
+  (`tests/agents_ext/test_agent_background_611.py::test_resume_hint_checked_against_current_branch`,
+  `::test_a_branch_holding_only_the_settle_gets_no_resume_hint`).
+- A background `resume` is not built (design D16).
+Inert until #611 S3.
+

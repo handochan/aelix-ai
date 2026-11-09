@@ -111,7 +111,7 @@ def test_roll_up_sums_the_counters_and_maxes_tokens() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:98-99``), not a running total. Summing three
     children's context levels reports a number three times the real one — the
-    mistake ``stream.py:284-287`` already warns about.
+    mistake ``stream.py:289-292`` already warns about.
     """
 
     results = [
@@ -292,7 +292,7 @@ def test_a_failed_member_carries_its_error_on_its_own_line() -> None:
 
 
 def test_an_error_already_inside_the_summary_is_not_repeated() -> None:
-    """Mirrors ``render_subagent_result`` (``tool.py:1408-1410``): the fallback
+    """Mirrors ``render_subagent_result`` (``tool.py:1717-1719``): the fallback
     chain often puts ``error_message`` INTO ``summary``, and printing it twice
     reads as two distinct failures."""
 
@@ -312,7 +312,7 @@ def test_an_empty_summary_falls_back_to_the_no_output_sentinel() -> None:
 
 def test_dropped_tools_and_dropped_lines_reach_the_member_block() -> None:
     """A batch member must never say less about itself than the same child would
-    say on the single-mode path (``tool.py:1360-1369``)."""
+    say on the single-mode path (``tool.py:1669-1678``)."""
 
     member = MemberOutcome.ran(
         _result(1, dropped_tools=("bash", "edit"), dropped_lines=3)
@@ -348,7 +348,7 @@ def test_a_did_not_start_members_usage_line_does_not_say_error() -> None:
     """The heading and the line beneath it must not disagree.
 
     Every refusal envelope carries ``status="error"`` — ``_refusal_envelope``
-    (``batch.py:622-637``) and ``runtime._error_result`` both mint one that way —
+    (``batch.py:642-657``) and ``runtime._error_result`` both mint one that way —
     so a verbatim ``result.status`` prints ``[agent scout · error · 0.0s]``
     directly under ``[2/2 did not start] …``. That tells the reader in two
     consecutive lines that this member did and did not run, and "error" is the
@@ -380,7 +380,7 @@ def test_both_renderers_emit_the_same_note_set_for_the_same_envelope() -> None:
     """A batch member must never say less about itself than the single path.
 
     ``_member_block`` mirrors ``render_subagent_result``'s notes by hand
-    (``tool.py:1407-1417``), so a fourth note added to one and not the other is
+    (``tool.py:1716-1726``), so a fourth note added to one and not the other is
     silent — the batch model would simply never hear about, say, ``truncated``.
     Compares the note lines themselves rather than counting them, so a note that
     is present in both but WORDED differently is caught too.
@@ -473,7 +473,7 @@ def test_the_not_run_line_does_not_blame_a_failure_that_never_happened() -> None
 
     The reachable one: step 2's task renders past ``MAX_TASK_BYTES`` once
     ``{previous}`` is substituted, so ``_run_chain`` appends a ``never_started``
-    member and breaks (``batch.py:354-361``) — no child, no failure. With the
+    member and breaks (``batch.py:373-380``) — no child, no failure. With the
     reason hard-coded, the same result then says ``0 failed`` in its header,
     ``did not start`` in step 2's heading, and "the chain stopped at the first
     failure" in its last line. Three sentences about one batch, two of which
@@ -623,7 +623,7 @@ def test_empty_details_are_omitted_and_keep_the_positions_of_the_others() -> Non
 
 def test_details_is_none_when_every_member_had_none() -> None:
     """What ``render_subagent_result`` passes when a single child had nothing
-    (``tool.py:1427``)."""
+    (``tool.py:1736``)."""
 
     result = render_batch_result(
         "scout", "parallel", [_ran(1), _ran(2)], not_run=0, wall_ms=1
