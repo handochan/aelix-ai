@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from aelix_ai.utils._process_tree import Confirmed, ProcessTree, Unconfirmed
 
 
@@ -208,7 +209,7 @@ async def test_a_registration_after_the_stop_latch_collects_before_it_kills() ->
     assert isinstance(verdict, Unconfirmed), "the helper's handle never signalled"
 
 
-async def test_a_soft_stop_collects_before_ctrl_break() -> None:
+async def test_a_soft_stop_collects_before_ctrl_break(monkeypatch: pytest.MonkeyPatch) -> None:
     """The soft leg of a service stop.
 
     Fails on ``a80e81fa``: ``CTRL_BREAK`` went first; the root exited, the
@@ -218,6 +219,10 @@ async def test_a_soft_stop_collects_before_ctrl_break() -> None:
 
     from aelix_coding_agent.jobs import evidence
 
+    # The root is the job's own process, so its number reads the start time the
+    # record holds. Read from the host instead, a real pid 10 (a kernel thread on
+    # Linux CI) is a reused number and the soft leg skips it (#611 S1c's guard).
+    monkeypatch.setattr(evidence, "process_started", lambda pid: 1.0 if pid == 10 else None)
     api = _JobKillsRoot(helper_dies=False)
 
     class Root:
