@@ -101,6 +101,27 @@ steer/follow-up echo in `shell.py`, and the replayed-transcript echo in
   `1h 03m`, the sub-second shape `/stats`'s latency uses); `/stats`'s two shapes moved there unchanged. Commands, extension
   turns (#674), `-p`, json and rpc leave no line. No `/settings` row turns it
   off: one dim row per typed turn, and none was asked for.
+- *2026-11-09 note (#732):* the line sits one blank row under what is above it,
+  in all three outcomes. Flush under the answer's last line it read as one more
+  line of the answer. The owner asked for the gap and took the recommendation to
+  draw it in all three outcomes ("정할 것하나는 권고대로 해주세요"): the line
+  closes the turn, it does not annotate the error. `turn_end_line` returns
+  `chrome.BlankRowAbove(line)`, and the chrome, which makes every scrollback
+  write, draws the row only when the last write does not already end on a row
+  that looks blank (`_ends_on_blank_row` renders that write again, once per
+  turn). The user's echo ends on one, so a turn that committed nothing after it
+  would otherwise have drawn two (the first cut always drew the row), and so
+  does a command's output that ends in a newline; there the turn adds the dim
+  line alone. On a console that paints colour a space with a background or
+  reversed is not blank: an answer that ends in a code block ends on the block's
+  padding row, spaces on its colour, and still gets its row (review round 2).
+  Measured live (deepseek-v4.1-flash-1017 via OpenRouter, a 100×45 pty, the
+  cells' background read from the emulator) under a plain answer, an answer
+  after a `bash` call, Esc's `✖ Operation aborted` line and an answer that is
+  one fenced code block: one empty, unpainted row each, where `6caaae09` drew
+  none. The empty answer and the newline-ended output are pinned by
+  `tests/tui/test_turn_done_line_702.py` only, and a failure's time by its
+  wrapper test only (the row does not depend on the outcome).
 - The `↑ N tokens` clause is **OMITTED / deferred.** The streaming event path
   carries text *deltas* (strings), not an incremental output-token / usage
   signal — usage only arrives at `message_end`. There is no cheap real source

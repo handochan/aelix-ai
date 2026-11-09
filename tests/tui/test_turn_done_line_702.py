@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -18,14 +19,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from aelix_ai.messages import AssistantMessage
-from aelix_coding_agent.tui.chrome import AelixChrome
+from aelix_ai.messages import AssistantMessage, TextContent
+from aelix_coding_agent.tui.chrome import AelixChrome, BlankRowAbove, SoftWrapped
 from aelix_coding_agent.tui.durations import call_duration, turn_duration, wall_duration
 from aelix_coding_agent.tui.render import EventRenderer
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input.base import PipeInput
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from rich.console import Console, Group
+from rich.text import Text
 
 from tests.tui.test_run_tui_smoke import FakeHarness, FakeRuntime, _quit_within, _spy_commits, _wait
 
@@ -83,8 +86,157 @@ def _epoch(hour: int, minute: int) -> float:
 def test_turn_end_line(outcome: str, text: str) -> None:
     from aelix_coding_agent.tui.shell import turn_end_line
 
-    line = turn_end_line(outcome, 4.2, _epoch(14, 5))
-    assert line.plain == text and str(line.style) == "dim"
+    # #732 — under a blank row: flush under the answer it read as one more line
+    # of it. All three outcomes, the failure's under its ``✖`` too.
+    wrapped = turn_end_line(outcome, 4.2, _epoch(14, 5))
+    assert isinstance(wrapped, BlankRowAbove)
+    line = wrapped.renderable
+    assert isinstance(line, Text) and line.plain == text and str(line.style) == "dim"
+
+
+# --- #732: one blank row above it, whatever the scrollback ends on -----------------
+
+_LINE = "✓ done · 4.2s · 14:05"
+
+
+def _plain_console(buf: io.StringIO) -> Console:
+    return Console(file=buf, width=60, color_system=None, legacy_windows=False)
+
+
+def _rows(buf: io.StringIO) -> list[str]:
+    return re.sub(r"\x1b\[\?2026[hl]", "", buf.getvalue()).split("\n")
+
+
+def _one_blank_row_above(rows: list[str], line: str) -> None:
+    """The row right above *line* is empty and the one above that is not: one row.
+
+    ``!= ""``, not ``.strip()``: the echo's bar pads its rows with spaces (a
+    coloured bar on a terminal), its blank rows are empty."""
+
+    i = next(k for k, row in enumerate(rows) if re.fullmatch(line, row))
+    assert i >= 2 and rows[i - 1] == "" and rows[i - 2] != "", rows[max(0, i - 6) : i + 1]
+
+
+def _colour_console(buf: io.StringIO) -> Console:
+    # Pinned, not detected: a CI runner's console is not a terminal.
+    return Console(
+        file=buf, width=60, force_terminal=True, color_system="truecolor", legacy_windows=False
+    )
+
+
+@asynccontextmanager
+async def _scrollback(*, colour: bool = False) -> AsyncGenerator[tuple[AelixChrome, io.StringIO]]:
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        buf = io.StringIO()
+        chrome = AelixChrome(console=(_colour_console if colour else _plain_console)(buf))
+        task = asyncio.create_task(chrome.run())
+        try:
+            await _wait(lambda: chrome.app.is_running)
+            yield chrome, buf
+        finally:
+            chrome.exit()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(task, timeout=3)
+
+
+def _above(kind: str) -> object:
+    from aelix_coding_agent.tui.render import render_user_message
+
+    return {
+        "an answer": Text("The answer, last line."),
+        "a tool card": Group(Text("● bash(echo hi)"), Text("│ hi")),
+        # Ends on a blank row: an empty answer leaves nothing between the two.
+        "the user's echo": render_user_message("hello"),
+        # Ends on a blank row too: a command's string with a trailing newline.
+        "a command's output": Text("a command's output\n"),
+    }[kind]
+
+
+@pytest.mark.parametrize(
+    "kind", ["an answer", "a tool card", "the user's echo", "a command's output"]
+)
+@pytest.mark.parametrize("same_batch", [True, False])
+async def test_one_blank_row_above_the_line_whatever_the_scrollback_ends_on(
+    kind: str, same_batch: bool
+) -> None:
+    """#732 — the row is drawn only when the last row printed is not blank: under
+    the echo or a newline-ended output it would have been the second. In the same
+    ``print_above_many`` batch, and in a later write (the state carries over)."""
+
+    from aelix_coding_agent.tui.shell import turn_end_line
+
+    line = turn_end_line("done", 4.2, _epoch(14, 5))
+    async with _scrollback() as (chrome, buf):
+        if same_batch:
+            await asyncio.wait_for(chrome.print_above_many([_above(kind), line]), timeout=5)
+        else:
+            await asyncio.wait_for(chrome.print_above_many([_above(kind)]), timeout=5)
+            await asyncio.wait_for(chrome.print_above(line), timeout=5)
+    _one_blank_row_above(_rows(buf), re.escape(_LINE))
+
+
+def test_a_renderable_that_raises_or_draws_nothing_reads_as_not_blank() -> None:
+    from aelix_coding_agent.tui.chrome import _ends_on_blank_row
+
+    class _Boom:
+        def __rich_console__(self, console: Any, options: Any) -> Any:
+            raise RuntimeError("no")
+
+    console = _plain_console(io.StringIO())
+    assert _ends_on_blank_row(console, None) is False
+    assert _ends_on_blank_row(console, _Boom()) is False
+    assert _ends_on_blank_row(console, Group()) is False
+    assert _ends_on_blank_row(console, Text("")) is True
+    assert _ends_on_blank_row(console, SoftWrapped(Text("x\n"))) is True
+
+
+@pytest.mark.parametrize("colour", [True, False])
+def test_spaces_the_terminal_paints_are_not_blank(colour: bool) -> None:
+    """#732 review r2 — a row of spaces on a background shows on a colour
+    terminal (a bar, a block's padding); with no colour it is blank, and the
+    segments carry the background either way, so the console decides."""
+
+    from aelix_coding_agent.tui.chrome import _ends_on_blank_row
+    from rich.padding import Padding
+
+    console = (_colour_console if colour else _plain_console)(io.StringIO())
+    painted = Padding(Text("x"), (0, 0, 1, 0), style="on blue")
+    reversed_ = Group(Text("x"), Text("   ", style="reverse"))
+    assert _ends_on_blank_row(console, painted) is (not colour)
+    assert _ends_on_blank_row(console, reversed_) is (not colour)
+    assert _ends_on_blank_row(console, Group(Text("x"), Text("   "))) is True
+
+
+@pytest.mark.parametrize("colour", [True, False])
+async def test_an_answer_ending_in_a_code_block_gets_its_row_on_a_colour_terminal(
+    colour: bool,
+) -> None:
+    """#732 review r2 — Rich draws a fenced block as a ``Syntax`` with padding: its
+    last row is spaces on the block's colour. Read as blank, the line sat flush
+    under the coloured box, the look #732 removes. With no colour that row IS the
+    blank row, and no second one is drawn."""
+
+    from aelix_coding_agent.tui.shell import turn_end_line
+    from rich.markdown import Markdown
+
+    block = Markdown("```python\nprint(1)\n```")
+    async with _scrollback(colour=colour) as (chrome, buf):
+        await asyncio.wait_for(
+            chrome.print_above_many([block, turn_end_line("done", 4.2, _epoch(14, 5))]),
+            timeout=5,
+        )
+    rows = _rows(buf)
+    i = next(k for k, row in enumerate(rows) if _LINE in row)
+    if colour:
+        # Painted at any depth: Rich keeps a style's codes from the first console
+        # that drew it (``Style._ansi``), so after an 8-colour render earlier in
+        # the run (CI has no COLORTERM) the block's colour comes out ``40``.
+        pad = rows[i - 2]
+        assert rows[i - 1] == "" and "\x1b[" in pad, rows[i - 4 : i + 1]
+        assert not re.sub(r"\x1b\[[0-9;]*m", "", pad).strip(), rows[i - 4 : i + 1]
+    else:
+        assert rows[i - 1] != "" and not rows[i - 1].strip(), rows[i - 4 : i + 1]
+        assert "print(1)" in rows[i - 2], rows[i - 4 : i + 1]
 
 
 # --- the chrome keeps how long the run took -----------------------------------------
@@ -199,12 +351,39 @@ class _TurnHarness(FakeHarness):
         return []
 
 
+class _AnswerHarness(_TurnHarness):
+    """#732 — a turn whose answer is *answer*'s text, streamed and committed."""
+
+    def __init__(self, clock: _Clock, answer: str) -> None:
+        super().__init__(clock, stop="stop", took=1.0)
+        self.answer = answer
+
+    async def prompt(self, text: str, *, source: str = "interactive", images=None):
+        self.prompts.append((text, source))
+        msg = AssistantMessage(content=[TextContent(text=self.answer)], stop_reason="stop")
+        delta = _ev("text_delta", content_index=0, delta=self.answer)
+        self._emit(_ev("agent_start"))
+        self._emit(_ev("message_start", message=msg))
+        self._emit(_ev("message_update", message=msg, assistant_message_event=delta))
+        self._emit(_ev("message_end", message=msg))
+        self._emit(_ev("turn_end", message=msg))
+        self._emit(_ev("agent_end"))
+        self.clock.t += self.took
+        return []
+
+
 @asynccontextmanager
-async def _tui(harness: _TurnHarness) -> AsyncGenerator[tuple[AelixChrome, PipeInput, list[str]]]:
+async def _tui(
+    harness: _TurnHarness, console: Console | None = None
+) -> AsyncGenerator[tuple[AelixChrome, PipeInput, list[str]]]:
     from aelix_coding_agent.tui.shell import run_tui
 
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        chrome = AelixChrome(time_fn=harness.clock)
+        chrome = (
+            AelixChrome(time_fn=harness.clock)
+            if console is None
+            else AelixChrome(time_fn=harness.clock, console=console)
+        )
         commits = _spy_commits(chrome)
         task = asyncio.ensure_future(
             run_tui(
@@ -249,6 +428,35 @@ async def test_a_typed_turn_leaves_its_line_last(
     assert echo < i
     if raises:
         assert any("provider exploded" in c for c in commits[echo:i])
+
+
+@pytest.mark.parametrize("answer", [None, "The answer, last line."])
+async def test_through_the_pump_the_line_is_one_blank_row_under_what_the_turn_left(
+    answer: str | None,
+) -> None:
+    """#732 — as the terminal gets it, through the input loop and the output pump.
+
+    An empty answer commits nothing after the echo, whose last row is blank: the
+    line sits one row under it, not two (review, 2026-11-09). Under an answer, one
+    row too. The commit spies drop a Group's blank rows, so this reads the console."""
+
+    clock = _Clock()
+    harness = (
+        _TurnHarness(clock, stop="stop", took=1.0)
+        if answer is None
+        else _AnswerHarness(clock, answer)
+    )
+    buf = io.StringIO()
+    line = rf"✓ done · 1\.0s · {_HHMM}"
+    async with _tui(harness, console=_plain_console(buf)) as (_chrome, pipe, _commits):
+        pipe.send_text("hello\n")
+        await _wait(lambda: any(re.fullmatch(line, row) for row in _rows(buf)))
+        await asyncio.sleep(0.05)
+    rows = _rows(buf)
+    _one_blank_row_above(rows, line)
+    if answer is not None:  # the markdown row is padded to the width
+        i = next(k for k, row in enumerate(rows) if re.fullmatch(line, row))
+        assert rows[i - 2].rstrip() == answer, rows[i - 3 : i + 1]
 
 
 async def test_a_line_an_input_hook_handled_ran_no_turn_and_leaves_no_line() -> None:
