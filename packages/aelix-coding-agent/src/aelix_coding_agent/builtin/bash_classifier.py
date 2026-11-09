@@ -26,6 +26,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -2179,48 +2180,392 @@ def _classify_recursive_mutator(command: Any) -> Verdict:
 # operator token with the fd in a separate child, so it is covered. ``>&-`` /
 # ``<&-`` close a descriptor and open no file (no target); ``&>|`` / ``>>|`` /
 # ``<>`` are parse errors tree-sitter reports as ``has_error`` → the gate
-# already ASKs. ``>&`` / ``<&`` with a NUMBER are fd dups (no file).
+# already ASKs. ``>&`` / ``<&`` with a descriptor number are fd dups (no file);
+# until #710 the number after ``>&`` was read as a path.
 _WRITE_REDIRECT_OPS = frozenset({">", ">>", "&>", "&>>", ">&", ">|"})
 _READ_REDIRECT_OPS = frozenset({"<", "<<", "<<<", "<&"})
+# tree-sitter emits a close as ONE token with the ``-`` inside it (#710).
+_CLOSE_REDIRECT_OPS = frozenset({">&-", "<&-"})
+_DUP_REDIRECT_OPS = frozenset({">&", "<&"})
 # The standard sink devices: a write redirect to one changes no file (#678).
 _SINK_DEVICES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+# The bytes that end an unquoted shell word: bash's blanks and metacharacters.
+# tree-sitter also skips ``\r``, ``\v`` and ``\f`` between tokens, but bash and
+# zsh keep them in the word (``echo x >&1\r`` writes a file ``1\r``), so they
+# are not here (#710 fix round 1). A backtick ends a word only where it closes
+# the substitution the word is in (:func:`_ends_a_word`, fix round 2).
+_WORD_ENDS = frozenset(b" \t\n;&|()<>")
+_BLANKS = frozenset(b" \t")
+
+
+# The source of the tree being walked, set by :func:`_walk_source` (#710 fix
+# round 1). :func:`_redirect_verdict` reads the bytes AFTER a target, which no
+# node covers (a trailing ``\r`` belongs only to the root), and climbing to the
+# root costs tree-sitter a descent from the root per step.
+_SOURCE: ContextVar[bytes | None] = ContextVar("bash_classifier_source", default=None)
+
+
+def _walk_source(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """:func:`_walk` over a tree parsed from ``source``, worst-of its argument views.
+
+    ``source`` is readable by the redirects under ``root`` while they are
+    walked. #710 fix round 1: tree-sitter keeps every word after a redirect's
+    target inside the redirect, where no argument check sees it, while bash,
+    zsh, dash and ksh pass those words to the command (measured;
+    ``find . 2>&1 -delete -maxdepth 1`` deletes). When a redirect holds one,
+    :func:`_argument_view` is walked as well, so the verdict is never below the
+    command's with those words as its arguments; a view the grammar rejects is
+    ASK.
+
+    Fix round 2: each tree also answers :func:`_evaluates_while_expanding`,
+    through :func:`_judge`. Its ``test`` / ``[`` reading takes the command's
+    arguments, which skip redirect nodes, so only the view shows it the
+    operands of ``test 2>&1 -v 'a[$(cmd)]'`` (bash 5 runs ``cmd``, measured)
+    or ``test </dev/null -v …``; asked of the original tree alone, both were
+    ALLOW.
+
+    Finish round: a view only RAISES. A redirect that holds a word some shell
+    passes to the command (:func:`_passes_words`) makes the verdict at least
+    ASK whatever the views say, because tree-sitter's reading of such a line
+    does not always match the shells' (``echo hi &>/dev/null find . -delete``,
+    ``test 1 -eq 0>&1 'a[$(cmd)]'``; both ran unasked when a view could lower
+    the verdict to ALLOW). Under the UNKNOWN and POSIX dialects the words after
+    an ``&>`` target are also judged as a command of their own, as dash and
+    ksh run them (:func:`_argument_view` with ``background``).
+    """
+
+    verdict = _judge(root, source, dialect=dialect)
+    redirects, digits = _scan_redirects(root)
+    if not redirects:
+        return verdict
+    if any(_passes_words(redirect) for redirect in redirects):
+        verdict = max(verdict, Verdict.ASK)
+    views = [_view_of(source, redirects, digits, background=False)]
+    if dialect in (Dialect.UNKNOWN, Dialect.POSIX):
+        views.append(_view_of(source, redirects, digits, background=True))
+    for view in views:
+        if view is None:
+            continue
+        if _PARSER is None:
+            return max(verdict, Verdict.ASK)
+        reread = _PARSER.parse(view).root_node
+        if reread.has_error:
+            verdict = max(verdict, Verdict.ASK)
+        else:
+            verdict = max(verdict, _judge(reread, view, dialect=dialect))
+    return verdict
+
+
+def _judge(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """One tree's verdict: :func:`_walk` with ``source`` readable, then the expansion question.
+
+    An ALLOW whose source could assign, or evaluate a word as a name or as
+    arithmetic, while expanding is ASK (#657 decision 3).
+    """
+
+    token = _SOURCE.set(source)
+    try:
+        verdict = _walk(root, dialect=dialect)
+    finally:
+        _SOURCE.reset(token)
+    if verdict is Verdict.ALLOW and _evaluates_while_expanding(root, source):
+        return Verdict.ASK  # #657 decision 3 inside an expansion
+    return verdict
+
+
+def _tree_source(node: Any) -> bytes:
+    """The whole source ``node`` was parsed from.
+
+    The one :func:`_walk_source` set, when ``node`` is in it; otherwise (a
+    direct call) its root's text, which spans every byte of the input.
+    """
+
+    source = _SOURCE.get()
+    if source is not None and source[node.start_byte : node.end_byte] == node.text:
+        return source
+    while (parent := getattr(node, "parent", None)) is not None:
+        node = parent
+    return node.text or b""
+
+
+def _ends_a_word(source: bytes, at: int, node: Any) -> bool:
+    """Whether the shell's word ends at byte ``at`` of ``node``'s command.
+
+    At the end of input, a blank or a metacharacter, or at the backtick that
+    closes a ``\\`…\\``` substitution ``node`` is in: the shell runs what the
+    backticks hold as a command of its own (fix round 2; ``echo \\`ls
+    2>/dev/null\\``` writes no file in bash 3.2, zsh, dash or ksh, measured).
+    Any other backtick starts a substitution whose output joins the word:
+    ``echo x >&1\\`echo .txt\\``` writes ``1.txt`` in bash and zsh, and
+    ``2>&-\\`echo 1\\``` writes ``-1`` in zsh.
+    """
+
+    if at >= len(source) or source[at] in _WORD_ENDS:
+        return True
+    return source[at : at + 1] == b"`" and _closes_its_substitution(node, at)
+
+
+def _closes_its_substitution(node: Any, at: int) -> bool:
+    """Whether byte ``at`` is the closing backtick of the substitution nearest above ``node``."""
+
+    while (node := getattr(node, "parent", None)) is not None:
+        if node.type == "command_substitution":
+            last = node.children[-1] if node.children else None
+            return last is not None and last.type == "`" and last.start_byte == at
+    return False
+
+
+def _redirect_operator(redirect: Any) -> Any | None:
+    """The one operator token of a ``file_redirect``, or ``None`` if it has none or several."""
+
+    ops = [child for child in redirect.children if not child.is_named]
+    return ops[0] if len(ops) == 1 else None
+
+
+def _redirect_arguments(redirect: Any) -> list[Any]:
+    """The words a redirect node holds that the shell passes to the command (#710 fix round 1).
+
+    tree-sitter-bash puts every word after a redirect INSIDE its node:
+    ``find . 2>&1 -delete -maxdepth 1`` is ``file_redirect(2 >& 1 -delete
+    -maxdepth 1)`` and ``find . <<EOF -delete`` holds ``-delete`` in the
+    ``heredoc_redirect``. bash, zsh, dash and ksh take the FIRST word as the
+    target and pass every further one to the command (measured), so those
+    words are arguments; a close (``>&-``) has no target, so all of them are.
+    A here-string takes one word and has none. A redirect nested in a
+    here-document's line is a node of its own and answers for itself.
+    """
+
+    if redirect.type == "file_redirect":
+        words = list(redirect.children_by_field_name("destination"))
+        op = _redirect_operator(redirect)
+        if op is not None and op.type in _CLOSE_REDIRECT_OPS:
+            return words
+        return words[1:]
+    if redirect.type == "heredoc_redirect":
+        return list(redirect.children_by_field_name("argument"))
+    return []
+
+
+def _passes_words(redirect: Any) -> bool:
+    """Whether a redirect node holds a word some shell passes to the command (#710 finish).
+
+    The words after its target (:func:`_redirect_arguments`), or a descriptor
+    of two or more digits: bash takes ``10>&1`` as descriptor 10, while zsh,
+    dash and ksh take only one digit there and pass ``10`` on (``echo a 10>&1
+    x`` prints ``a x`` in bash and ``a 10 x`` in the others, macOS and Linux,
+    measured), so ``git branch 10>&1`` creates a branch ``10`` in zsh.
+    """
+
+    if _redirect_arguments(redirect):
+        return True
+    descriptor = redirect.children_by_field_name("descriptor")
+    return bool(descriptor) and len(descriptor[0].text) > 1
+
+
+def _scan_redirects(root: Any) -> tuple[list[Any], dict[int, Any]]:
+    """Every redirect node under ``root``, and every all-digit ``number`` keyed by the byte it ends at."""
+
+    redirects: list[Any] = []
+    digits: dict[int, Any] = {}
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type in _REDIRECT_NODES:
+            redirects.append(node)
+        elif node.type == "number" and node.text.isdigit():
+            digits[node.end_byte] = node
+    return redirects, digits
+
+
+def _glued_descriptor(redirect: Any, digits: dict[int, Any], source: bytes) -> Any | None:
+    """The all-digit word right before a ``<`` / ``>`` operator, when tree-sitter left it outside.
+
+    #710 finish: one digit written with no blank before ``<`` or ``>`` is that
+    redirect's descriptor in bash, zsh, dash and ksh (``echo a 0>&1 x`` prints
+    ``a x`` in all four on macOS and Linux, measured), but tree-sitter makes a
+    ``0`` there a ``number`` argument of the command, or the command's name in
+    ``0>&1 mkfs /dev/sda``; ``1`` to ``9`` and longer runs it takes as the
+    descriptor, and ``00`` or ``01`` do not parse. Only a whole shell word
+    counts: not one joined to other text (``$(echo a)0>&1`` passes ``a0``),
+    and not one before ``&>``, which starts with ``&``.
+    """
+
+    op = next((child for child in redirect.children if not child.is_named), None)
+    if op is None or not op.type.startswith(("<", ">")):
+        return None
+    word = digits.get(redirect.start_byte)
+    if word is None or getattr(word.parent, "type", None) == "concatenation":
+        return None
+    start = word.start_byte
+    if start == 0 or source[start - 1] in _WORD_ENDS or source[start - 1 : start] == b"`":
+        return word
+    return None
 
 
 def _redirect_verdict(redirect: Any) -> Verdict:
-    """A write ``file_redirect`` to a protected path → DENY, else ASK.
+    """A ``file_redirect``'s own verdict, from its operator and its FIRST destination word.
 
-    Only WRITE redirects gate (``>`` / ``>>`` / ``&>`` / ``&>>`` / ``>|``); a
-    read redirect (``<``) is benign. The target path literal is matched against
-    the protected prefixes; a dynamic target → ASK.
+    A write to a protected path → DENY, any other write → ASK; a read (``<``)
+    opens no file for writing and is ALLOW. The target path literal is matched
+    against the protected prefixes; a dynamic target → ASK. The words after the
+    target are the command's arguments, judged through :func:`_argument_view`,
+    not here.
+
+    #710: ``2>&1``, ``>&2`` and ``3>&1`` duplicate a descriptor and open no file
+    in bash, zsh, dash or ksh (measured), yet the ``number`` after ``>&`` was
+    read as a path and ASKed, so ``cat a 2>&1`` opened a dialog under ``auto``.
+    A ``>&`` / ``<&`` target is a dup only when its source bytes, from the
+    operator to the end of the shell word, are blanks and then ASCII digits and
+    nothing else: tree-sitter's ``number`` also covers ``0x1``, ``1#x`` and
+    ``16#ff``, which bash and zsh write as files; tree-sitter skips a ``\\r``,
+    ``\\v`` or ``\\f`` that bash and zsh keep in the word (``>&1\\r`` writes a
+    file ``1\\r``); and after ``>`` / ``&>`` a number is a file name
+    (``echo x >1``). Any other ``<&`` target is path-checked like a write's
+    (fix round 1; it was ALLOW whatever it named).
+
+    A bare close (``2>&-``) opens no file and is ALLOW. A word glued to it
+    (``2>&-1``, ``2>&-\\r``) is ASK: zsh writes it as a file ``-1``. A sink
+    device is ALLOW only when nothing is glued to it either. An operator this
+    function does not know is ASK.
     """
 
-    op = ""
-    target: Any | None = None
-    for child in redirect.children:
-        ct = child.type
-        if ct in _WRITE_REDIRECT_OPS or ct in _READ_REDIRECT_OPS:
-            op = ct
-        elif ct not in ("&", "|"):
-            target = child
-    if not op or op in _READ_REDIRECT_OPS:
-        return Verdict.ALLOW  # read redirect / fd-closing form — no file written
-    if target is None:
+    op_node = _redirect_operator(redirect)
+    if op_node is None:
         return Verdict.ASK
+    op = op_node.type
+    source = _tree_source(redirect)
+    if op in _CLOSE_REDIRECT_OPS:
+        return Verdict.ALLOW if _ends_a_word(source, op_node.end_byte, redirect) else Verdict.ASK
+    if op not in _WRITE_REDIRECT_OPS and op not in _READ_REDIRECT_OPS:
+        return Verdict.ASK
+    targets = redirect.children_by_field_name("destination")
+    if not targets:
+        return Verdict.ASK
+    target = targets[0]
+    if op in _READ_REDIRECT_OPS and op not in _DUP_REDIRECT_OPS:
+        return Verdict.ALLOW  # a read redirect — no file written
+    whole = all(b in _BLANKS for b in source[op_node.end_byte : target.start_byte]) and (
+        _ends_a_word(source, target.end_byte, redirect)
+    )
+    if op in _DUP_REDIRECT_OPS and whole and target.type == "number" and target.text.isdigit():
+        return Verdict.ALLOW  # a dup; ``bytes.isdigit`` is ASCII-only
     path = _node_literal(target)
     if path is None:
         return Verdict.ASK
     norm = path.replace("\\", "/")
     # A write redirect to the three standard sink devices changes no file, so it
-    # is ALLOW as a REDIRECT (the command's own verdict still applies) — ``/dev``
+    # is ALLOW as a REDIRECT (the command's own verdict, with any words written
+    # after the target among its arguments since #710, still applies) — ``/dev``
     # being a protected prefix otherwise refused ``rg foo src 2>/dev/null`` and
     # ``git log … 2>/dev/null | head``, common reads (#678). Anything else under
     # ``/dev`` (``/dev/sda``, …) stays DENY.
-    if norm in _SINK_DEVICES:
+    if whole and norm in _SINK_DEVICES:
         return Verdict.ALLOW
     for prefix in _PROTECTED_WRITE_PREFIXES:
         if norm == prefix or norm.startswith(prefix.rstrip("/") + "/"):
             return Verdict.DENY
     return Verdict.ASK
+
+
+# What a here-document redirect is made of besides the words, redirects or
+# pipeline that follow it on its first line.
+_HEREDOC_PARTS = frozenset(
+    {"file_descriptor", "<<", "<<-", "heredoc_start", "heredoc_body", "heredoc_end"}
+)
+
+
+def _redirect_blanks(redirect: Any) -> list[tuple[int, int]]:
+    """The byte ranges of a redirect that are no part of the command line it sits in.
+
+    Its descriptor, operator and target — for a here-document also its
+    delimiters and body, for a here-string all of it. What is left is what the
+    shell passes on: the words after the target, and whatever a here-document's
+    first line goes on to hold. A ``$(…)`` / ``<(…)`` inside a blanked part is
+    kept in place, because it runs (``cat <<<$(find . 2>&1 -delete)``); one in
+    a quoted here-document body does not run and is blanked with it.
+    """
+
+    if redirect.type == "heredoc_redirect":
+        parts = [c for c in redirect.children if c.type in _HEREDOC_PARTS]
+        blanks = [(c.start_byte, c.end_byte) for c in parts]
+        expands = _heredoc_expands(redirect)
+        runs = [c for c in parts if c.type == "heredoc_body" and expands]
+    elif redirect.type == "file_redirect":
+        op = _redirect_operator(redirect)
+        targets = redirect.children_by_field_name("destination")
+        if op is not None and op.type in _CLOSE_REDIRECT_OPS:
+            end = op.end_byte  # no target: every word is passed on
+        else:
+            end = targets[0].end_byte if targets else redirect.end_byte
+        blanks = [(redirect.start_byte, end)]
+        runs = [c for c in redirect.children if c.end_byte <= end]
+    else:  # a here-string: its one word
+        blanks = [(redirect.start_byte, redirect.end_byte)]
+        runs = [redirect]
+    kept = sorted(r for node in runs for r in _ranges(node, _EXECUTABLE_WRAPPER_TYPES))
+    out: list[tuple[int, int]] = []
+    for lo, hi in blanks:
+        for keep_lo, keep_hi in kept:
+            if lo < keep_hi and keep_lo < hi:
+                if lo < keep_lo:
+                    out.append((lo, keep_lo))
+                lo = keep_hi
+        if lo < hi:
+            out.append((lo, hi))
+    return out
+
+
+def _argument_view(root: Any, source: bytes, *, background: bool = False) -> bytes | None:
+    """``source`` with every redirect blanked out but the words it passes on (#710 fix round 1).
+
+    ``None`` when no redirect holds such a word, which is nearly always. The
+    blanks keep every other byte where it was, so the view parses into the same
+    statements, pipelines and lists with the redirects' words as arguments of
+    the command bash gives them to — tree-sitter hangs ``ls | find . 2>&1
+    -delete``'s redirect on the whole pipeline, bash gives it to ``find``, and
+    the view reads ``ls | find .      -delete``. A compound command followed by
+    words (``{ ls; } 2>&1 x``, which bash refuses) does not parse as a view.
+
+    Finish round: a digit word glued before a ``<`` / ``>`` operator is the
+    redirect's descriptor (:func:`_glued_descriptor`) and is blanked too, so
+    ``0>&1 mkfs /dev/sda`` reads ``     mkfs /dev/sda``. With ``background``,
+    the ``&`` of an ``&>`` / ``&>>`` that holds words after its target is
+    kept: dash and macOS ksh93 read ``&>`` as ``&`` and then ``>``, so
+    ``echo hi &>/dev/null find . -delete`` runs ``echo hi`` in the background
+    and then ``find . -delete`` (measured: both deleted), and that view reads
+    ``echo hi &          find . -delete``. ``None`` with ``background`` when
+    no such ``&>`` exists.
+    """
+
+    redirects, digits = _scan_redirects(root)
+    return _view_of(source, redirects, digits, background=background)
+
+
+def _view_of(
+    source: bytes, redirects: list[Any], digits: dict[int, Any], *, background: bool
+) -> bytes | None:
+    """:func:`_argument_view` from a :func:`_scan_redirects` already made."""
+
+    glued = [word for r in redirects if (word := _glued_descriptor(r, digits, source)) is not None]
+    passing = [r for r in redirects if _redirect_arguments(r)]
+    amps = [
+        op
+        for r in passing
+        if (op := _redirect_operator(r)) is not None and op.type in ("&>", "&>>")
+    ]
+    if (background and not amps) or not (passing or glued):
+        return None
+    view = bytearray(source)
+    for redirect in redirects:
+        for lo, hi in _redirect_blanks(redirect):
+            view[lo:hi] = b" " * (hi - lo)
+    for word in glued:
+        view[word.start_byte : word.end_byte] = b" " * (word.end_byte - word.start_byte)
+    if background:
+        for op in amps:
+            view[op.start_byte] = ord("&")
+    return bytes(view)
 
 
 def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
@@ -2239,7 +2584,8 @@ def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
     ADR-0158). And a body tree-sitter leaves as one unparsed leaf
     (``<<-EOF`` + a tab, a line indented with spaces) hid its expansions from
     every check: :func:`_heredoc_body_unread` asks on it, and a re-read of the
-    body still finds a DENY inside it.
+    body still finds a DENY inside it. A delimiter tree-sitter ran on past is
+    judged by :func:`_heredoc_start_verdict` (#710 fix round 2).
     """
 
     if node.type == "file_redirect":
@@ -2249,8 +2595,10 @@ def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
                 worst = max(worst, _walk(child, stage_index=0, dialect=dialect))
         return worst
     worst = Verdict.ALLOW
-    if node.type == "heredoc_redirect" and _heredoc_body_unread(node):
-        worst = max(Verdict.ASK, _reread_heredoc_body(node, dialect=dialect))
+    if node.type == "heredoc_redirect":
+        worst = _heredoc_start_verdict(node, dialect=dialect)
+        if _heredoc_body_unread(node):
+            worst = max(worst, Verdict.ASK, _reread_heredoc_body(node, dialect=dialect))
     expands = _heredoc_expands(node)
     for child in node.children:
         if not child.is_named or child.type in ("heredoc_start", "heredoc_end"):
@@ -2259,6 +2607,44 @@ def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
             continue
         worst = max(worst, _walk(child, stage_index=0, dialect=dialect))
     return worst
+
+
+# A here-document delimiter as the shells read it: one word of plain bytes,
+# quoted runs and backslash escapes, with no blank or metacharacter outside the
+# quotes. ``$`` and backticks are left out: no shell expands a delimiter, and
+# leaving them out costs an ASK, never an ALLOW.
+_HEREDOC_DELIMITER = re.compile(rb"""(?:[^\s;&|()<>'"\\`$]|\\[^\n]|'[^']*'|"[^"\\`$]*")+""")
+
+
+def _heredoc_start_verdict(redirect: Any, *, dialect: Dialect) -> Verdict:
+    """ALLOW for a delimiter that is one word; otherwise ASK, or worse for what it swallowed.
+
+    #710 fix round 2 (pre-existing since ADR-0158): tree-sitter's
+    ``heredoc_start`` runs on to the next blank without a parse error, so
+    ``cat <<A; rm -rf ~`` is a start ``A;`` and ``cat <<A>~/.bashrc`` a start
+    ``A>~/.bashrc``. bash, zsh, dash and ksh end the delimiter at the ``;`` or
+    ``>`` and run the rest of the line (measured: ``touch``, ``find victim
+    -delete`` and the ``.bashrc`` write all happened, with the end line written
+    as ``A;``). The rest of that line, from the first byte the delimiter cannot
+    hold to the newline, is re-read after a ``:`` so a DENY in it still counts.
+    """
+
+    start = next((c for c in redirect.children if c.type == "heredoc_start"), None)
+    if start is None:
+        return Verdict.ASK
+    match = _HEREDOC_DELIMITER.match(start.text)
+    if match is not None and match.end() == len(start.text):
+        return Verdict.ALLOW
+    if _PARSER is None:
+        return Verdict.ASK
+    source = _tree_source(redirect)
+    begin = start.start_byte + (match.end() if match is not None else 0)
+    newline = source.find(b"\n", start.end_byte)
+    text = b": " + source[begin : newline if newline != -1 else len(source)]
+    reread = _PARSER.parse(text).root_node
+    if reread.has_error:
+        return Verdict.ASK
+    return max(Verdict.ASK, _walk_source(reread, text, dialect=dialect))
 
 
 # What can follow ``$`` and start an expansion; a ``$`` before anything else is
@@ -2304,7 +2690,7 @@ def _reread_heredoc_body(redirect: Any, *, dialect: Dialect) -> Verdict:
     reread = _PARSER.parse(text).root_node
     if reread.has_error:
         return Verdict.ASK
-    return _walk(reread, dialect=dialect)
+    return _walk_source(reread, text, dialect=dialect)
 
 
 # Node types that wrap (or are) an executable subtree worth re-walking when they
@@ -2480,10 +2866,7 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
         root = tree.root_node
         if root.has_error:
             return Verdict.ASK
-        verdict = _walk(root, dialect=dialect)
-        if verdict is Verdict.ALLOW and _evaluates_while_expanding(root, source):
-            return Verdict.ASK  # #657 decision 3 inside an expansion
-        return verdict
+        return _walk_source(root, source, dialect=dialect)
     except Exception:  # noqa: BLE001 — any traversal failure → fail safe
         return Verdict.ASK
 
