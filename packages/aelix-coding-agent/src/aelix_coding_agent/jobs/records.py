@@ -50,7 +50,8 @@ FACT_VERSION = 1
 FACT_KINDS = ("start", "process", "mode", "cleanup", "supervision", "outcome")
 
 #: The statuses an ``outcome`` fact may record. ``recovered`` is a restart's
-#: reading of a job's own records; it shows as ``done``.
+#: reading of what a job left, which no confirmed end backs; it shows as
+#: ``recovered``, never ``done`` (#611 S1c, ADR-0295).
 OUTCOME_STATUSES = frozenset({"done", "failed", "stopped", "lost", "recovered"})
 _HELPERS = frozenset({"confirmed", "unverified", "none"})
 

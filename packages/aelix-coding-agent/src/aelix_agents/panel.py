@@ -11,7 +11,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``), or it is a chain step
 waiting for the one before it, and has no spawn id at all, because
 ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:1441``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:1525``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -69,7 +69,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:1454-1455``), which for a chatty child is hundreds per
+stdout line (``runtime.py:1539-1540``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 1
@@ -86,7 +86,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 """The ``set_widget`` slot the batch panel owns.
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
-declares ``execution_mode="sequential"`` (``tool.py:896``), which makes the
+declares ``execution_mode="sequential"`` (``tool.py:1205``), which makes the
 kernel run the whole tool batch sequentially (``loop.py:848-858``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
@@ -138,7 +138,7 @@ PANEL_MAX_ROWS = 9
 """Hard ceiling on the panel's HEIGHT, in rows (finding F2, HIGH).
 
 One header plus ``tool.MAX_PARALLEL_TASKS`` (= 8) one-row members, which is every
-legal batch — the parser refuses a ninth task outright (``tool.py:678-684``), so
+legal batch — the parser refuses a ninth task outright (``tool.py:807-813``), so
 this never fires on input a model can actually get past the door. Two rows per
 member (ADR-0278 D4) fit under it up to four members; past that the panel draws
 one row each (:func:`panel_height`). Spelled here
@@ -252,7 +252,7 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:1255-1257``) — and the kernel emits that event with the raw
+    (``stream.py:1272-1274``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
     (``loop.py:889-897``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
@@ -635,7 +635,7 @@ def format_aggregate_status(
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:98-99``, and ``stream.py:284-287``
+    message wins" (``subagent_contract.py:98-99``, and ``stream.py:289-292``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
@@ -2290,7 +2290,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:1441``).
+        (``runtime.py:1525``).
         """
 
         if index < 0:

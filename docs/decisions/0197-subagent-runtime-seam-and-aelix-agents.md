@@ -1,6 +1,11 @@
 # 0197. Subagent-runtime seam & the bundled `aelix-agents` extension (P2)
 
 Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
+**Superseded in part 2026-11-08 (ADR-0295, #723): the prohibition of background delegation —
+"a background child has no owner to reap it and no channel to report through" — is superseded
+by [ADR-0295](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md): a
+background agent is a job of its session (ADR-0293), which owns, reaps and reports it. Inert
+until #611 S3 (`jobs/activation.py` `ACTIVE = False`); see the dated note at the end.**
 **Amended 2026-10-28 (ADR-0276, #604): a delegation has no time limit. §(k)'s
 `timeout_ms` precedence and its 600 000 ms default are gone, and §(j)'s exit
 wait after both pipes close has its own 30 s bound instead of the deadline — see
@@ -1509,3 +1514,19 @@ behaviour, cap, registry or consent policy in product-core.
 - **`trust.json` lost-update** is unchanged from ADR-0178 — the child never writes
   it (clause 1 emits nothing, clause 2 forces step 1, and neither persists), so
   P2 adds no new writer, but it also does not fix the existing one.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+The background prohibition this ADR's code states twice — `tool._BACKGROUND_REFUSED` ("a
+background child has no owner to reap it and no channel to report through") and
+`runtime._BACKGROUND_REJECTED` (the "task that outlives the session" this ADR bans) — is
+superseded by ADR-0295 for the `agent` tool's `spawn` action: the job service of ADR-0293 owns the
+child, its barrier reaps it, and the kernel inbox carries its one notice. Both texts are unchanged
+and still answer where background jobs are off, which is everywhere until #611 S3, and the seam's
+`spawn(background=True)` (the `SubagentRuntime` Protocol door that `/agents run` and RPC
+`agents/run` use) stays refused: a background run exists only as the tool's job. "Explicitly NOT
+done … a product-core `SubagentSupervisor`" (Deferred, above) stands: the job service is
+kind-agnostic under ADR-0008's gate as ADR-0293 §13 replaced it, and every delegation-specific
+part — consent, profiles, the clamp, the run, its records and its recovery — stays in
+`aelix_agents` (`jobs_client.py`).
+

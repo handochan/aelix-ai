@@ -1479,3 +1479,30 @@ counted by the kind's name. S1b (#722) built the admission (`jobs/admission.py`)
 reader; it registers no delegation kind,
 so `MAX_LIVE_CHILDREN` and `_SEM_BY_LOOP` are unchanged in code until #611 S1c, and the whole of
 it is inert until S3.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+#611 S1c wired (d) as ADR-0293's note above describes, behind the jobs gate. While the `agent`
+job kind is registered — background jobs on, a host other than RPC — every `agent` call reserves
+`F = min(MAX_CONCURRENCY, tasks, free)` — one for a `spawn` and a `chain` — in its `tool_call`
+hook before the dialog
+(`AgentsExtension._reserve`) and is refused there at `F = 0`; a batch runs under a semaphore of
+its own sized to `F` (`batch._Batch.semaphore`), every member admitted on the call's reservation;
+`/agents run` reserves before its dialog; `_run` takes a slot itself for any door that brought
+none. With the gate off — today, everywhere — `MAX_LIVE_CHILDREN` (`_admit_live`) and
+`_SEM_BY_LOOP` decide exactly as before, and neither was removed
+(`tests/agents_ext/test_agent_background_611.py::test_batch_sized_to_free_slots_never_refuses_after_consent`,
+`::test_no_free_slot_refuses_before_any_dialog`, `::test_a_foreground_run_holds_its_slot_while_it_lives`,
+`::test_agents_run_takes_its_slot_too`). A foreground call's slots are released when the call
+ends, after its children's reaps; a background agent's on its job's confirmed cleanup; and a call
+that ends without `execute()` — another extension's hook blocked it, its dialog was denied or
+cancelled, the next prompt or the session's end dropped its approval — gives them back then
+(`::test_a_call_another_extensions_hook_blocked_gives_its_slot_back`,
+`::test_a_denied_dialog_and_a_cancelled_one_give_their_slots_back`,
+`::test_approved_calls_never_run_give_their_slots_back_at_the_next_prompt_and_at_shutdown`). A
+notice turn (`before_agent_start.source == "notice"`) does not reset the per-prompt budget
+(`::test_a_notice_turn_keeps_the_prompts_delegation_budget`), and a `spawn` is charged against it
+once the service admitted it, with §3.5.2.1's belt repeated in its execute
+(`::test_a_spawn_is_charged_against_the_prompt_budget`,
+`::test_a_spawn_is_charged_once_admitted_and_two_in_one_message_meet_the_belt`).
+

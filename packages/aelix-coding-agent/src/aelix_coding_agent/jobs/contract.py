@@ -42,13 +42,36 @@ JobState = Literal[
     "failed",
     "stopped",
     "lost",
+    "recovered",
     "unresolved",
 ]
-"""``unresolved`` is not terminal: the service keeps re-checking it."""
+"""``unresolved`` is not terminal: the service keeps re-checking it.
 
-TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "stopped", "lost"})
+``recovered`` is a restart's reading of a job its kind could read an end of
+only from what the job left, not from a confirmed end (#611 S1c, ADR-0295):
+terminal, and never shown as ``done``. A restart records it only once every
+process the job recorded is confirmed gone."""
+
+TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "stopped", "lost", "recovered"})
 
 StopReason = Literal["user", "model", "owner_end", "reload", "liveness", "shutdown", "signal"]
+
+#: The variable a parent sets in the environment of a process it runs as a job
+#: when it wants that process's versioned end-of-run line (#611 S1c, ADR-0295),
+#: and the one version there is. :meth:`JobContext.protocol_env` hands it out.
+JOBS_PROTOCOL_ENV = "AELIX_JOBS_PROTOCOL"
+JOBS_PROTOCOL_VERSION = "1"
+#: The ``--mode json`` line such a process writes after its print run drained,
+#: before it exits (``modes/print_mode.py``). Only when it was asked for, and
+#: only while background jobs are on in that process too (Codex #1).
+PRINT_DONE_EVENT = "aelix_print_done"
+#: The job's marker in the environment of a process it owns
+#: (:meth:`JobContext.env_marker`).
+JOB_MARKER_ENV = "AELIX_JOB"
+#: Every variable the job service hands only to a process it owns. A client
+#: removes them from the environment of every other child it starts, so an
+#: inherited request never reaches a run nobody asked (Codex #1).
+JOB_INTERNAL_ENV: tuple[str, ...] = (JOBS_PROTOCOL_ENV, JOB_MARKER_ENV)
 
 
 @dataclass(frozen=True)
@@ -62,7 +85,10 @@ class KindCapabilities:
     says what happens to members still in the job's process tree when its root
     exits on its own: ``stop_descendants`` stops and confirms them inside the
     barrier, ``release`` leaves them. ``activity="none"`` turns the quiet flag
-    off for a kind that reports no progress.
+    off for a kind that reports no progress. ``noun`` is what an admission
+    refusal counts its running jobs as — ``(one, many)``, such as
+    ``("delegated agent", "delegated agents")`` — and ``None`` says "background
+    jobs of this kind" (#611 S1c, ADR-0295).
     """
 
     background: bool = True
@@ -78,6 +104,7 @@ class KindCapabilities:
     activity: Literal["progress", "none"] = "progress"
     on_owner_end: Literal["stop"] = "stop"
     on_reload: Literal["stop"] = "stop"
+    noun: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +182,11 @@ class JobSnapshot:
     progress: Mapping[str, Any] | None = None
     unresolved_reason: str | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
+    #: Whether the liveness loop checks an ``unresolved`` job again: ``False``
+    #: when it will not — a restored job whose kind's own ``unresolved`` has its
+    #: processes confirmed gone, for one; a kind's registration still re-reads
+    #: ``adapter_missing`` and ``adapter_too_old`` (#611 S1c).
+    rechecking: bool = False
 
 
 @runtime_checkable
@@ -206,7 +238,9 @@ class JobContext(Protocol):
         *,
         pgid: int | None = None,
         tree: Any = None,
-    ) -> None: ...
+    ) -> Any:
+        """The record the barrier reads; a client kills through it, never around it (#611 S1c)."""
+        ...
 
     def register_directory(self, path: str) -> None: ...
 
@@ -239,6 +273,11 @@ RunnerFactory = Callable[[Mapping[str, Any]], JobRunner]
 
 
 __all__ = [
+    "JOBS_PROTOCOL_ENV",
+    "JOB_INTERNAL_ENV",
+    "JOB_MARKER_ENV",
+    "JOBS_PROTOCOL_VERSION",
+    "PRINT_DONE_EVENT",
     "TERMINAL_STATES",
     "ClientOutcome",
     "HelperCleanup",

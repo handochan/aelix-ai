@@ -76,6 +76,8 @@ async def test_missing_adapter_is_unresolved_and_reevaluated_on_registration(
     # nothing the kind would say about a record it cannot read is made up.
     (notice,) = harness.undelivered_notices()
     assert notice.notice_id == "j:unresolved" and "(adapter_missing)" in notice.body
+    # Nothing rechecks it but a registration of its kind: no "keeps checking" (#611 S1c).
+    assert "keeps checking" not in notice.body and "it is not watching this job" in notice.body
     assert "sleeper said" not in notice.body
     assert service.admission.count(_sleeper.KIND) == 1, "held until it is settled"
 

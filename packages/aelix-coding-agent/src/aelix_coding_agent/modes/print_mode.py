@@ -73,6 +73,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import os
 import signal
 import sys
 from collections.abc import Callable
@@ -80,6 +81,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_ai.messages import AssistantMessage, TextContent
 
+from aelix_coding_agent.jobs.activation import is_active
+from aelix_coding_agent.jobs.contract import (
+    JOBS_PROTOCOL_ENV,
+    JOBS_PROTOCOL_VERSION,
+    PRINT_DONE_EVENT,
+)
 from aelix_coding_agent.model_registry import clear_command_value_cache
 
 if TYPE_CHECKING:
@@ -442,6 +449,20 @@ async def run_print_mode(
             raise BrokenPipeError(
                 "stdout consumer went away during JSON event emit"
             )
+
+        # #611 S1c (ADR-0295) — the versioned end-of-run line, written only when
+        # the process that launched this one asked for it: a parent running this
+        # run as a background job reads it as "the print run drained" before it
+        # counts a run that then lingered as finished. Only an owned run is
+        # asked, and only while background jobs are on HERE as well: with the
+        # gate off the stream is what it was, an inherited request included
+        # (Codex #1).
+        if (
+            mode == "json"
+            and os.environ.get(JOBS_PROTOCOL_ENV) == JOBS_PROTOCOL_VERSION
+            and is_active()
+        ):
+            _write_raw_stdout(json.dumps({"type": PRINT_DONE_EVENT}) + "\n")
 
         # === Pi step 8 — the run's verdict + text-mode terminal printout ======
         # The verdict is read in BOTH modes (#410, ADR-0268 — pi reads it in

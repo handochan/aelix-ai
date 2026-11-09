@@ -790,3 +790,18 @@ model a level it accepts.
 S1b adds the generic job facts (`aelix.job`, ADR-0293 §7) a delegated run will be linked to; the
 `job_id` link on `aelix.child_session` and confirmed appends for service-owned runs are #611 S1c.
 Nothing in this ADR changed in S1b.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+A background delegation's `aelix.child_session` start and settle carry `job_id`, the job it
+runs as (`SpawnReceipt.job_id`); every other run's records are byte for byte what they were. Its
+opening records are written CONFIRMED (`SpawnReceipt.writer`: placed once each under an id derived
+from the record, raising when one did not land — and a start that cannot be recorded refuses the
+launch), and its settle and final are written by the job service, confirmed, before the job's own
+`cleanup` and `outcome` facts, instead of by `_run`'s logged-and-swallowed append. "Recording never
+changes a delegation" therefore holds for foreground runs only; for a background one an
+unrecordable start is a refused launch
+(`tests/agents_ext/test_agent_background_611.py::test_spawn_returns_once_launched_and_one_notice_comes_back`
+pins the order). §5's no-path rule covers the notice: it names the child's session file by its
+id, never by its path. Inert until #611 S3.
+

@@ -3418,6 +3418,9 @@ async def _async_main(argv: list[str]) -> int:
                 # what its ``defaultTools`` keeps off (owner decision B), read
                 # LIVE off the harness's policy: ``/tool`` and RPC move it.
                 exclude_tools=lambda: _live_child_exclusions(session_host, parsed),
+                # #611 S1c — RPC (and ACP over it) refuses the background
+                # actions until #612. Read only while background jobs are on.
+                background_host=lambda: app_mode != "rpc",
             )
 
     # === Agent profile identity (ADR-0196) ===================================

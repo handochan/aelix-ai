@@ -26,7 +26,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:492-493`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:513-514`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -90,6 +90,7 @@ from aelix_coding_agent.agents.resolver import (
 )
 from aelix_coding_agent.agents.sendable import unencodable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.jobs.contract import JOB_INTERNAL_ENV
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
     MAX_SUBAGENT_DEPTH,
@@ -209,6 +210,45 @@ carries none would otherwise be launched with what a NEW delegation would get
 now, which the first run does not bound at all."""
 
 
+class CleanupOwner(Protocol):
+    """Who ends a SERVICE-OWNED row's processes, tree and prompt directory (#611 S1c, ADR-0295).
+
+    A background delegation is a job of its session (ADR-0293): the job
+    service's barrier, not this channel, closes what the child left. So a row
+    that carries an owner hands the owner, as soon as each exists, the prompt
+    directory (:meth:`on_directory` — removed by the service after the barrier
+    and the cleanup duty, never by ``run``'s ``finally``) and the process with
+    its tree (:meth:`on_process` — the tree is closed only after the barrier
+    confirmed its members gone); and every kill this module or the reaper would
+    have performed itself goes through the owner instead (:meth:`stop_now`,
+    :meth:`stop`), which collects the evidence the barrier confirms against
+    BEFORE it signals anything (ADR-0293 §5). A row with no owner — every
+    foreground delegation, every legacy path — is unchanged.
+
+    Implemented in :mod:`aelix_agents.jobs_client`. Every method is total: it
+    never raises into the channel.
+    """
+
+    def child_env(self) -> dict[str, str]:
+        """What the owner adds to the child's environment (the protocol request)."""
+        ...
+
+    def on_directory(self, path: str) -> None: ...
+
+    def on_process(self, row: RunningChild, proc: Any, *, session_path: str | None = None) -> None:
+        """The process exists, ``row.tree`` attached: it is the job's now. ``session_path``
+        is the child's session file, or ``None`` for a ``--no-session`` child."""
+        ...
+
+    def stop_now(self) -> None:
+        """The hard leg at once, evidence first. Synchronous: it runs in ``except CancelledError``."""
+        ...
+
+    async def stop(self, grace: float) -> None:
+        """Soft, ``grace``, then hard — evidence collected before the first signal."""
+        ...
+
+
 @dataclass
 class RunningChild:
     """One live delegation, as the registry sees it.
@@ -266,6 +306,13 @@ class RunningChild:
     allocated for a new delegation. ``runtime.resume_refusal`` refuses to resume
     a session a live row already runs — the one in-process double-resume guard;
     the child's own writer lock is the cross-process one."""
+    owner: CleanupOwner | None = field(default=None, repr=False, compare=False)
+    """The job service's side of a SERVICE-OWNED row (#611 S1c), else ``None``.
+
+    Set by ``runtime._run`` before the row is published, for a background
+    delegation only. See :class:`CleanupOwner` for what it changes: the
+    prompt directory and the tree outlive :meth:`PrintChannel.run`, and every
+    kill goes through it."""
 
 
 @dataclass(frozen=True)
@@ -1296,6 +1343,9 @@ async def abort_child(
                 # one path a human drives. ``None`` after ``run``'s ``finally``
                 # closed it, which is exactly the fallback ``reap`` wants.
                 tree=child.tree,
+                # A service-owned row's kill is its owner's (#611 S1c): ``reap``
+                # then signals nothing itself and waits for the process.
+                owner=child.owner,
             )
         )
         child.reaper_task = task
@@ -1345,6 +1395,23 @@ class PrintChannel:
         self._parent_model = parent_model
         self._argv_builder = argv_builder or build_child_argv
         self._env_builder = env_builder or build_child_env
+
+    def frozen(self, *, model_registry: Any, parent_model: Any) -> PrintChannel:
+        """This channel with its two live getters replaced by values read once (#611 S1c).
+
+        For a background run, whose runner must reach nothing an ``/reload``
+        invalidates (ADR-0293 §3): the cost fallback's registry and the parent's
+        model are the ones the spawn read. Everything else — the grace, the argv
+        and env builders a test injects — is this channel's.
+        """
+
+        return PrintChannel(
+            grace=self._grace,
+            model_registry=lambda: model_registry,
+            parent_model=lambda: parent_model,
+            argv_builder=self._argv_builder,
+            env_builder=self._env_builder,
+        )
 
     async def run(
         self,
@@ -1427,6 +1494,8 @@ class PrintChannel:
                 error=error,
                 session_recorded=plan.session_path is not None,
                 lingered=lingered,
+                # Only a service-owned run asked for the versioned line.
+                print_done_required=row.owner is not None,
             )
 
         if plan.resumes is not None and plan.limits is None:
@@ -1438,6 +1507,11 @@ class PrintChannel:
         # breath, so ``stop`` / ``stop_all`` / the extension teardown can remove
         # it even if this task never reaches its own ``finally`` (§(h)).
         row.prompt = write_prompt_file(plan.resolved.name, profile.body)
+        if row.owner is not None:
+            # A service-owned row's directory is the job's: removed by the
+            # service once its barrier and cleanup duty are done (#611 S1c,
+            # ADR-0293 §cleanup obligations), never by this ``finally``.
+            row.owner.on_directory(str(row.prompt.directory))
         try:
             if row.stopped:
                 # ``stop`` / ``stop_all`` landed while we were being set up. The
@@ -1460,6 +1534,14 @@ class PrintChannel:
             )
             from aelix_coding_agent.builtin.permission import pass_loader_roots_to_child
             env = pass_loader_roots_to_child(self._env_builder(profile), plan.parent_cwd)
+            # The versioned ``print_done`` request and the job's marker
+            # (#611 S1c) belong to a service-owned run only: one INHERITED from
+            # whatever launched this aelix is removed, so no other child is
+            # asked (Codex #1), and an owned row's own are set below.
+            for name in JOB_INTERNAL_ENV:
+                env.pop(name, None)
+            if row.owner is not None:
+                env.update(row.owner.child_env())
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -1477,7 +1559,7 @@ class PrintChannel:
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
                     # neither parent (``tui/shell.py:2547-2564``) nor child
-                    # (``modes/print_mode.py:241-300``) installs a SIGINT
+                    # (``modes/print_mode.py:248-307``) installs a SIGINT
                     # handler to convert that into a result.
                     #
                     # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,
@@ -1547,6 +1629,12 @@ class PrintChannel:
                 # insufficient, and a delegation that still returns a perfectly
                 # good envelope is the one failure with nowhere else to surface.
                 logger.warning("process-tree attach failed for %s: %s", row.id, exc)
+            if row.owner is not None:
+                # The process and its tree are the job's now (#611 S1c): the
+                # service's barrier waits on them and closes the tree. Before the
+                # ``stopped`` re-read below, so a stop that landed during the
+                # spawn kills through the owner, with the evidence collected.
+                row.owner.on_process(row, proc, session_path=plan.session_path)
             row.state = "running"
             if row.stopped:
                 # The other half of the race: a stop that landed while
@@ -1563,38 +1651,44 @@ class PrintChannel:
                 envelope=_envelope,
             )
         finally:
-            # Synchronous, idempotent, and never raises — so it always completes
-            # once entered, including on the cancellation path.
-            remove_prompt_dir(row.prompt)
-            row.prompt = None
-            # THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the
-            # close is deliberately not unconditional here.
-            #
-            # ``close()`` DISARMS both legs — ``soft_kill`` returns ``False`` and
-            # ``hard_kill`` is a no-op once ``_closed`` — so closing it before the
-            # reaper's escalation would silently delete the kill on BOTH
-            # platforms now that the POSIX escalation goes through the tree too
-            # (``reap``'s Q1 group kill). The reaper is DETACHED by design
-            # (finding B1) and may still be inside its grace when this ``finally``
-            # runs, so the close waits for it.
-            #
-            # ``row.tree is None`` is not a nicety either: the abort-before-spawn
-            # path and the spawn-failure path both reach here with no tree.
-            tree = row.tree
-            if tree is not None and row.tree_owned:
-                task = row.reaper_task
-                if task is None or task.done():
-                    tree.close()
-                    # NULLING IS THE MECHANISM, not tidiness: it is what makes a
-                    # later ``abort_child`` → ``reap(..., tree=row.tree)`` get
-                    # ``None`` and fall back to the signal legs instead of
-                    # dispatching into a disarmed object. Mirrors the reference
-                    # adoption (``rpc/rpc_client.py``'s ``stop()``).
-                    row.tree = None
-                else:
-                    task.add_done_callback(
-                        lambda _: (tree.close(), setattr(row, "tree", None))
-                    )
+            # SERVICE-OWNED (#611 S1c): the directory and the tree are the job's.
+            # The service removes the one after its barrier and cleanup duty, and
+            # the runner closes the other only once the barrier confirmed its
+            # members gone — closing it here would disarm the legs the barrier
+            # still needs (#220 §A.6). Every other row is released as before.
+            if row.owner is None:
+                # Synchronous, idempotent, and never raises — so it always completes
+                # once entered, including on the cancellation path.
+                remove_prompt_dir(row.prompt)
+                row.prompt = None
+                # THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the
+                # close is deliberately not unconditional here.
+                #
+                # ``close()`` DISARMS both legs — ``soft_kill`` returns ``False`` and
+                # ``hard_kill`` is a no-op once ``_closed`` — so closing it before the
+                # reaper's escalation would silently delete the kill on BOTH
+                # platforms now that the POSIX escalation goes through the tree too
+                # (``reap``'s Q1 group kill). The reaper is DETACHED by design
+                # (finding B1) and may still be inside its grace when this ``finally``
+                # runs, so the close waits for it.
+                #
+                # ``row.tree is None`` is not a nicety either: the abort-before-spawn
+                # path and the spawn-failure path both reach here with no tree.
+                tree = row.tree
+                if tree is not None and row.tree_owned:
+                    task = row.reaper_task
+                    if task is None or task.done():
+                        tree.close()
+                        # NULLING IS THE MECHANISM, not tidiness: it is what makes a
+                        # later ``abort_child`` → ``reap(..., tree=row.tree)`` get
+                        # ``None`` and fall back to the signal legs instead of
+                        # dispatching into a disarmed object. Mirrors the reference
+                        # adoption (``rpc/rpc_client.py``'s ``stop()``).
+                        row.tree = None
+                    else:
+                        task.add_done_callback(
+                            lambda _: (tree.close(), setattr(row, "tree", None))
+                        )
 
     async def _stream_and_reap(
         self,
@@ -1692,7 +1786,7 @@ class PrintChannel:
                 # Its answer is already in ``state``; the only open question is
                 # who is squatting.
                 exit_code = exited.result()
-                await self._drain_after_exit(proc, pumps, row.tree)
+                await self._drain_after_exit(proc, pumps, row.tree, owner=row.owner)
         except asyncio.CancelledError:
             self._eager_abort(proc, row)
             # The pumps must not outlive an aborted run: they hold the child's
@@ -1745,7 +1839,11 @@ class PrintChannel:
 
     @staticmethod
     async def _drain_after_exit(
-        proc: Any, pumps: asyncio.Future[Any], tree: ProcessTree | None
+        proc: Any,
+        pumps: asyncio.Future[Any],
+        tree: ProcessTree | None,
+        *,
+        owner: CleanupOwner | None = None,
     ) -> None:
         """Bounded drain once the child is dead — and evict whoever holds the pipes.
 
@@ -1786,6 +1884,13 @@ class PrintChannel:
           the negation of this branch's own precondition), and its open process
           handle pins the pid on Windows. Read from CPython, not measured on a
           Windows host.
+
+        A SERVICE-OWNED row (``owner``, #611 S1c) is the job service's to
+        clean: the squatters named by inode are signalled with no tree (so no
+        job-wide kill empties the member list the barrier still has to read),
+        then the owner's own hard leg, evidence first, reaches the child's group
+        and — on win32 — its Job's members. A background delegation's helpers are
+        stopped with it (owner, 2026-11-07); the barrier confirms it.
         """
 
         if pumps.done():
@@ -1797,7 +1902,13 @@ class PrintChannel:
         await asyncio.wait({pumps}, timeout=POST_EXIT_DRAIN_SECONDS)
         if pumps.done():
             return
-        kill_tree(proc, pipe_holder_pids(links), tree=tree)
+        if owner is not None:
+            # The owner's evidence first, then its hard leg; then the squatters
+            # the inode walk named, which no walk of a dead root can.
+            owner.stop_now()
+            kill_tree(proc, pipe_holder_pids(links), tree=None)
+        else:
+            kill_tree(proc, pipe_holder_pids(links), tree=tree)
         await asyncio.wait({pumps}, timeout=POST_EXIT_DRAIN_SECONDS)
         # Cancelled unconditionally: a pump still blocked on a pipe some
         # unkillable holder owns would otherwise outlive the delegation.
@@ -1837,6 +1948,8 @@ class PrintChannel:
                     groups=group_leaders(walk),
                     tree=row.tree,
                     escalate=row.escalate,
+                    # A service-owned row is stopped by its owner (#611 S1c).
+                    owner=row.owner,
                 )
             )
             row.reaper_task = task
@@ -1872,6 +1985,14 @@ class PrintChannel:
         # below, so without it a ``setsid`` descendant waited out the grace.
         row.escalate.set()
         row.state = "stopped"
+        if row.owner is not None:
+            # SERVICE-OWNED (#611 S1c, ADR-0293 §5): the owner's hard leg, which
+            # collects the evidence — the walk, the groups, on win32 the Job's
+            # members — before its first signal, on the record the barrier
+            # confirms against. ``kill_tree``'s tree arm would empty the Job's
+            # member list first and leave the barrier nothing to wait on.
+            row.owner.stop_now()
+            return
         # THE WALK IS WHAT REACHES THE CHILD'S ``bash`` COMMAND (#691): this is
         # a SIGKILL with no grace, so the child's ``dispose()`` gets no time, and
         # the command leads a session of its own that the child's group kill

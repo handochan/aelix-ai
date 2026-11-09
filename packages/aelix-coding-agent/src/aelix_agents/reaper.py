@@ -573,6 +573,7 @@ async def reap(
     groups: Sequence[int] | None = None,
     tree: ProcessTree | None = None,
     escalate: asyncio.Event | None = None,
+    owner: Any | None = None,
 ) -> int:
     """SIGTERM → grace → SIGKILL. Safe to be cancelled REPEATEDLY.
 
@@ -636,6 +637,8 @@ async def reap(
 
     if escalate is not None and escalate.is_set():
         eager_kill = True
+    if owner is not None:
+        return await _reap_owned(proc, owner, grace=grace, eager_kill=eager_kill, escalate=escalate)
     if descendants is not None:
         snapshot = list(descendants)
         leaders = list(groups) if groups is not None else []
@@ -747,6 +750,60 @@ async def reap(
     return int(await asyncio.shield(waiter))
 
 
+async def _reap_owned(
+    proc: Any,
+    owner: Any,
+    *,
+    grace: float,
+    eager_kill: bool,
+    escalate: asyncio.Event | None,
+) -> int:
+    """:func:`reap` for a SERVICE-OWNED row (#611 S1c, ADR-0295): the owner kills, this waits.
+
+    A background delegation is a job of its session, and the job service's
+    barrier confirms its processes gone from the evidence its own legs collect
+    BEFORE their first signal (ADR-0293 §5). This reaper's legs would signal
+    first and walk after — and on win32 its tree arm empties the Job's member
+    list before anything has waited on a member — so for such a row it signals
+    nothing itself: the owner's soft leg, its grace and its hard leg
+    (``owner.stop``), or its hard leg at once (``owner.stop_now``) when the stop
+    is eager or escalated mid-grace. Then the one ``proc.wait()`` this function
+    always ends with, shielded, so the child is reaped and no zombie is left.
+    """
+
+    waiter = asyncio.ensure_future(proc.wait())
+    if eager_kill:
+        owner.stop_now()
+    else:
+        soft = asyncio.ensure_future(owner.stop(grace))
+        # A strong reference until it ends: a second cancel leaves this frame
+        # with the legs still running, and the loop keeps only a weak one.
+        _OWNED_STOPS.add(soft)
+        soft.add_done_callback(_OWNED_STOPS.discard)
+        escalated = asyncio.ensure_future(escalate.wait()) if escalate is not None else None
+        try:
+            await asyncio.wait(
+                {soft} if escalated is None else {soft, escalated},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not soft.done():
+                # Escalated mid-grace: the hard leg now. The soft legs finish on
+                # their own (their hard leg finds nothing left); this waits for the
+                # process, not for them.
+                owner.stop_now()
+        except BaseException:  # noqa: BLE001 — a second cancel: the hard leg now
+            # As :func:`reap` does: escalating is the one answer that leaves no
+            # session leader alive, and the caller re-raises its own cancel.
+            owner.stop_now()
+        finally:
+            if escalated is not None:
+                escalated.cancel()
+    return int(await asyncio.shield(waiter))
+
+
+_OWNED_STOPS: set[asyncio.Future[Any]] = set()
+
+
 def _resolve_prctl() -> Callable[..., Any] | None:
     """``prctl`` from libc, loaded and looked up in THIS process, or ``None``.
 
@@ -774,7 +831,7 @@ def pdeathsig(
     """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
 
     Closes finding I1. Without it a child whose parent is SIGKILLed runs to
-    completion, reparented to init: ``modes/print_mode.py:331-338``'s ``_emit``
+    completion, reparented to init: ``modes/print_mode.py:338-345``'s ``_emit``
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
     ``break`` (``:385-390``) plus the ``raise BrokenPipeError`` (``:399-402``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``

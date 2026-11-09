@@ -111,6 +111,8 @@ async def test_live_match_is_unresolved_not_lost(tmp_path: Path, no_signals: lis
         # TUI turn), and the slot is held while the old process runs.
         (notice,) = harness.undelivered_notices()
         assert notice.notice_id == "j:unresolved"
+        # Rechecked while its process may live, and it says so (#611 S1c).
+        assert "it keeps checking" in notice.body and snap.rechecking
         assert service.admission.count(_sleeper.KIND) == 1
         await service.tick()
         assert service.snapshot("j").state == "unresolved", "still running: still unresolved"  # type: ignore[union-attr]
@@ -345,3 +347,128 @@ async def test_a_restored_live_job_counts_against_its_kinds_bound(
     await service.tick()
     assert service.snapshot("j").state == "lost"  # type: ignore[union-attr]
     assert service.admission.count(_sleeper.KIND) == 0
+
+
+# === #611 S1c: what a kind can only READ of an end is ``recovered`` (ADR-0295) ======
+
+
+async def _gone_pid() -> tuple[int, float | None]:
+    """A process that ran here and is gone: its pid and start time."""
+
+    child = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+    stamp = process_started(child.pid)
+    await child.wait()
+    return child.pid, stamp
+
+
+async def test_a_kinds_reading_is_recovered_never_done_and_waits_for_its_process(
+    tmp_path: Path, no_signals: list[Any]
+) -> None:
+    """Codex #4 (generic half): a kind's ``recovered`` is recorded only once every
+    recorded process is confirmed gone, and it reads ``recovered`` — never ``done``.
+
+    Fails on ``b387b4b5``: the live root's job read ``done`` at once
+    (``state=done admission=0``).
+    """
+
+    from aelix_coding_agent.jobs.contract import Recovered
+
+    reading = Recovered("recovered", "read from what it left", {"output": "left"})
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    try:
+        service, harness = await _restart(
+            tmp_path,
+            _start("j"),
+            _process("j", child.pid, process_started(child.pid)),
+            recovered=reading,
+        )
+        snap = service.snapshot("j")
+        assert snap is not None and snap.state == "unresolved"
+        assert "still running" in (snap.unresolved_reason or "")
+        assert service.admission.count(_sleeper.KIND) == 1, "it keeps its slot"
+        await service.tick()
+        assert service.snapshot("j").state == "unresolved"  # type: ignore[union-attr]
+        assert no_signals == []
+    finally:
+        await _end(child)
+    await service.tick()
+    snap = service.snapshot("j")
+    assert snap is not None and snap.state == "recovered"
+    assert service.admission.count(_sleeper.KIND) == 0
+    entries = await (await reopen(tmp_path)).get_entries()
+    outcome = fold(entries)["j"].outcome
+    assert outcome is not None and outcome["status"] == "recovered"
+    assert [n.notice_id for n in harness.undelivered_notices()] == ["j:unresolved", "j:final"]
+    # A second restart reads the recorded outcome: still ``recovered``.
+    again = fast_service()
+    _sleeper.register(again)
+    await again.bind(make_harness(await reopen(tmp_path)))
+    assert again.snapshot("j").state == "recovered"  # type: ignore[union-attr]
+    assert no_signals == []
+
+
+async def test_a_kinds_own_unresolved_reason_survives_os_evidence(
+    tmp_path: Path, no_signals: list[Any]
+) -> None:
+    """Codex #5 (generic half): a kind's ``unresolved`` keeps its reason; a gone
+    process never makes it ``lost``, and only gives its slot back. Nothing
+    checks it again, and its notice does not say anything does (verify-r2 SF2).
+
+    Fails on ``b387b4b5``: ``state=lost reason=None``; on ``fa742f77`` the
+    notice said "it keeps checking".
+    """
+
+    from aelix_coding_agent.jobs.contract import Recovered
+
+    pid, stamp = await _gone_pid()
+    service, harness = await _restart(
+        tmp_path,
+        _start("j"),
+        _process("j", pid, stamp),
+        recovered=Recovered("unresolved", reason="kind_cannot_tell"),
+    )
+    snap = service.snapshot("j")
+    assert snap is not None and (snap.state, snap.unresolved_reason) == (
+        "unresolved",
+        "kind_cannot_tell",
+    )
+    assert service.admission.count(_sleeper.KIND) == 0, "nothing of it runs: no slot"
+    (notice,) = harness.undelivered_notices()
+    assert "keeps checking" not in notice.body and "it is not watching this job" in notice.body
+    assert snap.rechecking is False and not service._needs_liveness()
+    await service.tick()
+    assert service.snapshot("j").unresolved_reason == "kind_cannot_tell"  # type: ignore[union-attr]
+    assert no_signals == []
+
+
+async def test_a_kinds_own_unresolved_with_a_live_process_holds_its_slot_and_reason(
+    tmp_path: Path, no_signals: list[Any]
+) -> None:
+    from aelix_coding_agent.jobs.contract import Recovered
+
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    try:
+        service, _harness = await _restart(
+            tmp_path,
+            _start("j"),
+            _process("j", child.pid, process_started(child.pid)),
+            recovered=Recovered("unresolved", reason="kind_cannot_tell"),
+        )
+        assert service.admission.count(_sleeper.KIND) == 1
+        await service.tick()
+        snap = service.snapshot("j")
+        assert snap is not None and snap.unresolved_reason == "kind_cannot_tell"
+    finally:
+        await _end(child)
+    await service.tick()
+    snap = service.snapshot("j")
+    assert snap is not None and (snap.state, snap.unresolved_reason) == (
+        "unresolved",
+        "kind_cannot_tell",
+    )
+    assert service.admission.count(_sleeper.KIND) == 0
+    assert no_signals == []

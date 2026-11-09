@@ -8,7 +8,9 @@ records read (:mod:`aelix_coding_agent.jobs.contract`). Nothing here names a
 kind: labels, settings keys and hints are the strings a client registered.
 
 **States.** ``starting`` → ``running`` → (``stopping``) → ``done`` | ``failed``
-| ``stopped``; ``lost`` only from a restart's evidence; ``unresolved`` when the
+| ``stopped``; ``lost`` and ``recovered`` only from a restart — ``recovered`` is
+what a kind read of a job's end that nothing confirmed, recorded once every
+process the job recorded is confirmed gone (#611 S1c); ``unresolved`` when the
 barrier could not confirm the processes gone, a runner's ``settle`` or
 ``helper_cleanup`` failed, or a restart cannot tell. A terminal state is
 recorded only after the barrier passed: the runner settled, every registered
@@ -43,9 +45,14 @@ no timeout).
 session's facts once per owner and posts what is undelivered; a job started
 and not ended is recovered by its kind from confirmed client records, or
 classified from OS evidence (:func:`~aelix_coding_agent.jobs.evidence.classify_restart`).
-Nothing found at start-up is ever signalled. One that stays ``unresolved`` holds
-a slot of its kind, leaves the model a restored notice, and — when OS evidence
-decided it — is classified again by the liveness loop (Codex #11).
+What a kind can only READ of a job's end — no confirmed end backs it — is
+recorded ``recovered``, never ``done``, and only once every process the job
+recorded is confirmed gone; a kind's own ``unresolved`` keeps its reason, and
+OS evidence never makes it ``lost`` (#611 S1c, ADR-0295). Nothing found at
+start-up is ever signalled. One that stays ``unresolved`` holds a slot of its
+kind while a recorded process may live, leaves the model a restored notice,
+and — when OS evidence decided it — is classified again by the liveness loop
+(Codex #11), which asks its kind again once the evidence says gone.
 
 **Ownership** (Codex #5). Every reading and control path answers only for the
 current session's jobs: an id of another session's job is not found.
@@ -70,6 +77,9 @@ from aelix_coding_agent.jobs import evidence as ev
 from aelix_coding_agent.jobs import notice as nt
 from aelix_coding_agent.jobs.admission import Admission, AdmissionRefused, Reservation
 from aelix_coding_agent.jobs.contract import (
+    JOB_MARKER_ENV,
+    JOBS_PROTOCOL_ENV,
+    JOBS_PROTOCOL_VERSION,
     TERMINAL_STATES,
     ClientOutcome,
     HelperCleanup,
@@ -211,13 +221,18 @@ class _Restored:
     folded: FoldedJob | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
     # An ``unresolved`` restored job is an obligation (Codex #11): it holds a
-    # slot of its kind until it is settled, and when its state came from OS
-    # evidence the liveness loop classifies it again — report-only — so a
-    # process that has since gone makes it ``lost``.
+    # slot of its kind until it is settled, and while ``recheck`` is set the
+    # liveness loop classifies it again — report-only — and once its processes
+    # are gone asks its kind again (``_recheck_restored``): ``recovered``, the
+    # kind's own ``unresolved``, or ``lost`` when the kind reads nothing or is
+    # not registered.
     session: Any = None
     reservation: Reservation | None = None
     recheck: bool = False
     argv_contains: tuple[str, ...] = ()
+    # The kind's own ``unresolved`` reason (#611 S1c): a recheck's OS evidence
+    # never replaces it.
+    kind_reason: bool = False
 
 
 @dataclass
@@ -249,7 +264,17 @@ class _Context:
         text = error if isinstance(error, str) else f"{type(error).__name__}: {error}"
         self._service._launch_result(self._job, text or "launch failed")
 
-    def register_process(self, proc: Any, *, pgid: int | None = None, tree: Any = None) -> None:
+    def register_process(
+        self, proc: Any, *, pgid: int | None = None, tree: Any = None
+    ) -> ev.ProcessRecord:
+        """Register ``proc``; the record the barrier will read is returned.
+
+        The SAME record, not a copy (#611 S1c): a client that has to kill
+        before its ``run`` returns — an eager path — signals through
+        :mod:`~aelix_coding_agent.jobs.evidence` on it, so the evidence those
+        legs collect is the evidence the barrier confirms against.
+        """
+
         if self._sealed:
             raise RuntimeError("register_process after run returned: the job is sealed")
         pid = proc if isinstance(proc, int) else int(getattr(proc, "pid", 0) or 0)
@@ -263,6 +288,7 @@ class _Context:
             tree=tree,
         )
         self._service._register_process(self._job, record)
+        return record
 
     def register_directory(self, path: str) -> None:
         if self._sealed:
@@ -277,10 +303,10 @@ class _Context:
         self._service._activity(self._job, snapshot)
 
     def env_marker(self) -> dict[str, str]:
-        return {"AELIX_JOB": f"{self.job_id}:{self._nonce}"}
+        return {JOB_MARKER_ENV: f"{self.job_id}:{self._nonce}"}
 
     def protocol_env(self) -> dict[str, str]:
-        return {"AELIX_JOBS_PROTOCOL": "1"}
+        return {JOBS_PROTOCOL_ENV: JOBS_PROTOCOL_VERSION}
 
     def _seal(self) -> None:
         self._sealed = True
@@ -474,6 +500,7 @@ class JobService:
                 adapter.capabilities.default_bound,
                 wanted,
                 settings_key=adapter.settings_key,
+                noun=adapter.capabilities.noun,
             )
         except AdmissionRefused as exc:
             raise JobStartRefused(str(exc)) from exc
@@ -523,7 +550,10 @@ class JobService:
         else:
             try:
                 own = self.admission.reserve(
-                    adapter.name, caps.default_bound, settings_key=adapter.settings_key
+                    adapter.name,
+                    caps.default_bound,
+                    settings_key=adapter.settings_key,
+                    noun=caps.noun,
                 )
             except AdmissionRefused as exc:
                 raise JobStartRefused(str(exc)) from exc
@@ -1357,9 +1387,9 @@ class JobService:
         client = client_records_of(entries or [], folded.job_id)
         outcome = folded.outcome
         if outcome is not None:
+            # ``recovered`` stays ``recovered`` (#611 S1c, ADR-0295): what a
+            # restart read of a job no confirmed end backs is never ``done``.
             restored.state = _terminal(outcome.get("status"))
-            if outcome.get("status") == "recovered":
-                restored.state = "done"
             restored.brief = str(outcome.get("brief", ""))
             restored.reason = None
             self._settle_restored(restored)
@@ -1392,7 +1422,8 @@ class JobService:
         except Exception:  # noqa: BLE001
             await self._restore_unresolved(restored, registration, "recover_error")
             return
-        if recovered is not None and recovered.status not in ("unresolved",):
+        if recovered is not None and recovered.status not in ("unresolved", "recovered"):
+            # The kind's confirmed records say how it ended.
             status = recovered.status
             await self._record_restored(
                 session, restored, registration, status, recovered.brief, recovered.payload
@@ -1407,10 +1438,32 @@ class JobService:
         state, why = ev.classify_restart(
             list(folded.process_list()), start.get("supervisor"), argv_contains=argv_contains
         )
-        if state == "lost":
+        restored.argv_contains = argv_contains
+        if recovered is not None and recovered.status == "unresolved":
+            # THE KIND'S OWN UNCERTAINTY STANDS (#611 S1c, ADR-0295): its reason
+            # is kept and OS evidence never turns it into ``lost``. The slot is
+            # held while a recorded process may live and given back once every
+            # one is confirmed gone; the job stays ``unresolved``.
+            restored.kind_reason = True
+            await self._restore_unresolved(
+                restored, registration, recovered.reason or "unresolved", recheck=state != "lost"
+            )
+            if state == "lost":
+                self._settle_restored(restored)
+            return
+        if recovered is not None and state == "lost":
+            # ``recovered``: a reading of what the job left, recorded only once
+            # every process it recorded is confirmed gone.
+            await self._record_restored(
+                session, restored, registration, "recovered", recovered.brief, recovered.payload
+            )
+        elif state == "lost":
             await self._record_restored(session, restored, registration, "lost", why, {})
         else:
-            restored.argv_contains = argv_contains
+            # A recorded process lives, or cannot be told gone: the job keeps its
+            # supervision and its slot whatever its kind could read — a reading
+            # is never an end while its process may still run (#611 S1c). The
+            # liveness loop asks the kind again once the evidence says gone.
             await self._restore_unresolved(restored, registration, why, recheck=True)
 
     async def _restore_unresolved(
@@ -1454,7 +1507,7 @@ class JobService:
                         title=restored.title,
                         status="unresolved",
                         elapsed=None,
-                        body=_restored_unresolved_body(reason),
+                        body=_restored_unresolved_body(reason, recheck=recheck),
                     ),
                     details={"v": 1, "job_id": restored.job_id, "status": "unresolved"},
                     brief=nt.cut_brief(f'{restored.label} "{restored.title}" unresolved: {reason}'),
@@ -1483,8 +1536,15 @@ class JobService:
         )
         if state == "lost":
             registration = self.registry.get(restored.kind)
+            if registration is not None:
+                # Its processes are gone now: the kind is asked again, as at the
+                # restart (#611 S1c) — what it can read of the job's end is
+                # recorded ``recovered``, its own uncertainty stays ``unresolved``,
+                # and only nothing at all makes it ``lost``.
+                await self._reconcile_one(restored.session, folded, entries=None)
+                return
             await self._record_restored(restored.session, restored, registration, "lost", why, {})
-        elif why != restored.reason:
+        elif why != restored.reason and not restored.kind_reason:
             restored.reason = why
 
     async def _record_restored(
@@ -1554,7 +1614,7 @@ class JobService:
         except RecordWriteFailed:
             restored.state, restored.reason = "unresolved", "record_failed"
             return
-        restored.state = "done" if status == "recovered" else _terminal(status)
+        restored.state = _terminal(status)
         restored.brief = brief
         restored.reason = None
         restored.payload = dict(payload)
@@ -1639,6 +1699,7 @@ class JobService:
             progress=job.progress,
             unresolved_reason=job.unresolved_reason,
             payload=dict(job.outcome.payload) if job.outcome is not None else {},
+            rechecking=job.state == "unresolved" and job.unresolved_reason != "settle_error",
         )
 
     def _snap_restored(self, restored: _Restored) -> JobSnapshot:
@@ -1658,6 +1719,7 @@ class JobService:
             brief=restored.brief,
             unresolved_reason=restored.reason,
             payload=dict(restored.payload),
+            rechecking=restored.state == "unresolved" and restored.recheck,
         )
 
     def unsettled(self, owner: str | None = None) -> bool:
@@ -1772,11 +1834,14 @@ _HELPERS_UNVERIFIED = (
 )
 
 
-def _restored_unresolved_body(reason: str) -> str:
+def _restored_unresolved_body(reason: str, *, recheck: bool) -> str:
+    """Only what is true: a job the liveness loop does not recheck is not said to be checked (#611 S1c)."""
+
+    then = "it keeps checking, and" if recheck else "it is not watching this job;"
     return (
         "aelix restarted and found this job started and not ended; it could not tell "
-        f"how it ended ({reason}). aelix stops nothing it finds at a restart; it keeps "
-        "checking, and /jobs shows its state."
+        f"how it ended ({reason}). aelix stops nothing it finds at a restart; {then} "
+        "/jobs shows its state."
     )
 
 

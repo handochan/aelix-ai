@@ -297,3 +297,21 @@ While background jobs are active (off until #611 S3), a `-p` / `--mode json` run
 its verdict: it waits for the session's tracked jobs and runs a notice turn for what they leave.
 A notice turn's events reach this stream as any turn's do; S1b adds no event type and changes no
 envelope. The versioned `aelix_print_done` event belongs to #611 S1c (ADR-D).
+
+## Note (2026-11-08, ADR-0295, #723)
+
+The versioned end-of-run event: a `--mode json` run whose environment holds
+`AELIX_JOBS_PROTOCOL=1` and whose own jobs gate is on writes `{"type": "aelix_print_done"}` after
+its background drain and before its verdict, its last line on a clean run; with any other value,
+or none, in text mode, and with `ACTIVE = False` — an inherited variable included — it writes
+nothing new (`tests/cli/test_print_done_protocol_611.py`,
+`::test_with_the_gate_off_an_inherited_request_changes_nothing`). Only a parent running the child
+as a background job sets the variable (`JobContext.protocol_env`), and its `PrintChannel` removes
+an inherited one from every other child it starts
+(`tests/agents_ext/test_agent_background_611.py::test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not`);
+`RpcChannel` does not, and it is not wired into the product (nothing in `packages/` constructs one,
+searched 2026-11-10); only that parent reads the line (ADR-0276's note of the same
+date), strictly: exactly `{"type": …}`, after the latest run closed, and taken back by a later
+`agent_start`. A consumer that does not know the type ignores it, as the delegation reducer always
+ignored unknown types.
+

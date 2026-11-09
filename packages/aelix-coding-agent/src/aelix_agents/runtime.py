@@ -155,7 +155,7 @@ _SESSION_DRAINING = (
 
 WITHOUT IT, ``stop_all`` CANNOT STOP A BATCH — it makes it bigger. Every abort
 ``stop_all`` performs RELEASES a member parked on the batch semaphore
-(``batch.py:436-439``), and every ``await`` in ``stop_all`` is a chance for that
+(``batch.py:455-458``), and every ``await`` in ``stop_all`` is a chance for that
 member to reach ``create_subprocess_exec``. Draining alone is not enough and a
 flag held only FOR THE DURATION of the drain is not enough either: MEASURED with
 real processes, a wave-1 member's ``PrintChannel.run`` routinely returns — and
@@ -486,6 +486,13 @@ class SubagentHost:
 
     ``None`` records nothing and spawns the child ``--no-session`` — the
     default, and every host that predates #199."""
+    reserve: Callable[[int], Any] | None = None
+    """Where a live delegation's slot comes from while background jobs are on
+    (#611 S1c, ADR-0199 (d) as amended by ADR-0293 §9 and ADR-0295): called with
+    the slots wanted, it returns a reservation of at least one — sized to what
+    is free — or raises with the sentence the model reads. ``None`` — every host
+    while jobs are off, and every host before #611 — is the per-session
+    :data:`MAX_LIVE_CHILDREN` registry count, as before."""
 
 
 @dataclass(frozen=True)
@@ -646,7 +653,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1046``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1093``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -657,7 +664,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:568``/``tool.py:1053`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:568``/``tool.py:1362`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -860,6 +867,35 @@ class _SubagentRuntimeImpl:
             child_cwd = resolve_child_cwd(cwd, self.host.cwd())
         except ValueError as exc:
             return _error_result(resolved, str(exc))
+        # WHILE BACKGROUND JOBS ARE ON, THE SLOT BEFORE THE DIALOG (#611 S1c,
+        # ADR-0199 (d) as amended): every live delegation counts, a human's
+        # included, and a refusal after a human said yes is what the
+        # pre-consent reservation exists to rule out. Off, ``reserve`` is
+        # ``None`` and the registry count in ``_run`` decides, as before.
+        reservation: Any = None
+        if self.host.reserve is not None:
+            try:
+                reservation = self.host.reserve(1)
+            except Exception as exc:  # noqa: BLE001 — the refusal is the result
+                return _error_result(resolved, str(exc))
+        try:
+            return await self._spawn_consented(
+                resolved, task, child_cwd=child_cwd, on_event=on_event, reservation=reservation
+            )
+        finally:
+            if reservation is not None:
+                reservation.release()
+
+    async def _spawn_consented(
+        self,
+        resolved: ResolvedProfile,
+        task: str,
+        *,
+        child_cwd: str,
+        on_event: Callable[[SubagentProgress], None] | None,
+        reservation: Any,
+    ) -> SubagentResult:
+        """:meth:`spawn` from its dialog on, holding ``reservation`` (or none while jobs are off)."""
 
         grant = await request_spawn_consent(
             self.host.consent_context(),
@@ -918,6 +954,7 @@ class _SubagentRuntimeImpl:
                 charge_budget=False,
                 # No tool call, no topology, no index: the receipt says null.
                 record=None,
+                reservation=reservation,
             )
         finally:
             if grant.disclosure and announce is not None:
@@ -936,6 +973,7 @@ class _SubagentRuntimeImpl:
         permission_floor: PermissionMode | None = None,
         on_event: Callable[[SubagentProgress], None] | None = None,
         record: SpawnRecordMeta | None = None,
+        reservation: Any = None,
     ) -> SubagentResult:
         """The MODEL-DRIVEN door — implementation-private, grant REQUIRED.
 
@@ -964,6 +1002,10 @@ class _SubagentRuntimeImpl:
         ``record`` carries the call's ``tool_call_id``, topology and this
         member's index into the parent's records (#199, :class:`SpawnRecordMeta`)
         — the CALL's topology, which is why it is not the ``mode`` above.
+
+        ``reservation`` (#611 S1c) is the slot the CALL reserved before its
+        dialog while background jobs are on; the row holds it while it lives
+        and the call releases it. ``None`` is the per-session registry count.
         """
 
         _reject_unsupported(mode, background=background)
@@ -1002,6 +1044,7 @@ class _SubagentRuntimeImpl:
             on_event=on_event,
             charge_budget=True,
             record=record,
+            reservation=reservation,
         )
 
     # ── Resume (#610, ADR-0277) ───────────────────────────────────
@@ -1101,6 +1144,7 @@ class _SubagentRuntimeImpl:
         *,
         on_event: Callable[[SubagentProgress], None] | None = None,
         record: SpawnRecordMeta | None = None,
+        reservation: Any = None,
     ) -> SubagentResult:
         """RESUME a child on its own session file — the model door, grant REQUIRED.
 
@@ -1178,6 +1222,7 @@ class _SubagentRuntimeImpl:
             charge_budget=True,
             record=record,
             resume=_Resume(target=target, instruction=instruction),
+            reservation=reservation,
         )
 
     # ── Registry ──────────────────────────────────────────────────
@@ -1224,7 +1269,7 @@ class _SubagentRuntimeImpl:
         been aborted there was nothing left that could start another, and a
         single pass followed by ``self._children.clear()`` was correct. Under P3
         a batch's later waves are parked on the batch semaphore and are released
-        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:436-439``): killing
+        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:455-458``): killing
         wave 1 frees four permits, wave 2 reaches ``create_subprocess_exec``
         during this method's own ``await``\\ s, and the unconditional ``clear()``
         then dropped the only handle on them. Measured, with real processes:
@@ -1272,8 +1317,13 @@ class _SubagentRuntimeImpl:
                     if task is not None:
                         with contextlib.suppress(Exception):
                             await asyncio.shield(task)
-                    remove_prompt_dir(child.prompt)
-                    child.prompt = None
+                    if child.owner is None:
+                        remove_prompt_dir(child.prompt)
+                        child.prompt = None
+                    # A SERVICE-OWNED row's directory is the job's (#611 S1c,
+                    # Codex #13): its finalizer removes it once the barrier and
+                    # the cleanup duty are done — not this runtime, whose
+                    # ``stop_all`` may run while that duty is still open.
                     # ONLY the row we just finished. A blanket ``clear()`` here
                     # would drop a row the ``_draining`` gate let through in the
                     # window before it was set.
@@ -1296,6 +1346,8 @@ class _SubagentRuntimeImpl:
         charge_budget: bool,
         record: SpawnRecordMeta | None = None,
         resume: _Resume | None = None,
+        reservation: Any = None,
+        owner: Any = None,
     ) -> SubagentResult:
         """Register the row, drive the channel, deregister. Always deregisters.
 
@@ -1357,6 +1409,22 @@ class _SubagentRuntimeImpl:
         row carries the child's session id from the insert on, the receipt is
         ATTACHED to the existing file under this run's new key, and the plan is
         marked with the first run's key.
+
+        WHILE BACKGROUND JOBS ARE ON (#611 S1c, ADR-0295) the live bound is the
+        job service's admission, not :data:`MAX_LIVE_CHILDREN`: ``reservation``
+        is the slot the caller reserved before its dialog, held while this row
+        lives; a door that brought none takes one here, inside the await-free
+        block, through :attr:`SubagentHost.reserve`, and gives it back in the
+        ``finally``. With neither, :meth:`_admit_live` decides, as before.
+
+        ``owner`` makes the row SERVICE-OWNED — a background delegation, run by
+        :mod:`aelix_agents.jobs_client` (#611 S1c). The row carries it to the
+        channel (``RunningChild.owner``: the tree, the pumps' kills and the
+        prompt directory become the job's), the receipt writes its opening
+        records CONFIRMED and linked to the job (``job_id``), and the closing
+        records are not appended here but handed to the owner, which the job
+        service writes — confirmed — before its ``cleanup`` and ``outcome``
+        facts (ADR-0293 §7). Every other run records exactly as before.
         """
 
         # BOTH DOORS PASS HERE, so this is the one place a profile's ignored
@@ -1426,7 +1494,21 @@ class _SubagentRuntimeImpl:
             return _error_result(resolved, excluded_refusal)
         # Built here for the same reason: the record builders must stay total.
         limits_record = limits.to_record()
-        refusal = self._admit_live()
+        # THE LIVE BOUND (#611 S1c). Still inside the await-free block: a
+        # ``reserve`` call is synchronous and takes its slot atomically.
+        taken: Any = None
+        if reservation is None and owner is None and self.host.reserve is not None:
+            try:
+                taken = self.host.reserve(1)
+            except Exception as exc:  # noqa: BLE001 — the refusal is the result
+                return _error_result(resolved, str(exc))
+            refusal = None
+        elif reservation is not None or owner is not None:
+            # The caller's reservation, or — for a service-owned row — the job's
+            # own slot, which the service holds until its cleanup is confirmed.
+            refusal = None
+        else:
+            refusal = self._admit_live()
         if refusal is not None:
             return _error_result(resolved, refusal)
         # THE BUDGET (MEDIUM #2, S6). One charge per CHILD, taken only once the
@@ -1436,6 +1518,8 @@ class _SubagentRuntimeImpl:
         # a task that reliably fails loop forever.
         if charge_budget:
             if self._delegations_this_prompt >= MAX_DELEGATIONS_PER_PROMPT:
+                if taken is not None:
+                    taken.release()
                 return _error_result(resolved, _BUDGET_EXHAUSTED)
             self._delegations_this_prompt += 1
         spawn_id = _new_id()
@@ -1445,6 +1529,7 @@ class _SubagentRuntimeImpl:
             # A resume's row names its child session from the insert on, so a
             # second resume of it is refused (``resume_refusal``) at once.
             session_id=resume.target.session_id if resume is not None else None,
+            owner=owner,
         )
         self._children[spawn_id] = child
         # What the argv will carry, so the id shown is the id launched — read
@@ -1502,6 +1587,10 @@ class _SubagentRuntimeImpl:
             permission_mode=plan.permission_mode.value,
             limits=limits_record,
             resumes=resume.target.first_key if resume is not None else None,
+            # #611 S1c — the job this run is, and its confirmed writer: only for
+            # a service-owned row, so every other receipt records as before.
+            job_id=owner.job_id if owner is not None else None,
+            writer=owner.write_records if owner is not None else None,
         )
         closing: list[tuple[str, dict[str, Any]]] | None = None
         settled = False
@@ -1548,7 +1637,12 @@ class _SubagentRuntimeImpl:
             # append still settles with what the envelope said — not with a
             # ``cancelled`` guess about a delegation that had already finished.
             closing = self._settled_records(receipt, child, result)
-            await append_records(receipt.session, closing)
+            if owner is not None:
+                # The job service writes them, confirmed, before its own
+                # ``cleanup`` and ``outcome`` (#611 S1c, ADR-0293 §7).
+                owner.hand_records(closing)
+            else:
+                await append_records(receipt.session, closing)
             settled = True
             return result
         except BaseException as exc:
@@ -1571,8 +1665,15 @@ class _SubagentRuntimeImpl:
                         self._leave_cancelled_envelope(
                             record, child=child, receipt=receipt, plan=plan
                         )
-                    await _shielded_append(receipt.session, records, self._settling)
+                    if owner is not None:
+                        owner.hand_records(records)
+                    else:
+                        await _shielded_append(receipt.session, records, self._settling)
             finally:
+                if taken is not None:
+                    # The slot this frame took (#611 S1c): released once the
+                    # channel returned, i.e. after its reap.
+                    taken.release()
                 # A run that left no envelope (no process, or an exception out
                 # of the channel) must not be built later from a dead row — and
                 # one that had a process is remembered as having run (#604
@@ -1582,9 +1683,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:225``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:265``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1440-1441``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1509-1515``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -1900,13 +2001,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:1060-1061``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:1075-1076``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:1083-1085``) — authoritative, because it
+            # ``message_end`` (``stream.py:1097-1099``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
