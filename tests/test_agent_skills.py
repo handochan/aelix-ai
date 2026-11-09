@@ -236,8 +236,11 @@ def test_git_may_track_the_skill_trees_and_still_ignores_the_rest_of_claude() ->
 
 
 def _write(path: Path, text: str) -> None:
+    # Bytes, not write_text: on Windows text mode turns "\n" into "\r\n", and the
+    # sync tests compare the mirror's bytes with the LF literal they wrote (#733's
+    # first CI run failed 3 tests on every windows-latest leg that way).
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _skill_md(name: str, description: str = "Does one thing.") -> str:
