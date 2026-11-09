@@ -32,6 +32,17 @@ cp1252 on the runner. A byte cp1252 lacks (`0x81`, inside `₁`) killed the read
 thread, so `stdout` was None and `ast.parse(None)` raised. Rule: every subprocess
 that reads text passes `encoding="utf-8", errors="replace"`.
 
+### `write_text` writes `\r\n`, #733
+
+`Path.write_text("a\n")` on Windows writes `a\r\n`: text mode translates newlines,
+whatever the `encoding`. A test that writes a fixture that way and then compares
+`read_bytes()` with an LF literal fails only on windows-latest. #733's first CI run
+failed 3 skill-sync tests on all four Windows legs for exactly this, while the code
+under test copied bytes correctly. Rule: a fixture whose bytes a test compares is
+written with `write_bytes(text.encode("utf-8"))` or `write_text(..., newline="")`.
+To see it locally, patch `Path.write_text` to translate `\n` to `\r\n` and run the
+test.
+
 ### Paths inside `str(list)` double their backslashes, #330 and #131
 
 The repr of an argv list doubles every backslash, so a single-backslash Windows path
