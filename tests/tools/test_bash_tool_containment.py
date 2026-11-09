@@ -3673,6 +3673,14 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
 
 # === 9: delivery completeness ===============================================
 
+#: #695: case 9's command ``timeout`` for each of its :data:`ATTEMPTS`, doubling
+#: from ``DEADLINE * 4``: 20, 40 and 80 s. Each attempt's :func:`_bounded` bound
+#: is its timeout plus 5 s, 25, 45 and 85 s, and the three bounds stay at least
+#: 60 s under pytest's 240 s ``faulthandler_timeout``
+#: (``test_bash_loaded_loop_premise.py`` pins the timeouts, the bounds and that
+#: sum). The numbers behind the doubling are in the case's #695 paragraph.
+LOADED_LOOP_BUDGETS = tuple(DEADLINE * 4 * 2**n for n in range(ATTEMPTS))
+
 
 async def test_every_byte_is_delivered_under_a_loaded_loop(
     tmp_path: Path, strays: list[int]
@@ -3689,7 +3697,12 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     queue rather than of timing.
 
     The reference is a plain ``subprocess.run`` of the same argv, so the
-    comparison is CRLF-safe by construction.
+    comparison is CRLF-safe by construction. Byte for byte means no byte
+    lost, added or changed; it does not mean order. Every :data:`CHATTY` line
+    is the same 1 KiB, so chunks that end on line boundaries and arrive out
+    of order compare equal: a mutant that swapped delivered chunks 3 and 4
+    survived 2 of 2 runs at ``6caaae09`` and 3 of 3 with #695's budgets
+    (#695's verify, 2026-11-09).
 
     WHAT THIS CASE DID NOT KILL, MEASURED (2026-09-05, darwin, py3.12). #222's
     §C.5(l) expects it to redden a polled ``reader.eof`` in place of
@@ -3777,6 +3790,38 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     a confirmed run. An unreported loss, changed byte or bad exit still fails
     on the FIRST confirmed attempt. Neither the pressure nor the timeout nor
     the product's drain bounds change here; the POSIX reader work is #592.
+
+    #695 (2026-11-09): THE TIMEOUT NOW DOUBLES PER ATTEMPT, 20, 40 and 80 s
+    (:data:`LOADED_LOOP_BUDGETS`). The first attempt keeps the 20 s above.
+    The step came with the ubuntu-latest runner image, not with this tree.
+    Measured from this warning's ``exec`` in the ci.yml logs, the image read
+    from each job log's "Runner Image" group:
+
+    * Every ubuntu job that started between 2026-10-27 16:00 and 10-28 18:00
+      UTC, the hours in which both images served jobs (all of them on the 11
+      commits that ran on both), first attempts only: 52 jobs on image
+      20261012.334.1 took 0.94 s at the median (max 7.99), and 28 on
+      20261025.353.1 took 7.22 s (max 15.66).
+    * Two images that served jobs from 11-02 on were slow too: first-attempt
+      medians of 8.26 s on 20261101.360.1 (198 jobs, 2026-11-03 to 11-08)
+      and 10.85 s on 20261018.96.1 (11 jobs, 11-02 to 11-05).
+    * From 2026-10-29 to 11-08, 629 ubuntu attempts (592 jobs) took 8.65 s
+      at the median when confirmed. 40 reached the 20 s timeout, each with
+      ``output_unconfirmed=False``. In five jobs, every job this case failed
+      in that window, all three attempts timed out.
+    * The windows legs did not move: their first-attempt medians were
+      6.47-6.91 s on py3.11/3.12 and 1.55-1.63 s on py3.13/3.14 from
+      2026-10-20 to 10-23, and 6.64-7.47 s and 1.58-1.84 s from 11-03 to
+      11-06.
+    * Linux docker with 4 CPUs on the development machine (kernel 7.0.11)
+      took 0.07-1.04 s over 30 runs at ``6caaae09``.
+
+    What in the image causes it is not measured. A timed-out attempt's own
+    byte rate puts its whole run at 20-49 s (a linear estimate). At that
+    rate, all five failed jobs would have passed on their second attempt, and
+    80 s is 1.6x the slowest estimate. Nothing else changes: the pressure,
+    the byte-for-byte comparison, the first-attempt failure of a confirmed
+    loss, and the named failure after three timeouts.
     """
 
     chatty = _script(tmp_path, "chatty.py", CHATTY)
@@ -3794,7 +3839,7 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     assert len(reference.stdout) >= 2 * 1024 * 1024, "the reference did not produce 2 MiB"
 
     premise_failures: list[str] = []
-    for attempt in range(1, ATTEMPTS + 1):
+    for attempt, budget in enumerate(LOADED_LOOP_BUDGETS, start=1):
         stop = asyncio.Event()
 
         async def _busy(stop: asyncio.Event) -> None:
@@ -3807,8 +3852,8 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
         chunks: list[bytes] = []
         started = time.monotonic()
         try:
-            task = _exec_task(command, tmp_path, chunks, timeout=DEADLINE * 4)
-            result = await _bounded(task, DEADLINE * 4 + 5.0, "delivery completeness")
+            task = _exec_task(command, tmp_path, chunks, timeout=budget)
+            result = await _bounded(task, budget + 5.0, "delivery completeness")
         finally:
             elapsed = time.monotonic() - started
             stop.set()
@@ -3817,7 +3862,7 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
         delivered = b"".join(chunks)
         measurement = (
             f"delivery under a loaded loop: attempt {attempt}, exec {elapsed:.3f}s of "
-            f"{DEADLINE * 4:.0f}s, {len(chunks)} chunks, {len(delivered)}/{len(reference.stdout)} "
+            f"{budget:.0f}s, {len(chunks)} chunks, {len(delivered)}/{len(reference.stdout)} "
             f"bytes, exit_code={result.exit_code}, timed_out={result.timed_out}, "
             f"output_unconfirmed={result.output_unconfirmed}, on {sys.platform}"
         )

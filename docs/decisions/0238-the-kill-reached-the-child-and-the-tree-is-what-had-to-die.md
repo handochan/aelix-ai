@@ -2129,3 +2129,30 @@ corruption, a bad exit and exhausted attempts through that same procedure.
 The real-child case keeps its 2 MiB writer, busy loop and 20-second command
 timeout. Moving POSIX reading onto the event loop remains #592, outside this
 test-only change.
+
+### 2026-11-09: #695 doubles the loaded-loop case's command timeout per attempt
+
+The 20-second command timeout above now applies to the first attempt only.
+The second attempt gets 40 s and the third 80 s
+(`LOADED_LOOP_BUDGETS` in `tests/tools/test_bash_tool_containment.py`).
+The verdicts are unchanged: a confirmed loss fails on its first confirmed
+attempt, and three timeouts still fail the case by name.
+
+The step came with the ubuntu-latest runner image, not with the reader. In
+the ci.yml logs, with the image read from each job's "Runner Image" group,
+the ubuntu jobs that started between 2026-10-27 16:00 and 10-28 18:00 UTC,
+while both images served jobs, took a first-attempt median `exec` of 0.94 s
+on image 20261012.334.1 (52 jobs) and 7.22 s on 20261025.353.1 (28 jobs).
+Two images that served jobs from 11-02 on were slow too: 20261101.360.1
+(8.26 s, 198 jobs, 11-03 to 11-08) and 20261018.96.1 (10.85 s, 11 jobs,
+11-02 to 11-05). What in the image slows the case is not measured. From
+2026-10-29 to 11-08, 40 of 629 ubuntu attempts (592 jobs) reached 20 s, all
+with `output_unconfirmed=False`, and five jobs timed out on all three
+attempts. The windows legs did not move.
+Estimated from each timed-out attempt's own byte rate, all five jobs would
+have passed on their second attempt.
+`tests/tools/test_bash_loaded_loop_premise.py` drives three timed-out
+attempts through the case and records what it hands on: the command timeouts
+20, 40 and 80 s, and `_bounded`'s outer bounds 25, 45 and 85 s. It pins both
+lists, and that the three recorded bounds stay at least 60 s under pytest's
+240-second `faulthandler_timeout`.
