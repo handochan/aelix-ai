@@ -2970,6 +2970,27 @@ unwritten. Add them with the next release.
   `model_registry`, `util`, `tools`, `settings_manager`, `session`, `core`)
   spent 23.5 s in setup before and 2.1 s after, and the basetemp ended with
   2,167 entries instead of 10,223. Users see no change.
+- **Tests: the loaded-loop delivery case no longer fails CI's ubuntu legs on
+  a slow runner (#695).** `test_every_byte_is_delivered_under_a_loaded_loop`
+  gave its command 20 s on each of its three attempts. Its time on ubuntu
+  changed with the runner image. In the ubuntu jobs that started between
+  2026-10-27 16:00 and 10-28 18:00 UTC, while both images served jobs, the
+  first attempt's median `exec` was 0.94 s on image 20261012.334.1 (52 jobs)
+  and 7.22 s on 20261025.353.1 (28 jobs). Two images that served jobs from
+  11-02 on were slow too: 20261101.360.1 (8.26 s, 198 jobs, 11-03 to 11-08)
+  and 20261018.96.1 (10.85 s, 11 jobs, 11-02 to 11-05). What in the image
+  slows the case is not measured. From 2026-10-29 to 11-08, 40 of 629 ubuntu
+  attempts (592 jobs) reached the 20 s timeout. Each of them had
+  `output_unconfirmed=False`. In five jobs all three attempts timed out. The
+  windows legs did not move. The timeout now doubles per attempt:
+  20, 40 and 80 s. Estimated from each timed-out attempt's own byte rate, all
+  five failed jobs would have passed on their second attempt. Three timeouts
+  still fail the case by name. They end within pytest's 240 s per-test limit
+  (141.9 s measured in Linux docker with every read slowed). A dropped chunk
+  still fails on the first confirmed attempt. In Linux docker, a mutant that
+  drops one delivered chunk failed 10 of 10 runs on attempt 1, and 2 of 2
+  runs on attempt 2 when reads were slowed past the first 20 s. Users see no
+  change.
 - **Quitting during file completion no longer leaves aelix running (#428).**
   The `@file` menu is collected in one background job, so repeated cancellation
   during shutdown cannot leave a second worker waiting forever on a queue.
