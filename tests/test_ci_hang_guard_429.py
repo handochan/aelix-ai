@@ -44,10 +44,25 @@ OLD_429_LIMITS = {
 _PER_OS_LIMIT = re.compile(r"\$\{\{ matrix\.os == 'windows-latest' && (\d+) \|\| (\d+) \}\}")
 _OS_NAMES = {"ubuntu-latest": "Ubuntu", "windows-latest": "Windows"}
 _COUNT_WORDS = {4: "four", 6: "six", 8: "eight", 10: "ten", 12: "twelve"}
+#: #689: the child's per-test timer in a row whose first child test passes. That
+#: test's teardown runs inside the timer, and it is where the child first imports
+#: ``runtime_bootstrap`` (``_no_hosted_catalog`` in tests/conftest.py; httpx and
+#: rich come with it). In fresh Linux docker py3.11 containers with 4 CPUs and 8
+#: busy loops, that test took 324-504 ms in the first (cold) child, and at the
+#: 0.2 s the other rows use, the row that got that child failed 20 of 20 runs. At
+#: 2 s both rows passed 20 of 20, and the hung teardown still trips the timer.
+#: Warming that import first was not chosen: it covers this import only, while
+#: 2 s covers whatever a passing test costs up to then.
+_FIRST_TEST_PASSES_TIMER_S = 2.0
 
 
 def _run_pytest(
-    tmp_path: Path, test: str, *, during_test: bool, extra: tuple[str, ...] = ()
+    tmp_path: Path,
+    test: str,
+    *,
+    during_test: bool,
+    extra: tuple[str, ...] = (),
+    per_test_timer: float = 0.2,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``test`` in a child pytest that loads the real conftest from ``tmp_path``.
 
@@ -88,7 +103,7 @@ faulthandler.dump_traceback_later = _short_exit_timeout
             sys.executable, "-u", "-m", "pytest", "-c", str(ROOT / "pyproject.toml"),
             "--rootdir", str(tmp_path), "--confcutdir", str(tmp_path), "-q",
             "-p", "no:cacheprovider", *extra,
-            "-o", f"faulthandler_timeout={0.2 if during_test else 0}", str(test_path),
+            "-o", f"faulthandler_timeout={per_test_timer if during_test else 0}", str(test_path),
         ],
         cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=15,
@@ -113,6 +128,122 @@ def test_hang(stuck_teardown):
     result = _run_pytest(tmp_path, test, during_test=True)
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Timeout" in result.stderr and "queue.py" in result.stderr, result.stderr
+
+
+_LABEL_FRAME = re.compile(
+    r'^  File "<pytest: the test running now \(#689\)>", line \d+ in (?P<label>.+)$', re.M
+)
+#: faulthandler's header above each thread's frames, most recent first. 3.14
+#: adds the thread's name in brackets.
+_THREAD_HEADER = re.compile(
+    r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+ .*\(most recent call first\):$"
+)
+
+
+def _top_frame_labels(dump: str) -> list[str]:
+    """The label frames in ``dump``, each required to be its thread's top frame (#689).
+
+    The label is the line a reader finds right under a thread's header only
+    while its thread blocks in C. ``SimpleQueue.get`` is C; a wait in Python
+    code, such as ``queue.Queue.get``, would put ``threading.py`` and
+    ``queue.py`` frames above it.
+    """
+
+    lines = dump.splitlines()
+    labels: list[str] = []
+    for index, line in enumerate(lines):
+        match = _LABEL_FRAME.match(line)
+        if match is None:
+            continue
+        above = lines[index - 1] if index else ""
+        assert _THREAD_HEADER.match(above), f"the label is not its thread's top frame:\n{dump}"
+        labels.append(match["label"])
+    return labels
+
+
+@pytest.mark.parametrize("shape", ["sync-call", "async-idle-loop", "teardown"])
+def test_a_hang_dump_names_the_test_that_hung(tmp_path: Path, shape: str) -> None:
+    """#689: the 240 s dump names the hung test itself.
+
+    In #689's three CI dumps, the main thread was idle in the event loop's
+    ``select`` with no test frame (the ``async-idle-loop`` row). The test had
+    to be found by counting progress dots. ``tests/conftest.py`` keeps one
+    idle thread whose top frame is named after the running test. This checks
+    that the frame is in the dump and that it names this test, in every phase
+    the timer covers.
+    """
+
+    tests = {
+        "sync-call": "import queue\ndef test_hang():\n    queue.Queue().get()\n",
+        "async-idle-loop": (
+            "import asyncio\nasync def test_hang():\n    await asyncio.Event().wait()\n"
+        ),
+        "teardown": (
+            "import queue\nimport pytest\n@pytest.fixture\ndef stuck():\n    yield\n"
+            "    queue.Queue().get()\ndef test_ok():\n    pass\ndef test_hang(stuck):\n    pass\n"
+        ),
+    }
+    timer = _FIRST_TEST_PASSES_TIMER_S if shape == "teardown" else 0.2
+    result = _run_pytest(tmp_path, tests[shape], during_test=True, per_test_timer=timer)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Timeout" in result.stderr, result.stderr
+    assert _top_frame_labels(result.stderr) == ["test_hang.py::test_hang"], result.stderr
+
+
+def test_a_post_summary_dump_names_the_last_test(tmp_path: Path) -> None:
+    """#689: after the last test, the label says no test is running and names the last one."""
+
+    test = (
+        "import queue\nimport threading\ndef test_strands_a_thread():\n"
+        "    threading.Thread(target=queue.Queue().get).start()\n"
+    )
+    result = _run_pytest(tmp_path, test, during_test=False)
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
+    assert "Timeout" in result.stderr, result.stderr
+    last = "no test running; the last one was test_hang.py::test_strands_a_thread"
+    assert _top_frame_labels(result.stderr) == [last], result.stderr
+
+
+def test_the_suite_keeps_one_label_thread(pytestconfig: pytest.Config) -> None:
+    """#689: one label thread for the whole run, whatever number of tests ran before.
+
+    A run under ``-p no:faulthandler`` has no dump to name a test in and
+    starts none; the row below checks that in a child.
+    """
+
+    import threading
+
+    expected = 1 if pytestconfig.pluginmanager.hasplugin("faulthandler") else 0
+    names = [thread.name for thread in threading.enumerate()]
+    assert names.count("aelix-running-test-label") == expected, names
+
+
+def test_without_the_faulthandler_plugin_no_label_thread_starts(tmp_path: Path) -> None:
+    """#689: the label serves only faulthandler's dump, so ``-p no:faulthandler`` starts no thread."""
+
+    test = (
+        "import threading\ndef test_a():\n"
+        "    names = [thread.name for thread in threading.enumerate()]\n"
+        "    assert 'aelix-running-test-label' not in names, names\n"
+    )
+    result = _run_pytest(tmp_path, test, during_test=True, extra=("-p", "no:faulthandler"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout
+
+
+def test_the_running_test_label_writes_nothing_to_a_passing_log(tmp_path: Path) -> None:
+    """#689: the label is only ever visible inside a dump; a ``-q`` run is unchanged."""
+
+    result = _run_pytest(
+        tmp_path,
+        "def test_a():\n    pass\ndef test_b():\n    pass\n",
+        during_test=True,
+        per_test_timer=_FIRST_TEST_PASSES_TIMER_S,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == "", result.stderr
+    assert "#689" not in result.stdout, result.stdout
+    assert result.stdout.splitlines()[0].startswith("..  "), result.stdout
 
 
 def test_a_green_summary_cannot_hide_a_stranded_thread(tmp_path: Path) -> None:
