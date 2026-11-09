@@ -3169,7 +3169,7 @@
   "tests/cli/test_pipe_robustness.py:500-500": [
    "proc = subprocess.run("
   ],
-  "tests/conftest.py:161-177": [
+  "tests/conftest.py:164-180": [
    "@pytest.fixture(autouse=True)",
    "def _no_real_tool_downloads(_per_test_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:",
    "# Created on the first call, so the many tests that never resolve a tool",

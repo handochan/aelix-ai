@@ -35,6 +35,28 @@ thread's wait. A printed passing summary is insufficient when the process later
 fails to exit. Job/step timeout can bound hangs outside the watchdog's coverage,
 but it cannot promise a Python traceback in those phases.
 
+The dump names the test that hung (#689). `tests/conftest.py` keeps one idle
+thread whose top frame reads
+`File "<pytest: the test running now (#689)>", line N in <nodeid>` while a test
+runs. After a test ends it reads
+`no test running; the last one was <nodeid>`, which is also what the final
+watchdog's dump shows. Search the dump for `the test running now`. Do not
+count progress dots: the dots of an unfinished progress line are printed after
+the dump, and #689's second count missed 57 of them. When the main thread is
+idle in the event loop's `select` it has no test frame, and this line is the
+only place the test's name appears. The thread takes each new label
+asynchronously, so a hang that holds the GIL from the very start of a test can
+leave an earlier label in the dump, even the previous test's nodeid: with a
+backtracking regex, which never releases the GIL, run first in a test's setup,
+3 of 30 child dumps on macOS (ten each on py3.11, 3.12 and 3.14) named the
+previous test. Run as the first line of the test body, it did so less often:
+0 of 30 in that run, and 1 of 90 in a later rerun on macOS (1 of 30 at a load
+average of 23-35, 0 of 60 at 7.7-9.2). The thread writes nothing, so a passing
+`-q` log is unchanged.
+`tests/test_ci_hang_guard_429.py` checks that the line is its thread's top
+frame for a hung call, an idle event loop and a hung teardown, and after the
+summary.
+
 For an intentional longer debugging session, `-o faulthandler_timeout=0`
 disables the per-test timer; `-o faulthandler_exit_on_timeout=false` disables
 forced exit and the final interpreter watchdog. CI uses the defaults.

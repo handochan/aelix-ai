@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import itertools
 import os
-from collections.abc import Callable, Iterator
+import queue
+import threading
+import types
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -340,6 +343,71 @@ def mkdir_or_skip() -> Callable[..., Path]:
         return path
 
     return _mkdir
+
+
+#: The file name the running test's frame shows in a faulthandler dump (#689).
+RUNNING_TEST_LABEL_FILE = "<pytest: the test running now (#689)>"
+
+
+def _labelled_wait(labels: queue.SimpleQueue[str]) -> str:
+    return labels.get()
+
+
+class _RunningTestLabel:
+    """One idle thread whose stack names the test that is running (#689).
+
+    pytest's ``faulthandler_timeout`` dump is written from C after 240 s and
+    names no test. When the main thread is idle in the event loop's
+    ``select``, its stack has no test frame either. That is how #689's three
+    CI dumps looked. The test was found by counting progress dots against a
+    collection list, and the count in the issue's comment missed the 57 dots
+    that were flushed after its dump.
+
+    faulthandler prints every thread's frames as ``line N in <code name>``.
+    This thread blocks in ``SimpleQueue.get``, which is C, inside a function
+    whose code is renamed to the running test's nodeid. So its top frame in
+    a dump names the test once the thread has taken the label; a test that
+    holds the GIL from its very start can leave an earlier label there
+    (docs/development/ci-hang-diagnostics.md). It writes nothing, so a
+    normal ``-q`` log does not change. On Windows the timeout dump lists
+    every thread too (#689's windows-latest dump, job 126387390673, has all
+    16).
+    """
+
+    def __init__(self) -> None:
+        self._labels: queue.SimpleQueue[str] = queue.SimpleQueue()
+        threading.Thread(target=self._hold, name="aelix-running-test-label", daemon=True).start()
+
+    def show(self, label: str) -> None:
+        self._labels.put(label)
+
+    def _hold(self) -> None:
+        label = self._labels.get()
+        while True:
+            # faulthandler prints ``co_name`` (measured on 3.11, 3.12 and 3.14).
+            code = _labelled_wait.__code__.replace(
+                co_name=label, co_filename=RUNNING_TEST_LABEL_FILE
+            )
+            label = types.FunctionType(code, {})(self._labels)
+
+
+_running_test_label: _RunningTestLabel | None = None
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object]:
+    """Put the running test's nodeid on the label thread's stack (#689)."""
+
+    global _running_test_label
+    if not item.config.pluginmanager.hasplugin("faulthandler"):
+        return (yield)
+    if _running_test_label is None:
+        _running_test_label = _RunningTestLabel()
+    _running_test_label.show(item.nodeid)
+    try:
+        return (yield)
+    finally:
+        _running_test_label.show(f"no test running; the last one was {item.nodeid}")
 
 
 @pytest.hookimpl(trylast=True)
