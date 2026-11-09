@@ -70,6 +70,7 @@ from aelix_agents.runtime import (
 )
 from aelix_agents.stream import _StreamState, reduce_line
 from aelix_agents.tool import AgentCall
+from aelix_ai.messages import TextContent, UserMessage
 from aelix_ai.streaming import Model, ModelCost
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -347,16 +348,32 @@ async def test_the_child_is_invisible_to_every_picker_even_when_newest(
     """``list``, ``find_most_recent`` and id-prefix resolution never see a child.
 
     The child file is made the NEWEST file under the root: ``--continue`` sorts
-    by mtime, so a child that was merely older would prove nothing.
+    by mtime, so a child that was merely older would prove nothing. Both files
+    are given a user message: since #709 ``find_most_recent`` skips a file
+    without a conversation, which would hide a visible child for another reason.
     """
 
     session, repo, parent_path = await _parent(tmp_path)
+    await session.append_message(UserMessage(content=[TextContent(text="parent turn")]))
     channel = _Channel()
     runtime = _runtime(tmp_path, channel, session=session)
     await _spawn(runtime)
 
     child_path = Path(channel.plans[0].session_path or "")
     assert child_path.is_file()
+    with child_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "cu1",
+                    "parentId": None,
+                    "timestamp": "2026-11-09T00:00:01.000Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "x"}]},
+                }
+            )
+            + "\n"
+        )
     future = parent_path.stat().st_mtime + 3600
     os.utime(child_path, (future, future))
 

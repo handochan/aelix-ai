@@ -6,6 +6,10 @@ Pi parity: ``findMostRecentSession`` (``core/session-manager.ts:480-493``)
 
 Covers: mtime DESC sort, cwd filter via encoded directory layout,
 invalid-header skip, empty case, and nonexistent cwd → ``None``.
+
+Since #709 a session with no user or assistant message is not a candidate, so
+every session these tests expect to find is given one (:func:`_talk`); the
+conversation rule itself is pinned in ``test_find_most_recent_conversation_709.py``.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from aelix_agent_core.session import (
     ForkOptions,
@@ -22,6 +27,24 @@ from aelix_agent_core.session import (
 )
 from aelix_agent_core.session.jsonl_repo import _HEADER_LINE_MAX_BYTES
 from aelix_ai.messages import TextContent, UserMessage
+
+# One user message line, in the shape ``Session.append_message`` writes it.
+_USER_LINE = json.dumps(
+    {
+        "type": "message",
+        "id": "u1",
+        "parentId": None,
+        "timestamp": "2026-11-09T00:00:01.000Z",
+        "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    }
+)
+
+
+async def _talk(session: Any) -> Any:
+    """Give ``session`` a conversation: #709 skips one without (see the module docstring)."""
+
+    await session.append_message(UserMessage(content=[TextContent(text="hi")]))
+    return session
 
 
 async def test_empty_cwd_returns_none(tmp_path: Path) -> None:
@@ -48,7 +71,7 @@ async def test_single_session_returned(tmp_path: Path) -> None:
     """A directory with one valid session returns its metadata."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    session = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    session = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     expected_meta = await session.get_metadata()
 
     found = await repo.find_most_recent("/r1")
@@ -61,9 +84,9 @@ async def test_most_recent_session_returned_by_mtime(tmp_path: Path) -> None:
     """When two sessions exist, the one with newer mtime is returned."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    a = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    a = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     await asyncio.sleep(0.01)
-    b = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    b = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
 
     a_meta = await a.get_metadata()
     b_meta = await b.get_metadata()
@@ -81,9 +104,9 @@ async def test_mtime_overrides_created_at_order(tmp_path: Path) -> None:
     """mtime sort wins over header ``created_at`` (divergence from ``list``)."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    a = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    a = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     await asyncio.sleep(0.01)
-    b = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    b = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
 
     a_meta = await a.get_metadata()
     b_meta = await b.get_metadata()
@@ -102,7 +125,7 @@ async def test_cwd_filter_excludes_other_cwd_sessions(tmp_path: Path) -> None:
     """Sessions in a different cwd are not returned."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     other = await repo.create(JsonlSessionCreateOptions(cwd="/r2"))
     other_meta = await other.get_metadata()
 
@@ -117,7 +140,7 @@ async def test_invalid_header_files_skipped(tmp_path: Path) -> None:
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
     # Build a valid session first so the directory exists.
-    valid = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    valid = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     valid_meta = await valid.get_metadata()
 
     # Drop an invalid .jsonl alongside.
@@ -136,7 +159,7 @@ async def test_missing_id_in_header_skipped(tmp_path: Path) -> None:
     """Header with missing/empty ``id`` is filtered out."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    valid = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    valid = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     valid_meta = await valid.get_metadata()
 
     # Drop a "valid JSON" but type-wrong .jsonl alongside.
@@ -154,7 +177,7 @@ async def test_non_jsonl_files_ignored(tmp_path: Path) -> None:
     """Files without .jsonl extension are ignored."""
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    valid = await repo.create(JsonlSessionCreateOptions(cwd="/r1"))
+    valid = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/r1")))
     valid_meta = await valid.get_metadata()
 
     # Drop a non-.jsonl file alongside.
@@ -211,15 +234,13 @@ async def test_falls_through_to_older_when_newer_metadata_parse_fails(
     """
 
     repo = JsonlSessionRepo(sessions_root=str(tmp_path))
-    valid_session = await repo.create(
-        JsonlSessionCreateOptions(cwd="/regression/cwd")
-    )
+    valid_session = await _talk(await repo.create(JsonlSessionCreateOptions(cwd="/regression/cwd")))
     valid_meta = await valid_session.get_metadata()
 
     # Drop a sniff-passes-but-load-fails JSONL alongside.
     bogus_path = Path(valid_meta.path).parent / "z_bogus.jsonl"
     bogus_path.write_text(
-        json.dumps({"type": "session", "id": "header-only"}) + "\n",
+        json.dumps({"type": "session", "id": "header-only"}) + "\n" + _USER_LINE + "\n",
         encoding="utf-8",
     )
 
@@ -231,7 +252,10 @@ async def test_falls_through_to_older_when_newer_metadata_parse_fails(
     assert JsonlSessionRepo._is_valid_session_file(bogus_path) is True
 
     # Act + assert: the loader must skip the bogus file and return the
-    # older valid metadata, NOT ``None``.
+    # older valid metadata, NOT ``None``. Since #709 the conversation check
+    # (``_has_conversation``) decodes the file with the loader's own header
+    # parser, so it is what refuses the bogus header first; the result is the
+    # same, and so is the reason (the loader cannot parse the header).
     found = await repo.find_most_recent("/regression/cwd")
     assert found is not None
     assert found.id == valid_meta.id

@@ -13,16 +13,19 @@ wrap in ``--...--``.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from aelix_agent_core.session.entries import SessionTreeEntry
 from aelix_agent_core.session.fs import FileSystem, LocalFileSystem
 from aelix_agent_core.session.jsonl_storage import (
     JsonlSessionStorage,
     _load_jsonl_storage,
+    _parse_jsonl_content,
     load_jsonl_session_metadata,
 )
 from aelix_agent_core.session.repo_utils import ForkOptions, get_entries_to_fork
@@ -41,6 +44,42 @@ from aelix_agent_core.session.storage import (
 #: file that is not a session at all (a multi-gigabyte newline-free blob that
 #: happens to be named ``*.jsonl``).
 _HEADER_LINE_MAX_BYTES = 65536
+
+#: The largest session file :meth:`JsonlSessionRepo._has_conversation` reads
+#: (#709). What it looks for is a file with no conversation on its branch: one a
+#: launch quit without a prompt or an unused ``/new`` leaves is a few hundred
+#: bytes (header and starting model), and one whose only prompt was withdrawn
+#: with Esc is that plus the prompt. A larger file counts as a conversation
+#: without being read (its size alone), so ``--continue`` never reads a long
+#: session to decide.
+_CONVERSATION_SCAN_MAX_BYTES = 1024 * 1024
+
+#: The roles that make a conversation: pi's ``_hasConversation``
+#: (``session-manager.ts``), as ``rpc_mode._has_conversation`` reads them.
+_CONVERSATION_ROLES = frozenset({"user", "assistant"})
+
+
+def _carries_conversation(entry: SessionTreeEntry) -> bool:
+    """Whether a branch entry is a turn the model gets back when the session opens.
+
+    A user or assistant ``message`` (pi's rule), and — fix round 1 of #709 — a
+    ``compaction`` or a ``branch_summary`` whose summary has text:
+    ``build_session_context`` turns each into a user message, so a branch
+    holding only a summary (a fork made at it, ``navigate_tree`` back to the
+    start) is a conversation to continue. Fix round 2: a summary that is empty
+    or only whitespace does not count. Opening still sends its template (a
+    compaction always, a branch summary when the text is not empty), but the
+    template holds ``<summary>`` and nothing of the earlier conversation. A
+    ``custom_message`` becomes a user message too, but pi's
+    ``_hasConversation`` does not count it, and neither does this.
+    """
+
+    if entry.type == "message":
+        return getattr(getattr(entry, "message", None), "role", None) in _CONVERSATION_ROLES
+    if entry.type in ("compaction", "branch_summary"):
+        summary = getattr(entry, "summary", None)
+        return isinstance(summary, str) and bool(summary.strip())
+    return False
 
 
 def _encode_cwd(cwd: str) -> str:
@@ -289,6 +328,18 @@ class JsonlSessionRepo:
         ``session-manager.ts:464-478`` — header line must parse, have
         ``type == "session"`` and non-empty ``id``).
 
+        #709: a candidate whose branch carries no conversation
+        (:func:`_carries_conversation`) is skipped (:meth:`_has_conversation`).
+        aelix writes the file when a session starts (ADR-0239 decision 6), so
+        a launch quit without a prompt, a ``/new`` or RPC ``new_session``
+        never used, or one whose only
+        prompt was withdrawn with Esc left the newest file in the folder, and
+        ``aelix -c`` opened it instead of the last conversation. pi never
+        writes such a file, so its ``--continue`` never picks one. The check
+        runs in mtime order and stops at the first candidate that has a
+        conversation, so files older than the one returned are not scanned
+        (the sniff above still reads the start of every candidate's header).
+
         Returns
         -------
         JsonlSessionMetadata | None
@@ -342,6 +393,8 @@ class JsonlSessionRepo:
         # #297 the sniff stopped at 512 bytes and the loader did not,
         # so the two disagreed on any header longer than that.
         for _, candidate_path in candidates:
+            if not self._has_conversation(Path(candidate_path)):
+                continue
             try:
                 return await load_jsonl_session_metadata(
                     self._fs, candidate_path
@@ -401,6 +454,58 @@ class JsonlSessionRepo:
             )
         except Exception:
             return False
+
+    @staticmethod
+    def _has_conversation(path: Path) -> bool:
+        """Whether ``path``'s branch holds a turn the model would get back — #709.
+
+        The question ``/clone`` and RPC ``clone`` ask (ADR-0239 #413 decision 8)
+        and the one #654 moved onto the BRANCH (ADR-0286): a prompt withdrawn
+        with Esc stays in the file on a branch left behind, and a session whose
+        only prompt was withdrawn opens with nothing on its branch, so it is no
+        conversation to continue. pi's ``_hasConversation`` reads every entry
+        instead; it writes no file before one, so its ``--continue`` never meets
+        an empty one. What counts is :func:`_carries_conversation`; a model or
+        thinking-level change, a custom record, a custom message, a label or a
+        name does not.
+
+        The answer is what opening the file restores: it is read as
+        ``LocalFileSystem.read_text_file`` reads it (strict UTF-8, universal
+        newlines, so a ``\\r`` ends a line here as it does on open) and decoded
+        by the loader's own reader, so a torn line, a record the loader cannot
+        decode (a ``message`` whose ``content`` is a plain string, #709 fix
+        round 1) and what hangs off them are dropped here as they are on open.
+        A file the loader cannot read (not UTF-8), or one whose header it
+        refuses, has none.
+
+        The file is read only up to :data:`_CONVERSATION_SCAN_MAX_BYTES`: a
+        larger one counts as a conversation unread. The wrong answer there is
+        the behaviour before #709, never a conversation ``--continue`` cannot
+        reach.
+        """
+
+        try:
+            with open(path, encoding="utf-8") as f:
+                if os.fstat(f.fileno()).st_size > _CONVERSATION_SCAN_MAX_BYTES:
+                    return True
+                content = f.read(_CONVERSATION_SCAN_MAX_BYTES + 1)
+        except (OSError, UnicodeDecodeError):
+            return False
+        if len(content) > _CONVERSATION_SCAN_MAX_BYTES:
+            return True  # it grew past the bound after the size was read
+        try:
+            loaded = _parse_jsonl_content(content, str(path))
+        except SessionError:
+            return False
+        by_id = {entry.id: entry for entry in loaded.entries}
+        current = by_id.get(loaded.leaf_id) if loaded.leaf_id else None
+        seen: set[str] = set()
+        while current is not None and current.id not in seen:
+            seen.add(current.id)
+            if _carries_conversation(current):
+                return True
+            current = by_id.get(current.parent_id) if current.parent_id else None
+        return False
 
     async def delete(self, metadata: JsonlSessionMetadata) -> None:
         """Pi `delete` (``jsonl-repo.ts:126-131``)."""

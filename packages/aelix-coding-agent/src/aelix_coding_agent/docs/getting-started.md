@@ -310,7 +310,8 @@ failed answer; aelix's exits `1` so that a script sees it in `$?`.
 ## Common flags
 
 ```bash
-aelix --continue                 # continue the most recent session (-c)
+aelix --continue                 # continue the most recent session that has a
+                                 #  conversation (-c)
 aelix --resume                   # pick a previous session interactively (-r)
 aelix --resume <id>              # resume a specific session by id/prefix
                                  # (all three come back on the model the session

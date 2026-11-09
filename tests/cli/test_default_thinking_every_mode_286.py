@@ -614,10 +614,15 @@ async def test_a_session_left_without_a_prompt_on_its_next_launch(
     tui_shape: list[str],
 ) -> None:
     """Opened and left without a prompt — a TUI opened and quit, an RPC host that
-    never prompted — then ``defaultThinkingLevel`` set to ``high``, then
-    ``--continue -p``. With no level recorded the new default applies; a level the
-    first launch recorded (only the TUI records its default, ``low`` here) comes
-    back. Both as on ``529b997e``; the second launch writes nothing."""
+    never prompted — then ``defaultThinkingLevel`` set to ``high``, then that
+    session opened again with ``-p``. With no level recorded the new default
+    applies; a level the first launch recorded (only the TUI records its default,
+    ``low`` here) comes back. Both as on ``529b997e``; the second launch writes
+    nothing.
+
+    The session is opened with ``--session``. Until #709 this test used
+    ``--continue``, which no longer opens a session with no conversation: see
+    :func:`test_continue_starts_a_new_session_over_one_left_without_a_prompt`."""
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-fake")
     if first_default is not None:
@@ -628,7 +633,8 @@ async def test_a_session_left_without_a_prompt_on_its_next_launch(
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     _settings(env, defaultThinkingLevel="high")
     seen = _stub_modes(monkeypatch)
-    assert await _launch(env, "--continue", "-p", "hi", *_LAUNCH) == 0
+    left = str(_only_file(env))
+    assert await _launch(env, "--session", left, "-p", "hi", *_LAUNCH) == 0
 
     if mode == "tui":
         assert seen["thinking"] == tui_level
@@ -636,6 +642,43 @@ async def test_a_session_left_without_a_prompt_on_its_next_launch(
     else:
         assert seen["thinking"] == "high"
         assert _shape(_only_file(env)) == ["model_change"]
+
+
+async def test_continue_starts_a_new_session_over_one_left_without_a_prompt(
+    env: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """#709: ``--continue`` skips a session with no user or assistant message.
+
+    A TUI opened at ``defaultThinkingLevel=low`` and quit records ``low`` in a file
+    that holds no conversation. On ``6caaae09`` ``--continue -p`` opened that file
+    and came back at ``low``; now it starts a new session at the default ``high``,
+    and the left file is untouched. A conversation in an older file is what it
+    opens instead (the last assertion); the left level still comes back when the
+    session is opened by path (the test above).
+    """
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-fake")
+    _settings(env, defaultThinkingLevel="low")
+    _stub_modes(monkeypatch)
+    assert await _launch(env, *_MODES[mode], *_LAUNCH) == 0
+    left = _only_file(env)
+    left_shape = _shape(left)
+
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    _settings(env, defaultThinkingLevel="high")
+    seen = _stub_modes(monkeypatch, drive=_one_turn)
+    assert await _launch(env, "--continue", "-p", "hi", *_LAUNCH) == 0
+    assert seen["thinking"] == "high"
+    files = _files(env)
+    assert len(files) == 2
+    assert _shape(left) == left_shape
+    talked = next(f for f in files if f != left)
+    assert "user" in _shape(talked)
+
+    os.utime(left, None)  # the empty file is the newest again
+    seen = _stub_modes(monkeypatch)
+    assert await _launch(env, "--continue", "-p", "again", *_LAUNCH) == 0
+    assert str(seen["runtime"].harness.session.session_file) == str(talked)
 
 
 async def test_no_session_starts_at_the_default(
