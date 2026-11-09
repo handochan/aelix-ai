@@ -1682,7 +1682,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:411-411": [
    "self.parsed.__dict__.update(copy.deepcopy(self.baseline).__dict__)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py:89-101": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py:90-102": [
    "# The reason, CORRECTED — the example this comment carried for a long time is",
    "# false, and it was copied into #204, ``permission.py``, two test docstrings",
    "# and two specs. ``Remove-Item -Recurse -Force C:\\`` and ``del /s /q C:\\Windows``",

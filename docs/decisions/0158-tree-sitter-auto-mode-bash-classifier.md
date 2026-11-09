@@ -75,6 +75,122 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     (`_SINK_DEVICES`) is now ALLOW as a redirect — it changes no file — while
     any other `/dev` target stays DENY and the command's own verdict still
     applies (`rm -rf / >/dev/null` is DENY).
+  - **Dated note 2026-11-09 (#710).** The #677 note's "a dup `2>&1` open no
+    file" was not what the code did: `_redirect_verdict` read the number after
+    `>&` as a target path, so `cat a 2>&1`, `git status 2>&1`,
+    `ls >/dev/null 2>&1` and `cat a >&2` were ASK and the TUI asked under
+    `auto`. The rules now, each pinned by `tests/builtin/test_bash_fd_dup_710.py`
+    (shell behaviour measured on macOS bash 3.2, zsh 5.9, dash and ksh and on
+    Linux bash 5.2, zsh 5.9, dash 0.5.12 and ksh 93u+m):
+    - **A redirect's target is its FIRST word. A word written after it makes
+      the command at least ASK, and the command is also judged with those
+      words as its arguments, which can raise the verdict to DENY.**
+      tree-sitter puts every word after a redirect inside its node —
+      `find . 2>&1 -delete -maxdepth 1` is `file_redirect(2 >& 1 -delete
+      -maxdepth 1)`, and `find . <<EOF -delete` keeps `-delete` in the
+      `heredoc_redirect` — while bash and zsh pass those words to the
+      command, and so do dash and ksh except after `&>` (below). `classify`
+      also judges an argument view of the source (every redirect blanked
+      except the words it passes on; a `$(…)` inside a blanked part kept,
+      because it runs) and takes the worse verdict, so
+      `find . 2>&1 -delete -maxdepth 1` is DENY like
+      `find . -delete -maxdepth 1`. The view only raises: where the command
+      with those words is ALLOW, the form still asks (`ls 2>&1 -la`,
+      `rg foo 2>/dev/null -n src` and `echo x <&0 y` ask; `ls 2>&1 -la` asked
+      before #710 too). tree-sitter's reading of such a line does not always
+      match the shells', and a draft that let an ALLOW view lower the verdict
+      ran `echo hi &>/dev/null find . -name 'keep*' -delete` (dash, ksh) and
+      `test 1 -eq 0>&1 'a[$(touch PWNED)]'` (macOS ksh93) with no dialog in
+      a pty TUI under `auto`. The view gets the walk and the #657
+      expansion question alike: `test 2>&1 -v 'a[$(cmd)]'` asks like
+      `test -v 'a[$(cmd)]'`; an earlier draft walked the view without asking
+      that question, and the form, which runs `cmd` in Linux bash 5.2, ran with
+      no dialog in a pty TUI under `auto` (with macOS ksh93 and `1 -eq`). The
+      view follows bash where tree-sitter hangs a trailing redirect on a whole
+      pipeline or list: in `ls | find . 2>&1 -delete` the words belong to
+      `find`. A view that does not parse (`{ ls; } 2>&1 x`, which bash
+      rejects) asks, and never lowers a DENY. This closes the same hole for a
+      read (`find . </dev/null -delete`, `test </dev/null -v 'a[$(cmd)]'`), a
+      read dup (`<&0`), a sink (`2>/dev/null … -path /dev/null`) and a close
+      (`2>&- -delete`), all ALLOW before #710 — the `</dev/null` `find` deleted
+      the files in its directory in a pty TUI under `auto` on `6caaae09`.
+      Measured over 24,597 command strings (the classifier tests' at
+      `24bcc679` and a hand list), with one of 29 redirects (dups, closes,
+      sinks, reads and here-strings, `0>&1`, `0>/dev/null`, `&>/dev/null`,
+      `>&-` and `3>&1` among them, and three here-documents) put before each
+      argument and before the command name: of 1,808,498 forms none is ALLOW where the
+      same command without the redirect asks or is refused, and none is ALLOW
+      where `6caaae09` asked or refused it while a redirect holds a word after
+      its target. 2,122 forms ask where the command without the redirect is
+      refused: 2,115 because the grammar cannot parse the redirect form
+      (`rm 2>&- -rf /`), 7 on a line all four shells reject
+      (`0<&0 rm -rf /; { ls; } 2>&1 x`). 206 forms refused on `6caaae09` now
+      ask: there the last word was read as the target (`tee 2>&1
+      /etc/passwd`), while the shells pass it to the command, and the command
+      with it asks (`tee /etc/passwd`). Reading the LAST word as the target
+      instead (an earlier draft) let a trailing number make
+      `find . 2>&1 -delete -maxdepth 1` an allowed dup.
+    - **One digit written with no blank before `<` or `>` is the redirect's
+      descriptor.** bash, zsh, dash and ksh take it so (`echo a 0>&1 x`
+      prints `a x` in all four on macOS and on Linux), but tree-sitter makes
+      a `0` there an argument of the command, or its name; the view blanks
+      it with the redirect, so `0>&1 mkfs /dev/sda` is DENY (DENY on
+      `6caaae09`, where the last word was read as the target, and ASK in an
+      earlier draft). **A descriptor of two or more digits is a word the
+      command may get:** bash takes `10>&1` as descriptor 10, while zsh,
+      dash and ksh take one digit and pass `10` on (measured on both
+      systems; `git branch 10>&1` created a branch `10` in them), so it makes
+      the command at least ASK, as a word after a target does.
+    - **Under the UNKNOWN and POSIX dialects the words after an `&>` or `&>>`
+      target are also judged as a command of their own.** dash (macOS and
+      Linux) and macOS ksh93u+ read `&>` as `&` and then `>`: the command
+      before it runs in the background and the words after the target run as
+      the next command (`echo hi &>/dev/null find . -name 'keep*' -delete`
+      deleted the files in both; bash, zsh and Linux ksh 93u+m pass the words
+      to `echo`). The argument view with that `&` kept is judged as well, so
+      the form is DENY like `find . -delete`; in a pty TUI under `auto` it is
+      refused with the files kept under `SHELL=/bin/dash` and `/bin/ksh`.
+    - **A `>&` / `<&` target is a descriptor copy (ALLOW as a redirect) only
+      when its source bytes, from the operator to the end of the shell word,
+      are blanks and then ASCII digits.** The word ends at the end of input, a
+      blank, one of `;&|()<>`, or the backtick that closes the `` `…` ``
+      substitution the redirect is in; the same end decides a bare close and
+      a sink below (`` echo `ls 2>&1` ``, `` echo `ls 2>&-` `` and
+      `` echo `git rev-parse HEAD 2>/dev/null` `` write no file in any of the
+      four shells, macOS and Linux). Any other backtick starts a substitution
+      whose output joins the word — `` echo x >&1`echo .txt` `` writes `1.txt`
+      in bash and zsh, `` 2>&-`echo 1` `` writes `-1` in zsh — so it asks.
+      tree-sitter's `number` also covers `0x1`, `1#x` and `16#ff`, and
+      tree-sitter skips `\r`, `\v` and `\f`
+      between tokens; bash and zsh write each of those into a file name
+      (`echo x >&1\r` creates `1\r`). After `>` or `&>` a number is a file
+      name (`echo x >1`). Any other `<&` target is path-checked (ASK, or DENY on
+      a protected path); every shell tried rejects that form, so this follows
+      the contract rather than closing a live hole.
+    - **A bare close (`2>&-`) stays ALLOW; a word glued to it asks** (`2>&-1`:
+      zsh writes a file `-1`, bash passes `1` to the command). A sink device is
+      ALLOW only with nothing glued to it: `>/dev/null\r` names a new file under
+      `/dev` (DENY; created as root on Linux).
+    - An operator outside the three sets is ASK.
+    - **A here-document delimiter that is not one word asks, and the rest of
+      its line is classified** (an adjacent hole, open since this ADR, closed
+      with #710). tree-sitter's `heredoc_start` runs on past `;`, `>`, `|` and
+      `&&` with no parse error when the end line is written the same way:
+      `cat <<A; find . -name 'keep*' -delete` + `b` + `A;` is a start `A;`
+      with `find …` as words, and `cat <<A>~/.bashrc` a start `A>~/.bashrc`.
+      All four shells end the delimiter at that byte and run the rest of the
+      line; the `find` deleted the files with no dialog in a pty TUI under
+      `auto` on `6caaae09`. A start that is not plain bytes, quoted runs and
+      backslash escapes is now at least ASK, and the rest of its first line is
+      re-read after a `:`, so `find … -delete`, `| sh` and the `.bashrc` write
+      are DENY; the body stays data. One-word delimiters (`<<EOF`, `<<'EOF'`,
+      `<<"EOF"`, `<<-EOF`, `<<\EOF`, `<<'E O F'`) are unchanged. `$` and a
+      backtick are not delimiter bytes here: `cat <<A$''` asks, because dash
+      ends its body at a line `A$` and runs what follows (measured on macOS
+      and Linux).
+
+    Under `-p`, where an ASK runs without a prompt (ADR-0120), an ASK form
+    still runs; the DENY forms above are refused there too.
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any

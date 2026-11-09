@@ -959,10 +959,20 @@ def test_677_write_redirect_operators_deny_a_protected_target(op: str) -> None:
 
 
 def test_677_benign_descriptor_and_dup_forms() -> None:
-    """A closing form writes no file; ``2>&1`` is a dup, not a file write."""
+    """A closing form writes no file; ``2>&1`` is a dup, not a file write.
+
+    The dup lines were missing until #710, which found ``2>&1`` ASK; its edges
+    and the gate entry points are in ``test_bash_fd_dup_710.py``.
+    """
 
     assert classify("echo x >&-") is Verdict.ALLOW
     assert classify("echo x 2>&-") is Verdict.ALLOW
+    assert classify("echo x 2>&1") is Verdict.ALLOW
+    assert classify("echo x >&2") is Verdict.ALLOW
+    assert classify("ls >/dev/null 2>&1") is Verdict.ALLOW
+    assert classify("ls 3>&1 1>&2 2>&3") is Verdict.ALLOW
+    assert classify("echo x >&out.txt") is Verdict.ASK
+    assert classify("echo x >& ~/.bashrc") is Verdict.DENY
     # ``&>|`` / ``>>|`` / ``<>`` are parse errors → ASK via has_error.
     assert classify("echo x &>| f") is Verdict.ASK
     assert classify("echo x >>| f") is Verdict.ASK

@@ -1343,6 +1343,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`auto` no longer asks before a read that merges or moves output with `2>&1` or `>&2` (#710,
+  ADR-0158).** The classifier read the descriptor number after `>&` as a file name, so `cat a
+  2>&1`, `rg -w foo src 2>&1`, `git status 2>&1`, `ls >/dev/null 2>&1` and `cat a >&2` were ASK,
+  and under `auto` the TUI asks before an ASK runs (measured for `cat keep1.txt 2>&1` on
+  `6caaae09`, pty TUI with a scripted model; it now runs there with no dialog). A `>&` or `<&` is
+  a descriptor copy, and allowed as a redirect, only when its target is ASCII digits with nothing
+  but blanks before them and a blank, the end of the command, one of `;&|()<>` or the backtick
+  that closes its `` `…` `` substitution right after (`` echo `ls 2>&1` `` no longer asks; the
+  four shells write no file): `>&0x1`, `>&1#x`, `>&1x`, `` >&1`echo .txt` `` and `>&1` followed by
+  `\r`, `\v`, `\f` or a no-break space (each written as a file by bash and zsh, measured on macOS
+  bash 3.2 and zsh 5.9 and on Linux bash 5.2 and zsh 5.9), `>&out.txt`, `>1` and `&>1` are still
+  checked as file writes, and a `<&` target that is not a descriptor number is now checked as a
+  path too (`echo x <&/etc/passwd` is refused; every shell tried rejects that form). Only a
+  redirect with nothing after its target is allowed this way: a word written after the target
+  makes the command ask at least, so `ls 2>&1 -la` still asks, as it did before, and the words are
+  also judged as the command's arguments, which can refuse it (see Security): `find . 2>&1 -delete
+  -maxdepth 1` is refused like `find . -delete -maxdepth 1`. Over 24,597 command strings from the
+  classifier tests and a hand list, with one of 29 redirects put before each argument and before
+  the command name (1,808,498 forms), none came out allowed where the same command without the
+  redirect asks or is refused; 2,122 forms ask where it is refused, 2,115 of them because the
+  grammar cannot parse the redirect form (`rm 2>&- -rf /`) and 7 on a line every shell tried
+  rejects. Tests: `tests/builtin/test_bash_fd_dup_710.py`, for the classifier under the UNKNOWN
+  and POSIX dialects, for the gate with bash, zsh or sh and for RPC with bash, zsh or ksh as the
+  resolved shell; PowerShell and cmd are unchanged (cmd's `dir 2>&1` still asks).
 - **A session line that reached the disk and then failed no longer leaves the conversation on a
   hidden branch (#721, ADR-0242 rule 5).** When a session append wrote its whole line and the
   write then raised (for example the disk filling exactly at the line's final newline, or a second
@@ -3780,6 +3804,49 @@ unwritten. Add them with the next release.
   in aelix, which is filed separately. (#263)
 
 ### Security
+
+- **`auto` asks at least for a command with words written after a redirect's target, and also
+  reads those words as the command's arguments (#710, ADR-0158).** The parser keeps every word
+  after a redirect inside it — in `find . </dev/null -delete` the `-delete` sits in the `<`
+  redirect, in `find . <<EOF -delete` in the here-document — where no argument check saw it, while
+  bash and zsh take the first word as the target and pass the rest to the command, and so do dash
+  and ksh except after `&>` (measured on macOS and on Linux). So `find . </dev/null -delete`,
+  `find . <&0 -delete`, `find . 2>/dev/null -delete -o -path /dev/null`, `find . 2>&- -delete` and
+  `find . <<EOF -delete` were allowed on `6caaae09`; `find . </dev/null -delete` ran with no
+  prompt in a pty TUI under `auto` and deleted the files in its directory, and `find . 2>&-
+  -delete` did the same under `-p --permission-mode auto`. Each now asks at least, and is also
+  classified as its command with those words as arguments — `find . -delete`, which is refused —
+  in the TUI, under `-p`, through the block gate and through RPC `permissions/evaluate`. That
+  includes whether `test` or `[` evaluates an operand: `test </dev/null -v 'a[$(cmd)]'`, allowed
+  on `6caaae09`, runs `cmd` in Linux bash 5.2 and now asks like `test -v 'a[$(cmd)]'`, as do `test
+  2>&1 -v …` and, for macOS ksh93, `test 2>&1 1 -eq 'a[$(cmd)]'` (live: a pty TUI under `auto`
+  opens a dialog for both). That second reading only raises the verdict: tree-sitter does not
+  always read such a line as the shells do, and in a draft where it could lower it the `&>` and
+  `0>&1` forms below ran with no dialog in a pty TUI under `auto`. dash (macOS and Linux) and
+  macOS ksh93 read `&>` as `&` and then `>`, so `echo hi &>/dev/null find . -name 'keep*' -delete`
+  deleted the files; the words after an `&>` or `&>>` target are now also judged as a command of
+  their own, and the form is refused like `find . -delete` (live: refused with the files kept
+  under `SHELL=/bin/dash` and `/bin/ksh`). One digit written right before `<` or `>` is the
+  redirect's descriptor in all four shells while the parser read a `0` there as an argument, so
+  `test 1 -eq 0>&1 'a[$(touch PWNED)]'`, which created PWNED in macOS ksh93, asks (live: a dialog,
+  nothing created) and `0>&1 mkfs /dev/sda` is refused; a descriptor of two or more digits, which
+  zsh, dash and ksh pass to the command as a word (`git branch 10>&1` created a branch `10` in
+  them), makes the command ask. A line that no longer parses with its redirects blanked out asks:
+  words after the redirect of a compound command (`{ ls; } 2>&1 x`, which bash rejects) ask, and a
+  DENY elsewhere on the line stays DENY. A bare close (`2>&-`) is still allowed; a word glued to
+  one (`2>&-1`, or `` 2>&-`echo 1` ``, which zsh writes as a file named `-1`) asks. A `/dev/null`
+  target with `\r`, `\v`, `\f` or a no-break space glued to it is a new file under `/dev` (as
+  root, Linux bash wrote `/dev/null\r`), so it is refused instead of allowed as a sink. An ASK
+  under `-p` still runs, as every ASK does there. Tests: `tests/builtin/test_bash_fd_dup_710.py`.
+
+  Closed here as well, open since ADR-0158: tree-sitter reads a here-document delimiter on past
+  `;`, `>`, `|` or `&&` without a parse error when the end line is written the same way, so in
+  `cat <<A; find . -name 'keep*' -delete` (body `b`, end line `A;`) the `find` was never
+  classified. bash, zsh, dash and ksh run it (measured on macOS and Linux), and on `6caaae09` it
+  deleted the files in its directory with no dialog in a pty TUI under `auto`. A delimiter that is
+  not one plain or quoted word now asks, and the rest of its first line is classified: that
+  `find`, `cat <<A>~/.bashrc` and `cat <<A|sh` are refused, and `cat <<A; touch x` asks. `<<EOF`,
+  `<<'EOF'`, `<<"EOF"`, `<<-EOF` and `<<\EOF` are unchanged. Tests: the same file.
 
 - **`auto` no longer refuses a command only because it discards output to
   `/dev/null` (#678).** `/dev` is a protected write prefix, so a write redirect
