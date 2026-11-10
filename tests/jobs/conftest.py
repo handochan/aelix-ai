@@ -8,6 +8,9 @@ puts it back. Every product check reads the attribute at call time.
 from __future__ import annotations
 
 import asyncio
+import sys
+import time
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -104,3 +107,59 @@ async def wait_for(predicate: Any, timeout: float = 10.0) -> None:
         if loop.time() > end:
             raise AssertionError("condition not reached in time")
         await asyncio.sleep(0.02)
+
+
+def _describe(service: Any, job_ids: Any) -> str:
+    parts = []
+    for job_id in job_ids:
+        snap = service.snapshot(job_id)
+        if snap is None:
+            parts.append(f"{job_id}: gone")
+        else:
+            parts.append(f"{job_id}: {snap.state} (reason {snap.unresolved_reason!r})")
+    return "; ".join(parts)
+
+
+async def wait_settled(
+    service: Any,
+    job_ids: Any,
+    *,
+    since: float,
+    state: str | tuple[str, ...] = "stopped",
+    slots: tuple[str, int] | None = None,
+    timeout: float = 10.0,
+) -> float:
+    """#751: wait for every job in ``job_ids`` to reach ``state`` (and ``slots``' kind to hold that count).
+
+    ``JobService.stop()`` returns at ``cleanup_bound`` (3.0 s in ``fast_service``)
+    even while the job's cleanup still runs, and on Windows CI a sleeper's stop
+    has outlasted it (#751). The cases care that the stop ENDS in ``state``, not
+    that it ends inside that bound, so they wait for it here; a stop that really
+    hangs or ends ``unresolved`` still fails, naming each job's state, its
+    reason and how long since ``since`` (``time.monotonic()`` before the stop).
+    Returns the seconds from ``since`` until it was reached. On win32 it reports
+    them with ``warnings.warn``, the one channel the ``-q`` log keeps.
+    """
+
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    wanted = (state,) if isinstance(state, str) else state
+
+    def done() -> bool:
+        snaps = [service.snapshot(job_id) for job_id in job_ids]
+        if any(snap is None or snap.state not in wanted for snap in snaps):
+            return False
+        return slots is None or service.admission.count(slots[0]) == slots[1]
+
+    while not done():
+        if loop.time() > end:
+            count = "" if slots is None else f"; {slots[0]} holds {service.admission.count(slots[0])} slots"
+            raise AssertionError(
+                f"not {state} {time.monotonic() - since:.2f}s after the stop began: "
+                f"{_describe(service, job_ids)}{count}"
+            )
+        await asyncio.sleep(0.02)
+    took = time.monotonic() - since
+    if sys.platform == "win32":
+        warnings.warn(f"#751 sleeper stop: {state} after {took:.3f}s", stacklevel=2)
+    return took

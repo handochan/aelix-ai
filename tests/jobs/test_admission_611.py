@@ -10,6 +10,7 @@ reading a project file lets a cloned repo raise its own limits.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from aelix_coding_agent.jobs.admission import (
 )
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
+from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for, wait_settled
 
 
 def _admission(settings: dict[str, Any] | None, warnings: list[str] | None = None) -> Admission:
@@ -199,9 +200,12 @@ async def test_a_reservation_taken_before_consent_is_handed_to_the_start(tmp_pat
     assert service.admission.count(_sleeper.KIND) == 2
     with pytest.raises(JobStartRefused, match="spent"):
         await service.start(_sleeper.KIND, title="third", reservation=batch)
+    since = time.monotonic()
     for job_id in (first, second):
         await service.stop(job_id)
-    assert service.admission.count(_sleeper.KIND) == 0
+    # #751: the slots return when each job's cleanup is confirmed, which may be
+    # after ``stop()`` returned at ``cleanup_bound``.
+    await wait_settled(service, (first, second), since=since, slots=(_sleeper.KIND, 0))
     await service.shutdown()
 
 

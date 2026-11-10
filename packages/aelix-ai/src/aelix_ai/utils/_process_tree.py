@@ -72,11 +72,25 @@ THE ASSIGNMENT WINDOW. Between ``CreateProcess`` and ``AssignProcessToJobObject`
 the child runs unheld. On the asyncio spawn the window spans the transport's
 pipe-connection round trips — measured on POSIX at 0.3 ms idle, 1.05 ms median
 and 1.65 ms max under load, against a shell that reaches its first ``fork`` at
-~2 ms; unmeasured on the proactor loop. ``CREATE_SUSPENDED`` cannot close it
-(``Popen`` closes the thread handle before returning). Belt and braces:
+~2 ms; unmeasured on the proactor loop. ``CREATE_SUSPENDED`` can close it
+when the process is resumed with ``NtResumeProcess``, which needs only the
+process handle ``Popen`` keeps (``Popen`` closes the THREAD handle, which is
+what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
+``attach(suspended=True)`` are that primitive (#611 S2b), and nothing spawns
+suspended yet — the background ``bash`` of #611 S2d is the first caller. Every
+spawn today keeps the window. Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.
+
+ONE STATE PER TREE (#611 S2b). ``OPEN`` until the first kill entry
+(``soft_kill``, ``hard_kill``, ``stop_and_collect``'s kill, ``confirm``'s
+terminates), then ``TERMINATING``; ``OPEN`` and :meth:`ProcessTree.preserve_descendants`
+make ``PRESERVED``, in which every kill entry is a no-op; any state and
+:meth:`ProcessTree.close` make ``CLOSED``. A preserve after a kill entry fails,
+so a stop already under way wins over a late preserve. Every call sequence a
+caller makes today takes the same api calls it took before (nothing preserves
+yet).
 
 THE PID/PGID HAZARD, BOUNDED PER SITE. ``soft_kill`` is always guarded by the
 caller's ``returncode is None`` with no ``await`` in between. ``hard_kill`` on
@@ -159,6 +173,7 @@ from aelix_ai.utils import _process_identity, _process_walk
 # imports would make the list a wish.
 __all__ = [
     "AbortHandle",
+    "CREATE_SUSPENDED",
     "Confirmed",
     "DRAIN_CAP_SECONDS",
     "EXIT_DRAIN_SECONDS",
@@ -168,6 +183,7 @@ __all__ = [
     "REAP_GRACE_SECONDS",
     "RELEASE_POLL_SECONDS",
     "StopReceipt",
+    "SuspendedLaunchError",
     "Unconfirmed",
     "_PipeReader",
     "_ReadState",
@@ -191,6 +207,14 @@ CTRL_BREAK_EVENT = 1
 # kernel32 constants, cross-checked against the MCP SDK's win32job use.
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+#: Never set by this module: a member could leave the job with it (#611 S2b).
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
+#: ``CreateProcess``'s flag; the process starts with its threads suspended.
+CREATE_SUSPENDED = 0x0000_0004
+_PROCESS_SUSPEND_RESUME = 0x0800
+_DUPLICATE_SAME_ACCESS = 0x0002
+#: How long a failed suspended launch waits for the process it terminated.
+SUSPENDED_ABORT_WAIT_MS = 5000
 _PROCESS_TERMINATE = 0x0001
 _PROCESS_SET_QUOTA = 0x0100
 # #722 (ADR-0293) — the evidence a service-owned tree's stop collects.
@@ -328,6 +352,20 @@ class _Win32EvidenceApi(Protocol):
     def close_process(self, handle: int) -> None: ...
 
 
+class _Win32JobControlApi(Protocol):
+    """What preserving a job and a suspended spawn need (#611 S2b), apart for the same reason."""
+
+    def limit_flags(self, job: int) -> int: ...
+
+    def set_limit_flags(self, job: int, flags: int) -> None: ...
+
+    def can_resume(self) -> bool: ...
+
+    def resume(self, pid: int, handle: int | None) -> None: ...
+
+    def duplicate(self, handle: int) -> int: ...
+
+
 class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
     """64 bytes on x64, ``LimitFlags`` at offset 16 (verified with ctypes)."""
 
@@ -418,6 +456,19 @@ def _load_kernel32() -> tuple[Any, Callable[[], int]]:
     kernel32.TerminateProcess.restype = ctypes.c_int
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    # #759 fix round 1: a suspended launch keeps its own copy of the handle it was given.
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.DuplicateHandle.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_uint32,
+    ]
+    kernel32.DuplicateHandle.restype = ctypes.c_int
     return kernel32, ctypes.get_last_error  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -574,8 +625,76 @@ class _KernelApi:
     def close_process(self, handle: int) -> None:
         self._kernel32.CloseHandle(handle)
 
+    # --- #611 S2b: preserve and the suspended spawn -------------------------
+
+    def limit_flags(self, job: int) -> int:
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        if not self._kernel32.QueryInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            raise self._last_os_error("QueryInformationJobObject")
+        return int(info.BasicLimitInformation.LimitFlags)
+
+    def set_limit_flags(self, job: int, flags: int) -> None:
+        # The job's whole limit structure, read back and written with only the
+        # flags changed (#759 fix round 1, Codex #8): a zeroed structure would
+        # turn a value-carrying limit (ProcessMemoryLimit, JobMemoryLimit, the
+        # time limits) into 0 under a flag that still enforces it.
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        if not self._kernel32.QueryInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            raise self._last_os_error("QueryInformationJobObject")
+        info.BasicLimitInformation.LimitFlags = flags
+        if not self._kernel32.SetInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            raise self._last_os_error("SetInformationJobObject")
+
+    def can_resume(self) -> bool:
+        return _nt_resume_process() is not None
+
+    def duplicate(self, handle: int) -> int:
+        current = self._kernel32.GetCurrentProcess()
+        out = ctypes.c_void_p()
+        if not self._kernel32.DuplicateHandle(
+            current, handle, current, ctypes.byref(out), 0, False, _DUPLICATE_SAME_ACCESS
+        ):
+            raise self._last_os_error("DuplicateHandle")
+        return int(out.value or 0)
+
+    def resume(self, pid: int, handle: int | None) -> None:
+        resume = _nt_resume_process()
+        if resume is None:
+            raise OSError("NtResumeProcess is not available")
+        opened = None
+        if handle is None:
+            opened = self._kernel32.OpenProcess(_PROCESS_SUSPEND_RESUME, False, pid)
+            if not opened:
+                raise self._last_os_error("OpenProcess")
+        try:
+            status = resume(handle if handle is not None else opened)
+        finally:
+            if opened is not None:
+                self._kernel32.CloseHandle(opened)
+        if status != 0:
+            raise OSError(f"NtResumeProcess failed (NTSTATUS={status & 0xFFFFFFFF:#010x})")
+
     def _last_os_error(self, call: str) -> OSError:
         return OSError(f"{call} failed (GetLastError={self._last_error()})")
+
+
+@functools.cache
+def _nt_resume_process() -> Any | None:
+    """``ntdll.NtResumeProcess``, typed, or ``None`` when it cannot be resolved (win32 only)."""
+
+    with contextlib.suppress(Exception):
+        ntdll = ctypes.WinDLL("ntdll")  # pyright: ignore[reportAttributeAccessIssue]
+        resume = ntdll.NtResumeProcess
+        resume.argtypes = [ctypes.c_void_p]
+        resume.restype = ctypes.c_long
+        return resume
+    return None
 
 
 def _taskkill_tree(pid: int) -> None:
@@ -667,15 +786,52 @@ def _taskkill_tree(pid: int) -> None:
 
 
 def _release_job(api: _Win32Api, job: int) -> None:
-    """``CloseHandle``, best effort. Also the ``weakref.finalize`` callback."""
+    """``CloseHandle``, best effort."""
 
     with contextlib.suppress(OSError):
         api.close_handle(job)
 
 
+def _release(api: _Win32Api, job: int | None, held: dict[int, int]) -> None:
+    """The ``weakref.finalize`` callback: the member handles the tree still holds, then the job."""
+
+    _close_held(api, held)
+    if job is not None:
+        _release_job(api, job)
+
+
+def _close_held(api: Any, held: dict[int, int]) -> None:
+    for handle in list(held.values()):
+        with contextlib.suppress(OSError, AttributeError):
+            api.close_process(handle)
+    held.clear()
+
+
+class SuspendedLaunchError(OSError):
+    """A suspended spawn that was not resumed (#611 S2b).
+
+    Its job could not be created, the process could not be assigned or resumed,
+    or the stop latch was set before the resume. The process was terminated and
+    waited on: ``tree`` is ``None``. When the terminate or its wait failed,
+    ``tree`` is the tree that still holds the process (its handle in its held
+    set, state ``TERMINATING``) and the caller keeps it registered, so a
+    barrier decides; nothing is abandoned and nothing is resumed uncontained.
+    """
+
+    def __init__(self, why: str, tree: ProcessTree | None = None) -> None:
+        super().__init__(why)
+        self.tree = tree
+
+
 # ---------------------------------------------------------------------------
 # the stop evidence (#722)
 # ---------------------------------------------------------------------------
+
+
+_OPEN = "open"
+_TERMINATING = "terminating"
+_PRESERVED = "preserved"
+_CLOSED = "closed"
 
 
 @dataclass(frozen=True)
@@ -750,16 +906,24 @@ class ProcessTree:
         # passes one even when the job failed, so a fallback tree still
         # dispatches to taskkill rather than to ``killpg``.
         self._win32 = api is not None
-        self._closed = False
+        # #611 S2b: one state decides every kill entry, preserve and close; the
+        # lock is held only inside one synchronous transition, never across an
+        # ``await``.
+        self._state = _OPEN
+        self._lock = threading.Lock()
+        # #611 S2b (PE5): the member handles this tree opened, by pid, held open
+        # for the whole cleanup obligation — until a confirm that succeeds,
+        # ``close``, or the finalizer — so a retry never reuses a closed value.
+        self._held: dict[int, int] = {}
         self._finalizer: weakref.finalize | None = None
-        if job is not None and api is not None:
-            # An abandoned tree still releases its handle. Nothing HERE kills —
+        if api is not None:
+            # An abandoned tree still releases its handles. Nothing HERE kills —
             # but KILL_ON_JOB_CLOSE decides that, and for a
             # ``kill_on_close=True`` tree (the rpc child and, since #220, the
             # delegation print child) this finalizer IS a kill, fired at a
             # nondeterministic GC moment. That is the accepted cost of the
             # backstop; the owner is expected to :meth:`close` deliberately.
-            self._finalizer = weakref.finalize(self, _release_job, api, job)
+            self._finalizer = weakref.finalize(self, _release, api, job, self._held)
 
     @property
     def job(self) -> int | None:
@@ -783,7 +947,79 @@ class ProcessTree:
         attribute there, so a stub that omits it fails loudly.
         """
 
-        return self._closed
+        return self._state is _CLOSED
+
+    @property
+    def state(self) -> str:
+        """``open``, ``terminating``, ``preserved`` or ``closed`` (#611 S2b)."""
+
+        return self._state
+
+    def _may_kill(self) -> bool:
+        """A kill entry: ``OPEN`` becomes ``TERMINATING``; ``PRESERVED`` and ``CLOSED`` refuse."""
+
+        with self._lock:
+            return self._may_kill_locked()
+
+    def _may_kill_locked(self) -> bool:
+        """:meth:`_may_kill` for a caller that holds ``_lock`` for the kernel calls that follow.
+
+        #759 fix round 1 (Codex #5): the state check, the handle lookups and the
+        synchronous kernel calls that use them run under ONE acquisition, so a
+        ``close()`` on another thread cannot close — and the system recycle — a
+        handle between the check and its use. Never held across an ``await``.
+        """
+
+        if self._state is _OPEN:
+            self._state = _TERMINATING
+        return self._state is _TERMINATING
+
+    def preserve_descendants(self) -> bool:
+        """Let what is left in the tree outlive :meth:`close` (#611 S2b). Returns whether it holds.
+
+        win32: clears ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` on the job and
+        nothing else — never ``BREAKAWAY_OK`` — so closing the handle releases
+        the members instead of ending them (codex-rs
+        ``normal_exit_preserves_descendants``). Only from ``OPEN``: after a kill
+        entry the stop wins and this answers ``False``; a failed
+        ``SetInformationJobObject`` leaves the tree ``OPEN`` and answers
+        ``False``, so the caller still owns a job whose close kills. Once
+        ``PRESERVED``, every kill entry is a no-op. POSIX, and a win32 tree with
+        no job: ``close`` never kills there, so it is ``PRESERVED`` at once.
+        Nothing calls it yet; S2d's background ``bash`` is the first caller.
+        """
+
+        with self._lock:
+            if self._state is _PRESERVED:
+                return True
+            if self._state is not _OPEN:
+                return False
+            if self._win32 and self._job is not None:
+                api = cast("_Win32JobControlApi", self._api)
+                try:
+                    flags = api.limit_flags(self._job)
+                    api.set_limit_flags(self._job, flags & ~_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+                except (OSError, AttributeError):
+                    return False
+            self._state = _PRESERVED
+            return True
+
+    @staticmethod
+    def suspend_flags(*, platform: str | None = None, api: _Win32Api | None = None) -> int:
+        """The ``creationflags`` bit a contained spawn may add: ``CREATE_SUSPENDED``, or 0 (#611 S2b).
+
+        ``CREATE_SUSPENDED`` only on win32 and only when ``NtResumeProcess``
+        resolves, checked BEFORE anything is created, so a host without it
+        spawns as today and passes ``suspended=False`` to :meth:`attach`.
+        """
+
+        if _resolve_platform(platform) != "win32":
+            return 0
+        resolved = api if api is not None else _KernelApi()
+        try:
+            return CREATE_SUSPENDED if cast("_Win32JobControlApi", resolved).can_resume() else 0
+        except (OSError, AttributeError):
+            return 0
 
     @classmethod
     def attach(
@@ -794,6 +1030,8 @@ class ProcessTree:
         handle: int | None = None,
         platform: str | None = None,
         api: _Win32Api | None = None,
+        suspended: bool = False,
+        stop_latched: Callable[[], bool] | None = None,
     ) -> ProcessTree:
         """Take ownership of the tree rooted at ``pid``.
 
@@ -803,14 +1041,96 @@ class ProcessTree:
         process handle (:func:`_retained_handle`); without one the win32 arm
         derives one with ``OpenProcess``, which a hardened process can refuse.
 
+        ``suspended`` (#611 S2b): the process was created with
+        :meth:`suspend_flags`'s ``CREATE_SUSPENDED``. It is assigned to the job,
+        ``stop_latched`` is read, and only then is it resumed
+        (``NtResumeProcess``), so a grandchild it starts at once is born in the
+        job. A latch already set, or a failed job, assignment or resume, ends it
+        instead: terminated and waited on, and :class:`SuspendedLaunchError`
+        raised — never resumed outside the job.
+
         ``platform`` and ``api`` are injection seams for the tests. Attaching
         with ``platform="win32"`` and no ``api`` off Windows raises.
         """
 
         _require_pid(pid)
         if _resolve_platform(platform) == "win32":
+            if suspended:
+                return cls._attach_suspended(
+                    pid, kill_on_close=kill_on_close, handle=handle, api=api, stop_latched=stop_latched
+                )
             return cls._attach_win32(pid, kill_on_close=kill_on_close, handle=handle, api=api)
+        if suspended:
+            raise ValueError("a suspended spawn is win32 only")
         return cls._attach_posix(pid)
+
+    @classmethod
+    def _attach_suspended(
+        cls,
+        pid: int,
+        *,
+        kill_on_close: bool,
+        handle: int | None,
+        api: _Win32Api | None,
+        stop_latched: Callable[[], bool] | None,
+    ) -> ProcessTree:
+        resolved: _Win32Api = api if api is not None else _KernelApi()
+        # The tree's own copy of the handle it was given (#759 fix round 1,
+        # Codex #9): the caller's (``Popen``'s) stays the caller's, and an abort
+        # can end the process through it even where reopening it is refused.
+        own: int | None = None
+        if handle is not None:
+            with contextlib.suppress(OSError, AttributeError):
+                own = cast("_Win32JobControlApi", resolved).duplicate(handle)
+        job: int | None = None
+        try:
+            job = resolved.create_job(kill_on_close=kill_on_close)
+            resolved.assign(job, pid, handle)
+        except OSError as exc:
+            if job is not None:
+                _release_job(resolved, job)
+            raise cls(pid, contained=False, api=resolved)._abort_launch(f"not contained: {exc}", own) from exc
+        tree = cls(pid, contained=True, job=job, api=resolved)
+        if own is not None:
+            tree._held[pid] = own
+        if stop_latched is not None and stop_latched():
+            raise tree._abort_launch("stopped before it ran")
+        try:
+            cast("_Win32JobControlApi", resolved).resume(pid, handle)
+        except (OSError, AttributeError) as exc:
+            raise tree._abort_launch(f"not resumed: {exc}") from exc
+        return tree
+
+    def _abort_launch(self, why: str, own: int | None = None) -> SuspendedLaunchError:
+        """End a suspended process that will not be resumed: terminate, then a bounded wait.
+
+        Through the tree's copy of the handle the launch was given (``own``, or
+        the one already held), else a handle opened now. Both done: the tree is
+        closed and the error carries none. Either failed: the tree keeps the
+        process's handle in its held set, stays ``TERMINATING`` and rides on
+        the error, so its owner keeps it registered.
+        """
+
+        self._may_kill()
+        api = cast("_Win32EvidenceApi", self._api)
+        if own is not None:
+            self._held[self.pid] = own
+        handle = self._held.get(self.pid)
+        if handle is None:
+            try:
+                handle = api.open_member(self.pid)
+            except OSError as exc:
+                return SuspendedLaunchError(f"{why}; could not open it to end it: {exc}", tree=self)
+            self._held[self.pid] = handle
+        try:
+            api.terminate_process(handle)
+            ended = api.wait_handle(handle, SUSPENDED_ABORT_WAIT_MS)
+        except OSError as exc:
+            return SuspendedLaunchError(f"{why}; ending it failed: {exc}", tree=self)
+        if not ended:
+            return SuspendedLaunchError(f"{why}; it did not end in time", tree=self)
+        self.close()
+        return SuspendedLaunchError(why)
 
     @classmethod
     def _attach_win32(
@@ -876,52 +1196,55 @@ class ProcessTree:
         with no ``await`` in between (§B.2).
         """
 
-        if self._closed:
-            return False
-        if self._win32:
-            if self._api is None:  # pragma: no cover — set together in __init__
+        with self._lock:
+            if not self._may_kill_locked():
                 return False
+            if self._win32:
+                if self._api is None:  # pragma: no cover — set together in __init__
+                    return False
+                try:
+                    self._api.ctrl_break(self.pid)
+                except OSError:
+                    return False
+                return True
             try:
-                self._api.ctrl_break(self.pid)
+                if whole_group and self.contained and self._pgid is not None:
+                    os.killpg(self._pgid, signal.SIGTERM)  # pyright: ignore[reportAttributeAccessIssue]
+                else:
+                    os.kill(self.pid, signal.SIGTERM)
             except OSError:
                 return False
             return True
-        try:
-            if whole_group and self.contained and self._pgid is not None:
-                os.killpg(self._pgid, signal.SIGTERM)  # pyright: ignore[reportAttributeAccessIssue]
-            else:
-                os.kill(self.pid, signal.SIGTERM)
-        except OSError:
-            return False
-        return True
 
     def hard_kill(self) -> None:
         """End the tree unconditionally. Never raises.
 
         Deliberately NOT guarded by root liveness: leader dead, descendants
-        alive is the shape this exists for, and a guard would skip it.
+        alive is the shape this exists for, and a guard would skip it. A no-op
+        on a closed or preserved tree (#611 S2b).
         """
 
-        if self._closed:
-            return
-        if self._win32:
-            if self._api is None:  # pragma: no cover — set together in __init__
+        with self._lock:
+            if not self._may_kill_locked():
                 return
-            # taskkill FIRST, while the root is still alive so ``/T`` can walk
-            # to anything that escaped the assignment window; the job second,
-            # which is what actually holds a parentless or re-parented member.
-            with contextlib.suppress(OSError):
-                self._api.taskkill(self.pid)
-            if self._job is not None:
+            if self._win32:
+                if self._api is None:  # pragma: no cover — set together in __init__
+                    return
+                # taskkill FIRST, while the root is still alive so ``/T`` can walk
+                # to anything that escaped the assignment window; the job second,
+                # which is what actually holds a parentless or re-parented member.
                 with contextlib.suppress(OSError):
-                    self._api.terminate_job(self._job)
-            return
-        with contextlib.suppress(OSError):
-            if self.contained and self._pgid is not None:
-                os.killpg(self._pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
-            else:
-                # Not our group. See the class docstring: root only.
-                os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+                    self._api.taskkill(self.pid)
+                if self._job is not None:
+                    with contextlib.suppress(OSError):
+                        self._api.terminate_job(self._job)
+                return
+            with contextlib.suppress(OSError):
+                if self.contained and self._pgid is not None:
+                    os.killpg(self._pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+                else:
+                    # Not our group. See the class docstring: root only.
+                    os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
 
     def close(self) -> None:
         """Release the tree. Idempotent, and a no-op on POSIX.
@@ -935,28 +1258,35 @@ class ProcessTree:
         the tree was attached with ``kill_on_close=True``.
         """
 
-        if self._closed:
-            return
-        self._closed = True
-        job, self._job = self._job, None
-        finalizer, self._finalizer = self._finalizer, None
-        if finalizer is not None:
-            finalizer.detach()
-        if job is not None and self._api is not None:
-            _release_job(self._api, job)
+        with self._lock:
+            if self._state is _CLOSED:
+                return
+            self._state = _CLOSED
+            job, self._job = self._job, None
+            finalizer, self._finalizer = self._finalizer, None
+            if finalizer is not None:
+                finalizer.detach()
+            if self._api is not None:
+                # #611 S2b: the member handles a stop collected are released with
+                # the tree, never before a confirm that needed them; under the
+                # lock, so no kill entry is between its lookup and its use.
+                _close_held(self._api, self._held)
+            if job is not None and self._api is not None:
+                _release_job(self._api, job)
 
     # --- #722 (ADR-0293): stop with evidence, for service-owned trees --------
 
     def active_processes(self) -> int | None:
         """win32: the job's ``ActiveProcesses`` count (monitoring only). ``None`` elsewhere."""
 
-        if not self._win32 or self._job is None:
-            return None
-        api = cast("_Win32EvidenceApi", self._api)
-        try:
-            return api.active_count(self._job)
-        except (OSError, AttributeError):
-            return None
+        with self._lock:
+            if not self._win32 or self._job is None:
+                return None
+            api = cast("_Win32EvidenceApi", self._api)
+            try:
+                return api.active_count(self._job)
+            except (OSError, AttributeError):
+                return None
 
     def collect(
         self,
@@ -981,6 +1311,17 @@ class ProcessTree:
         are still the process walked (``started`` unchanged).
         """
 
+        with self._lock:
+            return self._collect_locked(policy, walk, leaders, started, prior)
+
+    def _collect_locked(
+        self,
+        policy: str,
+        walk: Callable[[int], Sequence[int | _process_walk.WalkEntry]] | None,
+        leaders: Callable[[list[int]], list[int]] | None,
+        started: Callable[[int], float | None] | None,
+        prior: StopReceipt | None,
+    ) -> StopReceipt:
         if self._win32:
             return self._collect_win32(policy, prior)
         return self._collect_posix(policy, walk, leaders, started, prior)
@@ -1035,49 +1376,78 @@ class ProcessTree:
         accepts. A walked pid's group is judged by its walked start time.
         """
 
-        receipt = self.collect(
-            policy=policy, walk=walk, leaders=leaders, started=started, prior=prior
-        )
-        if self._win32:
-            self._kill_win32(receipt)
-        else:
-            self._kill_posix(
-                receipt, same, started=started, root_started=root_started, root_live=root_live
-            )
-        return receipt
+        with self._lock:
+            # One acquisition from the collection through the last kill (#759
+            # fix round 1, Codex #5): a ``close()`` waits, so no handle this
+            # uses is closed, and recycled, before it is used.
+            receipt = self._collect_locked(policy, walk, leaders, started, prior)
+            if not self._may_kill_locked():
+                return receipt  # preserved or closed: nothing is signalled (#611 S2b)
+            if self._win32:
+                self._kill_win32(receipt)
+            else:
+                self._kill_posix(
+                    receipt, same, started=started, root_started=root_started, root_live=root_live
+                )
+            return receipt
 
     def _collect_win32(self, policy: str, prior: StopReceipt | None) -> StopReceipt:
+        """The job's members, each opened and confirmed a member; earlier ones only if still held.
+
+        #611 S2b (PE5): a member an earlier collection named is reused only
+        while this tree still holds its handle open; otherwise it is opened again
+        and its membership asked again, so a handle value closed since — and
+        perhaps reused by the system for another process — is never signalled.
+        """
+
         api = cast("_Win32EvidenceApi", self._api)
-        held = list(prior.handles) if prior is not None else []
+        earlier = [pid for pid, _handle in prior.handles] if prior is not None else []
+        if self._state is _CLOSED:
+            return StopReceipt(policy, self.pid, errors=("the tree is closed",))
         if self._job is None:
             # The fallback tree (no job): taskkill is all there is.
-            return StopReceipt(policy, self.pid, handles=tuple(held), errors=("no job",))
-        have = {pid for pid, _handle in held}
-        handles: list[tuple[int, int]] = list(held)
+            return StopReceipt(policy, self.pid, handles=self._held_for(earlier), errors=("no job",))
         errors: list[str] = []
         try:
             members = api.job_member_pids(self._job)
         except (OSError, AttributeError) as exc:
             members = []
             errors.append(f"member query failed: {exc}")
-        for pid in members:
-            if pid in have:
-                continue
-            try:
-                handle = api.open_member(pid)
-            except OSError as exc:
+        for pid in dict.fromkeys([*earlier, *members]):
+            if pid not in self._held:
+                self._hold_member(api, pid, errors, listed=pid in members)
+        # Every member the tree still holds, listed now or not (#759 fix round
+        # 1, Codex #6): one a confirm found late and terminated is not known
+        # gone until its handle is signalled, whatever the job's listing says.
+        return StopReceipt(
+            policy,
+            self.pid,
+            handles=self._held_for([*earlier, *members, *self._held]),
+            errors=tuple(errors),
+        )
+
+    def _hold_member(self, api: _Win32EvidenceApi, pid: int, errors: list[str], *, listed: bool) -> None:
+        """Open ``pid`` and hold it if the job still has it; an earlier member that is gone is dropped."""
+
+        assert self._job is not None
+        try:
+            handle = api.open_member(pid)
+        except OSError as exc:
+            if listed:
                 errors.append(f"open {pid} failed: {exc}")
-                continue
-            try:
-                member = api.in_job(handle, self._job)
-            except OSError as exc:
-                member = False
-                errors.append(f"membership of {pid} unknown: {exc}")
-            if member:
-                handles.append((pid, handle))
-            else:
-                api.close_process(handle)
-        return StopReceipt(policy, self.pid, handles=tuple(handles), errors=tuple(errors))
+            return
+        try:
+            member = api.in_job(handle, self._job)
+        except OSError as exc:
+            member = False
+            errors.append(f"membership of {pid} unknown: {exc}")
+        if member:
+            self._held[pid] = handle
+        else:
+            api.close_process(handle)
+
+    def _held_for(self, pids: Sequence[int]) -> tuple[tuple[int, int], ...]:
+        return tuple((pid, self._held[pid]) for pid in dict.fromkeys(pids) if pid in self._held)
 
     def _kill_win32(self, receipt: StopReceipt) -> None:
         api = cast("_Win32EvidenceApi", self._api)
@@ -1085,10 +1455,13 @@ class ProcessTree:
         if receipt.policy == "stop":
             with contextlib.suppress(OSError):
                 win.taskkill(self.pid)
-        for _pid, handle in receipt.handles:
-            # A member that already exited refuses; the wait in :meth:`confirm` decides.
-            with contextlib.suppress(OSError):
-                api.terminate_process(handle)
+        for pid, _handle in receipt.handles:
+            # Only a handle this tree still holds open (#611 S2b, PE5). A member
+            # that already exited refuses; the wait in :meth:`confirm` decides.
+            handle = self._held.get(pid)
+            if handle is not None:
+                with contextlib.suppress(OSError):
+                    api.terminate_process(handle)
 
     def _collect_posix(
         self,
@@ -1265,49 +1638,104 @@ class ProcessTree:
     async def _confirm_win32(
         self, receipt: StopReceipt, deadline: float, clock: Callable[[], float], poll: float
     ) -> Confirmed | Unconfirmed:
+        """Wait on every member the tree holds, rescan, and end the job last.
+
+        #759 fix round 1: each synchronous step holds ``_lock`` (Codex #5), so a
+        ``close()`` lands between steps, never inside one; a confirm that finds
+        the tree closed answers :class:`Unconfirmed` (it was a ``KeyError``).
+        Every member the tree holds is waited on, not only the receipt's
+        (Codex #6). Nothing is closed on :class:`Unconfirmed`.
+        """
+
         api = cast("_Win32EvidenceApi", self._api)
         if self._job is None:
             return Unconfirmed("no job")
-        collected: dict[int, int] = dict(receipt.handles)
-        try:
+        collected = [pid for pid, _handle in receipt.handles]
+        while True:
             while True:
-                waiting = dict(collected)
-                while waiting:
-                    for pid, handle in list(waiting.items()):
-                        if api.wait_handle(handle, 0):
-                            del waiting[pid]
-                    if not waiting:
-                        break
-                    if clock() >= deadline:
-                        return Unconfirmed(f"members not stopped: {sorted(waiting)}")
-                    await asyncio.sleep(poll)
-                try:
-                    listed = api.job_member_pids(self._job)
-                except OSError as exc:
-                    return Unconfirmed(f"member query failed: {exc}")
-                fresh = [pid for pid in listed if pid not in collected]
-                if not fresh:
+                with self._lock:
+                    waiting = self._still_running(api, collected)
+                if waiting is None:
+                    return Unconfirmed("the tree was closed before its members were confirmed")
+                if not waiting:
                     break
-                for pid in fresh:
-                    try:
-                        handle = api.open_member(pid)
-                    except OSError as exc:
-                        return Unconfirmed(f"open {pid} failed: {exc}")
-                    if not api.in_job(handle, self._job):
-                        api.close_process(handle)
-                        continue
-                    collected[pid] = handle
-                    with contextlib.suppress(OSError):
-                        api.terminate_process(handle)
                 if clock() >= deadline:
-                    return Unconfirmed("members still joining the job")
-            with contextlib.suppress(OSError):
-                cast("_Win32Api", self._api).terminate_job(self._job)
-            return Confirmed()
-        finally:
-            for handle in collected.values():
+                    return Unconfirmed(f"members not stopped: {sorted(waiting)}")
+                await asyncio.sleep(poll)
+            with self._lock:
+                why, fresh = self._rescan_locked(api, collected)
+            if why is not None:
+                return Unconfirmed(why)
+            if not fresh:
+                break
+            collected.extend(fresh)
+            if clock() >= deadline:
+                return Unconfirmed("members still joining the job")
+        with self._lock:
+            if self._state is _CLOSED or self._job is None:
+                return Unconfirmed("the tree was closed before its members were confirmed")
+            if self._may_kill_locked():
                 with contextlib.suppress(OSError):
-                    api.close_process(handle)
+                    cast("_Win32Api", self._api).terminate_job(self._job)
+            _close_held(api, self._held)
+        return Confirmed()
+
+    def _still_running(self, api: _Win32EvidenceApi, collected: list[int]) -> list[int] | None:
+        """The held members whose handle is not signalled yet; ``None`` once the tree is closed. Under ``_lock``."""
+
+        if self._state is _CLOSED:
+            return None
+        for pid in self._held:
+            if pid not in collected:
+                collected.append(pid)
+        return [pid for pid in collected if pid in self._held and not api.wait_handle(self._held[pid], 0)]
+
+    def _rescan_locked(self, api: _Win32EvidenceApi, collected: list[int]) -> tuple[str | None, list[int]]:
+        """The job's listing again: each member no collection held is opened, verified, held, terminated."""
+
+        if self._state is _CLOSED or self._job is None:
+            return "the tree was closed before its members were confirmed", []
+        try:
+            listed = api.job_member_pids(self._job)
+        except OSError as exc:
+            return f"member query failed: {exc}", []
+        fresh: list[int] = []
+        for pid in listed:
+            if pid in collected:
+                continue
+            why = self._rescan_member(api, pid)
+            if why is not None:
+                return why, fresh
+            if pid in self._held:
+                fresh.append(pid)
+        return None, fresh
+
+    def _rescan_member(self, api: _Win32EvidenceApi, pid: int) -> str | None:
+        """A member the job lists that no collection held: open, verify, hold, terminate. Under ``_lock``.
+
+        A membership check that fails closes the handle it opened and is an
+        answer — not confirmed — never an exception (#759 fix round 1, Codex #10).
+        """
+
+        assert self._job is not None
+        if pid not in self._held:
+            try:
+                handle = api.open_member(pid)
+            except OSError as exc:
+                return f"open {pid} failed: {exc}"
+            try:
+                member = api.in_job(handle, self._job)
+            except OSError as exc:
+                api.close_process(handle)
+                return f"membership of {pid} unknown: {exc}"
+            if not member:
+                api.close_process(handle)
+                return None
+            self._held[pid] = handle
+        if self._may_kill_locked():
+            with contextlib.suppress(OSError):
+                api.terminate_process(self._held[pid])
+        return None
 
 
 def _moved_leader(leader: int, stamp: float | None) -> bool:

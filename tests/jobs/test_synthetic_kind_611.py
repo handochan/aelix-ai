@@ -16,6 +16,7 @@ Fails on main ``a385c64a``: ``ExtensionAPI`` has no ``jobs``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ from aelix_coding_agent.jobs.indicator import indicator_text
 from aelix_coding_agent.modes.print_mode import run_print_mode
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_session, reopen, wait_for
+from tests.jobs.conftest import fast_service, make_session, reopen, wait_for, wait_settled
 
 
 class _Model:
@@ -163,14 +164,16 @@ async def test_a_synthetic_kind_through_every_surface(tmp_path: Path, service: A
     model.seconds = 30
     await harness.prompt("nap long")
     long_id = started[-1]
+    since = time.monotonic()
     assert "Stopped" in await jobs_cmd(f"stop {long_id}", None)
-    assert service.snapshot(long_id).state == "stopped"
+    await wait_settled(service, (long_id,), since=since)  # #751
 
     # the session ends (/new): its running jobs stop through session_shutdown
     await harness.prompt("nap again")
     third = started[-1]
+    since = time.monotonic()
     await _emit_session_shutdown_event(harness.extension_runner, "new")
-    assert service.snapshot(third).state == "stopped"
+    await wait_settled(service, (third,), since=since)  # #751
 
     await service.shutdown()
 
@@ -189,9 +192,9 @@ async def test_reservation_reload_restart_reregistration_and_missing_adapter(tmp
         await service.start(_sleeper.KIND, title="second")
 
     # /reload: session_shutdown("reload") stops the session's jobs; the slot comes back
+    since = time.monotonic()
     await _emit_session_shutdown_event(harness.extension_runner, "reload")
-    assert service.snapshot(started[0]).state == "stopped"
-    assert service.admission.count(_sleeper.KIND) == 0
+    await wait_settled(service, (started[0],), since=since, slots=(_sleeper.KIND, 0))  # #751
 
     # a job left unfinished in the file: a restart with no adapter keeps it
     # unresolved, and the kind's registration re-evaluates it

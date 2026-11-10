@@ -309,7 +309,9 @@ On the asyncio spawn that window is the transport's pipe-connection round
 trips — measured on POSIX at 0.3 ms idle, 1.05 ms median and 1.65 ms max under
 load, against a shell that reaches its first `fork` at about 2 ms. Unmeasured
 on the proactor loop. `CREATE_SUSPENDED` cannot close it, because `Popen`
-closes the thread handle before returning. The belt-and-braces is ordering:
+closes the thread handle before returning. *(Corrected 2026-11-10, #759: it can — `NtResumeProcess`
+resumes a process from the process handle `Popen` keeps. The primitive exists now and nothing spawns
+suspended yet; see the 2026-11-10 note at the end.)* The belt-and-braces is ordering:
 win32 `hard_kill` runs `taskkill /T /F` **first**, while the root is still
 alive, so `/T` can walk to an escapee through its live parent link, and
 `TerminateJobObject` second.
@@ -2204,4 +2206,76 @@ its group (`::test_a_null_stamp_live_leader_is_never_signalled`, red on `3cab5d1
 own (`::test_the_tree_path_checks_the_roots_identity_before_walking`, red on `3cab5d16`; #731
 item 2). A leader that is gone or a zombie still gives authority (the owner's OQ-D answer,
 2026-11-10; ADR-0293's 2026-11-10 note states the residual).
+
+### 2026-11-10: one state per Job, member handles held for the cleanup, the suspended spawn (#759, #611 S2b)
+
+`ProcessTree` has one state that every win32 entry reads: `OPEN` until the first kill entry
+(`soft_kill`'s `CTRL_BREAK`, `hard_kill`'s `taskkill` and `TerminateJobObject`,
+`stop_and_collect`'s kill, `confirm`'s per-member `TerminateProcess` and its last
+`TerminateJobObject`), then `TERMINATING`; `preserve_descendants()` from `OPEN` makes it
+`PRESERVED`, in which every kill entry is a no-op; `close()` makes it `CLOSED` from any state. The
+preserve clears `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and keeps every other flag the job had, and never
+sets `BREAKAWAY_OK`; refused, it leaves the tree `OPEN` and answers `False`, so the owner still holds a
+job whose close kills. After a kill entry it answers `False`: a stop under way wins. A `threading.Lock`
+is held only inside each synchronous transition. Nothing preserves yet, so every sequence a caller
+makes today takes the calls it took on `3cab5d16`
+(`tests/process_tree/test_job_state_machine_611.py`, the three G cases: foreground `bash`'s attach and
+close at `kill_on_close=False`, `hard_kill`, a service stop and its confirm; injected api, every host).
+
+The member handles a stop collects are the tree's for the whole cleanup duty (Codex finding #8 on the
+#611 S2 contract, PE5). On `3cab5d16` `_confirm_win32` closed every handle it collected even when it
+answered `Unconfirmed`, the receipt kept their integers, and the liveness retry's
+`stop_and_collect(prior=…)` called `TerminateProcess` on them; a handle value the system had given to
+another process would have ended that process (`::test_a_retry_after_unconfirmed_never_uses_a_closed_handle`,
+red on `3cab5d16`, where the fake records `TerminateProcess` on both closed values). Now the tree
+holds them open until a confirm succeeds, `close()`, or its finalizer; a kill uses only a handle the
+tree still holds; and an earlier member it no longer holds is opened again and asked `IsProcessInJob`
+again (`::test_a_member_no_longer_held_is_reopened_and_asked_again`).
+
+`ProcessTree.suspend_flags()` answers `CREATE_SUSPENDED` only when `ntdll.NtResumeProcess` resolves,
+before anything is created; `attach(suspended=True, stop_latched=…)` assigns the suspended process
+to its job, reads the stop latch, and only then resumes it. A set latch, or a failed job, assignment
+or resume, ends the process instead — `TerminateProcess` and a bounded wait — and raises
+`SuspendedLaunchError`; it is never resumed outside the job. If the terminate or the wait fails, the
+error carries the tree still holding the process, `TERMINATING`, for its owner to keep registered
+(`::test_a_latched_stop_never_resumes`, `::test_assign_failure_terminates_never_resumes_uncontained`,
+`::test_resume_failure_terminates_and_waits`, `::test_a_failed_terminate_keeps_ownership`,
+`::test_missing_ntresumeprocess_spawns_unsuspended`). No spawn site uses it yet; #611 S2d's
+background `bash` is the first.
+
+Not run anywhere but CI: `tests/process_tree/test_job_object_windows_611.py` drives a real Job on
+windows-latest — a preserved job whose root exited normally leaves its child running after `close()`
+(codex-rs `normal_exit_preserves_descendants_for_pipe_and_conpty`), `hard_kill` wins over a later
+preserve, a suspended spawn's first child is in the job, a latched suspended spawn never runs, and
+#731 item 3's four legs (member handles collected, `kill_now` — the leg a registration after the stop latch takes, driven directly — the members
+a normal exit leaves, and the restart classification). No Windows host ran any of it for this note.
+
+Fix round 1 (#759, 2026-11-10), in `tests/process_tree/test_job_state_machine_611.py` (injected
+api); each case named below is red on `f3e9b814` unless it is marked a mutant pin:
+- **One lock from the check to the kernel call.** A kill entry's state check, its handle lookups and
+  the synchronous kernel calls that use them, and every step of `close()`, run under the tree's lock,
+  so a `close()` on another thread waits for a `TerminateProcess` already under way instead of closing
+  — and letting the system recycle — its handle (`::test_a_close_waits_for_a_terminate_already_under_way`).
+  A confirm whose tree is closed while it waits answers `Unconfirmed`; it raised `KeyError`
+  (`::test_a_close_during_confirm_is_an_unconfirmed_answer`). The lock is never held across an
+  `await`.
+- **Every held member stays in the evidence.** A member a confirm found late, held and terminated is
+  in the next receipt and is waited on, whether or not the job's listing still shows it
+  (`::test_a_member_found_late_stays_in_the_retry_evidence`; `TerminateProcess` is asynchronous, so
+  only its handle being signalled proves it ended).
+- **A failed membership check is an answer.** A rescan whose `IsProcessInJob` fails closes the handle
+  it opened and answers `Unconfirmed`; the error escaped and the handle leaked
+  (`::test_a_rescan_whose_membership_check_fails_closes_its_handle_and_is_unconfirmed`).
+- **Preserve keeps the job's other limits.** `_KernelApi.set_limit_flags` reads the whole
+  `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` back and writes it with only the flags changed; a zeroed
+  struct turned `ProcessMemoryLimit` 64 MiB into 0 under its still-set flag
+  (`::test_preserve_keeps_every_other_limit_value`, a ctypes struct on every host).
+- **A suspended launch keeps its own copy of the handle it is given** (`DuplicateHandle`), and an
+  abort ends and waits on the process through it; the caller's handle stays the caller's. Without
+  it, a launch whose job could not be created, on a process that refuses `OpenProcess`, left the
+  process running (`::test_a_suspended_launch_ends_the_process_through_the_handle_it_was_given`); so
+  did a launch that was latched, or whose resume failed, once its job and assignment had succeeded
+  (`::test_a_latched_or_unresumed_launch_ends_the_process_through_its_own_copy_of_the_handle`). A
+  terminate whose wait times out keeps the tree (`::test_a_suspended_launch_whose_end_times_out_keeps_the_tree`,
+  green on `f3e9b814` too: a mutant pin, for the timeout read as an ended process).
 

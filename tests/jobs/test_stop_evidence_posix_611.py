@@ -29,7 +29,7 @@ from aelix_coding_agent.jobs import evidence
 from aelix_coding_agent.jobs.contract import ClientOutcome, HelperCleanup
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_harness, make_session
+from tests.jobs.conftest import fast_service, make_harness, make_session, wait_settled
 
 pytestmark = [
     pytest.mark.usefixtures("jobs_active"),
@@ -90,13 +90,13 @@ async def test_a_descendant_in_its_own_group_is_walked_and_stopped(tmp_path: Pat
     )
     helper = int(marker.read_text())
     try:
-        snap = await service.stop(job_id)
+        since = time.monotonic()
+        await service.stop(job_id)
         record = service._jobs[job_id].processes[0]
         walked = record.receipt.pids if tree else tuple(record.walked)  # type: ignore[union-attr]
         assert helper in walked, "named before the root died"
-        assert snap is not None and snap.state == "stopped"
-        assert pid_is_live(helper) is False, "the helper is gone before the job is stopped"
-        assert service.admission.count(_sleeper.KIND) == 0
+        await wait_settled(service, (job_id,), since=since, slots=(_sleeper.KIND, 0))  # #751
+        assert not _running(helper), "the helper is gone before the job is stopped"
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(helper, signal.SIGKILL)
