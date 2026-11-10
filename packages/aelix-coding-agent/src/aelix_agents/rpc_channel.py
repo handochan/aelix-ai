@@ -106,8 +106,9 @@ from aelix_agents.print_channel import (
 from aelix_agents.prompt_file import remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
-    descendant_pids,
-    group_leaders,
+    HeldWalk,
+    descendant_identities,
+    hold_walk,
     kill_tree,
     pdeathsig_preexec,
     reap,
@@ -441,7 +442,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1790-1797``); this channel
+            # ``_eager_abort`` (``print_channel.py:1807-1814``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -814,14 +815,14 @@ class RpcChannel:
             # ``reap`` returns its status at once. ``row.escalate`` is what a
             # second interrupt sets to end this reaper's grace.
             live = getattr(proc, "returncode", None) is None
-            walk = descendant_pids(proc.pid) if live else []
+            # Held for the reaper, which closes it (#611 S2a).
+            walk = hold_walk(descendant_identities(proc.pid)) if live else HeldWalk()
             task = asyncio.ensure_future(
                 reap(
                     proc,
                     grace=self._grace,
                     eager_kill=row.eager_kill,
                     descendants=walk,
-                    groups=group_leaders(walk),
                     tree=row.tree,
                     escalate=row.escalate,
                 )
@@ -883,8 +884,11 @@ class RpcChannel:
             # walked processes lead are the walk's, not the client's tree, so
             # they pre-empt nothing ``RpcClient.stop`` owes it.
             live = getattr(proc, "returncode", None) is None
-            walk = descendant_pids(proc.pid) if live else []
-            kill_tree(proc, walk, tree=row.tree, groups=group_leaders(walk))
+            walk = hold_walk(descendant_identities(proc.pid)) if live else HeldWalk()
+            try:
+                kill_tree(proc, walk, tree=row.tree)
+            finally:
+                walk.close()
 
 
 def _stderr_of(exc: BaseException, client: RpcClient) -> str:

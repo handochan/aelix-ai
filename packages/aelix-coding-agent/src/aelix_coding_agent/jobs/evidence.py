@@ -43,7 +43,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aelix_ai.utils import _process_walk
-from aelix_ai.utils._process_identity import process_argv, process_started, same_process
+from aelix_ai.utils._process_identity import (
+    leader_authorizes,
+    pid_is_zombie,
+    process_argv,
+    process_started,
+    same_process,
+)
 from aelix_ai.utils._process_tree import Confirmed, ProcessTree, StopReceipt, Unconfirmed
 
 #: SIGTERM (or the tree's soft kill) to SIGKILL, inside a stop's barrier.
@@ -115,8 +121,16 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def _walk(pid: int) -> list[int]:
-    return _process_walk.descendant_pids(pid)
+def _walk(pid: int) -> list[_process_walk.WalkEntry]:
+    """``pid``'s descendants, each with the start time read WITH its parent (#758 fix round 1).
+
+    The identity a later check compares against must be the one the walk saw:
+    a stamp read after a pid-only walk names whatever holds the number then, so
+    a child replaced in between had the replacement's start time recorded and
+    passed the check (Codex #2 on #758's first round).
+    """
+
+    return _process_walk.descendant_identities(pid)
 
 
 def _leaders(pids: list[int]) -> list[int]:
@@ -135,25 +149,83 @@ def collect(record: ProcessRecord, *, policy: str = "stop") -> None:
     if record.tree is not None and not record.tree.closed:
         record.receipt = record.tree.collect(
             policy=policy,  # type: ignore[arg-type]
-            walk=_walk,
+            walk=_walk_of(record),
             leaders=_leaders,
             started=process_started,
             prior=record.receipt,
         )
         return
-    if sys.platform == "win32" or not record.identity_holds():
+    if sys.platform == "win32" or not _root_walkable(record):
         return
     try:
-        fresh = [p for p in _walk(record.pid) if p != record.pid and p not in record.walked]
+        found = [e for e in _walk(record.pid) if e.pid != record.pid and e.pid not in record.walked]
     except Exception:  # noqa: BLE001 — a walk that fails leaves the evidence as it was
-        fresh = []
-    for pid in fresh:
-        record.walked[pid] = process_started(pid)
+        found = []
+    for entry in found:
+        record.walked[entry.pid] = entry.stamp
+    fresh = [entry.pid for entry in found]
     if record.pgid is not None and record.pgid not in record.groups:
         record.groups.append(record.pgid)
     for group in _leaders([record.pid, *fresh]):
         if group not in record.groups:
             record.groups.append(group)
+
+
+def _root_walkable(record: ProcessRecord) -> bool:
+    """Whether ``record``'s root is still the process registered, so its number may be walked.
+
+    With a recorded start time, only the same start time now (#731 item 2: a
+    root the asyncio watcher has reaped, and whose number another process took,
+    would otherwise have that process's children walked and killed — the tree
+    path and ``stop_descendants`` checked nothing). Without one, the record's
+    own ``identity_holds``.
+    """
+
+    if record.started is not None:
+        return same_process(record.pid, record.started) is True
+    return record.identity_holds()
+
+
+def _walk_of(record: ProcessRecord) -> Callable[[int], list[_process_walk.WalkEntry]] | None:
+    """The walk for ``record``'s tree, or none when its root's number is not its own (#731 item 2)."""
+
+    return _walk if _root_walkable(record) else None
+
+
+def _group_signalable(record: ProcessRecord, group: int) -> bool:
+    """Whether ``group`` of ``record`` may be signalled (#611 S1c, S2a).
+
+    Every group needs a leader that gives authority
+    (:func:`~aelix_ai.utils._process_identity.leader_authorizes`): gone or a
+    zombie, or alive with the start time recorded for it — the root's for the
+    root's group (or the root being this service's own unreaped ``Process``,
+    :func:`_root_authorizes`), a walked pid's for its group. A live leader
+    whose start time was never read is not authority (PE3: ``_moved(g, None)``
+    was False, so it was killed, the root's group included until #758's fix
+    round 1).
+    """
+
+    if group == record.pid:
+        return _root_authorizes(record)
+    return leader_authorizes(group, record.walked.get(group), started=process_started)
+
+
+def _root_authorizes(record: ProcessRecord) -> bool:
+    """Whether ``record``'s root still gives authority over its own group.
+
+    A recorded start time decides when there is one, also against a
+    ``Process`` whose ``returncode`` still reads ``None`` (the asyncio watcher
+    may have reaped it already). Without one, only this service's own
+    unreaped ``Process`` is authority, besides a root that is gone (OQ-D).
+    """
+
+    if record.started is None and record.proc is not None and getattr(record.proc, "returncode", None) is None:
+        return True
+    return leader_authorizes(record.pid, record.started, started=process_started)
+
+
+def _root_live(record: ProcessRecord) -> bool:
+    return record.proc is not None and getattr(record.proc, "returncode", None) is None
 
 
 def _moved(pid: int, stamp: float | None) -> bool:
@@ -183,16 +255,17 @@ def _signal_record(record: ProcessRecord, *, hard: bool) -> None:
         if hard:
             record.receipt = record.tree.stop_and_collect(
                 policy="stop",
-                walk=_walk,
+                walk=_walk_of(record),
                 leaders=_leaders,
                 started=process_started,
                 prior=record.receipt,
                 same=same_process,
                 root_started=record.started,
+                root_live=_root_live(record),
             )
         else:
             collect(record)
-            if not _moved(record.pid, record.started):
+            if _root_authorizes(record):
                 record.tree.soft_kill(whole_group=True)
         return
     if sys.platform == "win32":
@@ -203,22 +276,34 @@ def _signal_record(record: ProcessRecord, *, hard: bool) -> None:
     collect(record)
     sig = signal.SIGKILL if hard else signal.SIGTERM  # pyright: ignore[reportAttributeAccessIssue]
     if hard:
-        for pid, stamp in record.walked.items():
-            if same_process(pid, stamp) is True:
-                with contextlib.suppress(OSError):
-                    os.kill(pid, sig)
-        for group in record.groups:
-            if group != record.pgid and not _moved(group, _leader_stamp(record, group)):
-                with contextlib.suppress(OSError):
-                    os.killpg(group, sig)  # pyright: ignore[reportAttributeAccessIssue]
-    if record.pgid is not None:
-        if not _moved(record.pgid, _leader_stamp(record, record.pgid)):
-            with contextlib.suppress(OSError):
-                os.killpg(record.pgid, sig)  # pyright: ignore[reportAttributeAccessIssue]
+        _kill_walked(record, sig)
+    if record.pgid is not None and _group_signalable(record, record.pgid):
+        with contextlib.suppress(OSError):
+            os.killpg(record.pgid, sig)  # pyright: ignore[reportAttributeAccessIssue]
         return
+    if record.pgid == record.pid:
+        return  # the root's own group without authority: its number is not the root's
     if record.identity_holds():
         with contextlib.suppress(OSError):
             os.kill(record.pid, sig)
+
+
+def _kill_walked(record: ProcessRecord, sig: int) -> None:
+    """The groups walked pids lead (each with authority, :func:`_group_signalable`), then those pids.
+
+    Groups first, so a leader killed and reaped cannot free the number its
+    group's ``killpg`` then names (#611 S2a, Codex N5). A pid only while it is
+    still the process walked.
+    """
+
+    for group in record.groups:
+        if group != record.pgid and _group_signalable(record, group):
+            with contextlib.suppress(OSError):
+                os.killpg(group, sig)  # pyright: ignore[reportAttributeAccessIssue]
+    for pid, stamp in record.walked.items():
+        if same_process(pid, stamp) is True:
+            with contextlib.suppress(OSError):
+                os.kill(pid, sig)
 
 
 def _leader_stamp(record: ProcessRecord, group: int) -> float | None:
@@ -271,17 +356,18 @@ def stop_descendants(records: list[ProcessRecord]) -> None:
         if record.tree is not None and not record.tree.closed:
             record.receipt = record.tree.stop_and_collect(
                 policy="stop_descendants",
-                walk=_walk,
+                walk=_walk_of(record),
                 leaders=_leaders,
                 started=process_started,
                 prior=record.receipt,
                 same=same_process,
                 root_started=record.started,
+                root_live=_root_live(record),
             )
         elif (
             record.pgid is not None
             and _group_alive(record.pgid)
-            and not _moved(record.pgid, _leader_stamp(record, record.pgid))
+            and _group_signalable(record, record.pgid)
         ):
             with contextlib.suppress(OSError):
                 os.killpg(record.pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
@@ -311,25 +397,64 @@ async def confirm_gone(
             await asyncio.sleep(poll)
         if record.receipt is not None and record.tree is not None:
             verdict: Confirmed | Unconfirmed = await record.tree.confirm(
-                record.receipt, deadline, clock=clock, poll=poll, same=same_process
+                record.receipt,
+                deadline,
+                clock=clock,
+                poll=poll,
+                same=same_process,
+                root_started=record.started,
             )
             if isinstance(verdict, Unconfirmed):
                 return False, verdict.reason
             continue
-        if check_groups:
-            groups: list[int] = [record.pgid] if record.pgid is not None else []
-            groups.extend(g for g in record.groups if g not in groups)
-            for group in groups:
-                while _group_alive(group):
-                    if clock() >= deadline:
-                        return False, f"process group {group} not confirmed empty"
-                    await asyncio.sleep(poll)
-        for pid, stamp in record.walked.items():
-            while same_process(pid, stamp) is not False:
-                if clock() >= deadline:
-                    return False, f"pid {pid} not confirmed stopped"
-                await asyncio.sleep(poll)
+        why = await _confirm_rest(record, deadline, clock=clock, poll=poll, check_groups=check_groups)
+        if why is not None:
+            return False, why
     return True, None
+
+
+def _group_settled(record: ProcessRecord, group: int) -> bool:
+    """A recorded group is settled when empty, only zombies, or its leader's number moved.
+
+    Read on every poll (#758 fix round 1, Codex #11): a group that empties
+    during the wait may have its number taken by another process's group.
+    """
+
+    if _moved(group, _leader_stamp(record, group)):
+        return True
+    return not _group_alive(group) or _process_walk.group_only_zombies(group)
+
+
+async def _confirm_rest(
+    record: ProcessRecord,
+    deadline: float,
+    *,
+    clock: Callable[[], float],
+    poll: float,
+    check_groups: bool,
+) -> str | None:
+    """A tree-less record's groups empty and walked pids gone by ``deadline``; else why not.
+
+    The confirm step's own rules (#611 S2a): a zombie is gone — a walked pid
+    that is one, a group whose every member is one — and a group whose leader's
+    number now reads as another process is not waited on, since the legs did
+    not signal it (#731 item 1).
+    """
+
+    if check_groups:
+        groups: list[int] = [record.pgid] if record.pgid is not None else []
+        groups.extend(g for g in record.groups if g not in groups)
+        for group in groups:
+            while not _group_settled(record, group):
+                if clock() >= deadline:
+                    return f"process group {group} not confirmed empty"
+                await asyncio.sleep(poll)
+    for pid, stamp in record.walked.items():
+        while same_process(pid, stamp) is not False and pid_is_zombie(pid) is not True:
+            if clock() >= deadline:
+                return f"pid {pid} not confirmed stopped"
+            await asyncio.sleep(poll)
+    return None
 
 
 def classify_restart(

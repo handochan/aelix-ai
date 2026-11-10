@@ -88,13 +88,14 @@ AND THE GROUPS THE WALK'S PROCESSES LEAD (#691). The ``bash`` tool's shell leads
 its own group, and what it backgrounded stays there after its parent exits:
 ``(sleep X &); sleep Y`` leaves X with PPID 1, which no walk can name, in the
 shell's group. So every walked process that leads its own group
-(:func:`group_leaders`, read with the walk) gets one ``killpg(SIGKILL)`` after
-the pids (:func:`kill_tree`'s ``groups``). A group holds only processes of its
-leader's session, and every session below the walk was started inside the
+(:func:`group_leaders`, read with the walk) gets one ``killpg(SIGKILL)``
+(:func:`kill_tree`'s ``groups``) — since #611 S2a BEFORE the pids, and only
+while its leader is still the process walked. A group holds only processes of
+its leader's session, and every session below the walk was started inside the
 delegated child's tree, so the group kill reaches nothing that tree did not
-start; the pid it is addressed to is ADR-0238's recycling residual, as every
-pid here is. It also takes what a shell started after the walk, which is most of
-ADR-0291's limit 1 (measured with a fork loop there, §5).
+start; the number it is addressed to is checked first (ADR-0291's 2026-11-10
+note), as every pid here is. It also takes what a shell started after the walk,
+which is most of ADR-0291's limit 1 (measured with a fork loop there, §5).
 
 ON WINDOWS THERE IS NEITHER (#220). ``descendant_pids`` returns ``[]`` there, with
 no ``/proc`` to read and no libproc to ask, and ``os.kill`` delivers no catchable
@@ -158,7 +159,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aelix_ai.utils import _process_walk as _walk
+from aelix_ai.utils._parent_death import (  # noqa: F401 — re-exported (#611 S2a)
+    _resolve_prctl,
+    pdeathsig,
+    pdeathsig_preexec,
+)
+from aelix_ai.utils._process_signal import HeldWalk
 from aelix_ai.utils._process_tree import wait_released
+from aelix_ai.utils._process_walk import WalkEntry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -178,8 +186,6 @@ DEFAULT_GRACE_SECONDS = 5.0
 ``_signal_cleanup_and_exit`` to flush its session, dispose its harness and kill
 its bash grandchildren; short enough that a wedged child does not hold a
 ``/agents run`` panel for a noticeable time."""
-
-_PR_SET_PDEATHSIG = 1
 
 _PROC = Path("/proc")
 
@@ -235,6 +241,45 @@ def descendant_pids(pid: int) -> list[int]:
     return _walk.descendant_pids(pid, proc=_PROC, is_darwin=_is_darwin, libproc=_libproc)
 
 
+def descendant_identities(pid: int) -> list[WalkEntry]:
+    """:func:`descendant_pids` with each process's start time and parent, DEEPEST FIRST (#611 S2a).
+
+    The walk every stop leg here takes. Each entry's start time comes from the
+    same kernel read as its parent, and a child is kept only while that parent
+    is the one being walked, so :class:`~aelix_ai.utils._process_signal.HeldWalk`
+    can later tell the walked process from another that took its number.
+    ``[]`` on Windows, as :func:`descendant_pids`.
+    """
+
+    return _walk.descendant_identities(pid, proc=_PROC, is_darwin=_is_darwin, libproc=_libproc)
+
+
+def hold_walk(entries: Sequence[WalkEntry]) -> HeldWalk:
+    """The walk ``entries`` and the groups they lead, read NOW, held for the kill (#611 S2a).
+
+    Called right after the walk and before any signal, which is where
+    :func:`group_leaders` must be read (ADR-0291 §5). A Linux pidfd is NOT
+    opened here: :class:`~aelix_ai.utils._process_signal.HeldWalk` opens one
+    for an entry right before that entry's first signal and keeps it only if the
+    pid still has the walk's start time (ADR-0291's 2026-11-10 note says why,
+    and what that leaves). The caller closes it; :func:`reap` closes one it is
+    handed.
+    """
+
+    return HeldWalk(entries, group_leaders([entry.pid for entry in entries]))
+
+
+def _held(
+    descendants: HeldWalk | Sequence[WalkEntry | int], groups: Sequence[int] | None
+) -> HeldWalk:
+    """``descendants`` as a :class:`HeldWalk`; a bare pid carries no start time and is never signalled."""
+
+    if isinstance(descendants, HeldWalk):
+        return descendants
+    entries = [d if isinstance(d, WalkEntry) else WalkEntry(int(d), None, None) for d in descendants]
+    return HeldWalk(entries, groups or ())
+
+
 def _deepest_first(pid: int, children_of: Callable[[int], Iterable[int]]) -> list[int]:
     """Breadth-first from ``pid``, then reverse.
 
@@ -286,7 +331,7 @@ def group_leaders(pids: Iterable[int]) -> list[int]:
 
     The other half of the walk's snapshot, taken right after it: before any
     signal, while every pid in it was just seen alive. :func:`kill_tree` sends
-    each of these groups one ``SIGKILL`` after the pids, for what a group holds
+    each of these groups one ``SIGKILL`` before the pids (#611 S2a), for what a group holds
     that the walk cannot name — ``(cmd &)`` leaves ``cmd`` with PPID 1 in the
     group of the ``bash`` tool's shell, and a command that shell starts after
     the walk is there too. Only while that shell runs: a shell that has exited
@@ -303,7 +348,10 @@ def group_leaders(pids: Iterable[int]) -> list[int]:
     have all gone too, frees it, and a new process that took it AND made itself
     a group leader before the kill would be signalled with its group. That is
     ADR-0238's recycling residual with a group in place of a pid, and the reason
-    this is never re-read once a signal has gone out (ADR-0291).
+    this is never re-read once a signal has gone out (ADR-0291). Since #611 S2a
+    the group is signalled only while its leader still verifies (pidfd live, or
+    its walked start time again), and before that leader's own kill: what is
+    left is the check-to-``killpg`` window (ADR-0291's 2026-11-10 note, R2).
 
     ``getpgid`` failing is "not a leader": a pid that exited since the walk
     (``ESRCH``; Darwin answers that for a zombie too) has no group to kill
@@ -443,12 +491,12 @@ def _kill_signal() -> int:
 
 def kill_tree(
     proc: Any,
-    descendants: Sequence[int] = (),
+    descendants: HeldWalk | Sequence[WalkEntry | int] = (),
     *,
     tree: ProcessTree | None = None,
     groups: Sequence[int] = (),
 ) -> None:
-    """SIGKILL ``descendants`` (deepest first), the child itself, then ``groups``.
+    """SIGKILL ``groups``, then ``descendants`` (deepest first), then the child itself.
 
     Synchronous and total: every signal is best-effort and no failure
     propagates. ``ProcessLookupError`` is the normal case (the target already
@@ -493,28 +541,37 @@ def kill_tree(
     ``groups`` (#691) is not that kill, and it is the callers' too. It is
     :func:`group_leaders` of the same snapshot as ``descendants`` — the groups
     the WALKED processes lead, never the child's own — and each gets one
-    ``killpg(SIGKILL)`` after every pid, for the members the walk could not
-    name. The caller reads it with the walk, because on the grace leg this runs
+    ``killpg(SIGKILL)`` before the pids (#611 S2a; after every pid until then),
+    for the members the walk could not name. The caller reads it with the walk, because on the grace leg this runs
     seconds after the snapshot and a pgid read now may be a stranger's.
     ``_drain_after_exit`` passes none: its pids come from a pipe scan of a child
     that is already dead, on the success path, where a group kill is the
     revision-1 ``close()`` again.
+
+    IDENTITY BEFORE EVERY SIGNAL (#611 S2a, Codex #4 and N5 on the S2
+    contract). ``descendants`` is a :class:`~aelix_ai.utils._process_signal.HeldWalk`
+    (:func:`hold_walk`) or walk entries with their start times; a pid is
+    signalled only while it is still the process walked — through a pidfd on
+    Linux, after a start-time check elsewhere — and a bare pid, which carries no
+    start time, never. A group goes FIRST, each only while its leader still
+    verifies, so a leader killed before its group cannot have freed the number
+    the ``killpg`` then names; a dead or unverified leader's group gets nothing
+    here. Until #611 S2a a number the walk named and another process took
+    before this ran got the SIGKILL, and so did that process's group. A
+    ``HeldWalk`` handed in stays the caller's to close.
     """
 
     if _is_win32() and _usable(tree):
         tree.hard_kill()  # pyright: ignore[reportOptionalMemberAccess]
         return
     sig = _kill_signal()
-    for pid in descendants:
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pid, sig)
+    walk = _held(descendants, groups)
+    try:
+        walk.kill(sig, groups=sys.platform != "win32")
+    finally:
+        if walk is not descendants:
+            walk.close()
     _signal_child(proc, sig)
-    if sys.platform != "win32":
-        # After every pid, so a group addresses only what the walk could not
-        # name. ``ESRCH`` is the common answer: the walk named every member.
-        for pgid in groups:
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(pgid, signal.SIGKILL)
 
 
 def kill_group_if_live(proc: Any, tree: ProcessTree | None) -> bool:
@@ -569,7 +626,7 @@ async def reap(
     *,
     grace: float = DEFAULT_GRACE_SECONDS,
     eager_kill: bool = False,
-    descendants: Sequence[int] | None = None,
+    descendants: HeldWalk | Sequence[WalkEntry | int] | None = None,
     groups: Sequence[int] | None = None,
     tree: ProcessTree | None = None,
     escalate: asyncio.Event | None = None,
@@ -629,7 +686,60 @@ async def reap(
     doubling the latency of a leg that already blocks the loop on a
     ``taskkill.exe`` spawn. The POSIX arm keeps its SIGTERM-then-SIGKILL
     sequence; the divergence is win32-cost-driven and deliberate.
+
+    The snapshot is a :class:`~aelix_ai.utils._process_signal.HeldWalk` (#611
+    S2a): its pids are signalled at the escalation, a grace after the walk,
+    only while each is still the process walked, and its groups only while
+    their leaders are. ``reap`` closes the walk it takes and the one it is
+    handed, however it ends.
     """
+
+    held = descendants if isinstance(descendants, HeldWalk) else None
+    try:
+        return await _reap(
+            proc,
+            grace=grace,
+            eager_kill=eager_kill,
+            descendants=descendants,
+            groups=groups,
+            tree=tree,
+            escalate=escalate,
+            owner=owner,
+        )
+    finally:
+        if held is not None:
+            held.close()
+
+
+def _snapshot(
+    proc: Any,
+    descendants: HeldWalk | Sequence[WalkEntry | int] | None,
+    groups: Sequence[int] | None,
+    tree: ProcessTree | None,
+) -> HeldWalk:
+    """:func:`reap`'s walk: the one handed in, none on the win32 tree arm, else one taken now."""
+
+    if descendants is not None:
+        return _held(descendants, groups)
+    if _is_win32() and _usable(tree):
+        # The job is the descendant set; :func:`kill_tree`'s tree arm would
+        # ignore a walk, so none is taken (#691).
+        return HeldWalk()
+    return hold_walk(descendant_identities(proc.pid))
+
+
+async def _reap(
+    proc: Any,
+    *,
+    grace: float,
+    eager_kill: bool,
+    descendants: HeldWalk | Sequence[WalkEntry | int] | None,
+    groups: Sequence[int] | None,
+    tree: ProcessTree | None,
+    escalate: asyncio.Event | None,
+    owner: Any | None,
+) -> int:
+    """:func:`reap`'s body; ``reap`` itself only guarantees the walk handed in is closed."""
 
     returncode = getattr(proc, "returncode", None)
     if returncode is not None:
@@ -639,16 +749,24 @@ async def reap(
         eager_kill = True
     if owner is not None:
         return await _reap_owned(proc, owner, grace=grace, eager_kill=eager_kill, escalate=escalate)
-    if descendants is not None:
-        snapshot = list(descendants)
-        leaders = list(groups) if groups is not None else []
-    elif _is_win32() and _usable(tree):
-        # The job is the descendant set; :func:`kill_tree`'s tree arm would
-        # ignore a walk, so none is taken (#691).
-        snapshot, leaders = [], []
-    else:
-        snapshot = descendant_pids(proc.pid)
-        leaders = group_leaders(snapshot)
+    snapshot = _snapshot(proc, descendants, groups, tree)
+    try:
+        return await _escalate(proc, snapshot, grace=grace, eager_kill=eager_kill, tree=tree, escalate=escalate)
+    finally:
+        snapshot.close()
+
+
+async def _escalate(
+    proc: Any,
+    snapshot: HeldWalk,
+    *,
+    grace: float,
+    eager_kill: bool,
+    tree: ProcessTree | None,
+    escalate: asyncio.Event | None,
+) -> int:
+    """SIGTERM, the grace, then :func:`kill_tree` of ``snapshot`` and Q1 (:func:`reap`'s legs)."""
+
     # ONE waiter, reused by both legs. Two concurrent ``proc.wait()`` calls are
     # legal, but a fresh coroutine per leg makes the "was it already awaited"
     # reasoning harder than it needs to be.
@@ -722,7 +840,7 @@ async def reap(
             if escalated is not None:
                 escalated.cancel()
 
-    kill_tree(proc, snapshot, tree=tree, groups=leaders)
+    kill_tree(proc, snapshot, tree=tree)
     if not _is_win32() and _usable(tree):
         # Q1. AFTER the walk, so the group kill addresses only what the walk
         # could not name.
@@ -804,148 +922,14 @@ async def _reap_owned(
 _OWNED_STOPS: set[asyncio.Future[Any]] = set()
 
 
-def _resolve_prctl() -> Callable[..., Any] | None:
-    """``prctl`` from libc, loaded and looked up in THIS process, or ``None``.
-
-    Called by :func:`pdeathsig_preexec` in the spawning aelix, before the fork,
-    so the child only calls a function that is already resolved. Building the
-    ``CDLL`` and looking the symbol up used to happen in the child, between
-    ``fork`` and ``exec``, where a lock another parent thread held at the fork
-    is held for ever (Codex review of #721, finding 7; already so on main
-    ``fc8f3048``). ``None`` off Linux, and wherever libc cannot be loaded
-    (musl has no ``libc.so.6``): the hook then arms nothing, as it always did
-    there.
-    """
-
-    if sys.platform != "linux":
-        return None
-    try:
-        return ctypes.CDLL("libc.so.6", use_errno=True).prctl
-    except Exception:  # noqa: BLE001 - best effort, as the arming always was
-        return None
-
-
-def pdeathsig(
-    parent_pid: int | None = None, prctl: Callable[..., Any] | None = None
-) -> None:
-    """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
-
-    Closes finding I1. Without it a child whose parent is SIGKILLed runs to
-    completion, reparented to init: ``modes/print_mode.py:338-345``'s ``_emit``
-    only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
-    ``break`` (``:385-390``) plus the ``raise BrokenPipeError`` (``:399-402``)
-    are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``
-    (``:366-370``). Since ``agents/resolver.py:621-622`` makes the whole task the
-    initial prompt, the EPIPE guard covers nothing a subagent does.
-
-    Composes with ``start_new_session=True``: ``setsid()`` does not clear the
-    pdeathsig, and neither does ``exec`` (only a UID change does). Linux-only —
-    ``PR_SET_PDEATHSIG`` has no portable equivalent, and the parent-death race is
-    accepted elsewhere.
-
-    ``prctl`` is libc's, resolved by :func:`pdeathsig_preexec` before the fork
-    (:func:`_resolve_prctl`); without it nothing is armed, because loading it
-    here is the thing a child between ``fork`` and ``exec`` must not do.
-
-    SIGTERM GOES BACK TO ITS DEFAULT FIRST (Codex review of #721, finding 6).
-    The fork inherits the parent's handler — the TUI and print mode install one,
-    an asyncio one on POSIX — so a SIGTERM that reached the child before
-    ``exec`` only tripped that handler, and ``exec`` then ran: a parent dying
-    after the recheck below was swallowed, and so was the reaper's own SIGTERM
-    in that window. With the default restored the signal ends the child where
-    it stands. ``exec`` resets a caught signal to its default anyway, so the
-    command starts exactly as it did. An ignored SIGTERM is left ignored, as
-    ``exec`` would leave it.
-
-    THE RECHECK (#611 S1a, Codex r5 finding 13). ``PR_SET_PDEATHSIG`` watches the
-    parent the child has WHEN IT IS ARMED. A parent that died between ``fork``
-    and this call has already handed the child to another process — init, or a
-    subreaper whose pid is not 1 — and the signal is then armed against that one,
-    so the child runs on under it. ``parent_pid`` is the spawning aelix's pid,
-    read before the fork (:func:`pdeathsig_preexec`); after arming, a
-    ``getppid()`` that differs from it means that parent is gone, and the child
-    exits before ``exec``. Compared with the pid itself, not with 1, which a
-    subreaper would pass. codex-rs does the same
-    (``utils/pty/src/process_group.rs:25-37``, ``set_parent_death_signal``).
-
-    It exits with ``os._exit(128 + SIGTERM)`` where codex-rs raises ``SIGTERM``,
-    because a raise does not end a forked Python child whose parent handled
-    SIGTERM: the TUI and print mode install a handler (an asyncio one on
-    POSIX), the fork inherits it, the raise only trips it, and ``exec`` then
-    runs. Measured on macOS 3.12 with a ``loop.add_signal_handler(SIGTERM)``
-    parent: a raising hook let ``sh -c 'echo EXECED'`` exit 0 printing
-    ``EXECED``; ``os._exit`` ended it with 143 before ``exec``.
-
-    Runs between ``fork`` and ``exec``, so it must not allocate, log or raise:
-    a bare ``except`` is correct here in a way it almost never is. The recheck
-    runs even when arming failed — a parent that is already gone is the same
-    fact either way. What is left is CPython's own: ``preexec_fn`` is Python
-    code, and the ``signal.signal`` and ``prctl`` calls still run the
-    interpreter in the child, which Python documents as unsafe with threads in
-    the parent. No library is loaded and no symbol looked up here any more.
-    """
-
-    if sys.platform != "linux":  # pragma: no cover - platform guard
-        return
-    try:
-        if callable(signal.getsignal(signal.SIGTERM)):
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    except Exception:  # noqa: BLE001 - pragma: no cover - best effort, pre-exec
-        pass
-    if prctl is not None:
-        try:  # noqa: SIM105 - not ``suppress``: no context manager between fork and exec
-            prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-        except Exception:  # noqa: BLE001 - pragma: no cover - best effort, pre-exec
-            pass
-    if parent_pid is not None and os.getppid() != parent_pid:
-        os._exit(128 + signal.SIGTERM)
-
-
-def pdeathsig_preexec() -> Callable[[], None] | None:
-    """The ``preexec_fn`` a delegation spawn should pass: the hook, or nothing.
-
-    ``pdeathsig`` is already inert off Linux, so this is not about what the
-    hook *does*. It is about whether the argument can be passed at all:
-    ``subprocess`` REJECTS a non-None ``preexec_fn`` on Windows before it
-    creates anything ("preexec_fn is not supported on Windows platforms",
-    CPython ``subprocess.py``). Both delegation channels wrap the spawn in
-    ``except Exception`` and turn a failure into an error envelope, so that
-    ValueError did not surface as a crash — every delegation simply came back
-    "error" and 52 of the 238 remaining ``windows-latest`` failures were
-    downstream of it (#200).
-
-    A function rather than a module constant so a case can drive the branch by
-    patching ``sys.platform``, per this repo's no-``skipif`` convention — and,
-    since #611 S1a, because it is where the parent's pid is read: called in the
-    spawning process right before the spawn, it binds ``os.getpid()`` into the
-    hook as the ``parent_pid`` :func:`pdeathsig` rechecks after arming, and the
-    already-resolved ``prctl`` (:func:`_resolve_prctl`), so the child loads no
-    library.
-
-    Note what this does NOT fix, and who does. The sibling
-    ``start_new_session=True`` is accepted on Windows and silently ignored —
-    CPython names the parameter ``unused_start_new_session`` there — so the
-    process-group isolation both call sites document was absent on Windows
-    rather than merely degraded. #202 built the primitive
-    (``aelix_ai.utils._process_tree``, a Job Object on Windows) and **#220
-    adopted it**: the print channel now spawns with
-    ``containment_spawn_kwargs(new_session=True)``, which is
-    ``{"start_new_session": True}`` here and ``creationflags=
-    CREATE_NEW_PROCESS_GROUP`` there. This hook is still POSIX's alone —
-    Windows has no ``pdeathsig``; the job's ``kill_on_close`` is the nearest
-    equivalent and fires on the parent's death by a different mechanism
-    (ADR-0238).
-    """
-
-    if sys.platform == "win32":
-        return None
-    return functools.partial(pdeathsig, os.getpid(), _resolve_prctl())
-
-
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
+    "HeldWalk",
+    "WalkEntry",
+    "descendant_identities",
     "descendant_pids",
     "group_leaders",
+    "hold_walk",
     "kill_group_if_live",
     "kill_tree",
     "pdeathsig",

@@ -28,13 +28,34 @@ import signal
 
 import pytest
 from aelix_agents import reaper
-from aelix_agents.reaper import kill_tree, reap
+from aelix_agents.reaper import WalkEntry, kill_tree, reap
+from aelix_ai.utils import _process_identity
 
 # The POSIX cases run on the windows leg too, where this name does not exist —
 # so they lend it, exactly as ``tests/tools/test_process_tree_win32.py`` does.
 # The value only has to be the one both production and the assertion see: on
 # POSIX it IS ``signal.SIGKILL`` and lending it back is a no-op.
 SIGKILL = getattr(signal, "SIGKILL", 9)
+
+STAMP = 1000.0
+#: The walk's entry for pid 99, with the start time it read (#611 S2a).
+WALKED = WalkEntry(99, STAMP, 4321)
+
+
+@pytest.fixture(autouse=True)
+def _pid_99_is_still_the_process_walked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pid 99 still reads the walk's start time, and no pidfd is opened (#611 S2a).
+
+    A walked pid is signalled only while its start time is the walk's; 99 is
+    fake, so the reader is pinned for it and Linux is made to compare start
+    times as the other hosts do.
+    """
+
+    real = _process_identity.process_started
+    monkeypatch.setattr(
+        _process_identity, "process_started", lambda pid: STAMP if pid == 99 else real(pid)
+    )
+    monkeypatch.delattr(reaper.os, "pidfd_open", raising=False)
 
 
 class _Live:
@@ -87,7 +108,7 @@ def test_kill_tree_on_windows_does_not_die_on_the_missing_sigkill(
     sent = _record_signals(monkeypatch)
     _simulate_win32(monkeypatch)
 
-    kill_tree(_Live(), [99])
+    kill_tree(_Live(), [WALKED])
 
     assert sent == [(99, signal.SIGTERM), (4321, signal.SIGTERM)]
 
@@ -105,7 +126,7 @@ async def test_reap_escalates_on_windows_instead_of_dying_in_the_handler(
     sent = _record_signals(monkeypatch)
     _simulate_win32(monkeypatch)
 
-    assert await reap(_Live(), eager_kill=True, descendants=[99]) == 15
+    assert await reap(_Live(), eager_kill=True, descendants=[WALKED]) == 15
 
     # The cooperative leg first, then the escalation over the same tree.
     assert sent == [
@@ -131,6 +152,6 @@ def test_posix_still_escalates_with_sigkill(
     monkeypatch.setattr(reaper.signal, "SIGKILL", SIGKILL, raising=False)
     sent = _record_signals(monkeypatch)
 
-    kill_tree(_Live(), [99])
+    kill_tree(_Live(), [WALKED])
 
     assert sent == [(99, SIGKILL), (4321, SIGKILL)]

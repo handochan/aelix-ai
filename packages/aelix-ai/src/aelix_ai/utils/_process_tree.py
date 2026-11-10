@@ -142,6 +142,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import IO, Any, Literal, Protocol, cast
 
+from aelix_ai.utils import _process_identity, _process_walk
+
 # The private names are exported deliberately (#222): ``tools/bash.py`` builds
 # the same drain this module runs for :func:`run_contained` — the reader, the
 # idle-rule state, the kill ladder and the five constants those two agree on
@@ -960,7 +962,7 @@ class ProcessTree:
         self,
         *,
         policy: Literal["stop", "stop_descendants"] = "stop",
-        walk: Callable[[int], list[int]] | None = None,
+        walk: Callable[[int], Sequence[int | _process_walk.WalkEntry]] | None = None,
         leaders: Callable[[list[int]], list[int]] | None = None,
         started: Callable[[int], float | None] | None = None,
         prior: StopReceipt | None = None,
@@ -987,12 +989,13 @@ class ProcessTree:
         self,
         *,
         policy: Literal["stop", "stop_descendants"] = "stop",
-        walk: Callable[[int], list[int]] | None = None,
+        walk: Callable[[int], Sequence[int | _process_walk.WalkEntry]] | None = None,
         leaders: Callable[[list[int]], list[int]] | None = None,
         started: Callable[[int], float | None] | None = None,
         prior: StopReceipt | None = None,
         same: Callable[[int, float | None], bool | None] | None = None,
         root_started: float | None = None,
+        root_live: bool = False,
     ) -> StopReceipt:
         """Collect the evidence first (:meth:`collect`), then kill. Synchronous; never raises.
 
@@ -1007,12 +1010,18 @@ class ProcessTree:
 
         POSIX: the walk and the groups its pids lead, read while the root lives
         (``walk`` and ``leaders`` are injected by the caller; without them the
-        root's own group is the evidence), then SIGKILL to each pid deepest
-        first and to each group, in ADR-0291's order. A pid walked by an earlier
-        collection (``prior``) is signalled only while ``same`` says it is still
-        the process that was walked, so a number freed since is not hit by
-        its own SIGKILL; a group the earlier collection recorded is still
-        killed whole (ADR-0293 §5).
+        root's own group is the evidence), then SIGKILL to each group, then to
+        each pid deepest first. A pid — walked by this collection or an earlier
+        one (``prior``) — is signalled only while ``same`` (default
+        :func:`~aelix_ai.utils._process_identity.same_process`) says it is still
+        the process that was walked, so a number freed since is not hit by its
+        own SIGKILL (#611 S2a, PE2: until then a pid this collection walked was
+        signalled unchecked). A group a walked pid leads is signalled only while
+        that leader gives authority (:func:`~aelix_ai.utils._process_identity.leader_authorizes`):
+        gone or a zombie, or alive with its walked start time; a live leader
+        whose start time was not read, or is another one now, gets nothing (PE3).
+        Groups go before the pids, so a leader is not killed and reaped before
+        its group's number is used.
 
         ``stop_descendants`` is the normal-exit policy: the root is gone and only
         what is left in the tree is collected and stopped.
@@ -1032,8 +1041,9 @@ class ProcessTree:
         if self._win32:
             self._kill_win32(receipt)
         else:
-            fresh = set(receipt.pids) - set(prior.pids if prior is not None else ())
-            self._kill_posix(receipt, fresh, same, started=started, root_started=root_started)
+            self._kill_posix(
+                receipt, same, started=started, root_started=root_started, root_live=root_live
+            )
         return receipt
 
     def _collect_win32(self, policy: str, prior: StopReceipt | None) -> StopReceipt:
@@ -1083,7 +1093,7 @@ class ProcessTree:
     def _collect_posix(
         self,
         policy: str,
-        walk: Callable[[int], list[int]] | None,
+        walk: Callable[[int], Sequence[int | _process_walk.WalkEntry]] | None,
         leaders: Callable[[list[int]], list[int]] | None,
         started: Callable[[int], float | None] | None,
         prior: StopReceipt | None,
@@ -1093,12 +1103,15 @@ class ProcessTree:
         order: list[int] = list(prior.pids) if prior is not None else []
         if walk is not None:
             try:
-                fresh = [p for p in walk(self.pid) if p != self.pid and p not in stamped]
+                walked = [self._walked_stamp(p, started) for p in walk(self.pid)]
             except Exception as exc:  # noqa: BLE001 — a walk that fails is an error, not a stop
-                fresh = []
+                walked = []
                 errors.append(f"walk failed: {exc}")
-            for pid in fresh:
-                stamped[pid] = started(pid) if started is not None else None
+            fresh = []
+            for pid, stamp in walked:
+                if pid != self.pid and pid not in stamped:
+                    stamped[pid] = stamp
+                    fresh.append(pid)
             # Deepest first: what this walk found goes ahead of what an earlier one did.
             order = [*fresh, *order]
         groups: list[int] = list(prior.groups) if prior is not None else []
@@ -1128,49 +1141,72 @@ class ProcessTree:
             errors=tuple(dict.fromkeys(errors)),
         )
 
+    @staticmethod
+    def _walked_stamp(
+        item: int | _process_walk.WalkEntry, started: Callable[[int], float | None] | None
+    ) -> tuple[int, float | None]:
+        """A walked process and its start time: the walk's own reading when it carries one.
+
+        #758 fix round 1 (Codex #2): a start time read AFTER a pid-only walk
+        names whatever holds the number by then, so a child replaced in between
+        had the replacement's recorded and the check passed it. The service
+        walk (``jobs/evidence.py``) now hands entries read with their parent;
+        a bare pid (an injected walk) is still stamped now.
+        """
+
+        if isinstance(item, _process_walk.WalkEntry):
+            return item.pid, item.stamp
+        return item, started(item) if started is not None else None
+
     def _kill_posix(
         self,
         receipt: StopReceipt,
-        fresh: set[int],
         same: Callable[[int, float | None], bool | None] | None,
         *,
         started: Callable[[int], float | None] | None = None,
         root_started: float | None = None,
+        root_live: bool = False,
     ) -> None:
         stamps = dict(receipt.started)
-
-        def moved(leader: int) -> bool:
-            """Whether ``leader``'s number now belongs to a process that started at another time.
-
-            A group a walked pid leads is judged by that pid's walked start time
-            whenever ``started`` is given, with or without ``root_started``; the
-            root itself, and the group it leads, only with ``root_started``.
-            ``jobs/evidence.py`` is the one caller of :meth:`stop_and_collect`,
-            and it passes both (#611 S1c).
-            """
-
-            stamp = root_started if leader == self.pid else stamps.get(leader)
-            if started is None or stamp is None:
-                return False
-            try:
-                now = started(leader)
-            except Exception:  # noqa: BLE001 — unreadable is no evidence of a reuse
-                return False
-            return now is not None and now != stamp
-
-        for pid in receipt.pids:
-            if pid not in fresh and (same is None or same(pid, stamps.get(pid)) is not True):
-                continue  # walked earlier and not proven the same process now
-            with contextlib.suppress(OSError):
-                os.kill(pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
-        if receipt.policy == "stop" and not receipt.groups and not moved(self.pid):
-            with contextlib.suppress(OSError):
-                os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+        check = same if same is not None else _process_identity.same_process
+        root = self._root_authorized(root_started, root_live, started)
         for group in receipt.groups:
-            if moved(group):
-                continue  # its number leads another process now: not this tree's group
+            if group == self.pid:
+                if not root:
+                    continue  # the root's number is not proven its own: not this tree's group
+            elif not _process_identity.leader_authorizes(group, stamps.get(group), started=started):
+                continue  # its leader is not this tree's walked process: not this tree's group
             with contextlib.suppress(OSError):
                 os.killpg(group, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+        for pid in receipt.pids:
+            if check(pid, stamps.get(pid)) is not True:
+                continue  # not proven the process walked: its number may be another's now
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+        if receipt.policy == "stop" and not receipt.groups and root:
+            with contextlib.suppress(OSError):
+                os.kill(self.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+
+    def _root_authorized(
+        self,
+        root_started: float | None,
+        root_live: bool,
+        started: Callable[[int], float | None] | None,
+    ) -> bool:
+        """Whether the root, and the group it leads, may be signalled (#611 S2a; #758 fix round 1).
+
+        The root's recorded start time decides when the caller has one (gone, a
+        zombie, or the same start time now: yes; another start time: no), also
+        against a ``root_live`` that the asyncio watcher may not have caught up
+        with. Without one, ``root_live`` — the caller holds the root's own
+        unreaped ``Process`` — or a root that is gone gives authority; a live
+        root of unknown start time does not (PE3, which until this round still
+        held for the root's group: ``moved`` read an unknown time as "not moved").
+        """
+
+        if root_started is None and root_live:
+            return True
+        return _process_identity.leader_authorizes(self.pid, root_started, started=started)
 
     async def confirm(
         self,
@@ -1180,6 +1216,7 @@ class ProcessTree:
         clock: Callable[[], float] = time.monotonic,
         poll: float = 0.05,
         same: Callable[[int, float | None], bool | None] | None = None,
+        root_started: float | None = None,
     ) -> Confirmed | Unconfirmed:
         """Wait until the collected evidence says the tree is gone, or ``deadline`` (``clock``) passes.
 
@@ -1190,19 +1227,34 @@ class ProcessTree:
         is :class:`Unconfirmed`. POSIX: every recorded group answers ``ESRCH``
         and every walked pid is gone (``same`` compares pid and start time).
         The root's own reap is the caller's.
+
+        Two POSIX rules of #611 S2a, the confirm step's alone: a zombie is gone
+        (a walked pid that is one, and a group whose every member is one) —
+        it holds its number until its parent reaps it, and runs nothing; and a
+        recorded group whose leader's number now reads as a process that started
+        at another time (``root_started`` for the root's, the walked start time
+        for a walked leader's) is not waited on, since the legs did not signal
+        it and it is not this tree's (#731 item 1).
         """
 
         if receipt.errors:
             return Unconfirmed("; ".join(receipt.errors))
         if self._win32:
             return await self._confirm_win32(receipt, deadline, clock, poll)
+        stamps = dict(receipt.started)
+        check = same if same is not None else _process_identity.same_process
         while True:
-            left = [g for g in receipt.groups if _group_alive(g)]
-            walked = [
-                pid
-                for pid, stamp in receipt.started
-                if (same(pid, stamp) if same is not None else _group_alive(-pid)) is not False
+            # Read again on every poll (#758 fix round 1, Codex #11): a group
+            # that empties during the wait may have its number taken by another
+            # process's group, which is not this tree's to wait for.
+            left = [
+                g
+                for g in receipt.groups
+                if not _moved_leader(g, root_started if g == self.pid else stamps.get(g))
+                and _group_alive(g)
+                and not _process_walk.group_only_zombies(g)
             ]
+            walked = [pid for pid, stamp in receipt.started if not _walked_gone(pid, stamp, check)]
             if not left and not walked:
                 return Confirmed()
             if clock() >= deadline:
@@ -1256,6 +1308,28 @@ class ProcessTree:
             for handle in collected.values():
                 with contextlib.suppress(OSError):
                     api.close_process(handle)
+
+
+def _moved_leader(leader: int, stamp: float | None) -> bool:
+    """Whether ``leader``'s number now reads as a process that started at another time than ``stamp``."""
+
+    if stamp is None:
+        return False
+    now = _process_identity.process_started(leader)
+    return now is not None and now != stamp
+
+
+def _walked_gone(pid: int, stamp: float | None, same: Callable[[int, float | None], bool | None]) -> bool:
+    """A walked pid is gone when it is not the process walked any more, or is a zombie (#611 S2a).
+
+    ``same`` compares pid and start time; :meth:`ProcessTree.confirm` defaults
+    it to ``same_process`` (#758 fix round 1: a bare ``kill(pid, 0)`` waited on
+    a reused, live number to the deadline).
+    """
+
+    if same(pid, stamp) is False:
+        return True
+    return _process_identity.pid_is_zombie(pid) is True
 
 
 def _group_alive(group: int) -> bool:

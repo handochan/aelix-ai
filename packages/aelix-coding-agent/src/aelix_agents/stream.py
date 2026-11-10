@@ -1312,7 +1312,7 @@ def latest_run_closed(state: _StreamState) -> bool:
     sends one) still closes, as it always did.
 
     It sees only what the channel folded: the print channel folds every line,
-    ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:431``).
+    ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:432``).
     """
 
     return state.saw_agent_end and not state.run_open
