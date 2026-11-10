@@ -813,6 +813,32 @@ class _ResumeMeta:
         self.cwd = "."
 
 
+def _conversation_file(
+    directory: Path, name: str, text: str = "hi there", at: str = "2026-05-27T14:05:00Z"
+) -> str:
+    """A session file whose branch holds a user message, so ``/resume`` lists it (#754).
+
+    ``at`` is the turn's timestamp, which is the session's last activity: the
+    picker's order (#27).
+    """
+
+    import json
+
+    path = directory / name
+    header = {"type": "session", "version": 3, "id": name, "timestamp": "2026-05-27T14:00:00Z"}
+    turn = {
+        "type": "message",
+        "id": "u1",
+        "parentId": None,
+        "timestamp": at,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }
+    path.write_text(
+        json.dumps({**header, "cwd": "/r"}) + "\n" + json.dumps(turn) + "\n", encoding="utf-8"
+    )
+    return str(path)
+
+
 class _ResumeRepo:
     def __init__(self, metas: list[_ResumeMeta]) -> None:
         self._metas = metas
@@ -862,20 +888,29 @@ class _ResumeRuntime(FakeRuntime):
         return SimpleNamespace(cancelled=self._cancelled)
 
 
-async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> None:
+async def test_run_tui_resume_picker_excludes_active_switches_and_replays(
+    tmp_path: Path,
+) -> None:
     # W-review M1: cover the _resume_session orchestration — list (cwd-scoped) →
     # exclude the active session → picker select #1 → switch_session(path).
+    # #754: the listed sessions are files with a conversation; ``/resume`` lists
+    # only what ``-c`` would open, and a path with no file has none. The active
+    # session is one too, and the newest, so only the exclusion keeps it off #1.
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 
+    # Last activity decides the order (#27).
+    active_path = _conversation_file(tmp_path, "active.jsonl", at="2026-05-27T15:05:00Z")
+    new_path = _conversation_file(tmp_path, "new.jsonl")
+    old_path = _conversation_file(tmp_path, "old.jsonl", at="2026-05-27T13:05:00Z")
     metas = [
-        _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00"),  # active → excluded
-        _ResumeMeta("bbbbbbbb", "/s/new.jsonl", "2026-05-27T14:00"),  # picker #1
-        _ResumeMeta("cccccccc", "/s/old.jsonl", "2026-05-27T13:00"),  # picker #2
+        _ResumeMeta("aaaaaaaa", active_path, "2026-05-27T15:00"),  # active → excluded
+        _ResumeMeta("bbbbbbbb", new_path, "2026-05-27T14:00"),  # picker #1
+        _ResumeMeta("cccccccc", old_path, "2026-05-27T13:00"),  # picker #2
     ]
     repo = _ResumeRepo(metas)
-    active = _ResumeSession("/s/active.jsonl", [])
+    active = _ResumeSession(active_path, [])
     target = _ResumeSession(
-        "/s/new.jsonl",
+        new_path,
         [
             UserMessage(content=[TextContent(text="hi there")]),
             AssistantMessage(content=[TextContent(text="hello back")]),
@@ -901,7 +936,7 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
         await _quit_within(task)
     assert repo.list_cwds == ["."]  # listed cwd-scoped
     # active.jsonl excluded; #1 = the newest remaining (new.jsonl), not active.
-    assert runtime.switch_calls == ["/s/new.jsonl"]
+    assert runtime.switch_calls == [new_path]
 
 
 async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
@@ -927,7 +962,13 @@ async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
         path = tmp_path / name
         lines = [
             json.dumps(
-                {"type": "session", "version": 3, "id": name, "timestamp": "2026-05-27T14:00:00Z"}
+                {
+                    "type": "session",
+                    "version": 3,
+                    "id": name,
+                    "timestamp": "2026-05-27T14:00:00Z",
+                    "cwd": "/r",
+                }
             )
         ]
         for text in (first, last):
@@ -1017,7 +1058,15 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
 
     path = tmp_path / "s.jsonl"
     path.write_text(
-        json.dumps({"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"})
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": "s",
+                "timestamp": "2026-05-27T14:00:00Z",
+                "cwd": "/r",
+            }
+        )
         + "\n"
         + json.dumps(
             {
@@ -1110,7 +1159,13 @@ async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_byte
         path = tmp_path / name
         path.write_text(
             json.dumps(
-                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+                {
+                    "type": "session",
+                    "version": 3,
+                    "id": "s",
+                    "timestamp": "2026-05-27T14:00:00Z",
+                    "cwd": "/r",
+                }
             )
             + "\n"
             + json.dumps(
@@ -1205,7 +1260,13 @@ async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
         path = tmp_path / name
         path.write_text(
             json.dumps(
-                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+                {
+                    "type": "session",
+                    "version": 3,
+                    "id": "s",
+                    "timestamp": "2026-05-27T14:00:00Z",
+                    "cwd": "/r",
+                }
             )
             + "\n"
             + json.dumps(
@@ -1226,13 +1287,16 @@ async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
 
     for label, session_id in (("identical", "0f3ab9c1-7e22-4d0a"), ("wide", "한국어한국어한국어")):
         paths = [_session(f"{label}-{index}.jsonl") for index in range(6)]
+        # #754: the active session holds a conversation too, so only the
+        # exclusion keeps it out of the count below.
+        active_path = _session(f"{label}-active.jsonl")
         metas = [
-            _ResumeMeta("aaaaaaaa", str(tmp_path / f"{label}-active.jsonl"), "2026-05-27T15:00"),
+            _ResumeMeta("aaaaaaaa", active_path, "2026-05-27T15:00"),
             *(_ResumeMeta(session_id, path, "2026-05-27T14:00") for path in paths),
         ]
         runtime = _ResumeRuntime(
             FakeHarness(), _ResumeRepo(metas),
-            _ResumeSession(str(tmp_path / f"{label}-active.jsonl"), []),
+            _ResumeSession(active_path, []),
             target=_ResumeSession(paths[0], []),
         )
 
@@ -1274,11 +1338,14 @@ async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
         assert not any(row.endswith(" ·") for row in rows), (label, rows)  # type: ignore[union-attr]
 
 
-async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
+async def test_run_tui_resume_empty_choices_does_not_switch(tmp_path: Path) -> None:
     # Only the active session exists → no other sessions → no switch; REPL lives.
-    metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]
+    # #754: it holds a conversation, so the exclusion, not the filter, empties
+    # the list.
+    active_path = _conversation_file(tmp_path, "active.jsonl")
+    metas = [_ResumeMeta("aaaaaaaa", active_path, "2026-05-27T15:00")]
     repo = _ResumeRepo(metas)
-    active = _ResumeSession("/s/active.jsonl", [])
+    active = _ResumeSession(active_path, [])
     runtime = _ResumeRuntime(FakeHarness(), repo, active)
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
         chrome = AelixChrome()
@@ -2782,7 +2849,9 @@ async def test_run_tui_extension_command_throw_survives() -> None:
     assert runtime.harness.prompts == [("ping", "interactive")]
 
 
-async def test_run_tui_resume_replays_custom_message_via_extension_renderer() -> None:
+async def test_run_tui_resume_replays_custom_message_via_extension_renderer(
+    tmp_path: Path,
+) -> None:
     """Issue #62 (ADR-0183) — /resume takes the DISPLAY tier when the session
     exposes ``get_branch`` and dispatches the extension MessageRenderer
     (first-wins by custom_type; display=False gated before lookup)."""
@@ -2850,13 +2919,14 @@ async def test_run_tui_resume_replays_custom_message_via_extension_renderer() ->
             display=False,
         ),
     ]
+    new_path = _conversation_file(tmp_path, "new.jsonl")  # #754: /resume lists it
     metas = [
         _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00"),
-        _ResumeMeta("bbbbbbbb", "/s/new.jsonl", "2026-05-27T14:00"),
+        _ResumeMeta("bbbbbbbb", new_path, "2026-05-27T14:00"),
     ]
     repo = _ResumeRepo(metas)
     active = _ResumeSession("/s/active.jsonl", [])
-    target = _BranchSession("/s/new.jsonl", entries)
+    target = _BranchSession(new_path, entries)
     harness = FakeHarness()
     harness.extension_runner = ExtensionRunner(  # type: ignore[attr-defined]
         extensions=[ext]

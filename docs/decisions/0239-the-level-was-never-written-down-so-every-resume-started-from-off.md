@@ -643,16 +643,48 @@ at a local mock; driver and outputs in `.omc/probes/413-live/impl/`):
      - **Known limits.** Each `aelix -c` in a folder with no conversation,
        quit without a prompt, leaves one more header-and-model file: three
        such launches leave three files where `6caaae09` left one (measured,
-       `m709v-*.txt`). The `/resume` list and the `aelix -r` menu still list
-       a file without a conversation as `(no messages)`, first when it is the
-       newest; that needs `tui/shell.py` and `cli/entry.py`. Not writing the
-       file until a conversation exists, or removing an empty one on exit,
-       would address both; neither is this change. The answer is the one for
+       `m709v-*.txt`). *(2026-11-10, #754: the `/resume` list and the
+       `aelix -r` menu no longer list a file without a conversation; see the
+       next note.)* Not writing the file until a conversation exists, or
+       removing an empty one on exit, would stop the files themselves; neither
+       is this change. The answer is the one for
        the bytes the scan read: a prompt appended to the newest file after
        that read, by another aelix writing it at the same moment, is not seen,
        and `-c` opens an older file (Codex's review, a coordinated
        second-process append; `.omc/probes/710/codex/race709.py`). Nothing
        re-reads a file after a negative answer.
+   - **Dated note 2026-11-10 (#754).** The two resume pickers now ask
+     `--continue`'s question too. They listed every file `repo.list` returned,
+     newest-used first, so the files above, and a launch that only ran
+     `/name`, sat above the last conversation: `/resume` opened on such a row
+     and Enter gave `↻ Resumed session (0 messages)`, and `aelix -r` numbered
+     them first and pushed conversations into `… and N older` (real TUI,
+     scripted model, `aaca9e09`; `.omc/probes/754/impl/tui-base-*.txt`).
+     `cli/session_labels.with_conversation` keeps the files
+     `JsonlSessionRepo._has_conversation` answers yes for, and both pickers
+     apply it to what `repo.list` returned before ordering and cutting, so the
+     `-r` footer counts only sessions it could list (`tui-fix-*.txt`,
+     `tests/tui/test_resume_pickers_skip_empty_754.py`). Which sessions the
+     pickers hide is the lead's call on #754, open to the owner: the ones
+     `--continue` skips, a `/name`-only launch included; a branch holding only
+     a summary stays. That fits the owner's #709 decision above: a level
+     changed in a launch that never sent a prompt comes back through
+     `--session`, which, like `--resume <id>`, does not go through the
+     pickers' filter (`repo.list` is unchanged;
+     `test_resume_by_id_still_opens_an_empty_session` for `--resume <id>`).
+     pi writes no such file, so its pickers never meet one. A file is decoded
+     in full once per picker: `JsonlSessionRepo._read_conversation` returns
+     the decoded entries with the answer, and the row's saved name is taken
+     from them while the file's inode, size and mtime, read before that
+     decode, are unchanged
+     (`test_each_listed_file_is_decoded_once_by_each_picker`,
+     `test_a_name_saved_after_the_filter_read_still_labels_the_row`,
+     `test_each_part_of_the_file_identity_drops_the_remembered_name`,
+     `test_a_name_saved_while_the_filter_reads_still_labels_the_row`). Its
+     header, its last line and its first message are still read separately
+     (an `open()` counter, `.omc/probes/754/verify-r1/out/opens.txt`). `-r` now
+     checks every file to count its footer, not only the 20 it labels; the
+     costs are in the CHANGELOG entry.
 7. **Appended, never inserted.** A delegated child's file starts with
    `aelix.child_origin` (ADR-0243 §2); the child's launch appends its record
    after it, so the origin stays first and §8's warning still finds it.

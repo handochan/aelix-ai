@@ -1395,6 +1395,37 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`/resume` and `aelix -r` list only the sessions `aelix -c` would continue (#754, ADR-0239).**
+  Since #709 `-c` skips a session whose branch carries no conversation, but the two pickers still
+  listed every session file, newest-used first. A launch quit without a prompt, an unused `/new`,
+  a launch whose only prompt was withdrawn with Esc and a launch that only ran `/name` sat above
+  the last conversation: `/resume` opened with that row selected and Enter gave `↻ Resumed
+  session (0 messages)`, and `aelix -r` numbered them first, pushing conversations into `… and N
+  older` (measured in the real TUI with a scripted model on `aaca9e09`). Both pickers now ask
+  `-c`'s own question of each file before the list is ordered and cut, so a branch holding only a
+  summary stays listed, a file over 1 MiB is listed without the check reading it, and a file of at
+  most 1 MiB that is not UTF-8 is not listed when its first bad byte lies past its first 8 KiB. A
+  bad byte inside the first 8 KiB of any session file still takes both lists away, as on `aaca9e09`:
+  listing the folder decodes that much of each file to read its header, so `aelix -r` exits 1 with a
+  `UnicodeDecodeError` and `/resume` prints `✖ could not list sessions` (a bad byte at offset 8191
+  fails and one at 8192 is hidden, behind a header line of 156–174 bytes, on macOS with Python 3.11,
+  3.12 and 3.14 and on Linux with 3.12). The `-r` footer counts only sessions the menu could list:
+  with 21 conversations and 3 newer empty files it printed three `(no messages)` rows first and
+  `… and 4 older`, and now prints `talk-20`…`talk-01` and `… and 1 older`. With nothing left,
+  `-r` says `No previous sessions in this folder; starting a new one.` and `/resume` says `No other
+  sessions to resume in this folder.` The file a launch that ran `/resume` leaves behind no
+  longer becomes the next `-r` menu's `[1]` (real TUI, a scripted model, and once with
+  `openai/gpt-4.1-mini` through OpenRouter). `--resume <id>` still opens such a session, and
+  `--session` does not go through the pickers' filter. Each listed file is decoded in full once,
+  not twice: the check's decode also gives the row its saved name while the file is unchanged
+  (`test_each_listed_file_is_decoded_once_by_each_picker`). Its header, its last line and its
+  first message are still read separately.
+  On 100 files just under 1 MiB of small entries (macOS, medians of 5, two rounds, load average
+  5–6), `/resume` took 1481–1549 ms against 1381–1419 ms on `aaca9e09`; `aelix -r`, which labels
+  20 rows but now checks every file to count the footer, took 1459–1523 ms against 291–295 ms. On
+  100 files of about 20 KB, `-r` took 30–33 ms against 11 ms. On 100 files of 2 MiB, which the
+  check does not read, `-r` took 571–584 ms against 575–592 ms and `/resume` 2795–2858 ms against
+  2831–2894 ms. Tests: `tests/tui/test_resume_pickers_skip_empty_754.py`.
 - **`auto` no longer asks before a read that merges or moves output with `2>&1` or `>&2` (#710,
   ADR-0158).** The classifier read the descriptor number after `>&` as a file name, so `cat a
   2>&1`, `rg -w foo src 2>&1`, `git status 2>&1`, `ls >/dev/null 2>&1` and `cat a >&2` were ASK,
@@ -1443,9 +1474,9 @@ unwritten. Add them with the next release.
   one conversation under 20 of them, each just under 1 MiB, took about 25 ms against 0.5 ms
   before, and 333–358 ms against about 1 ms when those files are made of many small entries
   (macOS, medians of 5 and 7). Known limits: each `aelix -c` quit without a prompt in a folder
-  with no conversation leaves one more empty session file; the `/resume` list and the `aelix -r`
-  menu still show such sessions as `(no messages)`; and a prompt appended to the newest file
-  after `-c` has read it is missed, so `-c` opens an older file. Tests:
+  with no conversation leaves one more empty session file (since #754 the `/resume` list and the
+  `aelix -r` menu no longer show such sessions); and a prompt appended to the newest file after
+  `-c` has read it is missed, so `-c` opens an older file. Tests:
   `tests/session/test_find_most_recent_conversation_709.py`.
 - **A session line that reached the disk and then failed no longer leaves the conversation on a
   hidden branch (#721, ADR-0242 rule 5).** When a session append wrote its whole line and the

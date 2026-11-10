@@ -14,6 +14,7 @@ Through the real ``run_tui`` input loop over a scripted runtime:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from aelix_coding_agent.core.extension_selection import (
@@ -232,15 +233,20 @@ async def test_a_new_session_says_what_failed_to_load_below_its_banner() -> None
     assert "✖ broken.py failed to load: RuntimeError: boom (see /extension)" in entry
 
 
-async def test_a_resumed_session_says_what_failed_to_load_below_its_banner() -> None:
+async def test_a_resumed_session_says_what_failed_to_load_below_its_banner(
+    tmp_path: Path,
+) -> None:
     """Round-1 verify R1: ``/resume`` committed its banner and nothing else."""
 
     from tests.tui.test_run_tui_smoke import (
+        _conversation_file,
         _ResumeMeta,
         _ResumeRepo,
         _ResumeRuntime,
         _ResumeSession,
     )
+
+    target_path = _conversation_file(tmp_path, "target.jsonl")  # #754: /resume lists it
 
     holder: dict[str, Any] = {
         "inventory": ExtensionInventory(
@@ -250,7 +256,7 @@ async def test_a_resumed_session_says_what_failed_to_load_below_its_banner() -> 
     repo = _ResumeRepo(
         [
             _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-11-03T15:00"),
-            _ResumeMeta("bbbbbbbb", "/s/target.jsonl", "2026-11-03T14:00"),
+            _ResumeMeta("bbbbbbbb", target_path, "2026-11-03T14:00"),
         ]
     )
     async with _harness_chrome() as (base, chrome, pipe):
@@ -258,7 +264,7 @@ async def test_a_resumed_session_says_what_failed_to_load_below_its_banner() -> 
             base.harness,
             repo,
             _ResumeSession("/s/active.jsonl", []),
-            target=_ResumeSession("/s/target.jsonl", []),
+            target=_ResumeSession(target_path, []),
         )
         commits = _spy_commits(chrome)
         task = asyncio.ensure_future(

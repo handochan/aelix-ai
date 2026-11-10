@@ -50,13 +50,24 @@ import logging
 import os
 from collections.abc import Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from aelix_agent_core.session.entries import SessionInfoEntry
+from aelix_agent_core.session.entries import SessionInfoEntry, SessionTreeEntry
+from aelix_agent_core.session.jsonl_repo import JsonlSessionRepo
 from aelix_agent_core.session.jsonl_storage import _parse_jsonl_content
 from aelix_agent_core.session.storage import SessionError
 
 logger = logging.getLogger(__name__)
+
+#: The saved name of each file :func:`with_conversation` decoded, by path, with
+#: the file's ``(inode, size, mtime_ns)`` taken BEFORE that read (#754). The label
+#: of a listed row asks :func:`session_display_name`, which decodes the whole
+#: file again; for a file the filter already decoded it takes the name from here
+#: instead, so a picker reads each file once. A file that changed after that
+#: stat no longer matches and is decoded again. Replaced on every filter call,
+#: so it holds one folder's listing at most.
+_NAMES_READ: dict[str, tuple[tuple[int, int, int], str | None]] = {}
 
 #: The head window that :func:`first_user_message` scans. The first user turn is
 #: the second or third line of a session file (the header is line one), so this
@@ -254,23 +265,88 @@ def last_user_message(path: str) -> str | None:
     return None
 
 
+def _identity(path: str) -> tuple[int, int, int] | None:
+    """``(inode, size, mtime_ns)`` of ``path``, or :data:`None` if it cannot be read."""
+
+    try:
+        stat = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _latest_name(entries: Sequence[SessionTreeEntry]) -> str | None:
+    for entry in reversed(entries):
+        if isinstance(entry, SessionInfoEntry):
+            return (entry.name.strip() or None) if entry.name is not None else None
+    return None
+
+
 def session_display_name(path: str) -> str | None:
     """The latest retained name, matching ``Session.get_session_name`` on reopen.
 
     Use the actual storage decoder rather than a separate metadata validator:
     malformed entries and their orphaned descendants must be skipped by both.
     Inspection does not log recovery warnings or change the saved bytes.
+
+    A file :func:`with_conversation` just decoded, unchanged since, answers from
+    that decode (#754): the same content through the same decoder.
     """
 
+    known = _NAMES_READ.get(path)
+    if known is not None and known[0] == _identity(path):
+        return known[1]
     try:
         with open(path, encoding="utf-8") as handle:
             loaded = _parse_jsonl_content(handle.read(), path)
-        for entry in reversed(loaded.entries):
-            if isinstance(entry, SessionInfoEntry):
-                return (entry.name.strip() or None) if entry.name is not None else None
+        return _latest_name(loaded.entries)
     except (OSError, UnicodeError, SessionError):
         return None
-    return None
+
+
+def with_conversation(sessions: Sequence[Any]) -> list[Any]:
+    """The sessions ``aelix -c`` would continue, in their order — what both pickers list.
+
+    #754: since #709 ``--continue`` skips a session whose branch carries no
+    conversation, and the ``/resume`` list and the ``aelix -r`` menu did not, so
+    a launch quit without a prompt, an unused ``/new``, a launch whose only
+    prompt was withdrawn with Esc, and one that only ran ``/name`` sat above the
+    last conversation (newest-used first) and opened with no transcript. The
+    judgment is ``--continue``'s own, :meth:`JsonlSessionRepo._has_conversation`
+    (through :meth:`~JsonlSessionRepo._read_conversation`): a user or assistant
+    message on the branch, or a summary with text. A label cannot stand in for
+    it: a withdrawn prompt still labels its row, and a branch holding only a
+    summary has a conversation to continue. So a file over 1 MiB is kept
+    unread, and one of at most 1 MiB that is not UTF-8 is dropped, as ``-c``
+    does.
+
+    Both pickers call this on what ``repo.list`` returned, BEFORE ordering and
+    cutting, so the ``-r`` footer (``… and N older``) counts only sessions the
+    menu could list; filtering inside :func:`by_recent_activity` would leave the
+    hidden ones in that count. ``repo.list`` itself is unchanged: ``--resume
+    <id>`` and ``--session`` still open such a session.
+
+    One read per file: the saved name the decode yields is kept for the row's
+    label (:data:`_NAMES_READ`). A file whose check raises something the loader
+    does not turn into an answer is kept, as before #754; one bad file must not
+    take the list away (see :func:`session_choice_label`).
+    """
+
+    _NAMES_READ.clear()
+    kept: list[Any] = []
+    for meta in sessions:
+        path = getattr(meta, "path", "") or ""
+        identity = _identity(path)
+        try:
+            answer, entries = JsonlSessionRepo._read_conversation(Path(path))
+        except Exception:  # noqa: BLE001 — one bad file, one row as before #754
+            logger.debug("conversation check failed for %r", meta, exc_info=True)
+            answer, entries = True, None
+        if answer and entries is not None and identity is not None:
+            _NAMES_READ[path] = (identity, _latest_name(entries))
+        if answer:
+            kept.append(meta)
+    return kept
 
 
 def last_activity(path: str) -> str | None:
@@ -576,4 +652,5 @@ __all__ = [
     "session_detail_lines",
     "short_field",
     "truncate_cells",
+    "with_conversation",
 ]
