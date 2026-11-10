@@ -521,9 +521,9 @@ _SWALLOWED_BY_A_DELIMITER = (
     ("cat <<A&&\nb\nA&&", Verdict.ASK),
     # Finish round: ``$`` is outside the delimiter class. dash ends this body at
     # the line ``A$`` and runs the next line (it deleted ``victim`` on macOS and
-    # Linux; bash, zsh and ksh did not). ALLOW on 6caaae09, and ALLOW again if
-    # ``$`` is let into the class.
-    ("cat <<A$''\nx\nA$\nfind victim -delete\nA$''", Verdict.ASK),
+    # Linux; bash, zsh and ksh did not). ALLOW on 6caaae09, ASK on b160b8f7, and
+    # DENY since #742 reads dash's delimiter ``A$`` and re-reads the ``find``.
+    ("cat <<A$''\nx\nA$\nfind victim -delete\nA$''", Verdict.DENY),
 )
 
 

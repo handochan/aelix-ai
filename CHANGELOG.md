@@ -3978,6 +3978,80 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` asks at least, and refuses what it can see would run, where bash, zsh, dash or ksh end a
+  here-document's body on another line than the parser does (#742, ADR-0158).** tree-sitter-bash
+  0.25.1 compares body lines with the delimiter as written unless it starts with a quote or a
+  backslash, and also ends a body at a line that holds the delimiter among blanks or before `;`,
+  `#…` or `\r`; the shells end at the first line equal to the delimiter with its quotes removed
+  (leading tabs removed under `<<-`), and join a line ending in an odd number of backslashes to the
+  next when no part of the delimiter is quoted. So `cat <<A''` + `x` + `A` + `find victim -delete` +
+  `A''` (also with `A""`, `A'B'`, `A"B"`, `A''B`, `A'B'C`, `<<-A''`, `EOF''`, inside `( … )` and
+  with CRLF line ends), and `cat <<EOF` + `EOF ` + `cat <<'Q'` + `EOF` + `find victim -delete` + `Q`
+  (also with ` EOF`, `EOF;`, `EOF #c`, `EOF\r`, under `<<'EOF'` and `<<-EOF`, or with `x\` before
+  the first `EOF`) were allowed on `b160b8f7`, and each deleted `victim` in bash 3.2.57, zsh 5.9,
+  dash and ksh93u+ on macOS and in bash 5.2.37, zsh 5.9, dash and ksh 93u+m in Linux docker. When
+  the line a shell ends the body on differs from the parser's, the command now asks at least, and
+  what that shell runs is classified as well, so these forms are refused like `find victim -delete`.
+  `$'…'` and `$"…"` in a delimiter are read the way each shell reads them (dash keeps the `$`, bash,
+  zsh and ksh93 decode `$'…'`, and `$"…"` is `A` in bash, `$A` in zsh and dash and `$"A"` in ksh93,
+  measured on both systems), so `cat <<A$''` + `x` + `A$` + `find victim -delete`, which deleted
+  `victim` in dash and asked on `b160b8f7`, is refused. Inside backticks the shells also end the
+  substitution at the first unescaped backtick, inside the body too, and join `\`-newline before
+  reading the here-document, and macOS bash 3.2 does both with `)` inside `$( )`, `<( )` and `>( )`,
+  which the parser knows nothing of: ``echo `cat <<'EOF'`` + `x` + `EO\` + `F` + `find victim
+  -delete` + `EOF` + `` ` `` deleted `victim` in all eight shells and was allowed. So any
+  here-document inside a command or process substitution the parser reads as one now asks at least,
+  and what the shells read there is re-read as far as a budget allows, which refuses that form and
+  three other measured ones. Two older holes of the same kind, adjacent and pre-existing (allowed on
+  `80ff2cc2` too), are closed the same way. The parser reads some `${…}` operands as plain text: one
+  holding a backtick substitution with no quote in it, any operand after `#`, `%`, `/`, `^` or `,`,
+  and `'…'` or `$'…'`, which inside double quotes or a here-document body do not quote; so
+  ``echo ${x:-`find victim -delete`}``, `echo ${x#$(find victim -delete)}` and `echo "${x:-'$(find
+  victim -delete)'}"` were allowed and deleted `victim` in bash 3.2 and 5.2, zsh, dash, ksh93 and
+  mksh (with `x` unset or set as each operator needs, on macOS and in Linux docker). And inside
+  backticks bash and ksh93 end the substitution at a backtick inside `'…'` or `$'…'`, and every
+  shell measured does inside a comment, while the parser reads across it: ``echo `echo '`; find
+  victim -delete; echo `'` `` deleted `victim` in bash 3.2 and 5.2 and macOS ksh93. A `${…}`
+  operand the parser leaves as text that holds a backtick, `$(`, `$[`, `${`, `<(` or `>(` no
+  backslash escapes, and a backtick substitution holding a `'…'`, `$'…'` or comment with a backtick
+  in it or a word with an escaped backtick in it, now ask at least and are re-read as the shells
+  read them, so these are refused; of a 704-form grid of operators, operand spellings and places,
+  none is allowed where a shell deleted `victim`. That includes two later-found forms, allowed on
+  `80ff2cc2` too: `echo ${x:-<(find victim -delete)}`, which deleted `victim` in bash 3.2 and 5.2
+  only, and ``echo `echo \`find victim -delete\`` ``, which every shell measured ran. Other code the
+  parser leaves as text is not covered.
+  A re-read that stops parsing still classifies the statements before the error (`cat <<A''` + `x` +
+  `A` + `find victim -delete` + `cat <<Z` + `A''` is refused), and one that runs out of stack asks
+  only for itself, so a command refused elsewhere in the line stays refused. The re-reads, the
+  search for each end line and the delimiter scan are paid from one budget of four passes over the
+  command plus 4 KiB per call, so the cost stays linear (1,600 repetitions of `cat <<A''` + `x` +
+  `B` + `ls` + `A''` take 20 ms on macOS); what the budget cannot pay leaves the verdict at ask,
+  never lower. Which hidden line is still refused rather than asked depends on sizes: an `rm -rf ~`
+  hidden after 22 here-documents like `cat <<A''` + `x` + `A` + `ls` + `A''` is refused and after 23
+  asks, and with about 4.5 KB in its own body it asks after 4. Now asking where no shell measured
+  ran anything: an end line with a trailing blank or a stray `\r` at the end of the command (`cat
+  <<EOF` + `x` + `EOF `), any here-document inside a substitution, such as `echo $(cat <<EOF` +
+  `hi` + `EOF` + `)`, ``echo `cat <<'EOF'`` + `hi` + ``EOF` `` and `cat <(cat <<EOF` + `hi` + `EOF`
+  + `)`, any backtick substitution with no quote in a `${…}` operand (``echo ${x:-`pwd`}``), a `${`
+  or `$[` the parser left as text there (`echo ${path#${HOME}/}`), a `<(…)` there
+  (`echo ${x:-<(echo hi)}`), a nested escaped backtick (``echo `basename \`pwd\`` ``), and `'…'`
+  holding `$(` or a backtick in an operand outside double quotes, where it does quote. Refused
+  although no shell measured ran it: `'…'` or `$'…'` holding a substitution in a pattern operand
+  inside double quotes or a here-document body (`echo "${x#'$(find victim -delete)'}"`). Ordinary
+  here-documents keep their verdict: of 30,446 command strings (the classifier tests' at `b160b8f7`
+  and a hand list) the one that changed is the `A$''` form, and none of 115 hand-written and test
+  here-documents changed otherwise; of 31,348 corpus, test and realistic strings, the `${…}` rule
+  changed only three realistic ``${…:-`…`}`` lines (to ask), and the escaped-backtick rule one of
+  199 more probe lines, ``echo `basename \`pwd\`` `` (to ask). Live, in a pty TUI under `auto`, the
+  `A''` and `EOF ` forms with `SHELL=/bin/zsh` deleted the files with no dialog on `b160b8f7`, the
+  backtick form above with `/bin/zsh` and one whose body holds a lone backtick with `/bin/bash` did
+  on `61eda564`, ``echo ${x:-`rm -f keep1.txt keep2.txt`}`` with `/bin/zsh` and `/bin/bash`, the
+  backtick `'…'` form with `/bin/bash` and three more did on `ce3cc695`, and
+  `echo ${x:-<(rm -f keep1.txt keep2.txt)}` with `/bin/bash` and
+  ``echo `echo \`rm -f keep1.txt keep2.txt\`` `` with `/bin/bash` and `/bin/zsh` did on
+  `3963bea9`; all are refused with the files kept now. An ASK under `-p` still runs, as every ASK
+  does there. Tests: `tests/builtin/test_bash_heredoc_end_742.py`.
+
 - **`auto` asks at least for a command with words written after a redirect's target, and also
   reads those words as the command's arguments (#710, ADR-0158).** The parser keeps every word
   after a redirect inside it — in `find . </dev/null -delete` the `-delete` sits in the `<`
