@@ -61,12 +61,15 @@ OS evidence. What it reads is ``recovered`` on every surface — never ``done`` 
 and the service records it only once the job's recorded processes are
 confirmed gone (ADR-0295 §8).
 
-HELPERS (owner, 2026-11-07; S2, #719). A delegated child's detached helpers are
-to be stopped with it. Until S2 builds the launch ledger and the subreaper,
-POSIX cannot confirm a helper that left the child's process group, so every
-background delegation's cleanup answers ``unverified`` on POSIX and its notice
-says so; a win32 child whose Job the barrier confirmed empty answers
-``confirmed``.
+HELPERS (owner, 2026-11-07; #719, ADR-0296). A delegated child's detached
+helpers are stopped with it. On POSIX the cleanup is the same sweep a foreground
+run's cleanup task makes (``print_channel.sweep_helpers``): the launch ledger's
+groups and this run's marker hits, each with authority, then confirmed; its
+answer is ``confirmed`` only when every target aelix identified is confirmed
+gone, no launch was in flight, the ledger is whole and armed, the agent ran its
+own exit cleanup (or aelix's stop legs ended it) and, on Linux, it was a
+subreaper — otherwise ``unverified`` with why. A win32 child whose Job the
+barrier confirmed empty answers ``confirmed``.
 
 RPC AND ACP refuse the background actions until #612: the tool there has the
 schema it had before #611 (``extension.py``).
@@ -108,6 +111,7 @@ from aelix_agents.child_session import (
     resume_lineage_refusal,
 )
 from aelix_agents.envelope import REASON_STOPPED, child_line
+from aelix_agents.print_channel import _parent_stopped, sweep_helpers
 from aelix_agents.runtime import (
     MAX_LIVE_CHILDREN,
     CallEnvelopes,
@@ -190,10 +194,7 @@ _STOPPED_BY: dict[str, str] = {
 The envelope's own :data:`~aelix_agents.envelope.REASON_STOPPED` names the
 foreground ways — ``stop``, ``/new`` … — which are not how a job is stopped."""
 
-_HELPERS_POSIX = (
-    "on POSIX a helper that left the agent's process group is not tracked until "
-    "the launch ledger (#719)"
-)
+_HELPERS_UNTRACKED = "the agent's run had no launch ledger to sweep"
 _HELPERS_NO_JOB = "the agent ran without a Windows Job to confirm its helpers against"
 _HELPERS_UNCONFIRMED = "its processes are not yet confirmed gone"
 
@@ -576,11 +577,29 @@ class DelegationRunner:
             if own.had_job:
                 return HelperCleanup("confirmed")
             return HelperCleanup("unverified", _HELPERS_NO_JOB)
-        return HelperCleanup("unverified", _HELPERS_POSIX)
+        return await _posix_helpers(own)
 
     def records(self, outcome: ClientOutcome) -> list[tuple[str, dict[str, Any]]]:
         own = self._own
         return list(own.closing or []) if own is not None else []
+
+
+async def _posix_helpers(own: _Ownership) -> HelperCleanup:
+    """The launch ledger's sweep for a background run, inside the service's ``cleanup_bound`` (#719).
+
+    Reached only after the barrier confirmed the job's processes gone. The
+    ledger is read before the service removes the run's directories, so one
+    kept in the prompt directory is read too (r2 §3.1).
+    """
+
+    row = own.row
+    tracking = row.tracking if row is not None else None
+    if row is None or tracking is None:
+        return HelperCleanup("unverified", _HELPERS_UNTRACKED)
+    answer = await sweep_helpers(tracking, parent_stopped=_parent_stopped(row))
+    if answer.confirmed:
+        return HelperCleanup("confirmed")
+    return HelperCleanup("unverified", answer.reason)
 
 
 # === The kind's adapter ===========================================================

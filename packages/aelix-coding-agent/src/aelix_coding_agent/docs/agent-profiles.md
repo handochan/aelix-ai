@@ -390,12 +390,17 @@ next prompt says the stop was intended, and tells it to resume or repeat that
 work only if you ask. Any stop — Esc, quitting, a SIGTERM or Ctrl+C to aelix —
 also ends the command the agent's `bash` tool was running, what that command
 started, and what it put in the background with `(cmd &)` while it was still
-running. On macOS and Linux a stop does not reach what a command that had
-already finished left in the background with `cmd &`, `(cmd &)` or
-`nohup cmd &`: the `bash` tool leaves it running when the command returns, and
-once that command's shell has exited nothing ties it to the agent. Nor does it
-reach a process that started a session of its own, such as a daemon's. If aelix
-itself is killed with SIGKILL, on macOS the agent and its commands run on.
+running. What a command that had already finished left in the background
+with `cmd &`, `(cmd &)` or `nohup cmd &` — a dev server started with
+`npm run dev &`, say — stops too, when the delegation ends and when it is
+stopped, on macOS and Linux (#719, ADR-0296); on Linux so does one that started
+a session of its own and cleared its environment, such as a daemon's double
+fork. On macOS such a process — one that left its process group and cleared its
+environment, or left its group and is a system binary like `/bin/sleep` — is
+not found and keeps running. Your own `bash` calls, outside a delegation, still
+leave such helpers running. A delegation's result can come up to a few seconds
+later while what it left is stopped. If aelix itself is killed with SIGKILL, on
+macOS the agent and its commands run on.
 A resumed agent is told that it is being resumed, that it
 should not redo work it already finished, and that a tool call showing no
 result may or may not have run. Resuming is the model's call, through its

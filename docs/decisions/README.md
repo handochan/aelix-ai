@@ -68,6 +68,21 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   is a rename of a function that is gone or a renumbering. The per-release trend value is radon's count with each
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
+- [0296 — A delegated agent's helpers stop with it](0296-a-delegated-agents-helpers-stop-with-it.md)
+  (Accepted 2026-11-10; #719, #750, #611 S2c; ungated, the owner's OQ-A). A delegated agent's
+  finished `bash` call's `cmd &`, `(cmd &)` and `nohup cmd &` helpers stop when the delegation ends
+  or is stopped (owner, 2026-11-07): every POSIX delegated child gets a launch ledger beside its
+  session and a run token in `AELIX_DELEGATION_MARKER`; its `bash` writes each shell's group before
+  and after the spawn; on Linux it is a child subreaper that reaps nothing it did not spawn and
+  walks its descendants at its exit, up to 3 passes; the parent's ONE cleanup task per run, published
+  to the runtime's registry at the run's first end and joined by `run`, `stop`, `stop_all` and the
+  CLI's last drain (10 s bound, reported past it), sweeps the ledger's groups with authority (a
+  gone leader's non-retired group is killed, owner OQ-D) and the token's processes, and awaits the
+  killed child (#750). Windows relies on the delegation's Job. Top-level `bash`, REPL `!` and RPC
+  `exec` are unchanged (#232). Rewrites ADR-0291 limit 2; residuals: S2a's R1–R3, OQ-D's shape,
+  held zombies, an agent that dies without its cleanup, and macOS's group-escaped env-cleared or
+  platform-binary helpers.
+
 - [0295 — A delegated agent can run in the background as a job of its session](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)
   (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3). Delegation is the job service's
   first client (ADR-0293): `agent(action="spawn")` runs ONE task as a job of the session and

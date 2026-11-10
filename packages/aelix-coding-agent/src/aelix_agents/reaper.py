@@ -50,7 +50,7 @@ grace.
 
 WHY A DESCENDANT WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
-too"*. That is factually wrong: ``tools/bash.py:362`` and
+too"*. That is factually wrong: ``tools/bash.py:919`` and
 ``tools/_subprocess.py:107`` both spawn through
 ``containment_spawn_kwargs(new_session=True)`` — which is the
 ``start_new_session=True`` those two lines used to spell literally, and still is
@@ -59,7 +59,7 @@ child's group cannot reach it. The descendant walk can. It reads ``/proc`` on
 Linux and asks the kernel through libproc on macOS (#691, ADR-0291).
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
-``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:576-591``
+``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:508-523``
 already reaps its grandchildren. That last hop was a ``_kill_group(proc.pid)``
 until #222 and is the bash tool's own ``ProcessTree`` now, so on Windows it
 reaches a grandchild whose intermediate parent already exited (a job does;

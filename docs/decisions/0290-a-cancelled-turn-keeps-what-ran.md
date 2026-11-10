@@ -280,6 +280,14 @@ result, `No result provided` on its resume (ADR-0277 D14), which is why `RESUME_
 10. **A `setsid` grandchild outlives the cut,** by the process tree's design, on the base as well. `exec` ends
     the group it started, and what left that group is out of reach. The record says the command was stopped; a
     daemon it started may still run.
+
+    *Note 2026-11-10 (#719, ADR-0296):* inside a DELEGATED agent this is no longer out of reach on
+    Linux: the agent is a child subreaper, so a `setsid` or double-forked descendant of its `bash` is
+    reparented to it, and its exit cleanup and the parent's stop legs walk it
+    (`tests/agents_ext/test_delegated_helpers_719.py`, the `dfork-setsid` rows, Linux docker). One
+    that kept its environment is found by the run's marker on macOS too. A top-level `exec`, the
+    REPL `!` and RPC `exec` are unchanged; on macOS a delegated agent's helper that left its group
+    and cleared its environment stays out of reach (ADR-0296's residuals).
 11. **A cut flood has no line count, and its file comes after its result.** Over 4 MiB `original_lines` is 0,
     and the notice says the lines were not counted. The file holds the raw bytes, not the decoded text the exit
     path writes. It is still being written when the result goes out, for 0.16-0.58 s after a 900 MB flood. A process

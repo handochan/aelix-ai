@@ -26,7 +26,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:513-514`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:518-519`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -58,7 +58,15 @@ error, kill, spawn failure and cancellation — because the ``finally``
 that removes it is synchronous (nothing to interrupt) and because the directory
 is recorded on the :class:`RunningChild` registry row before the process starts,
 so ``stop`` / ``stop_all`` / the extension teardown can remove it even when the
-owning task was cancelled out of its own ``finally``.
+owning task was cancelled out of its own ``finally``. Since #719 the directory
+of a run that got a process goes with the run's ONE cleanup task
+(:func:`ensure_cleanup`), after its sweep read the launch ledger that may be kept
+there; the file itself still goes in the ``finally``.
+
+#719, #750 (ADR-0296): every POSIX delegated child is given a launch ledger and a
+run token (:func:`_helper_tracking`); the run's cleanup task awaits the killed
+child, stops what the ledger and the token name (:func:`sweep_helpers`), and is
+joined by ``run``, ``stop``, ``stop_all`` and the CLI's last drain.
 """
 
 from __future__ import annotations
@@ -69,6 +77,7 @@ import dataclasses
 import logging
 import math
 import os
+import secrets
 import sys
 import time
 from dataclasses import dataclass, field
@@ -82,6 +91,7 @@ from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
     containment_spawn_kwargs,
+    wait_released,
 )
 from aelix_coding_agent.agents.resolver import (
     ModelPin,
@@ -98,7 +108,7 @@ from aelix_coding_agent.subagent_contract import (
     SubagentState,
     subagent_depth,
 )
-from aelix_coding_agent.tools import ALL_TOOL_NAMES
+from aelix_coding_agent.tools import ALL_TOOL_NAMES, launch_ledger
 
 from aelix_agents.child_session import RESUME_CWD_GONE, ChildLimits, ResumeRefused
 from aelix_agents.consent import contains_control_chars
@@ -316,6 +326,20 @@ class RunningChild:
     delegation only. See :class:`CleanupOwner` for what it changes: the
     prompt directory and the tree outlive :meth:`PrintChannel.run`, and every
     kill goes through it."""
+    tracking: HelperTracking | None = field(default=None, repr=False, compare=False)
+    """The run's launch ledger and marker token (#719), set by
+    :meth:`PrintChannel.run` before the spawn on POSIX; ``None`` on win32, where
+    the delegation's Job is what stops the helpers."""
+    channel_cleans: bool = False
+    """Whether :meth:`PrintChannel.run` spawned this row's process and so owes it
+    ONE cleanup task (#719, #750): an rpc row, or a print row that never got a
+    process, does not."""
+    cleanup: CleanupDuty | None = field(default=None, repr=False, compare=False)
+    """That task, once the run's first end created it (:func:`ensure_cleanup`)."""
+    cleanups: dict[str, CleanupDuty] | None = field(default=None, repr=False, compare=False)
+    """The runtime's registry the task is published to, in the same synchronous
+    step that creates it (r3 §3.4, Codex N8). ``None`` for a row built without a
+    runtime (the channel tests); the task is then held by this module."""
 
 
 @dataclass(frozen=True)
@@ -1366,11 +1390,420 @@ async def abort_child(
             )
         )
         child.reaper_task = task
+    # A stop is one of the run's ends (#719, #750): its cleanup task exists and
+    # is in the runtime's registry from here, before any ``await``, so a
+    # ``stop_all`` that pops this row still has the task to join (Codex N8).
+    ensure_cleanup(child, grace=grace)
     # ``Exception`` only: a ``CancelledError`` here means the CALLER is being
     # torn down, and it must propagate — the reaper itself is shielded and
     # keeps going regardless.
     with contextlib.suppress(Exception):
         await asyncio.shield(task)
+
+
+# === #719, #750: what a delegated agent's bash left, and one cleanup per run ===
+
+
+@dataclass
+class HelperTracking:
+    """One delegated run's launch ledger and marker token (#719, ADR-0296).
+
+    ``ledger`` is the file the agent writes, or ``None`` when it could not be
+    created (the run is then untracked and its sweep reads ``unverified``).
+    ``beside_session``: the file sits beside the child session as
+    ``<stem>/<run key>.launch-ledger``, kept with a ``swept`` line when the
+    sweep is not confirmed; otherwise it is in the per-spawn prompt directory
+    and is read before that directory is removed (r2 §3.1). ``token`` is never
+    written anywhere but the child's environment.
+    """
+
+    token: str
+    ledger: str | None
+    beside_session: bool
+    agent_stamp: float | None = None
+
+
+def _helper_tracking(row: RunningChild, plan: SpawnPlan) -> HelperTracking | None:
+    """THE #719 SWITCH: every POSIX delegated row is tracked; none on win32 (r3 §2, owner OQ-A).
+
+    Ungated, foreground and background alike (owner, 2026-11-10: "게이트 없이
+    적용 (권장)"). Creates the ledger before the spawn (``O_EXCL``, 0600, one
+    ``open`` line) beside the child session, or in the prompt directory when
+    there is none.
+    """
+
+    if sys.platform == "win32" or row.prompt is None:
+        return None
+    if plan.session_path is not None:
+        path = os.path.join(
+            os.path.dirname(plan.session_path), plan.id + launch_ledger.LEDGER_SUFFIX
+        )
+    else:
+        path = str(row.prompt.directory / launch_ledger.FALLBACK_NAME)
+    created = launch_ledger.create(path, run=plan.id)
+    return HelperTracking(
+        token=secrets.token_hex(16),
+        ledger=path if created else None,
+        beside_session=plan.session_path is not None,
+    )
+
+
+def _track_in_env(env: dict[str, str], tracking: HelperTracking | None) -> None:
+    """The ledger's path and the run's token, into the child's environment.
+
+    An inherited ``AELIX_LAUNCH_LEDGER`` is removed first: it is internal to the
+    process it was handed to. The marker is appended to, never replaced.
+    """
+
+    env.pop(launch_ledger.LEDGER_ENV, None)
+    if tracking is None:
+        return
+    if tracking.ledger is not None:
+        env[launch_ledger.LEDGER_ENV] = tracking.ledger
+    prior = env.get(launch_ledger.MARKER_ENV)
+    env[launch_ledger.MARKER_ENV] = f"{prior},{tracking.token}" if prior else tracking.token
+
+
+def _parent_stopped(row: RunningChild) -> bool:
+    """Whether aelix's own stop legs killed the agent, walking it first (S2a).
+
+    Then a missing ``exit`` line is not "the agent ended without its own
+    cleanup": the leg walked the agent's descendants while it lived — on Linux,
+    with the subreaper, the helpers it had adopted too.
+    """
+
+    return row.stopped or row.eager_kill or row.reaper_task is not None
+
+
+def _reading_reasons(reading: launch_ledger.Reading | None, *, parent_stopped: bool) -> list[str]:
+    """What a ledger says that keeps a sweep from ``confirmed`` (r3 §3.4)."""
+
+    if reading is None:
+        return [launch_ledger.DAMAGED]
+    reasons: list[str] = []
+    if reading.damaged:
+        reasons.append(launch_ledger.DAMAGED)
+    if reading.in_flight:
+        reasons.append(launch_ledger.IN_FLIGHT)
+    if reading.armed is None:
+        reasons.append(launch_ledger.NOT_ARMED)
+    elif sys.platform == "linux" and reading.armed.get("subreaper") is not True:
+        reasons.append(launch_ledger.NOT_SUBREAPER)
+    if reading.exit is None:
+        if not parent_stopped:
+            reasons.append(launch_ledger.NO_EXIT_CLEANUP)
+    elif reading.exit.get("cleanup") != "confirmed":
+        reasons.append(str(reading.exit.get("reason") or "the agent's own cleanup was unverified"))
+    return reasons
+
+
+def _sweep_now(
+    tracking: HelperTracking, *, parent_stopped: bool
+) -> tuple[launch_ledger.Sweep, list[str]]:
+    """Read the ledger, kill its groups with authority, then this run's marker hits (r3 §3.5).
+
+    Blocking — the ledger read and the scan of every process of this user —
+    so :func:`sweep_helpers` runs it on a worker thread. Returns what was
+    signalled and the reasons the reading itself gives.
+    """
+
+    reasons: list[str] = []
+    done = launch_ledger.Sweep()
+    if tracking.ledger is None:
+        reasons.append(launch_ledger.NOT_CREATED)
+    else:
+        reading = launch_ledger.read(tracking.ledger)
+        reasons.extend(_reading_reasons(reading, parent_stopped=parent_stopped))
+        if reading is not None:
+            done.merge(launch_ledger.sweep_groups(reading.launches.values(), reading.retired))
+    exclude = launch_ledger.ancestry()
+    hits = launch_ledger.marker_hits(tracking.token, since=tracking.agent_stamp, exclude=exclude)
+    if hits is None:
+        reasons.append(launch_ledger.SCAN_FAILED)
+    done.merge(launch_ledger.kill_hits(hits, exclude=exclude))
+    return done, reasons
+
+
+@dataclass(frozen=True)
+class HelperAnswer:
+    """A sweep's verdict: ``confirmed``, or why not (at most 16 targets, then a count)."""
+
+    confirmed: bool
+    reason: str | None = None
+
+
+async def sweep_helpers(tracking: HelperTracking, *, parent_stopped: bool) -> HelperAnswer:
+    """Stop what the agent's ``bash`` left, confirm it gone, and keep the ledger only when unverified.
+
+    The foreground cleanup task (:func:`ensure_cleanup`) and a background job's
+    ``helper_cleanup`` (``jobs_client``) both end here. ``confirmed`` means every
+    target aelix identified was signalled with authority and is confirmed gone,
+    no launch was in flight, the ledger is whole and armed, the agent ran its
+    own exit cleanup or aelix's stop legs ended it, and on Linux it was a
+    subreaper. It does not cover ADR-0296's residuals. A scan of this user's
+    processes that could not run is ``unverified`` and keeps the ledger (Codex 7).
+    """
+
+    done, reasons = await asyncio.to_thread(_sweep_now, tracking, parent_stopped=parent_stopped)
+    reasons.extend(done.reasons)
+    why = await launch_ledger.confirm_stopped(done)
+    if why is not None:
+        reasons.append(why)
+    answer = HelperAnswer(
+        confirmed=not reasons, reason=launch_ledger.summarize(reasons) if reasons else None
+    )
+    _settle_ledger(tracking, answer)
+    return answer
+
+
+def _settle_ledger(tracking: HelperTracking, answer: HelperAnswer) -> None:
+    """Beside the session: deleted when confirmed, kept with a ``swept`` line when not (r2 §3.1).
+
+    Report-only evidence for a restart; nothing ever kills from it. The
+    prompt-directory copy goes with that directory.
+    """
+
+    path = tracking.ledger
+    if path is None or not tracking.beside_session:
+        return
+    with contextlib.suppress(OSError):
+        # A compaction the agent did not finish (it was killed between the
+        # write and the replace) leaves this beside the session.
+        os.unlink(path + launch_ledger.COMPACT_SUFFIX)
+    if answer.confirmed:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        return
+    launch_ledger.append(path, {"t": "swept", "confirmed": False, "reason": answer.reason})
+
+
+@dataclass
+class CleanupDuty:
+    """One run's cleanup task, as its registry holds it (r3 §3.4).
+
+    Published right before the spawn (:func:`open_cleanup`), so a spawn in
+    flight — whose OS child may already exist while ``row.proc`` is still
+    ``None`` — is already a duty every remover finds (Codex 3); its task waits
+    for :attr:`ended`, set at the run's first end. ``step`` names where it is,
+    for the one line a drain writes about a duty still running at its bound.
+    """
+
+    key: str
+    step: str = "waiting for the run to end"
+    task: asyncio.Task[None] | None = None
+    ended: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+
+
+CLEANUP_CONFIRM_SECONDS = launch_ledger.CONFIRM_SECONDS
+"""How long the task waits for the child's pipes before the parent closes its own ends."""
+
+_HELD_DUTIES: dict[str, CleanupDuty] = {}
+"""Where a row built without a runtime keeps its task (the loop keeps only a weak one)."""
+
+
+def open_cleanup(row: RunningChild, *, grace: float) -> CleanupDuty | None:
+    """The row's ONE cleanup task, published BEFORE the spawn is awaited (Codex 3, N8).
+
+    Created and added to the runtime's registry in one synchronous step — no
+    ``await`` between them — so no remover can look at the registry in between,
+    and a ``stop_all`` that meets the spawn in flight keeps the row's prompt
+    directory and joins this task instead of returning past a live child. The
+    task waits for the run's first end (:func:`ensure_cleanup`) before it
+    touches anything. ``None`` for a service-owned row, whose barrier and
+    ``helper_cleanup`` are the job service's.
+    """
+
+    if row.owner is not None:
+        return None
+    duty = row.cleanup
+    if duty is not None:
+        return duty
+    duty = CleanupDuty(key=row.id)
+    registry = row.cleanups if row.cleanups is not None else _HELD_DUTIES
+    duty.task = asyncio.ensure_future(_clean_up(row, duty, grace))
+    row.cleanup = duty
+    registry[row.id] = duty
+
+    def _done(_task: asyncio.Future[None]) -> None:
+        if registry.get(duty.key) is duty:
+            del registry[duty.key]
+
+    duty.task.add_done_callback(_done)
+    return duty
+
+
+def ensure_cleanup(row: RunningChild, *, grace: float) -> CleanupDuty | None:
+    """The run's first end — normal, an error, the cancel handler, or a stop — sets its task going (#750).
+
+    Every later end gets the same task. ``None`` for a row this channel did not
+    spawn (no process, an rpc row) or a service-owned one.
+    """
+
+    if row.owner is not None or row.proc is None or not row.channel_cleans:
+        return None
+    duty = open_cleanup(row, grace=grace)
+    if duty is not None:
+        duty.ended.set()
+    return duty
+
+
+async def join_cleanup(duty: CleanupDuty | None) -> None:
+    """Await ``duty`` under ``asyncio.shield``: a cancelled awaiter never cancels it (Codex N9)."""
+
+    if duty is None or duty.task is None:
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.shield(duty.task)
+
+
+async def _bounded(awaitable: Any, timeout: float) -> bool:
+    """``awaitable`` for at most ``timeout`` seconds; whether it finished. Cancelled, never raised, past it."""
+
+    future = asyncio.ensure_future(awaitable)
+    try:
+        await asyncio.wait({future}, timeout=timeout)
+    finally:
+        if not future.done():
+            future.cancel()
+        future.add_done_callback(_swallow)
+    return future.done() and not future.cancelled()
+
+
+def _close_pipes(proc: Any) -> None:
+    """The PARENT's read ends of the child's stdout and stderr, closed. Never raises.
+
+    Only once the child is reaped, for a holder the sweep could not name (an
+    ADR-0296 residual): its next write to that pipe gets ``EPIPE`` (or a
+    ``SIGPIPE`` it does not handle), and the subprocess transport can close, so
+    it is not left to a closed loop (#750, Codex 6). The holder itself is not
+    signalled by aelix.
+    """
+
+    transport = getattr(proc, "_transport", None)
+    if transport is None:
+        return
+    for fd in (1, 2):
+        with contextlib.suppress(Exception):
+            pipe = transport.get_pipe_transport(fd)
+            if pipe is not None and not pipe.is_closing():
+                pipe.close()
+
+
+async def _release_pipes(proc: Any) -> None:
+    """The killed child's transport released (#750): its pipes within the bound, else ours closed.
+
+    Never drops the obligation: a child not yet reaped is waited for with no
+    bound, and the drain reports a task still here at ``CLEANUP_BOUND``.
+    """
+
+    if await _bounded(wait_released(proc), CLEANUP_CONFIRM_SECONDS):
+        return
+    await _wait_for_exit(proc)
+    _close_pipes(proc)
+    await wait_released(proc)
+
+
+async def _clean_up(row: RunningChild, duty: CleanupDuty, grace: float) -> None:
+    """The task's body (r3 §3.4): the child's exit, the sweep, its pipes, the directory, the tree.
+
+    0. wait for the run's first end (the task is published before the spawn);
+       a run that got no process skips to step 4;
+    1. await the child's exit, bounded by the grace — the killed child is
+       awaited (#750), so its transport is not left to a closed loop;
+    2. the ledger sweep and the marker scan (:func:`sweep_helpers`); an
+       unverified answer is one DEBUG log line, never a terminal write (the
+       TUI's frame, #546's rule);
+    3. the child's pipes released (:func:`_release_pipes`);
+    4. the prompt directory removed — after the sweep read a ledger kept there;
+    5. the tree closed, after a reaper still escalating (#220 §A.6).
+
+    Steps 4 and 5 run however 0–3 end — a sweep that raised is one DEBUG line,
+    and a loop closing under the task still removes the directory and closes
+    the tree.
+    """
+
+    try:
+        await duty.ended.wait()
+        proc = row.proc
+        if proc is None:
+            return
+        duty.step = "waiting for the agent to exit"
+        await _bounded(_wait_for_exit(proc), grace)
+        tracking = row.tracking
+        if tracking is not None:
+            duty.step = "sweeping what its bash left"
+            answer = await sweep_helpers(tracking, parent_stopped=_parent_stopped(row))
+            if not answer.confirmed:
+                logger.debug(
+                    "delegated run %s: its helpers are not confirmed stopped: %s",
+                    row.id,
+                    answer.reason,
+                )
+        duty.step = "waiting for its pipes to close"
+        await _release_pipes(proc)
+    except Exception:  # noqa: BLE001 — the directory and the tree still go
+        logger.debug("delegated run %s: its cleanup failed", row.id, exc_info=True)
+    finally:
+        duty.step = "removing its prompt directory"
+        remove_prompt_dir(row.prompt)
+        row.prompt = None
+        _close_tree(row)
+
+
+def _close_tree(row: RunningChild) -> None:
+    """THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the close is not unconditional.
+
+    ``close()`` DISARMS both legs — ``soft_kill`` returns ``False`` and
+    ``hard_kill`` is a no-op once ``_closed`` — so closing it before the
+    reaper's escalation would silently delete the kill on BOTH platforms
+    (``reap``'s Q1 group kill goes through the tree). The reaper is DETACHED by
+    design (finding B1) and may still be inside its grace, so the close waits
+    for it. ``row.tree is None``: an attach that degraded. NULLING IS THE
+    MECHANISM: a later ``abort_child`` → ``reap(..., tree=row.tree)`` then gets
+    ``None`` and falls back to the signal legs instead of dispatching into a
+    disarmed object (``rpc/rpc_client.py``'s ``stop()`` does the same).
+    """
+
+    tree = row.tree
+    if tree is None or not row.tree_owned:
+        return
+    task = row.reaper_task
+    if task is None or task.done():
+        tree.close()
+        row.tree = None
+    else:
+        task.add_done_callback(lambda _: (tree.close(), setattr(row, "tree", None)))
+
+
+def _end_of_run(row: RunningChild, grace: float) -> None:
+    """``run``'s ``finally``: synchronous, total, and the same on every path out.
+
+    A service-owned row's directory and tree are the job's (#611 S1c). A row
+    that never got a process has nothing to sweep: its directory goes now, and
+    an unused ledger beside its session with it. Otherwise the prompt FILE is
+    unlinked now — the user's private agent prompt never outlives the run on
+    any path — and the run's cleanup task, created here if no earlier end did,
+    removes the directory once it has read what may be kept there.
+    """
+
+    if row.owner is not None:
+        return
+    if row.proc is None:
+        remove_prompt_dir(row.prompt)
+        row.prompt = None
+        tracking = row.tracking
+        if tracking is not None and tracking.ledger is not None and tracking.beside_session:
+            with contextlib.suppress(OSError):
+                os.unlink(tracking.ledger)
+        if row.cleanup is not None:
+            # A spawn that failed or was cancelled: the duty published before
+            # it has nothing to sweep, and ends now.
+            row.cleanup.ended.set()
+        return
+    if row.prompt is not None:
+        with contextlib.suppress(OSError):
+            row.prompt.path.unlink()
+    ensure_cleanup(row, grace=grace)
 
 
 class PrintChannel:
@@ -1559,6 +1992,13 @@ class PrintChannel:
                 env.pop(name, None)
             if row.owner is not None:
                 env.update(row.owner.child_env())
+            # #719: the launch ledger and the run's marker (POSIX, every row).
+            row.tracking = _helper_tracking(row, plan)
+            _track_in_env(env, row.tracking)
+            # The run's one cleanup duty, BEFORE the spawn is awaited: asyncio
+            # starts the OS child inside that await, while ``row.proc`` is
+            # still None (Codex 3 on #719).
+            open_cleanup(row, grace=self._grace)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -1576,7 +2016,7 @@ class PrintChannel:
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
                     # neither parent (``tui/shell.py:2548-2565``) nor child
-                    # (``modes/print_mode.py:248-307``) installs a SIGINT
+                    # (``modes/print_mode.py:253-312``) installs a SIGINT
                     # handler to convert that into a result.
                     #
                     # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,
@@ -1607,6 +2047,11 @@ class PrintChannel:
                 return _envelope(outcome="error", exit_code=None, error=str(exc))
 
             row.proc = proc
+            # This run owes the process one cleanup task now (#750), and the
+            # sweep reads the agent's start time against its marker hits.
+            row.channel_cleans = True
+            if row.tracking is not None:
+                row.tracking.agent_stamp = _process_identity.process_started(proc.pid)
             try:
                 # ITS OWN ``try``, deliberately OUTSIDE the spawn's. Inside it,
                 # an attach failure would take the ``except`` above and return an
@@ -1658,7 +2103,7 @@ class PrintChannel:
                 # ``create_subprocess_exec`` was in flight saw ``proc is None``
                 # and had nothing to signal. Now it does.
                 await abort_child(row, grace=self._grace)
-            return await self._stream_and_reap(
+            result = await self._stream_and_reap(
                 proc,
                 row,
                 state=state,
@@ -1667,45 +2112,23 @@ class PrintChannel:
                 on_stream=on_stream,
                 envelope=_envelope,
             )
+            # A run that ENDS — normally, after a reap, or on an error the
+            # pumps caught — returns its envelope once its cleanup is done:
+            # the sweep of what its bash left (#719) and the killed child
+            # awaited (#750). Shielded: a cancel here leaves it running in the
+            # registry, and the ``finally`` below finds the same task. The
+            # cancel path itself never waits here (D14).
+            await join_cleanup(ensure_cleanup(row, grace=self._grace))
+            return result
         finally:
             # SERVICE-OWNED (#611 S1c): the directory and the tree are the job's.
             # The service removes the one after its barrier and cleanup duty, and
             # the runner closes the other only once the barrier confirmed its
             # members gone — closing it here would disarm the legs the barrier
-            # still needs (#220 §A.6). Every other row is released as before.
-            if row.owner is None:
-                # Synchronous, idempotent, and never raises — so it always completes
-                # once entered, including on the cancellation path.
-                remove_prompt_dir(row.prompt)
-                row.prompt = None
-                # THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the
-                # close is deliberately not unconditional here.
-                #
-                # ``close()`` DISARMS both legs — ``soft_kill`` returns ``False`` and
-                # ``hard_kill`` is a no-op once ``_closed`` — so closing it before the
-                # reaper's escalation would silently delete the kill on BOTH
-                # platforms now that the POSIX escalation goes through the tree too
-                # (``reap``'s Q1 group kill). The reaper is DETACHED by design
-                # (finding B1) and may still be inside its grace when this ``finally``
-                # runs, so the close waits for it.
-                #
-                # ``row.tree is None`` is not a nicety either: the abort-before-spawn
-                # path and the spawn-failure path both reach here with no tree.
-                tree = row.tree
-                if tree is not None and row.tree_owned:
-                    task = row.reaper_task
-                    if task is None or task.done():
-                        tree.close()
-                        # NULLING IS THE MECHANISM, not tidiness: it is what makes a
-                        # later ``abort_child`` → ``reap(..., tree=row.tree)`` get
-                        # ``None`` and fall back to the signal legs instead of
-                        # dispatching into a disarmed object. Mirrors the reference
-                        # adoption (``rpc/rpc_client.py``'s ``stop()``).
-                        row.tree = None
-                    else:
-                        task.add_done_callback(
-                            lambda _: (tree.close(), setattr(row, "tree", None))
-                        )
+            # still needs (#220 §A.6). Every other row: :func:`_end_of_run`,
+            # synchronous, idempotent and never raising, so it always completes
+            # once entered, including on the cancellation path.
+            _end_of_run(row, self._grace)
 
     async def _stream_and_reap(
         self,

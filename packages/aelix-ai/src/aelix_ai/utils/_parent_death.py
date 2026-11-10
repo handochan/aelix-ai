@@ -48,7 +48,7 @@ def pdeathsig(
     """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
 
     Closes finding I1. Without it a child whose parent is SIGKILLed runs to
-    completion, reparented to init: ``modes/print_mode.py:338-345``'s ``_emit``
+    completion, reparented to init: ``modes/print_mode.py:343-350``'s ``_emit``
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
     ``break`` (``:385-390``) plus the ``raise BrokenPipeError`` (``:399-402``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``

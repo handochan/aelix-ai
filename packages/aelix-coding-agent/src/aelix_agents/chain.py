@@ -19,7 +19,7 @@ Truncation therefore stays visible by construction: ``cap_summary``
 literally reads "[Output truncated: … bytes omitted…]". Nothing here strips it.
 
 THE SUBSTITUTION HAPPENS INSIDE THE TASK STRING; IT NEVER TOUCHES ARGV.
-``build_child_argv`` (``print_channel.py:909-976``) documents that the ``"Task: "``
+``build_child_argv`` (``print_channel.py:933-1000``) documents that the ``"Task: "``
 prefix ``profile_to_argv`` prepends is load-bearing — ``args.py`` swallows an
 unrecognised ``--`` token into ``parsed.unknown_flags`` with NO diagnostic — so a
 previous summary that begins with ``--`` stays safe only because that prefix is
@@ -28,7 +28,7 @@ element.
 
 THE SUBSTITUTED TEXT IS NOT HUMAN-APPROVED, AND THIS MODULE SAYS SO (§3.1.1).
 The consent grant is taken once, in the hook, BEFORE step 1 exists
-(``extension.py:1176-1179``, frozen into ``PendingSpawn`` at ``:1197-1199``), and
+(``extension.py:1184-1187``, frozen into ``PendingSpawn`` at ``:1205-1207``), and
 ``build_consent_title`` renders the task verbatim (``consent.py:620-677``) — so
 what the human read on screen for step 2 is the literal string ``{previous}``.
 What actually reaches child *k ≥ 2* is text minted mid-call by a child process
@@ -58,7 +58,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:935-940``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:959-964``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:32``), so a chain step that
 forwards a whole uncapped previous summary still fits.

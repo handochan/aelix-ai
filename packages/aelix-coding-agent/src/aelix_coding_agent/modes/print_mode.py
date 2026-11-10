@@ -88,6 +88,7 @@ from aelix_coding_agent.jobs.contract import (
     PRINT_DONE_EVENT,
 )
 from aelix_coding_agent.model_registry import clear_command_value_cache
+from aelix_coding_agent.tools import launch_ledger
 
 if TYPE_CHECKING:
     from aelix_agent_core.runtime.agent_session_runtime import (
@@ -189,6 +190,10 @@ async def _safe_dispose(runtime_host: AgentSessionRuntime) -> None:
 
     with contextlib.suppress(Exception):
         await runtime_host.dispose()
+    # #719 (ADR-0296): an armed delegated agent ends what its ``bash`` left —
+    # its own descendants, its ledger's groups, its marker's processes — once its
+    # session is disposed. A no-op in every process that is not one; never raises.
+    await launch_ledger.exit_cleanup()
 
 
 async def run_print_mode(

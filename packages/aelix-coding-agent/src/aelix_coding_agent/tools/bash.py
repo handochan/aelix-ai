@@ -53,6 +53,7 @@ from aelix_ai.utils._shell import (
     windows_command_shells,
 )
 
+from aelix_coding_agent.tools import launch_ledger
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
@@ -292,76 +293,7 @@ class _LocalBashOperations:
         # since #232 this site's too).
         started_at = time.monotonic()
         try:
-            # The cast is about the CHECKER, and it is ``run_contained``'s:
-            # unpacking a ``dict[str, Any]`` costs pyright the text/bytes
-            # overload discrimination and it settles on ``Popen[str]``. At
-            # runtime ``PIPE`` with no ``text``/``encoding`` is bytes.
-            proc = cast(
-                "subprocess.Popen[bytes]",
-                subprocess.Popen(  # noqa: S603
-                    # #239: ask THIS family for UTF-8 output, prepended here —
-                    # after ``_resolve_spawn_context``, so the AUTO-mode gate
-                    # and any ``spawn_hook`` still see exactly the command the
-                    # model sent, invisibly by construction. The choice is the
-                    # shell FAMILY's and not the platform's (#239 review):
-                    # every POSIX shell family gets ``""``, but
-                    # ``SHELL=/usr/local/bin/pwsh`` on macOS gets the PowerShell
-                    # statement, deliberately — pwsh's output encoding is
-                    # pwsh's wherever it runs.
-                    # PowerShell is the ONLY family that gets one. The ``cmd``
-                    # arm was deleted on 2026-09-09, after CI run 34272507388
-                    # measured its ``chcp 65001 >nul&`` breaking an unquoted
-                    # spaced executable path on windows-latest: the prefix costs
-                    # ``cmd /c`` rule 1's quotes and ``cmd`` then answers "is
-                    # not recognized". A ``cmd`` child's console-page output
-                    # goes through the decoder instead — see
-                    # ``utf8_output_preamble`` for the leg output and the price.
-                    # It reaches all three callers of
-                    # ``create_local_bash_operations`` (the bash tool, the REPL
-                    # ``!`` escape, RPC ``exec``) deliberately: all three are
-                    # shells AELIX spawns. A ``models.json`` ``!command`` is
-                    # not one of them and gets nothing prepended, because its
-                    # stdout is a credential returned verbatim.
-                    [
-                        shell.path,
-                        shell.command_flag,
-                        utf8_output_preamble(shell.path) + command,
-                    ],
-                    cwd=cwd,
-                    env=env_dict,
-                    # #222 §A.5, and Pi's ``stdio: ["ignore", "pipe", "pipe"]``.
-                    # The child used to inherit Aelix's stdin, where under
-                    # ``start_new_session=True`` it does NOT stop on SIGTTIN —
-                    # it has no controlling terminal, so the kernel's
-                    # background-group test never applies. What happened
-                    # instead was invisible: measured, a ``!cat`` typed into
-                    # the TUI took the user's keystroke (the child got
-                    # ``'secret\n'``, the TUI's own ``read`` got ``b''``) and
-                    # never returned, and a child that called ``tcsetattr``
-                    # left ECHO off after it exited. On POSIX ``DEVNULL`` +
-                    # ``setsid`` makes the child non-interactive (``cat``
-                    # prints nothing and exits 0; ``git commit`` without
-                    # ``-m`` fails with "Aborting commit due to empty commit
-                    # message." — the string measured 2026-09-06 from git
-                    # itself, not the paraphrase this comment used to quote).
-                    # On win32
-                    # ``containment_spawn_kwargs`` returns only
-                    # ``CREATE_NEW_PROCESS_GROUP``, so the child keeps Aelix's
-                    # console: a real stdin reader gets EOF from ``NUL``, but a program that
-                    # reads ``CONIN$`` directly (git credential prompts) or opens the console
-                    # for a masked prompt (``Read-Host -AsSecureString``, ``Get-Credential``)
-                    # still prompts there and still costs the whole timeout — and only when
-                    # ``default_timeout != 0`` (see :data:`_DEFAULT_TIMEOUT`).
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    # ``new_session=True`` is today's ``start_new_session=True``
-                    # spelled through the primitive, so every tool child still
-                    # makes its own session on POSIX and gains a process group
-                    # (and, below, a job) on win32.
-                    **containment_spawn_kwargs(new_session=True),
-                ),
-            )
+            proc = _spawn_shell(shell, command, cwd, env_dict)
         except OSError as exc:
             # #243 — classified by ERRNO, not by exception class. The tuple
             # this replaces, ``(FileNotFoundError, NotADirectoryError)``,
@@ -867,6 +799,9 @@ class _LocalBashOperations:
             # A release, never a kill: ``kill_on_close=False``. POSIX signals
             # nothing here; win32 closes the job handle.
             tree.close()
+            # #719: an armed delegated agent retires the groups this call left
+            # empty; a no-op in every unarmed process.
+            launch_ledger.after_call()
         # Pi parity: signal-kill and timeout-kill both report exit_code=None.
         if _signal_aborted:
             exit_code = None
@@ -877,6 +812,113 @@ class _LocalBashOperations:
             timed_out=_timed_out and not _signal_aborted,
             output_unconfirmed=output_unconfirmed,
         )
+
+
+def _spawn_shell(
+    shell: ShellConfig, command: str, cwd: str, env: dict[str, str]
+) -> subprocess.Popen[bytes]:
+    """The one ``Popen`` of :meth:`_LocalBashOperations.exec`, and the launch ledger around it (#719).
+
+    UNARMED — the top-level aelix, the REPL ``!`` escape, RPC ``exec`` — this is
+    the spawn ``exec`` always made, with ``env`` passed as given, byte for byte.
+    ARMED — a delegated agent whose parent handed it a launch ledger
+    (:mod:`aelix_coding_agent.tools.launch_ledger`) — the command's environment
+    loses ``AELIX_LAUNCH_LEDGER`` and ``AELIX_JOBS_PROTOCOL`` (the marker stays),
+    the ``intent`` line is written in full BEFORE the spawn and the ``launch``
+    line, with the shell's group and start time, right after it. Neither write
+    can lose the process: a failed write marks the ledger damaged, and the
+    launch is still the agent's to stop at its end (Codex #6). A spawn that
+    raises writes ``failed`` and raises as before.
+    """
+
+    ledger = launch_ledger.writer()
+    if ledger is None:
+        return _popen_shell(shell, command, cwd, env)
+    seq = ledger.intent()
+    try:
+        proc = _popen_shell(shell, command, cwd, launch_ledger.spawn_env(env))
+    except BaseException:
+        ledger.failed(seq)
+        raise
+    ledger.launched(seq, proc.pid)
+    return proc
+
+
+def _popen_shell(
+    shell: ShellConfig, command: str, cwd: str, env: dict[str, str]
+) -> subprocess.Popen[bytes]:
+    """The shell for one command, in a session of its own, its output on one pipe."""
+
+    # The cast is about the CHECKER, and it is ``run_contained``'s:
+    # unpacking a ``dict[str, Any]`` costs pyright the text/bytes
+    # overload discrimination and it settles on ``Popen[str]``. At
+    # runtime ``PIPE`` with no ``text``/``encoding`` is bytes.
+    return cast(
+        "subprocess.Popen[bytes]",
+        subprocess.Popen(  # noqa: S603
+            # #239: ask THIS family for UTF-8 output, prepended here —
+            # after ``_resolve_spawn_context``, so the AUTO-mode gate
+            # and any ``spawn_hook`` still see exactly the command the
+            # model sent, invisibly by construction. The choice is the
+            # shell FAMILY's and not the platform's (#239 review):
+            # every POSIX shell family gets ``""``, but
+            # ``SHELL=/usr/local/bin/pwsh`` on macOS gets the PowerShell
+            # statement, deliberately — pwsh's output encoding is
+            # pwsh's wherever it runs.
+            # PowerShell is the ONLY family that gets one. The ``cmd``
+            # arm was deleted on 2026-09-09, after CI run 34272507388
+            # measured its ``chcp 65001 >nul&`` breaking an unquoted
+            # spaced executable path on windows-latest: the prefix costs
+            # ``cmd /c`` rule 1's quotes and ``cmd`` then answers "is
+            # not recognized". A ``cmd`` child's console-page output
+            # goes through the decoder instead — see
+            # ``utf8_output_preamble`` for the leg output and the price.
+            # It reaches all three callers of
+            # ``create_local_bash_operations`` (the bash tool, the REPL
+            # ``!`` escape, RPC ``exec``) deliberately: all three are
+            # shells AELIX spawns. A ``models.json`` ``!command`` is
+            # not one of them and gets nothing prepended, because its
+            # stdout is a credential returned verbatim.
+            [
+                shell.path,
+                shell.command_flag,
+                utf8_output_preamble(shell.path) + command,
+            ],
+            cwd=cwd,
+            env=env,
+            # #222 §A.5, and Pi's ``stdio: ["ignore", "pipe", "pipe"]``.
+            # The child used to inherit Aelix's stdin, where under
+            # ``start_new_session=True`` it does NOT stop on SIGTTIN —
+            # it has no controlling terminal, so the kernel's
+            # background-group test never applies. What happened
+            # instead was invisible: measured, a ``!cat`` typed into
+            # the TUI took the user's keystroke (the child got
+            # ``'secret\n'``, the TUI's own ``read`` got ``b''``) and
+            # never returned, and a child that called ``tcsetattr``
+            # left ECHO off after it exited. On POSIX ``DEVNULL`` +
+            # ``setsid`` makes the child non-interactive (``cat``
+            # prints nothing and exits 0; ``git commit`` without
+            # ``-m`` fails with "Aborting commit due to empty commit
+            # message." — the string measured 2026-09-06 from git
+            # itself, not the paraphrase this comment used to quote).
+            # On win32
+            # ``containment_spawn_kwargs`` returns only
+            # ``CREATE_NEW_PROCESS_GROUP``, so the child keeps Aelix's
+            # console: a real stdin reader gets EOF from ``NUL``, but a program that
+            # reads ``CONIN$`` directly (git credential prompts) or opens the console
+            # for a masked prompt (``Read-Host -AsSecureString``, ``Get-Credential``)
+            # still prompts there and still costs the whole timeout — and only when
+            # ``default_timeout != 0`` (see :data:`_DEFAULT_TIMEOUT`).
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            # ``new_session=True`` is today's ``start_new_session=True``
+            # spelled through the primitive, so every tool child still
+            # makes its own session on POSIX and gains a process group
+            # (and, below, a job) on win32.
+            **containment_spawn_kwargs(new_session=True),
+        ),
+    )
 
 
 def create_local_bash_operations(

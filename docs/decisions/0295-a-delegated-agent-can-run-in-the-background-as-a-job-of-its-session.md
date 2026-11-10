@@ -327,9 +327,15 @@ ended agent with no confirmed end that no restart read as `recovered`
 - **The disclosure row** (#196) of a `spawn` under a yolo parent is written before the child exists
   and taken down when the call returns; from then on the footer's jobs segment and `/jobs` show
   the agent running, and the call's result names its posture.
-- **Helpers.** On POSIX the cleanup duty answers `unverified` — a helper that left the agent's
-  process group is not tracked until #719 (S2) — and the notice says so
-  (`tests/agents_ext/test_agent_background_ownership_611.py::test_s1_reports_helpers_unverified`).
+- **Helpers.** On POSIX the cleanup duty answered `unverified` until #719 — a helper that left the
+  agent's process group was not tracked — and the notice said so (S1's
+  `test_s1_reports_helpers_unverified`, replaced 2026-11-10). *Note 2026-11-10 (#719, ADR-0296 §6):*
+  it now runs the launch ledger's sweep after the barrier, inside `cleanup_bound`, and answers
+  `confirmed` only when every target aelix identified is confirmed gone, no launch was in flight,
+  the ledger is whole and armed, the agent cleaned up after itself or aelix's stop legs ended it,
+  and on Linux it was a subreaper; otherwise `unverified` with why
+  (`tests/agents_ext/test_agent_background_ownership_611.py::test_posix_helpers_confirmed_when_the_sweep_leaves_nothing`,
+  `::test_posix_helpers_unverified_when_the_agent_ended_without_its_cleanup`).
   On win32 it answers `confirmed` when the barrier confirmed the child's Job empty — whether a Job
   existed is read before the close that clears it — and `unverified` without a Job; before the
   barrier confirms it answers `unverified` and closes nothing.
@@ -340,6 +346,12 @@ ADR-0276 D14's synchronous Esc report is unchanged for foreground calls; an Esc 
 background agent at all. A background stop goes through the job's barrier. The runner implements
 ADR-0293's cleanup-obligation interface (`register_directory`, `helper_cleanup`, the `cleanup`
 fact); S2 fills the helper half with the launch ledger and the subreaper.
+
+*Note 2026-11-10 (#719, #750, ADR-0296 §5):* D14's synchronous Esc report is still unchanged. A
+foreground run now owns ONE cleanup task, created at its first end — the cancel handler on Esc —
+and published to the runtime's registry in the same synchronous step; Esc does not wait for it,
+and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row gets none: its sweep is
+`helper_cleanup`'s, as above.
 
 ## Consequences
 
@@ -388,7 +400,8 @@ fact); S2 fills the helper half with the launch ledger and the subreaper.
   test. S3 rewrites them when it turns the gate on.
 - **A restart stops nothing it finds.** An agent the restart found unfinished keeps running until
   it ends on its own; `stop` cannot reach it from the new process.
-- **Helpers** on POSIX are `unverified` until S2; the macOS limits of ADR-0293 stand.
+- **Helpers** on POSIX were `unverified` until S2; since #719 they are swept and confirmed or
+  `unverified` with why (§9's note), and ADR-0296's residuals stand, the macOS ones among them.
 - **Restored and unresolved texts still overstate in four shapes** (verify-r3, all behind the
   gate; to be closed before S3 flips it):
   - a kind's own `unresolved(cannot_bind_run)` with a live process promises that what aelix can

@@ -410,7 +410,7 @@ _GRANDCHILD_BODY = (
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
-    ``tools/bash.py:362`` spawns through
+    ``tools/bash.py:919`` spawns through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX, before and after #222 — so a grandchild is the leader of its OWN
     process group and ``os.killpg`` on the child's group cannot reach it
@@ -750,7 +750,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2548-2565``) nor child (``modes/print_mode.py:248-307``)
+    (``tui/shell.py:2548-2565``) nor child (``modes/print_mode.py:253-312``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -1614,7 +1614,7 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     that BLOCKS SIGTERM (pthread_sigmask) -> state='S (sleeping)'`` three seconds
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
-    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:362``
+    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:919``
     and ``tools/_subprocess.py:107`` both spawn through
     ``containment_spawn_kwargs(new_session=True)``, which on POSIX is the
     ``start_new_session=True`` both lines used to spell literally, so each
@@ -1676,7 +1676,7 @@ _PDEATH_CHILD = (
         def _bye(*_a):
             # What a REAL aelix child does on SIGTERM:
             # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
-            # abort watcher (bash.py:576-591), which since #222 ends a ProcessTree
+            # abort watcher (bash.py:508-523), which since #222 ends a ProcessTree
             # instead of calling the _kill_group this stub imitates. On POSIX that
             # is still killpg(pgid, SIGKILL), which is why the stub still stands.
             try:
@@ -1933,7 +1933,7 @@ async def test_double_cancellation_still_kills(
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:362`` and ``tools/_subprocess.py:107`` both spawn through
+    ``tools/bash.py:919`` and ``tools/_subprocess.py:107`` both spawn through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX — so every tool subprocess the child starts is the leader of its
     own group. On the COOPERATIVE leg the child's own
@@ -2147,7 +2147,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:338-345``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:343-350``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
@@ -2389,7 +2389,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1369-1373``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1397-1401``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2441,11 +2441,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1526``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1959``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:268``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:278``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2914,9 +2914,12 @@ async def test_prompt_file_unlinked_when_the_owner_is_cancelled(
 ) -> None:
     """The cancellation path still runs its ``finally``.
 
-    The removal is SYNCHRONOUS and never raises, so once the ``finally`` is
-    entered nothing can interrupt it — which is why the temp dir survives a
-    second Ctrl+C that the awaiting coroutine does not.
+    The prompt FILE's removal is SYNCHRONOUS and never raises, so once the
+    ``finally`` is entered nothing can interrupt it — which is why the user's
+    agent prompt does not survive a second Ctrl+C that the awaiting coroutine
+    does not. Since #719 the DIRECTORY goes with the run's cleanup task, once
+    its sweep read the launch ledger that may be kept there: the cancel path
+    does not wait for it (D14), and it is joined here.
     """
 
     channel = _stub_channel(
@@ -2925,9 +2928,13 @@ async def test_prompt_file_unlinked_when_the_owner_is_cancelled(
     row = RunningChild(id="sub-cancel", profile="scout")
     task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     pid = await _wait_for_pid(row)
+    assert row.prompt is not None
+    prompt = row.prompt.path
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+    assert not prompt.exists()
+    await _join_the_runs_cleanup(row)
     assert _leaked(_isolated_tmpdir) == []
     assert row.prompt is None
     await _await_death(pid, 5.0)
@@ -4683,6 +4690,94 @@ async def test_a_stopped_delegation_takes_what_its_bash_left_in_the_shells_group
                 os.killpg(os.getpgid(left), _SIGKILL)
             with contextlib.suppress(Exception):
                 os.kill(left, _SIGKILL)
+        # #750: the run's cleanup task awaits the child it killed; joined here,
+        # the case leaves no subprocess transport for a closed loop to collect.
+        await _join_the_runs_cleanup(row)
+
+
+def _escaped_holder_stub(marker: Path) -> str:
+    """A child that leaves a holder of its stdio no walk and no group kill reaches (#750, #719).
+
+    A double fork into a session of its own: the holder's parent exits at once
+    and the stub reaps it, so the holder is reparented away from the child
+    before any walk and is in a group whose leader is gone — on Linux a
+    zombie first child would still be walked and lead that group, and its
+    group kill would end the holder (verify F7). It keeps the child's stdout
+    and stderr, so the child's subprocess transport cannot close while it
+    lives, and the child's environment, the run's marker included.
+    """
+
+    return _stub(
+        f"""
+        start()
+        first = os.fork()
+        if first == 0:
+            os.setsid()
+            if os.fork() == 0:
+                announce({str(marker)!r}, os.getpid())
+                time.sleep(120)
+                os._exit(0)
+            os._exit(0)
+        os.waitpid(first, 0)
+        say("left a holder")
+        time.sleep(60)
+        done()
+        """
+    )
+
+
+@posix_walk
+async def test_a_cancelled_delegation_awaits_its_killed_child(tmp_path: Path) -> None:
+    """#750: Esc's cancel path kills the child and, with nobody awaiting anything, its transport closes.
+
+    The run's cleanup task (#719, r3 §3.4), created in the cancel path and not
+    awaited by it (D14), awaits the killed child's exit and its pipes, after its
+    sweep stopped the holder by the run's marker. Red on ``478ffd13`` on
+    macOS and Linux: nothing awaits the child after ``_eager_abort``, the
+    holder keeps both pipes, and the transport is still open 10 s later
+    (``returncode`` set, pipes not disconnected) — the shape #750 measured
+    leaking into a closed loop. (Until fix round 1 the stub left its first
+    child a zombie, which Linux walked; verify F7.)
+    """
+
+    marker = tmp_path / "holder.pid"
+    channel = _stub_channel(_escaped_holder_stub(marker), grace=0.5)
+    row = RunningChild(id="sub-750", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    holder: int | None = None
+    try:
+        await wait_until(
+            lambda: row.stream.summary == "left a holder" and _announced_pid(marker) is not None,
+            what="the stub to leave its holder",
+        )
+        holder = _announced_pid(marker)
+        proc = row.proc
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        await wait_until(
+            lambda: proc.returncode is not None and proc._transport.is_closing(),
+            timeout=10,
+            what="the killed child's transport to close",
+        )
+        assert holder is not None and not _alive(holder)
+    finally:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        if holder is not None:
+            with contextlib.suppress(Exception):
+                os.kill(holder, _SIGKILL)
+        await _join_the_runs_cleanup(row)
+
+
+async def _join_the_runs_cleanup(row: RunningChild) -> None:
+    """The run's cleanup task joined (#719, #750), where this tree has one — so on a base without
+    it a case fails on what it asserts, not on this ``finally``."""
+
+    join = getattr(pc, "join_cleanup", None)
+    if join is not None:
+        await join(getattr(row, "cleanup", None))
 
 
 def _lend_the_group_calls(

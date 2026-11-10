@@ -1,6 +1,6 @@
 # 0291. A stopped delegation takes what its bash started
 
-Status: Accepted (2026-11-06, #691)
+Status: Accepted (2026-11-06, #691). Limit 2 rewritten 2026-11-10 by ADR-0296 (#719).
 Date: 2026-11-06
 Issue: #691. Batch B6. Found by the #672/#673 verify (`.omc/specs/672-673-verify-r1-report.md`,
 `672-673-verify-r2-report.md`, "PRE-EXISTING").
@@ -215,6 +215,14 @@ whose second was `sleep Y`, stopped during the second with Esc in the TUI or wit
 left X on the first commit and here. The table's Linux `nohup` row is not that case: its stand-in
 never reaped its shell, so the walk named a zombie leader and that group went with it.
 
+*Note 2026-11-10 (#719, ADR-0296):* "out of reach" was the walk's, and stays the walk's; it is no
+longer the stop's. The delegated agent's `bash` now records each shell's group in a launch ledger
+when it spawns it, and the run's cleanup kills each recorded group whose leader is gone or still the
+shell recorded — so `cmd &`, `(cmd &)` and `nohup cmd &` from a returned call are stopped on every
+door, with a real child on a scripted model on macOS and Linux
+(`tests/agents_ext/test_delegated_helpers_719.py::test_a_finished_calls_helper_stops_with_the_delegation`,
+red on `478ffd13` on every row). Limit 2 below says what still escapes.
+
 ### 6. A reaper already in its grace escalates at once
 
 `reap` read `eager_kill` once, on entry. A reaper already waiting out its grace therefore ignored the
@@ -275,16 +283,20 @@ nothing). What stays is a child that nothing walks: its parent SIGKILLed on macO
    per process: a fork loop of about 170 children took 5 to 12 ms to stop. It is the race ADR-0197
    accepts for the `/proc` walk. Measured with the group kill: 1 stop in 26 left one `sleep` of a fork
    loop on macOS, and 0 in 26 on Linux (§5).
-2. **What a shell that has exited left behind is not reached, nor is a new session.** §5 reaches a
-   background process through the shell that ran it, so `(cmd &)` is reached only while that shell
-   still runs. A `bash` call that returned after `cmd &`, `(cmd &)` or `nohup cmd &` leaves its
-   helper running: the `bash` tool returns when the command does (the CHANGELOG's "A command that
-   backgrounds a server now comes back when the command does", and on Windows `kill_on_close=False`
-   in `tools/bash.py`, Pi #8225). Once that shell has exited, the helper has PPID 1 and its pgid is
-   a dead shell's pid: nothing the walk names leads its group, and a stop leaves it, on macOS and
-   Linux (measured in §5). `nohup` changes nothing here; it does not leave the group. A daemon's
-   double fork with its own `setsid` is out of reach even while its shell runs: a new session, with
-   no parent chain back to the child. The same on Linux (ADR-0290 limit 10).
+2. **What a shell that has exited left behind — rewritten 2026-11-10 (#719, ADR-0296).** The owner's
+   decision of 2026-11-07 on #719: helpers a delegated agent's `bash` left with `cmd &`, `(cmd &)` or
+   `nohup cmd &` stop when that agent ends or is stopped. Since ADR-0296 the agent records each
+   `bash` shell's group in a launch ledger, the run's cleanup kills each recorded group with
+   authority and each process carrying the run's marker, and on Linux the agent is a child subreaper
+   whose exit cleanup walks its adopted orphans, a double fork with its own `setsid` included. With a
+   real child on a scripted model, every `cmd &`, `(cmd &)` and `nohup cmd &` row through end, Esc,
+   `stop` and `stop_all` left nothing on macOS and Linux, and every `setsid` and env-cleared double
+   fork row nothing on Linux (`tests/agents_ext/test_delegated_helpers_719.py::test_a_finished_calls_helper_stops_with_the_delegation`,
+   red on `478ffd13` on every macOS row). What stays is ADR-0296's residuals: on macOS a helper that
+   left its group and cleared its environment, or left its group as a platform binary, is not found;
+   an agent that dies without its exit cleanup leaves such helpers on Linux too. Until #719 a
+   returned call's helper had PPID 1 and a dead shell's pgid, and every door left it (§5). A
+   top-level session's helpers are released as before (#232).
 3. **A parent that is SIGKILLed walks nothing.** On Linux `pdeathsig` sends the child SIGTERM and its
    own cleanup ends its commands; macOS has no `pdeathsig`, so the child and its commands run on
    (ADR-0197 finding I1, unchanged).
