@@ -2260,7 +2260,11 @@ def _judge(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
     """One tree's verdict: :func:`_walk` with ``source`` readable, then the expansion question.
 
     An ALLOW whose source could assign, or evaluate a word as a name or as
-    arithmetic, while expanding is ASK (#657 decision 3).
+    arithmetic, while expanding is ASK (#657 decision 3). A here-document
+    inside a command or process substitution makes it at least ASK
+    (:func:`_substituted_heredocs_verdict`, #742 fix round 1), and so does
+    code tree-sitter left as text in a ``${…}`` operand or across a backtick
+    (:func:`_hidden_code_verdict`, #742 fix round 2).
     """
 
     token = _SOURCE.set(source)
@@ -2268,6 +2272,10 @@ def _judge(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
         verdict = _walk(root, dialect=dialect)
     finally:
         _SOURCE.reset(token)
+    if b"<<" in source:
+        verdict = max(verdict, _substituted_heredocs_verdict(root, source, dialect=dialect))
+    if b"${" in source or b"`" in source:
+        verdict = max(verdict, _hidden_code_verdict(root, source, dialect=dialect))
     if verdict is Verdict.ALLOW and _evaluates_while_expanding(root, source):
         return Verdict.ASK  # #657 decision 3 inside an expansion
     return verdict
@@ -2585,7 +2593,9 @@ def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
     (``<<-EOF`` + a tab, a line indented with spaces) hid its expansions from
     every check: :func:`_heredoc_body_unread` asks on it, and a re-read of the
     body still finds a DENY inside it. A delimiter tree-sitter ran on past is
-    judged by :func:`_heredoc_start_verdict` (#710 fix round 2).
+    judged by :func:`_heredoc_start_verdict` (#710 fix round 2), and a body
+    the shells end on another line than tree-sitter does by
+    :func:`_heredoc_end_verdict` (#742).
     """
 
     if node.type == "file_redirect":
@@ -2596,7 +2606,10 @@ def _walk_redirect(node: Any, *, dialect: Dialect) -> Verdict:
         return worst
     worst = Verdict.ALLOW
     if node.type == "heredoc_redirect":
-        worst = _heredoc_start_verdict(node, dialect=dialect)
+        worst = max(
+            _heredoc_start_verdict(node, dialect=dialect),
+            _heredoc_end_verdict(node, dialect=dialect),
+        )
         if _heredoc_body_unread(node):
             worst = max(worst, Verdict.ASK, _reread_heredoc_body(node, dialect=dialect))
     expands = _heredoc_expands(node)
@@ -2647,6 +2660,494 @@ def _heredoc_start_verdict(redirect: Any, *, dialect: Dialect) -> Verdict:
     return max(Verdict.ASK, _walk_source(reread, text, dialect=dialect))
 
 
+# --- #742: the line the shells end a here-document body on ---
+#
+# tree-sitter-bash 0.25.1 and the shells disagree on which line ends a body.
+# tree-sitter compares the line with the RAW delimiter unless it starts with a
+# quote or backslash (``<<A''`` ends at a line ``A''``), and it also ends at a
+# line that only holds the delimiter among blanks or before ``;``, ``#…`` or
+# ``\r`` (``EOF ``, `` EOF``, ``EOF;``). bash, zsh, dash and ksh end at the
+# first line equal to the delimiter after quote removal (``A``), with leading
+# tabs removed under ``<<-``, and, when no part of the delimiter is quoted,
+# with a line ending in an odd number of backslashes joined to the next. A
+# body tree-sitter ends too late hides the commands after the shell's end; one
+# it ends too early lets what follows open another here-document that hides
+# the line the shells run next (measured on macOS and Linux:
+# ``.omc/probes/742/impl/``).
+
+# One reading per shell family of ``$'…'`` / ``$"…"`` in a delimiter, measured
+# on macOS and Linux: dash keeps the ``$`` (``$'A'`` ends at ``$A``); bash, zsh
+# and ksh93 decode ``$'…'``; ``$"…"`` ends at ``A`` in bash, ``$A`` in zsh and
+# dash, and at the raw ``$"A"`` in ksh93.
+_DOLLAR_QUOTE_READINGS = (
+    ("keep", "keep"),  # dash
+    ("decode", "drop"),  # bash
+    ("decode", "keep"),  # zsh
+    ("decode", "raw"),  # ksh93
+)
+
+# Inside double quotes a backslash is removed only before these; before a
+# newline it is removed with the newline.
+_DQ_ESCAPE = re.compile(rb'\\([$`"\\\n])')
+
+# The bytes the #742 checks may still scan or re-read in this :func:`classify`
+# call. A re-read walks the here-documents in it again, so unbounded, 16
+# mismatched ones parsed 6,632 times the source (measured), and each
+# here-document's search for the shells' end line scans the rest of the source
+# (fix round 1: Codex's ``cat <<A''`` + ``x`` + ``B`` + ``ls`` + ``A''`` times
+# 1,600 scanned 26.9 MB). Every scanned line and every re-read is charged its
+# length; work the budget cannot pay is skipped and leaves the verdict at ASK,
+# never lower. ``None`` (a direct call, not through :func:`classify`) does not
+# limit.
+_REREAD_BUDGET: ContextVar[list[int] | None] = ContextVar(
+    "bash_classifier_reread_budget", default=None
+)
+_REREAD_PASSES = 4
+_REREAD_SLACK = 4096
+# How many re-reads may run inside one another. Each nests a walk on the
+# stack, so a run of mismatched here-documents re-read inside each other ran
+# out of stack (fix round 1: Codex's 103,172-byte input); past the limit a
+# re-read is not made and the verdict stays at ASK.
+_REREAD_DEPTH: ContextVar[int] = ContextVar("bash_classifier_reread_depth", default=0)
+_REREAD_DEPTH_LIMIT = 24
+# What :func:`_shell_end_line` returns when the budget could not pay its scan.
+_UNPAID = (-1, -1)
+
+
+def _charge_reread(size: int) -> bool:
+    """Take ``size`` bytes from the re-read budget; ``False`` when it cannot pay them."""
+
+    budget = _REREAD_BUDGET.get()
+    if budget is None:
+        return True
+    if budget[0] < size:
+        return False
+    budget[0] -= size
+    return True
+
+
+def _reread(text: bytes, *, dialect: Dialect, expanded: bool = False) -> Verdict:
+    """Classify ``text`` the shells run, paid from the budget; ASK when it cannot be read.
+
+    ``expanded`` reads it as an expanded here-document body
+    (:func:`_reread_as_expanded`), otherwise as command lines
+    (:func:`_reread_lines`). A re-read the budget cannot pay, one nested
+    deeper than :data:`_REREAD_DEPTH_LIMIT`, and one that runs out of stack
+    are ASK here, so the walk that asked for it keeps any DENY it already
+    found (fix round 1: a ``RecursionError`` in a re-read reached
+    :func:`classify`'s catch and turned a visible ``find victim -delete``'s
+    DENY into ASK).
+    """
+
+    depth = _REREAD_DEPTH.get()
+    if depth >= _REREAD_DEPTH_LIMIT or not _charge_reread(len(text)):
+        return Verdict.ASK
+    token = _REREAD_DEPTH.set(depth + 1)
+    try:
+        if expanded:
+            return _reread_as_expanded(text, dialect=dialect)
+        return _reread_lines(text, dialect=dialect)
+    except RecursionError:
+        return Verdict.ASK
+    finally:
+        _REREAD_DEPTH.reset(token)
+
+
+def _shell_word_end(source: bytes, at: int) -> int | None:
+    """Where the shell word starting at ``at`` ends, or ``None`` if a quote is left open.
+
+    ``None`` too when the budget cannot pay the bytes scanned (fix round 1).
+    """
+
+    budget = _REREAD_BUDGET.get()
+    stop = len(source) if budget is None else min(len(source), at + budget[0])
+    i = at
+    quote = 0
+    while i < stop:
+        ch = source[i]
+        if quote == ord("'"):
+            quote = 0 if ch == quote else quote
+        elif quote == ord('"'):
+            if ch == ord("\\"):
+                i += 1
+            elif ch == quote:
+                quote = 0
+        elif ch in _WORD_ENDS:
+            break
+        elif ch == ord("\\"):
+            i += 1
+        elif ch in b"'\"":
+            quote = ch
+        i += 1
+    end = min(i, len(source))
+    if quote or (end >= stop and stop < len(source)) or not _charge_reread(end - at):
+        return None
+    return end
+
+
+def _delimiter_readings(word: bytes) -> frozenset[bytes] | None:
+    """The delimiter each shell family reads ``word`` as, or ``None`` when one is unknown.
+
+    Quote removal: ``'…'`` keeps its bytes, ``"…"`` drops a backslash before
+    ``$``, `````, ``"``, ``\\`` or a newline, and an unquoted backslash
+    quotes the next byte. ``$'…'`` and ``$"…"`` follow
+    :data:`_DOLLAR_QUOTE_READINGS`; a backslash inside ``$'…'`` (an escape
+    to decode) is unknown, and so is a byte above ASCII (macOS ksh93 ended
+    ``<<É''`` and ``<<ÉOF`` at no line, measured).
+    """
+
+    if any(byte > 0x7F for byte in word):
+        return None
+    readings: set[bytes] = set()
+    for ansi, locale in _DOLLAR_QUOTE_READINGS:
+        out = bytearray()
+        i = 0
+        while i < len(word):
+            ch = word[i : i + 1]
+            dollar = ch == b"$" and word[i + 1 : i + 2] in (b"'", b'"')
+            quote = word[i + 1 : i + 2] if dollar else ch
+            if quote not in (b"'", b'"'):
+                if ch == b"\\":
+                    out += word[i + 1 : i + 2].replace(b"\n", b"")
+                    i += 2
+                    continue
+                out += ch
+                i += 1
+                continue
+            begin = i + 2 if dollar else i + 1
+            end = word.find(quote, begin) if quote == b"'" else _double_quote_end(word, begin)
+            if not begin <= end < len(word):
+                return None  # a quote left open
+            inner = word[begin:end]
+            if quote == b'"':
+                inner = _DQ_ESCAPE.sub(lambda m: m.group(1).replace(b"\n", b""), inner)
+            if not dollar:
+                out += inner
+            elif quote == b"'":
+                if ansi == "keep":
+                    out += b"$" + inner
+                elif b"\\" in inner:
+                    return None
+                else:
+                    out += inner
+            elif locale == "raw":
+                out += word[i : end + 1]
+            else:
+                out += (b"$" if locale == "keep" else b"") + inner
+            i = end + 1
+        readings.add(bytes(out))
+    return frozenset(readings)
+
+
+def _double_quote_end(word: bytes, begin: int) -> int:
+    """The index of the ``"`` closing a double-quoted run that starts at ``begin``."""
+
+    i = begin
+    while word[i : i + 1] not in (b'"', b""):
+        i += 2 if word[i : i + 1] == b"\\" else 1
+    return i
+
+
+def _line_start(source: bytes, at: int) -> int:
+    """The index of the first byte of the line holding ``source[at]``."""
+
+    return source.rfind(b"\n", 0, at) + 1
+
+
+def _shell_end_line(
+    source: bytes, begin: int, delimiters: frozenset[bytes], *, strip_tabs: bool, joins: bool
+) -> tuple[int, int] | None:
+    """The ``(start, end)`` bytes of the first line from ``begin`` the shells end the body at.
+
+    ``None`` when no line matches: the shells read the body to the end of the
+    input. ``joins`` glues a line ending in an odd number of backslashes to
+    the next, as the shells do for a delimiter with no quoted part (measured:
+    ``x\\`` then ``EOF`` is not an end, ``x\\\\`` then ``EOF`` is).
+    :data:`_UNPAID` when :data:`_REREAD_BUDGET` cannot pay the bytes scanned
+    (fix round 1: one scan per here-document over the rest of the source made
+    the work quadratic).
+    """
+
+    budget = _REREAD_BUDGET.get()
+    at = begin
+    while at < len(source):
+        if budget is not None and budget[0] <= 0:
+            return _UNPAID
+        end = source.find(b"\n", at)
+        end = len(source) if end == -1 else end
+        line = source[at:end]
+        while joins and end < len(source) and (len(line) - len(line.rstrip(b"\\"))) % 2:
+            nxt = source.find(b"\n", end + 1)
+            nxt = len(source) if nxt == -1 else nxt
+            line = line[:-1] + source[end + 1 : nxt]
+            end = nxt
+        if not _charge_reread(end + 1 - at):
+            return _UNPAID
+        if (line.lstrip(b"\t") if strip_tabs else line) in delimiters:
+            return at, end
+        at = end + 1
+    return None
+
+
+def _heredoc_end_verdict(redirect: Any, *, dialect: Dialect) -> Verdict:
+    """ALLOW when the shells end the body on tree-sitter's end line; otherwise ASK or worse.
+
+    #742 (pre-existing since ADR-0158): ``cat <<A''`` + ``x`` + ``A`` +
+    ``find victim -delete`` + ``A''`` was ALLOW — tree-sitter ends the body at
+    ``A''``, so the ``find`` sat in a quoted body nobody walks, while bash,
+    zsh, dash and ksh end it at ``A`` and delete ``victim`` (measured on
+    macOS and Linux). Each shell family's delimiter (:func:`_delimiter_readings`)
+    is looked for line by line from the body's first line
+    (:func:`_shell_end_line`); a reading that ends anywhere but on
+    tree-sitter's end line makes the verdict at least ASK, and what that shell
+    runs is re-read so a DENY in it still counts (:func:`_heredoc_end_rereads`).
+    A delimiter whose readings are unknown asks, and so does a scan the budget
+    cannot pay. Fix round 1: running out of stack here is ASK too, so the walk
+    keeps any DENY it already found.
+    """
+
+    try:
+        return _heredoc_end_reads(redirect, dialect=dialect)
+    except RecursionError:
+        return Verdict.ASK
+
+
+def _heredoc_end_reads(redirect: Any, *, dialect: Dialect) -> Verdict:
+    """:func:`_heredoc_end_verdict` without its stack guard."""
+
+    kids = {child.type: child for child in reversed(redirect.children)}
+    start = kids.get("heredoc_start")
+    if start is None:
+        return Verdict.ASK
+    source = _tree_source(redirect)
+    word_end = _shell_word_end(source, start.start_byte)
+    if word_end is None:
+        return Verdict.ASK
+    word = source[start.start_byte : word_end]
+    readings = _delimiter_readings(word)
+    if readings is None:
+        return Verdict.ASK
+    end = kids.get("heredoc_end")
+    first = kids.get("heredoc_body") or end
+    if first is not None:
+        begin = _line_start(source, first.start_byte)
+    else:
+        newline = source.find(b"\n", start.end_byte)
+        begin = len(source) if newline == -1 else newline + 1
+    ts_end: tuple[int, int] | None = None
+    if end is not None:
+        newline = source.find(b"\n", end.end_byte)
+        ts_end = (_line_start(source, end.start_byte), len(source) if newline == -1 else newline)
+    strip_tabs = any(child.type == "<<-" for child in redirect.children)
+    quoted = any(ch in word for ch in b"'\"\\")
+    shell_ends = {
+        _shell_end_line(source, begin, frozenset({d}), strip_tabs=strip_tabs, joins=not quoted)
+        for d in readings
+    }
+    if _UNPAID in shell_ends:
+        return Verdict.ASK
+    worst = Verdict.ALLOW
+    for shell_end in shell_ends - {ts_end}:
+        worst = max(
+            worst,
+            Verdict.ASK,
+            _heredoc_end_rereads(source, begin, shell_end, ts_end, quoted=quoted, dialect=dialect),
+        )
+    return worst
+
+
+def _heredoc_end_rereads(
+    source: bytes,
+    begin: int,
+    shell_end: tuple[int, int] | None,
+    ts_end: tuple[int, int] | None,
+    *,
+    quoted: bool,
+    dialect: Dialect,
+) -> Verdict:
+    """What one shell runs when it ends the body on ``shell_end``, re-read through :func:`_reread`.
+
+    The shell's body as the double-quoted string it expands like (unquoted
+    delimiter only), the lines after its end up to tree-sitter's end line
+    (they parse inside ``$(…)`` too), and everything after its end.
+    """
+
+    rereads: list[tuple[bytes, bool]] = []
+    if not quoted:
+        rereads.append((source[begin : shell_end[0] if shell_end else len(source)], True))
+    if shell_end is not None:
+        after = shell_end[1] + 1
+        if ts_end is not None and ts_end[0] > shell_end[0]:
+            rereads.append((source[after : ts_end[1]], False))
+        rereads.append((source[after:], False))
+    worst = Verdict.ASK
+    for text, expanded in rereads:
+        worst = max(worst, _reread(text, dialect=dialect, expanded=expanded))
+    return worst
+
+
+def _reread_lines(text: bytes, *, dialect: Dialect) -> Verdict:
+    """Classify lines the shells run as commands; ASK at least.
+
+    Fix round 1: when ``text`` does not parse, its prefix that ends before
+    the first statement or line tree-sitter cannot parse (or, when that is
+    the first, before its last line) is classified instead, each shorter
+    prefix paid from :data:`_REREAD_BUDGET`. bash, zsh,
+    dash and ksh ran ``find victim -delete`` before an unended ``cat <<Z``
+    (Codex: ``cat <<A''`` + ``x`` + ``A`` + ``find victim -delete`` + ``cat
+    <<Z`` + ``A''`` deleted ``victim`` in all four and was ASK, not DENY).
+    """
+
+    if _PARSER is None:
+        return Verdict.ASK
+    while text:
+        reread = _PARSER.parse(text).root_node
+        if not reread.has_error:
+            return max(Verdict.ASK, _walk_source(reread, text, dialect=dialect))
+        statement = next((c.start_byte for c in reread.children if c.has_error), 0)
+        cuts = [c for c in (statement, _line_start(text, _error_byte(reread))) if 0 < c < len(text)]
+        text = text[: max(cuts) if cuts else _line_start(text, len(text) - 1)]
+        if not _charge_reread(len(text)):
+            break
+    return Verdict.ASK
+
+
+def _error_byte(root: Any) -> int:
+    """Where the first part of ``root`` that tree-sitter could not parse starts.
+
+    The innermost node with an error in it; in an ``ERROR`` node whose parts
+    each parse, its first stray token (``\\``` in ``find victim -delete`` +
+    ``Q`` + ``\\```).
+    """
+
+    node = root
+    while (bad := next((c for c in node.children if c.has_error), None)) is not None:
+        node = bad
+    if node.type == "ERROR":
+        return next((c.start_byte for c in node.children if not c.is_named), node.start_byte)
+    return node.start_byte
+
+
+# --- #742 fix round 1: a here-document inside a substitution ---
+#
+# Inside backticks, bash, zsh, dash and ksh on macOS and Linux end the
+# substitution at its first unescaped backtick, inside a here-document body
+# too, and remove ``\⏎`` before they read the here-document, whatever its
+# delimiter. macOS bash 3.2.57 does both with a ``)`` inside ``$( )`` and
+# ``<( )`` (the round-1 verify, ``.omc/probes/742/verify-r1/``; R1-R4 deleted
+# ``victim`` and were ALLOW). tree-sitter knows neither. So any
+# here-document in a command or process substitution makes the verdict at
+# least ASK, and the text the shells read instead is re-read so a DENY in it
+# still counts. The cost is ASK on a harmless one: ``echo `cat <<'EOF'`` +
+# ``hi`` + ``EOF``` `` and ``echo $(cat <<EOF`` + ``hi`` + ``EOF`` + ``)``.
+
+# A backslash inside backticks is removed before ``$``, ````` ``, ``\\`` and
+# a newline (with the newline).
+_BACKTICK_ESCAPE = re.compile(rb"\\([$`\\\n])")
+
+
+def _substituted_heredocs_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """ASK at least for each command / process substitution holding a here-document, or worse.
+
+    For each one :func:`_substitution_rereads` re-reads what the shells read
+    instead. Running out of stack here is ASK, so the walk's DENY is kept.
+    """
+
+    try:
+        worst = Verdict.ALLOW
+        for sub, heredocs in _substituted_heredocs(root):
+            worst = max(worst, Verdict.ASK, _substitution_rereads(sub, heredocs, source, dialect))
+        return worst
+    except RecursionError:
+        return Verdict.ASK
+
+
+def _substituted_heredocs(root: Any) -> list[tuple[Any, list[Any]]]:
+    """Each command / process substitution under ``root`` with the here-documents inside it.
+
+    A here-document counts for every substitution around it, nested ones too.
+    """
+
+    found: dict[tuple[int, int], tuple[Any, list[Any]]] = {}
+    stack: list[tuple[Any, tuple[Any, ...]]] = [(root, ())]
+    while stack:
+        node, around = stack.pop()
+        if node.type in _EXECUTABLE_WRAPPER_TYPES:
+            around = (*around, node)
+        elif node.type == "heredoc_redirect":
+            for sub in around:
+                found.setdefault((sub.start_byte, sub.end_byte), (sub, []))[1].append(node)
+        stack.extend((child, around) for child in node.children)
+    return list(found.values())
+
+
+def _substitution_rereads(
+    sub: Any, heredocs: list[Any], source: bytes, dialect: Dialect
+) -> Verdict:
+    """ASK, or worse for what the shells read as ``sub`` and after it.
+
+    Backticks: the text up to the first unescaped backtick with ``\\$``,
+    ``\\```, ``\\\\`` and ``\\⏎`` unescaped. ``$( )``, ``<( )``, ``>( )``,
+    as macOS bash 3.2 reads them: the text up to the first ``)`` a
+    here-document's body or end line holds outside nested parentheses, with
+    ``\\⏎`` joined. That text is re-read when it is not what tree-sitter
+    read. When the shells end the substitution before tree-sitter does, the
+    source is re-read too with the substitution, up to where they end it,
+    replaced by one word: what follows it stays on its command line, or in
+    its double-quoted string (``echo $(cat <<'EOF'`` + ``1) find victim
+    -delete`` passes ``find`` to ``echo`` in bash 3.2, measured). Each
+    re-read is paid from :data:`_REREAD_BUDGET` through :func:`_reread`;
+    what it cannot pay stays ASK.
+    """
+
+    kids = sub.children
+    if len(kids) < 2:
+        return Verdict.ASK
+    start = kids[0].end_byte
+    stop = kids[-1].start_byte if kids[-1].type in ("`", ")") else sub.end_byte
+    if not _charge_reread(stop - start):
+        return Verdict.ASK
+    if kids[0].type == "`":
+        close = _first_unescaped(source, start, stop, b"`")
+        inner = _BACKTICK_ESCAPE.sub(lambda m: m.group(1).replace(b"\n", b""), source[start:close])
+    else:
+        parts = [c.start_byte for h in heredocs for c in h.children if c.type in _HEREDOC_LINES]
+        close = _first_unescaped(source, min(parts, default=stop), stop, b")")
+        inner = source[start:close].replace(b"\\\n", b"")
+    worst = Verdict.ASK
+    if inner != source[start:stop]:
+        worst = max(worst, _reread(inner, dialect=dialect))
+    if close < stop:
+        view = source[: sub.start_byte] + b"x" + source[close + 1 :]
+        worst = max(worst, _reread(view, dialect=dialect))
+    return worst
+
+
+# The parts of a here-document that sit on the lines after its start.
+_HEREDOC_LINES = frozenset({"heredoc_body", "heredoc_end"})
+
+
+def _first_unescaped(source: bytes, start: int, stop: int, close: bytes) -> int:
+    """The first ``close`` byte in ``source[start:stop]`` no backslash escapes, else ``stop``.
+
+    For ``)``, one that closes a ``(`` opened in the range does not count.
+    """
+
+    depth = 0
+    i = start
+    while i < stop:
+        ch = source[i : i + 1]
+        if ch == b"\\":
+            i += 2
+            continue
+        if ch == close and depth == 0:
+            return i
+        if close == b")" and ch in b"()":
+            depth += 1 if ch == b"(" else -1
+        i += 1
+    return stop
+
+
 # What can follow ``$`` and start an expansion; a ``$`` before anything else is
 # a literal dollar sign.
 _EXPANSION_START = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_{([@*#?$!-")
@@ -2683,14 +3184,144 @@ def _reread_heredoc_body(redirect: Any, *, dialect: Dialect) -> Verdict:
     A ``"`` is literal in a body and is escaped for the re-read.
     """
 
+    bodies = b"".join(c.text for c in redirect.children if c.type == "heredoc_body")
+    return _reread_as_expanded(bodies, dialect=dialect)
+
+
+def _reread_as_expanded(body: bytes, *, dialect: Dialect) -> Verdict:
+    """Classify an expanded here-document ``body`` as the double-quoted string it expands like."""
+
     if _PARSER is None:
         return Verdict.ASK
-    bodies = b"".join(c.text for c in redirect.children if c.type == "heredoc_body")
-    text = b': "' + bodies.replace(b'"', b'\\"') + b'"'
+    text = b': "' + body.replace(b'"', b'\\"') + b'"'
     reread = _PARSER.parse(text).root_node
     if reread.has_error:
         return Verdict.ASK
     return _walk_source(reread, text, dialect=dialect)
+
+
+# --- #742 fix round 2: code the parser leaves as text ---
+#
+# tree-sitter-bash 0.25.1 keeps some code as text, where no walk sees it, and
+# the shells run it (fix round 2, ``.omc/probes/742/fix-r2/``):
+#
+# - an operand of ``${…}``: a ``word`` when a backtick substitution in it
+#   holds no quote (``${x:-`find victim -delete`}``), a ``regex`` after
+#   ``#``, ``%``, ``/``, ``^`` or ``,`` whatever it holds
+#   (``${x#$(find victim -delete)}``), and ``'…'`` or ``$'…'``, which
+#   tree-sitter reads as literal but the shells do not inside double quotes
+#   or an expanded here-document body (``"${x:-'$(find victim -delete)'}"``);
+# - inside backticks, a ``'…'`` or ``$'…'`` holding a backtick: bash and
+#   ksh93 end the substitution at that backtick, while tree-sitter reads the
+#   string across it (``echo `echo '`; find victim -delete; echo `'```); and
+#   a comment holding one, which every shell ends there and tree-sitter
+#   reads to the end of the line.
+#
+# Fix round 3 (the round-3 verify's measurements, ``.omc/probes/742/verify-r3/``):
+#
+# - a ``<(…)`` or ``>(…)`` in a ``${…}`` operand, which tree-sitter reads as
+#   a plain word and bash runs (``echo ${x:-<(find victim -delete)}`` in
+#   macOS bash 3.2.57 and Linux bash 5.2.37; no other shell measured ran
+#   it, Alpine bash 5.3.20 included);
+# - inside backticks, a word holding an escaped backtick, which the shells
+#   unescape into a nested substitution (``echo `echo \`find victim
+#   -delete\``` in all nine shells measured).
+#
+# Each asks at least, and the text is re-read as the shells read it, as far
+# as the budget pays, so a DENY in it still counts.
+
+# A backtick, ``$(``, ``$[``, ``${``, ``<(`` or ``>(`` (group 1) or a
+# backslash escape.
+_HIDDEN_CODE = re.compile(rb"\\.|(`|\$[({[]|[<>]\()", re.DOTALL)
+# Where a ``${…}`` sits decides how a quote inside its operand reads: the
+# nearest enclosing node that is not one of ``_QUOTE_TRANSPARENT``.
+_DOUBLE_QUOTED = frozenset({"string", "heredoc_body"})
+_QUOTE_TRANSPARENT = frozenset({"expansion", "concatenation"})
+# Text tree-sitter reads across a backtick the shells end a substitution at.
+_BACKTICK_CUT_TEXT = frozenset({"raw_string", "ansi_c_string", "comment"})
+
+
+def _hides_code(text: bytes) -> bool:
+    """Whether ``text`` holds a backtick, ``$(``, ``$[``, ``${``, ``<(`` or ``>(`` no backslash escapes."""
+
+    return any(match.group(1) for match in _HIDDEN_CODE.finditer(text))
+
+
+def _has_backtick(text: bytes) -> bool:
+    """Whether ``text`` holds a backtick no backslash escapes."""
+
+    return any(match.group(1) == b"`" for match in _HIDDEN_CODE.finditer(text))
+
+
+def _hidden_code_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """ASK at least for code tree-sitter left as text in a ``${…}`` operand or across a backtick.
+
+    Worse when the text, re-read as the shells read it, is; each re-read is
+    made by :func:`_reread`, which answers ASK where it runs out of stack.
+    """
+
+    worst = Verdict.ALLOW
+    # Each node carries whether a ``${…}`` there is in a double-quoted string
+    # or a here-document body. Fix round 3 carries it down: climbing
+    # ``.parent``, which py-tree-sitter answers by walking down from the root,
+    # cost cubic time in nested operands (``echo ${x:-${x:-…}}`` 490 deep).
+    stack = [(root, False)]
+    while stack:
+        node, quoted = stack.pop()
+        if node.type == "expansion":
+            worst = max(worst, _expansion_text_verdict(node, dialect, quoted=quoted))
+        elif node.type == "command_substitution" and node.children[0].type == "`":
+            worst = max(worst, _backtick_text_verdict(node, source, dialect))
+        if node.type not in _QUOTE_TRANSPARENT:
+            quoted = node.type in _DOUBLE_QUOTED
+        stack.extend((child, quoted) for child in node.children)
+    return worst
+
+
+def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -> Verdict:
+    """ASK or worse when an operand of ``expansion`` holds code as text (:func:`_hides_code`).
+
+    The text is re-read as a double-quoted string when the ``${…}`` is in
+    one or in a here-document body (``quoted``), else as a word (where a
+    ``'…'`` or ``$'…'`` quotes). Substitutions tree-sitter parsed are
+    walked already, and a ``${…}`` inside is judged on its own.
+    """
+
+    worst = Verdict.ALLOW
+    stack = list(expansion.children)
+    while stack:
+        node = stack.pop()
+        if node.type in ("expansion", *_EXECUTABLE_WRAPPER_TYPES):
+            continue
+        if node.children:
+            stack.extend(node.children)
+            continue
+        if not node.is_named or not _hides_code(node.text):
+            continue
+        if quoted:
+            reread = _reread(node.text, dialect=dialect, expanded=True)
+        else:
+            reread = _reread(b": " + node.text, dialect=dialect)
+        worst = max(worst, Verdict.ASK, reread)
+    return worst
+
+
+def _backtick_text_verdict(sub: Any, source: bytes, dialect: Dialect) -> Verdict:
+    """ASK or worse when a ``'…'``, ``$'…'`` or comment inside backticks holds a backtick, or a word an escaped one.
+
+    What the shells read, up to the first unescaped backtick and with an
+    escaped one unescaped, is re-read by :func:`_substitution_rereads`.
+    """
+
+    stack = list(sub.children)
+    while stack:
+        node = stack.pop()
+        if (node.type in _BACKTICK_CUT_TEXT and _has_backtick(node.text)) or (
+            node.type == "word" and b"\\`" in node.text
+        ):
+            return max(Verdict.ASK, _substitution_rereads(sub, [], source, dialect))
+        stack.extend(node.children)
+    return Verdict.ALLOW
 
 
 # Node types that wrap (or are) an executable subtree worth re-walking when they
@@ -2866,7 +3497,11 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
         root = tree.root_node
         if root.has_error:
             return Verdict.ASK
-        return _walk_source(root, source, dialect=dialect)
+        token = _REREAD_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
+        try:
+            return _walk_source(root, source, dialect=dialect)
+        finally:
+            _REREAD_BUDGET.reset(token)
     except Exception:  # noqa: BLE001 — any traversal failure → fail safe
         return Verdict.ASK
 

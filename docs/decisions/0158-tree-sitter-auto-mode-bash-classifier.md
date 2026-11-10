@@ -191,6 +191,272 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
 
     Under `-p`, where an ASK runs without a prompt (ADR-0120), an ASK form
     still runs; the DENY forms above are refused there too.
+  - **Dated note 2026-11-10 (#742).** **Outside a command or process
+    substitution, a here-document body ends, for the verdict, on the line
+    bash, zsh, dash and ksh end it on; where that is not the line tree-sitter
+    ends it on, the command asks at least and what the shell runs is re-read
+    so a DENY in it still counts. Inside a command or process substitution
+    tree-sitter parses as one, any here-document asks at least. So does a
+    `${…}` operand tree-sitter leaves as text when it holds a backtick,
+    `$(`, `$[`, `${`, `<(` or `>(` no backslash escapes, and a backtick
+    substitution holding a `'…'`, `$'…'` or comment with a backtick in it,
+    or a word with an escaped backtick in it (fix rounds 2 and 3); other
+    code tree-sitter leaves as text is not covered.** tree-sitter-bash
+    0.25.1 compares body lines
+    with the delimiter as written unless it starts with a quote or a backslash
+    (`cat <<A''` ends at a line `A''`), and ends any body, `<<EOF` and
+    `<<'EOF'` included, at a line holding the delimiter among blanks or before
+    `;`, `#…` or `\r` (`EOF `, ` EOF`, `EOF;`). The shells end at the first
+    line equal to the delimiter after quote removal, with leading tabs removed
+    under `<<-`, and, only when no part of the delimiter is quoted or
+    backslash-escaped, with a line ending in an odd number of backslashes
+    joined to the next (measured with `<shell> -c` on macOS bash 3.2.57, zsh
+    5.9, dash and ksh93u+ 2012-08-01 and in Linux docker bash 5.2.37, zsh 5.9,
+    dash and ksh 93u+m/1.0.10, alike on both except for delimiters with bytes
+    above ASCII; `.omc/probes/742/impl/`). `cat <<A''` + `x` + `A` +
+    `find victim -delete` + `A''` and `cat <<EOF` + `EOF ` + `cat <<'Q'` +
+    `EOF` + `find victim -delete` + `Q` were ALLOW on `b160b8f7` and deleted
+    `victim` in all eight shells. `_heredoc_end_verdict` looks for each shell
+    family's reading of the delimiter word (`$'…'` decoded by bash, zsh and
+    ksh93 and kept with its `$` by dash; `$"…"` read as `A` by bash, `$A` by
+    zsh and dash and `$"A"` by ksh93; a byte above ASCII or an escape inside
+    `$'…'` is unknown and asks) line by line from the body's first line. A
+    reading that ends elsewhere makes the verdict at least ASK, and three
+    re-reads can raise it: the shell's body as the double-quoted string it
+    expands like (unquoted delimiter only), the lines after the shell's end up
+    to tree-sitter's end line (they parse inside `$(…)` too), and everything
+    after the shell's end.
+
+    **Fix round 1 (2026-11-10): rules that only raise.** The round-1 verify
+    and a Codex review found forms the end-line model above misses, so each
+    gap is now closed by a rule that can only make the verdict ASK or worse,
+    at the cost of asking on some harmless commands:
+    - *A here-document in a command or process substitution tree-sitter
+      parses as one asks.* Inside
+      backticks the eight shells end the substitution at its first unescaped
+      backtick, inside a here-document body too, and remove `\⏎` before they
+      read the here-document, quoted delimiter or not; macOS bash 3.2.57 does
+      both with a `)` inside `$( )`, `<( )` and `>( )` (the verify's R1–R4,
+      ALLOW on `61eda564`, each deleted `victim`; measured again on both
+      systems, `.omc/probes/742/fix-r1/`). `_substituted_heredocs_verdict`
+      makes any here-document inside such a substitution ASK at least, and
+      re-reads, as far as the budget pays, the backtick text unescaped or the
+      `$( )` text up to bash 3.2's `)` with `\⏎` joined, and, when the shells
+      end the substitution early, the source with the substitution replaced
+      by one word; so R1–R4 are refused, and inside double quotes, where what
+      follows stays in the string, nothing is refused that no shell ran
+      (`test_bash_heredoc_end_742.py`, the `_IN_SUBSTITUTION_*` rows). These
+      re-reads are a best effort; the ASK is the rule. A backtick
+      substitution with no quote in it inside `${…}` is plain text to
+      tree-sitter, so this rule never sees a here-document there: the
+      round-2 verify's ``echo ${x:-`cat <<EOF`` + `x` + `EOF` +
+      `find victim -delete` + `` `} `` deleted `victim` in all nine shells of
+      fix round 2 and was ALLOW on `ce3cc695`; fix round 2 covers it.
+      `( … )`, `{ … }` and function bodies get no such rule: the shells
+      parse them like the rest,
+      ksh93's end of `( cat <<EOF` + `hi` + `EOF)` at `EOF)` is tree-sitter's
+      too, and of the verify's 108,960 generated here-documents the ALLOW ones
+      that deleted `victim` were all in a substitution.
+    - *A re-read that stops parsing keeps the statements before.* Codex's
+      `cat <<A''` + `x` + `A` + `find victim -delete` + `cat <<Z` + `A''`
+      deleted `victim` in all eight shells and was ASK; `_reread_lines` now
+      classifies the prefix ending before the first statement or line
+      tree-sitter cannot parse (where that is the first one, it drops lines
+      from the end until the rest parses), each prefix paid from the budget,
+      and it is DENY. A statement before an error on its own line counts too,
+      though bash runs no part of a line it cannot parse.
+    - *Running out of stack asks where it happens.* A `RecursionError` in a
+      re-read reached `classify`'s catch and replaced the DENY the walk had
+      already found: the verify's 1,026-byte `cat <<A''` + `x` + `A` + `A''` +
+      a 328-level `$(…)` nest and Codex's 103,172-byte `find victim -delete`
+      + a 100 KB comment + 150 mismatched here-documents were DENY on
+      `80ff2cc2` and ASK on `61eda564`. `_reread`, `_heredoc_end_verdict` and
+      `_substituted_heredocs_verdict` now return ASK for that part only, and
+      a re-read nested more than 24 deep is not made; both forms are DENY
+      again, and prefixing the nest with that here-document no longer moves
+      the depth at which it stops being refused (330 on macOS, Python 3.12).
+    - *All the work is paid from one budget.* The re-reads, each reading's
+      search for its end line and the delimiter word's scan are charged to a
+      budget of four passes over the command plus 4 KiB per `classify` call
+      (`_REREAD_BUDGET`); work it cannot pay is skipped and leaves the verdict
+      at ASK, never lower. Unbounded re-reads grew exponentially (16
+      mismatched here-documents parsed 6,632 times the input), and the
+      end-line search was quadratic: Codex's `cat <<A''` + `x` + `B` + `ls` +
+      `A''` repeated 1,600 times scanned 26.9 MB.
+
+      | `cat <<A''` + `x` + `B` + `ls` + `A''` × N | 400 | 800 | 1,600 | 3,200 |
+      |---|---|---|---|---|
+      | `80ff2cc2` (ALLOW) | 5 ms | 10 ms | 19 ms | 45 ms |
+      | `ac44df68` (ASK) | 42 ms | 161 ms | 605 ms | 2,365 ms |
+      | now (ASK) | 10 ms | 11 ms | 20 ms | 41 ms |
+
+      (one run each, macOS, Python 3.12). The ASK floor is the guarantee;
+      which hidden line is still refused depends on sizes. An `rm -rf ~`
+      hidden the same way after 22 documents like `cat <<A''` + `x` + `A` +
+      `ls` + `A''` is refused and after 23 asks; padded with about 900 bytes
+      in its own document it asks after 8, with about 4.5 KB after 4
+      (measured on `ac44df68` and now). A test pins the four passes: a 5.4 KB
+      command with one hidden `find` is refused with them and only asks
+      without them.
+
+    **Fix round 2 (2026-11-10): code tree-sitter leaves as text.** The
+    round-2 verify found tree-sitter reading code as text in two places
+    older than this issue, the same class as the here-documents above. Each
+    is now ASK at least, and the text is re-read as the shells read it, so
+    a DENY in it counts (`_hidden_code_verdict`, from `_judge`). Measured
+    with `<shell> -c`, `x` unset and then `x=abc` in the environment, in
+    macOS bash 3.2.57, zsh, dash and ksh93u+ and Linux docker bash 5.2.37,
+    zsh, dash, ksh 93u+m and mksh (`.omc/probes/742/fix-r2/`):
+    - *A `${…}` operand.* tree-sitter parses an operand that holds a
+      backtick substitution with no quote in it as a plain `word`
+      (``echo ${x:-`find victim -delete`}``), an operand after `#`, `%`,
+      `/`, `^` or `,` as a `regex` whatever it holds
+      (`echo ${x#$(find victim -delete)}`), and `'…'` or `$'…'` there as
+      literal text, which inside double quotes or an expanded
+      here-document body it is not (`echo "${x:-'$(find victim -delete)'}"`).
+      Of a grid of 704 forms (22 operators × 8 operand spellings × bare, in
+      double quotes, in a here-document body and inside `"$( )"`), 167 were
+      ALLOW on `ce3cc695` and `80ff2cc2` and deleted `victim` in at least
+      one shell. An operand holding a backtick, `$(`, `$[` or `${` no
+      backslash escapes now asks, and is re-read as a double-quoted string
+      when the `${…}` is in one or in a here-document body, else as a word.
+      None of the 704 is ALLOW where a shell deleted `victim`: of the 438
+      that did in some shell, 394 are refused and 44 ask.
+    - *A quote or comment inside backticks that holds a backtick.* bash and
+      ksh93 end a backtick substitution at the first unescaped backtick
+      inside `'…'` and `$'…'` too, and every shell measured does so inside
+      a comment; tree-sitter reads the string or comment across it.
+      ``echo `echo '`; find victim -delete; echo `'` `` deleted `victim` in
+      macOS bash 3.2.57 and ksh93u+ and Linux bash 5.2.37, and
+      ``echo `echo hi # x`; find victim -delete; echo `y`` + `` ` `` in all
+      nine; both were ALLOW on `ce3cc695`. Such a substitution now asks, and
+      what the shells read is re-read as for a here-document in backticks,
+      so both are refused.
+    - *bash 3.2's `)` is looked for from the first here-document line*, not
+      in the start word: `echo $(cat <<'E)'` + `x` + `)` +
+      `find victim -delete` + `E)` + `)` deleted `victim` in macOS bash
+      3.2.57 only and stays refused; a test now pins this (the round-2
+      verify's mutant A19 had turned it into ASK unnoticed).
+
+    **Fix round 3 (2026-11-10): the round-3 verify's measured rules.** The
+    round-3 verify found two more forms of the class above, both ALLOW on
+    `80ff2cc2` and on `3963bea9`, the round-2 tree
+    (`.omc/probes/742/verify-r3/`, `test_bash_heredoc_end_742.py`, the
+    fix-round-3 rows):
+    - *A `<(…)` or `>(…)` in a `${…}` operand* is a plain word to
+      tree-sitter. `echo ${x:-<(find victim -delete)}` deleted `victim` in
+      macOS bash 3.2.57 and Linux bash 5.2.37, and so did `${x-…}`,
+      `${HOME:+…}`, `${x:?…}`, `${x:->(…)}`, `cat ${x:-…}`, `${x:- <(…) }`
+      and the nested `${x:-${y:-<(…)}}`; no other shell measured ran them,
+      Alpine bash 5.3.20 included. `<(` and `>(` now count with the
+      backtick, `$(`, `$[` and `${`, so these are refused.
+    - *A word holding an escaped backtick inside backticks*, which the
+      shells unescape into a nested substitution:
+      ``echo `echo \`find victim -delete\`` `` deleted `victim` in all nine
+      shells and in bash 5.3.20, and so did the `cat`, `ls`, pipe,
+      double-nested and ``\${x:-\`…\`}`` variants. Such a substitution
+      now asks and is re-read as for a quote holding a backtick, with the
+      escaped backtick unescaped, so these are refused.
+    - *The walk's cost.* Whether a `${…}` sits in double quotes was found by
+      climbing `.parent`, which py-tree-sitter answers by walking down from
+      the root, so nested operands cost cubic time with no hidden code in
+      them: `echo ${x:-` nested 490 deep took 947 ms on `3963bea9` against
+      2 ms on `80ff2cc2`, and eight such chains in one 23.6 KB line 7.6 s
+      against 19 ms. The flag is now carried down the walk: 3 ms and 27 ms,
+      with the same verdicts (best of three, one run on `3963bea9`, macOS,
+      Python 3.12; `.omc/probes/742/finish/`).
+
+    **Accepted cost** — ASK where no shell measured ran anything: a malformed
+    end line with a trailing blank or a stray `\r` at the end of the command
+    (`cat <<EOF` + `x` + `EOF `), which the shells never end; and any
+    here-document inside a command or process substitution tree-sitter
+    parses as one, for example
+    ``echo `cat <<'EOF'`` + `hi` + ``EOF` `` (all eight shells print `hi`),
+    `echo $(cat <<EOF` + `hi` + `EOF` + `)` and `cat <(cat <<EOF` + `hi` +
+    `EOF` + `)`, ALLOW on `80ff2cc2`. Some odd delimiters inside a
+    substitution are refused where they only asked: of 229 sampled forms that
+    went from ASK to DENY, 215 deleted `victim` in a macOS shell and 14 (with
+    backslashes in the delimiter, like `<<"EOF\\"`) did not. Fix round 2
+    adds, ASK where no shell measured ran anything: any backtick
+    substitution in a `${…}` operand that holds no quote
+    (``echo ${x:-`pwd`}``, ``echo "${VERSION:-`cat VERSION`}"``), a `${`
+    or `$[` tree-sitter left as text (`echo ${path#${HOME}/}`,
+    `echo ${x:-$[1+2]}`), and a `'…'` holding `$(` or a backtick in an
+    operand outside double quotes, where it quotes
+    (`[ 1 = ${x:-'a[$(touch PWNED)]'} ]`); and DENY where no shell measured
+    ran it: `'…'` or `$'…'` holding the substitution in a pattern operand
+    (after `#`, `%`, `/`, `^` or `,`) inside double quotes or a here-document
+    body, where the shells still read the quotes
+    (`echo "${x#'$(find victim -delete)'}"`; 48 of the 704 grid forms).
+    Fix round 3 adds, ASK where no shell measured ran anything: a nested
+    escaped backtick such as ``echo `basename \`pwd\`` `` (the one line of
+    the 31,348 corpus, test and realistic strings and the round-3 verify's
+    199 lines whose verdict it changes) or ``echo `echo \`date\`` ``, and a
+    harmless `<(…)` in an operand (`echo ${x:-<(echo hi)}`).
+
+    **Measured only raising.** Against `b160b8f7` at `ac44df68`: the #710
+    sweep (24,668 argv strings from the tests at `b160b8f7` and the hand
+    list, 29 redirects before each argument and the name, 1,815,255 forms)
+    has no form below `b160b8f7` and none above; of 30,446 command strings
+    one changed, `cat <<A$''` + `x` + `A$` + `find victim -delete` (ASK →
+    DENY; dash deletes), which also makes the #710 note's "`cat <<A$''`
+    asks" DENY when its hidden line is refused; 115 hand and test
+    here-documents are otherwise unchanged. In a fuzz of 5,860 random
+    here-documents with these end lines none went below `b160b8f7`; of the
+    423 that were ALLOW, the 11 where a shell ran a hidden `touch PWNED` now
+    ask, the 60 still ALLOW ran it in none of the eight shells, and 352 now
+    ask with no effect: 341 the shells never end (they print the rest as the
+    body), 10 they end earlier and then run an unknown command, 1 they end
+    later. Fix round 1, against `80ff2cc2` (the same classifier): the
+    verify's 108,960 generated here-documents (12 wrappers, 31 delimiters,
+    both operators) have none below `80ff2cc2`, `ac44df68` or `61eda564`;
+    the 4,640 still ALLOW are a subset of the 7,424 the verify ran in the
+    eight shells, and none deleted `victim`. The #710 sweep re-run (24,972
+    argv strings, 1,909,470 forms, redirects also before and after every
+    `[`/`[[`) has none below `80ff2cc2` and no exception caught by
+    `classify`; the 30,841 corpus strings and 132 realistic lines, under
+    UNKNOWN and POSIX, have none below and none changed from `61eda564`.
+    Fix round 2, measured on the #742 commit alone (`d5711a6d` plus this
+    round, without #743) against `80ff2cc2` and `d5711a6d`: the #710 sweep
+    (25,255 argv strings, 1,928,940 forms) has none below either and no
+    exception caught by `classify`; the round-1 verify's 108,960
+    here-documents keep every verdict; the round-2 verify's 936-form
+    substitution set has none below, 3 harmless ``echo ${x:-`cat <<EOF`` +
+    `hi` + `EOF` + `` `} `` forms go from ALLOW to ASK and 3 from ASK to DENY;
+    the round-1 verify's 7,560-form `[`/`[[`/`test` grid has none below and 42
+    go from ALLOW to ASK, all `${x:-'a[$(touch PWNED)]'}` forms that ran
+    nothing in the eight shells; of 31,348 corpus, test and realistic strings
+    under UNKNOWN and POSIX the three realistic ``${…:-`…`}`` lines changed
+    (ALLOW → ASK) and nothing else. Live, in a pty TUI under `auto` with a
+    scripted model, on `ce3cc695` with no dialog and both files deleted, now
+    refused with both kept: ``echo ${x:-`rm -f keep1.txt keep2.txt`}`` with
+    `SHELL=/bin/zsh` and `/bin/bash`; ``echo `echo '`; find . -name 'keep*'
+    -delete; echo `'` `` and the comment form with `rm -f keep1.txt keep2.txt`
+    with `/bin/bash`; `echo ${x#$(rm -f keep1.txt keep2.txt)}` and `echo
+    "${x:-'$(rm -f keep1.txt keep2.txt)'}"` with `/bin/zsh`. ``echo
+    ${HOME:-/tmp} `date '+%F'` `` runs with no dialog on both.
+    Fix round 3, on the #742 commit alone (`15b9f044` plus this round)
+    against `80ff2cc2` and `15b9f044`, and on `3963bea9` plus this round
+    against `3963bea9`: the #710 sweep (25,292 argv strings, 1,930,980
+    forms), the 108,960 here-documents, the 7,560-form grid, the 936-form
+    substitution set and the 704-form `${…}` grid keep every verdict, with
+    no exception caught by `classify`; of the 31,348 corpus, test and
+    realistic strings and the round-3 verify's 199 lines, under UNKNOWN and
+    POSIX, only ``echo `basename \`pwd\`` `` changed (ALLOW → ASK). Live,
+    in a pty TUI under `auto` with a scripted model on `3963bea9` plus this
+    round, `echo ${x:-<(rm -f keep1.txt keep2.txt)}` with `SHELL=/bin/bash`
+    and ``echo `echo \`rm -f keep1.txt keep2.txt\`` `` with `/bin/bash` and
+    `/bin/zsh`, which ran with no dialog and deleted both files on
+    `3963bea9` and `80ff2cc2` in the verify's run, are refused with both
+    files kept.
+    Live, in a pty TUI under `auto` with a scripted model: with
+    `SHELL=/bin/zsh` the `A''` form and the `EOF ` form deleted the files with
+    no dialog on `b160b8f7` and are refused with the files kept now; R1
+    (``echo `cat <<'EOF'`` + `x` + `EO\` + `F` + `find . -name 'keep*'
+    -delete` + `EOF` + `` ` ``) with `/bin/zsh` and R2 (the body's own backtick)
+    with `/bin/bash` deleted the files with no dialog on `61eda564` and are
+    refused with the files kept now; `cat <<'EOF'` + `find . -name 'keep*'
+    -delete` + `EOF` runs with no dialog on all three.
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any
