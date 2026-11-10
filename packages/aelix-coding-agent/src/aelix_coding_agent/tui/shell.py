@@ -720,7 +720,7 @@ async def _commit_update_notice(
     try:
         from aelix_coding_agent.update_check import FETCH_TIMEOUT_S
 
-        notice = await asyncio.wait_for(asyncio.shield(task), timeout=FETCH_TIMEOUT_S)
+        notice = await _update_check_answer(task, FETCH_TIMEOUT_S)
     except Exception:  # noqa: BLE001
         return
     if notice is None:
@@ -5770,6 +5770,25 @@ def _show_compaction_end(event: object, commit: Callable[[object], None]) -> obj
 
         commit(Text(f"✖ {safe_error_for_terminal(message)}", style="bold red"))
     return etype
+
+
+async def _update_check_answer(task: asyncio.Task[Any], timeout: float) -> Any:
+    """The update check's answer if it finishes within *timeout* seconds, else ``None`` (#689).
+
+    ``asyncio.wait``, not ``asyncio.wait_for(asyncio.shield(task))``: on Python 3.11
+    ``wait_for`` returned the result when a cancel landed in the loop turn after the
+    check finished, so the caller's cancel was lost and ``run_tui`` went on running.
+    ``wait`` never cancels the check either - on a timeout it runs on and caches its
+    answer for the next launch, as the shield let it - and a check that ends
+    cancelled is no answer, like any other way it can fail. An error it raised is
+    raised here. Defined below ``run_tui`` so the lines above keep their numbers
+    (gated citations name them).
+    """
+
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done or task.cancelled():
+        return None
+    return task.result()
 
 
 __all__ = ["run_tui"]

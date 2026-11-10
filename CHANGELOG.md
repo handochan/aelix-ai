@@ -3097,6 +3097,27 @@ unwritten. Add them with the next release.
   event that is never set. The thread writes nothing: a passing run's `-q`
   output is unchanged. On 3,000 trivial tests the median time was 1.58 s with
   it and 1.56 s without (five runs each). Users see no change.
+- **The TUI's update notice no longer loses a cancel on Python 3.11 (#689).**
+  `run_tui` waits up to 4 s for the launch-time update check before its input
+  loop starts. It waited with `asyncio.wait_for` over `asyncio.shield`, and on
+  3.11 `wait_for` returns the check's answer instead of raising when a cancel
+  of `run_tui` lands in the loop turn after the check finished, so `run_tui`
+  went on running. With the cancel forced into that loop turn
+  (`tests/tui/test_update_notice_cancel_689.py`), `run_tui` was still running
+  5 s later on 3.11 (macOS 3.11.15 and Linux docker 3.11) and ended at once on
+  3.12 and 3.14; it now ends on all of them. Only a direct cancel of the task
+  running `run_tui` reaches this: `/quit`, SIGTERM and SIGINT do not cancel it.
+  It is the candidate cause of the 240 s CI hangs above, reproduced only with
+  the cancel forced: the Ctrl+G smoke test those dumps named passed 210 of 210
+  times in one process in Linux docker py3.11 before and after this change,
+  also with four busy loops beside it. A check that ends cancelled now says
+  nothing, as any other failure of it does, where it ended `run_tui` as if
+  `run_tui` itself had been cancelled; nothing cancels the check. The 4 s hold
+  is unchanged: with the fetch held by a proxy that never answers, `/quit` is
+  held up to 4 s after the check started, before and after this change (a pty
+  on macOS, a new session, 3.11, 3.12 and 3.14: typed before the banner, at it
+  or 3.5 s in, it exited 4.1–4.2 s after the check started), and a newer
+  release in the update cache still shows its notice.
 - **Quitting during file completion no longer leaves aelix running (#428).**
   The `@file` menu is collected in one background job, so repeated cancellation
   during shutdown cannot leave a second worker waiting forever on a queue.
