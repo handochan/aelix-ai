@@ -6,9 +6,10 @@ Wires real LLM turns for the interactive / print / rpc CLI. Three pieces:
   real environment variables always win). This is a SECURITY BOUNDARY, not a
   dev convenience: it runs from ``main_sync`` BEFORE the Project Trust gate
   exists, so a ``.env`` from a repo you merely cloned is attacker-controlled
-  input to ``os.environ``. It admits provider credentials plus a short,
-  value-shape-checked list of provider-configuration names, and refuses
-  everything else — see the admission-control block below for the four
+  input to ``os.environ``. It admits provider credentials whose values are
+  credential-shaped (#756), plus a short, value-shape-checked list of
+  provider-configuration names, and refuses everything else — see the
+  admission-control block below for the four
   privilege-escalation chains that were reproduced end-to-end against the real
   CLI, and ADR-0203.
 - :func:`register_providers` — registers the built-in provider adapters on the
@@ -129,10 +130,10 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
 # happen to name ``*_KEY`` from being repo-settable, which is the one thing the
 # suffix rule alone cannot do. That sentence is executable rather than asserted,
 # and the executable form is one parametrization: measured, deleting the
-# ``^(AELIX|PI|…)_`` alternation turns exactly ONE of the 133 admission tests red —
-# ``test_repo_dotenv_cannot_set_control_plane[AELIX_FUTURE_API_KEY]``. Before that
-# case existed the whole file passed with the alternation gone, because every
-# other ``AELIX_*`` name under test is refused for some other reason. So one
+# ``^(AELIX|PI|…)_`` alternation turns 2 of the 341 admission tests red: this one,
+# ``test_repo_dotenv_cannot_set_control_plane[AELIX_FUTURE_API_KEY]``, and a #756
+# notice test through ``NPM_``. Before that case existed the whole file passed with
+# the alternation gone, because every other ``AELIX_*`` name is refused for another reason. So one
 # ``CONTROL_PLANE`` entry is the entire test pressure on the branch this comment
 # calls load-bearing; do not delete it. (An earlier draft of this comment cited a
 # standalone test by name. No such test exists — the coverage is the parametrized
@@ -394,12 +395,251 @@ def _dotenv_key_allowed(key: str) -> bool:
     if key.endswith(_CREDENTIAL_SUFFIXES):
         return True
     # Redundant with the suffix rule for every name in the table today — measured,
-    # replacing this line with ``return False`` turns 0 of the 133 admission tests
+    # replacing this line with ``return False`` turns 0 of the 341 admission tests
     # red. Kept so a provider added with an odd key name keeps working without
     # anyone remembering this filter exists.
     from aelix_ai.providers._env_api_keys import ENV_API_KEYS
 
     return any(key in names for names in ENV_API_KEYS.values())
+
+
+# #756 — a credential's VALUE is shape-checked too. The rule above judges a
+# credential by its NAME, on the premise that a secret is inert data. A shell
+# breaks that premise: ``tools/bash.py`` hands ``os.environ`` to every
+# ``bash -c``, and bash, mksh and macOS's ksh93u+ evaluate a variable read in
+# arithmetic (``$((NAME))``, ``(( NAME ))``, ``${a[NAME]}``) as an expression of
+# its own, running a ``$(…)`` inside an array subscript; the same ksh and mksh
+# also field-split an unquoted ``[ $NAME … ]`` into an ``-eq`` test that does
+# it. And ``=`` is not inert: ``PATH=0`` as a value is an arithmetic ASSIGNMENT,
+# after which the next ``ls`` runs the repo's ``./0/ls`` — in bash, zsh, both
+# ksh93 builds and mksh. Measured with ``EVIL_API_KEY=a[$(touch PWNED)]`` in a
+# cloned repo's ``.env``: auto ran ``echo $((EVIL_API_KEY))`` with no dialog and
+# ``PWNED`` appeared.
+#
+# So the value must be credential-SHAPED, which is two rules:
+#
+# 1. CHARACTERS. Letters, digits and ``- _ . + / ~ : %``, with up to two ``=``
+#    only at the end (base64 padding). The set is the union of the key formats
+#    the tests carry: ``sk-``/``sk-proj-``/
+#    ``sk-ant-api03-``/``sk-or-v1-``, ``AIza…``, Azure hex, AWS secrets
+#    (``/`` ``+``) and STS session tokens (``=`` padding), ``ghp_``/``github_pat_``,
+#    ``hf_``, JWTs (``.``) — vendors' published prefixes, not fetched — plus three
+#    whose vendor pages the #756 verify fetched: Entra client secrets (``~``),
+#    Telegram bot tokens (``:``) and X bearer tokens (``%``). Measured on
+#    bash 3.2/5.2, zsh, dash, ksh93u+/93u+m and mksh, 13 command forms each: 50
+#    values the first version admitted ran nothing in 5,850 shell runs
+#    (``.omc/probes/756/impl/``), and the values with ``~ : %`` ran nothing in 17
+#    forms on the same 9 shells (``.omc/probes/756/fix-r1/``). A value may start
+#    with ``-`` or ``.`` (fix round 2, the lead's call). ``find victim $X`` with
+#    ``-delete`` and ``sh "$X"`` with ``./marker`` do act on the repo, but the
+#    classifier asks before both, and a bare ``marker`` reaches ``sh "$X"`` the
+#    same way. The round-2 verify ran 37 commands the classifier allows as
+#    ``cmd $X`` and ``cmd $X README.md`` with 37 values led by ``-`` or ``.`` in
+#    bash, 2,590 runs on macOS and 2,590 on Linux: nothing ran, was written or
+#    was deleted (``.omc/probes/756/verify-r2/grid/lead-*.jsonl``).
+# 2. NO SHELL-OWNED NAME. In arithmetic the shell reads every name in the value
+#    as a variable and evaluates ITS value too, so a value that names a variable
+#    the shell fills from the command's own data runs what that data holds. Measured
+#    in bash 3.2 with a repo file ``files/z[$(touch PWNED)]``: ``1+_`` after
+#    ``ls files/*`` (``_`` is the last argument) created ``PWNED``, and so did
+#    ``0+REPLY`` after ``read REPLY < files/r`` (bash and macOS ksh93u+), and
+#    ``0+.sh.match`` after a ksh pattern match (ksh93u+). ``0+IFS++`` changed
+#    ``IFS`` and ``~CDPATH++`` moved ``cd src`` into ``1/src``. So no name in the
+#    value (a run of letters, digits and ``_``) may be ``_`` or one of
+#    ``_SHELL_OWN_NAMES``, and nothing may start ksh93's ``.sh.`` namespace.
+#
+# Rule 2 refuses some real keys, and those need an export. Measured over
+# 200,000 random keys per shape (``.omc/probes/756/fix-r2/fp/``), it refused
+# 0.262 % of 40-character values over the Entra alphabet, 0.176 % of JWTs,
+# 0.110 % of ``sk-proj-`` keys, 0.063 % of unprefixed 40-character base64url keys
+# and 0.054 % of ``sk-ant-api03-`` keys, nearly all for a lone ``_`` (no letter
+# or digit on either side); a name other than ``_`` refused at most 4 in 200,000
+# of a shape.
+#
+# What an admitted value CAN still do is name an ordinary variable
+# (``FOO_TOKEN+1``), which the shell then evaluates. Every ``.env`` value is
+# checked, so a name another ``.env`` line supplies holds nothing either; what
+# the COMMAND itself assigns is the classifier's to judge. A value can also step
+# an ordinary integer (``x++``) or stop the command (``1/0``). ADR-0203's #756
+# note has the residuals.
+#
+# The check covers the ``.env`` path only, and runs ahead of the hatch: the hatch
+# names a KEY, and the code is in the VALUE. Any value still works when you
+# export it in your own shell.
+_CREDENTIAL_VALUE = re.compile(r"\A(?:[A-Za-z0-9._+/~:%-]+={0,2})?\Z")
+
+# Rule 2's names, derived 2026-11-10: every uppercase name bash 3.2.57/5.2.37,
+# zsh 5.9, dash, ksh93u+/93u+m and mksh 59c define under ``env -i``, plus the
+# names their manuals say the shell sets on demand (``REPLY``, ``OPTARG``,
+# ``BASH_REMATCH``, ``MAPFILE``, ``COPROC``, ``MATCH``, …) or reads to change what
+# it does (``CDPATH``, ``ENV``, ``GLOBIGNORE``, ``POSIXLY_CORRECT``, ``TMOUT``, …).
+# The derivation is ``.omc/probes/756/fix-r1/names/derive.py``. Fix round 2 added
+# ten names the round-2 verify found in the shell binaries: mksh's ``KSH_MATCH``,
+# which ``[[ x = pattern ]]`` and ``case`` fill with what matched (measured in
+# mksh R59: ``EVIL_API_KEY=KSH_MATCH`` and
+# ``[[ $(cat files/r) == *x* ]] && echo $((EVIL_API_KEY))`` ran the ``$(…)`` in
+# ``files/r``), and ``EXECSHELL``, ``TEXTDOMAIN``, ``TEXTDOMAINDIR``,
+# ``ZSH_DEBUG_CMD``, ``HISTORY_IGNORE``, ``REPORTTIME``, ``REPORTMEMORY``,
+# ``CORRECT_IGNORE`` and ``CORRECT_IGNORE_FILE``, which the shells read to change
+# what they do (not measured further). zsh's lowercase
+# parameters are left out: zsh ran no ``$(…)`` from arithmetic in any measured
+# form, and each is an array, a hash or read-only, so ``++`` on it fails. Like
+# ``_DOTENV_LOCKED`` this is a best-effort list, not a complete one: a shell
+# release can add a name.
+_SHELL_OWN_NAMES_TEXT = """
+    _ ARGC BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_ARGV0
+    BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_ENV BASH_EXECUTION_STRING BASH_LINENO
+    BASH_LOADABLES_PATH BASH_MONOSECONDS BASH_REMATCH BASH_SOURCE BASH_SUBSHELL
+    BASH_TRAPSIG BASH_VERSINFO BASH_VERSION BASH_XTRACEFD BAUD CDPATH CHILD_MAX
+    COLUMNS COMPREPLY COMP_CWORD COMP_KEY COMP_LINE COMP_POINT COMP_TYPE
+    COMP_WORDBREAKS COMP_WORDS COPROC CORRECT_IGNORE
+    CORRECT_IGNORE_FILE CPUTYPE DIRSTACK DIRSTACKSIZE EDITOR EGID
+    EMACS ENV EPOCHREALTIME EPOCHSECONDS ERRNO EUID EXECIGNORE EXECSHELL FCEDIT FIGNORE FPATH
+    FUNCNAME FUNCNEST GID GLOBIGNORE GLOBSORT GROUPS HISTCHARS HISTCMD HISTCONTROL
+    HISTEDIT HISTFILE HISTFILESIZE HISTIGNORE HISTORY_IGNORE HISTSIZE HISTTIMEFORMAT HOME HOST
+    HOSTFILE HOSTNAME HOSTTYPE IFS IGNOREEOF INPUTRC INSIDE_EMACS JOBMAX
+    KEYBOARD_HACK KEYTIMEOUT KSHEGID KSHGID KSHUID KSH_MATCH KSH_VERSION LANG LC_ALL
+    LC_COLLATE LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LINENO LINES LISTMAX LOGCHECK
+    LOGNAME MACHTYPE MAIL MAILCHECK MAILPATH MANPATH MAPFILE MATCH MBEGIN MEND
+    MODULE_PATH NULLCMD OLDPWD OPTARG OPTERR OPTIND OSTYPE PATH PATHSEP PGRP
+    PIPESTATUS POSIXLY_CORRECT POSTEDIT PPID PROMPT PROMPT2 PROMPT3 PROMPT4
+    PROMPT_COMMAND PROMPT_DIRTRIM PROMPT_EOL_MARK PS0 PS1 PS2 PS3 PS4 PSVAR PWD
+    RANDOM READLINE_ARGUMENT READLINE_LINE READLINE_MARK READLINE_POINT READNULLCMD
+    REPLY REPORTMEMORY REPORTTIME RPROMPT RPROMPT2
+    RPS1 RPS2 SAVEHIST SECONDS SHELL SHELLOPTS SHLVL
+    SH_OPTIONS SPROMPT SRANDOM STTY TERM TERMINFO
+    TERMINFO_DIRS TEXTDOMAIN TEXTDOMAINDIR TIMEFMT TIMEFORMAT
+    TMOUT TMPDIR TMPPREFIX TMPSUFFIX TRY_BLOCK_ERROR TRY_BLOCK_INTERRUPT TTY TTYIDLE
+    UID USERNAME USER_ID VENDOR VISUAL WATCH WATCHFMT WORDCHARS ZBEEP ZDOTDIR
+    ZLE_LINE_ABORTED ZLE_REMOVE_SUFFIX_CHARS ZLE_RPROMPT_INDENT
+    ZLE_SPACE_SUFFIX_CHARS ZSH_ARGZERO ZSH_DEBUG_CMD ZSH_EVAL_CONTEXT ZSH_EXECUTION_STRING
+    ZSH_NAME ZSH_PATCHLEVEL ZSH_SCRIPT ZSH_SUBSHELL ZSH_VERSION
+"""
+_SHELL_OWN_NAMES = frozenset(_SHELL_OWN_NAMES_TEXT.split())
+
+_VALUE_NAME = re.compile(r"[A-Za-z0-9_]+")
+
+# ksh93 reads ``.sh.match`` (what a pattern matched), ``.sh.file`` and the rest of
+# its ``.sh.`` namespace as a name wherever one may start; ``x.sh.y`` is the
+# compound variable ``x`` instead.
+_KSH_SH_NAME = re.compile(r"(?<![A-Za-z0-9_])\.sh\.")
+
+# A HATCHED value — a name you listed in ``AELIX_DOTENV_ALLOW`` that no arm
+# above admits, such as ``OPENROUTER_BASE_URL`` or ``PI_OFFLINE`` — is checked too,
+# on ``_DOTENV_LOCKED``'s criterion: the hatch may let a repo REDIRECT, never
+# EXECUTE. It loads if it is credential-shaped (rules 1 and 2) or a URL: a scheme,
+# ``://``, then printable ASCII with no space and none of ``$``, a backtick, ``<``
+# or ``>``. Read BY NAME (``$((V))``, ``${a[V]}``) a URL stops at the ``:`` after
+# its scheme. Pasted as TEXT into an array subscript it does not: the shell
+# expands that text again, so ``let "y=a[$V]"``, ``typeset -i y; y="a[$V]"`` and
+# ``unset "x[$V]"`` ran a ``$(…)``, a backtick or a ``${…}`` after ``://`` in bash
+# 3.2/5.2/5.3, macOS ksh93u+ or mksh, ``'$(…)'`` too in bash 5.2/5.3 and mksh,
+# and ``<(…)`` in bash 3.2 (the round-2 verify, ``grid/url-*.jsonl``: 43 of 90
+# URLs ran something, every one holding one of the four). Over the same 40 forms
+# in 9 shells and bash 5.3, the URLs this tail admits ran nothing
+# (``.omc/probes/756/fix-r2/grid/``). The scheme itself IS read before its
+# ``:`` — measured, ``Y://h.example/v1`` with ``Y=a[$(touch PWNED)]`` created
+# ``PWNED`` in bash 3.2 and ksh93u+ — so the scheme is held to rule 2.
+_URL_VALUE = re.compile(r"\A([A-Za-z][A-Za-z0-9+.-]*)://([!-#%-;=?-_a-~]*)\Z")
+
+# A ``]`` ends the ``a[…]`` such a form pastes the URL into: with
+# ``https://x.example/]+(PATH=0)+m[x``, ``echo $(( a[$V] ))`` in zsh 5.9 and
+# ``typeset -A m; let "y=m[$V]"`` in bash 5.2 and ksh93 assigned ``PATH=0``, and the
+# next ``ls`` ran the repo's ``./0/ls`` (the round-3 verify). So a URL's ``[`` and
+# ``]`` load only as an IPv6 host: ``[userinfo@]`` then hex digits, ``:`` and ``.``
+# in brackets, an optional ``:port``, then ``/``, ``?``, ``#`` or the end (the lead's
+# call). That refuses a zone id too (``[fe80::1%lo0]``), which httpx can reach.
+_URL_IPV6_HOST = re.compile(r"(?:[^@/?#\[\]]*@)?\[[0-9A-Fa-f:.]+\](?::[0-9]*)?(?![^/?#])")
+
+_CREDENTIAL_VALUE_WHY = (
+    "its value is not credential-shaped (letters, digits and - _ . + / ~ : %, up "
+    "to two = at the end, and naming none of the "
+    "shell's own variables such as _ or IFS), and shells such as bash run a value "
+    "like a[$(cmd)] when a command reads the variable in arithmetic. Export it in "
+    "your own shell if it is yours."
+)
+
+_HATCHED_VALUE_WHY = (
+    "its value is neither credential-shaped (letters, digits and - _ . + / ~ : %, "
+    "naming none of the shell's own variables) nor a URL (scheme:// with no "
+    "spaces, $, `, < or >), and shells such as bash run a value like a[$(cmd)] "
+    "when a command reads the variable in arithmetic. Export it in your own shell "
+    "if it is yours."
+)
+
+
+def _dotenv_names_a_shell_variable(text: str) -> bool:
+    """Does ``text`` name ``_``, another of the shell's own variables, or ksh93's ``.sh.``?"""
+
+    return (
+        any(name in _SHELL_OWN_NAMES for name in _VALUE_NAME.findall(text))
+        or _KSH_SH_NAME.search(text) is not None
+    )
+
+
+def _dotenv_credential_value_ok(value: str) -> bool:
+    """Is ``value`` credential-shaped (#756)? See the block above for why and how measured."""
+
+    return _CREDENTIAL_VALUE.match(value) is not None and not _dotenv_names_a_shell_variable(value)
+
+
+def _dotenv_url_value_ok(value: str) -> bool:
+    """Is ``value`` a URL whose scheme names no shell variable and whose only brackets
+    are an IPv6 host (#756, hatched values only)?"""
+
+    url = _URL_VALUE.match(value)
+    if url is None or _dotenv_names_a_shell_variable(url.group(1)):
+        return False
+    host = _URL_IPV6_HOST.match(url.group(2))
+    rest = url.group(2)[host.end() if host else 0 :]
+    return "[" not in rest and "]" not in rest
+
+
+_SHELL_NAME_WHY = (
+    "its value names one of the shell's own variables (such as _ or IFS), and a "
+    "shell reads that variable when a command reads this one in arithmetic. "
+    "Export it in your own shell if it is yours."
+)
+
+
+def _dotenv_config_refusal(rule: _ConfigRule, value: str) -> str | None:
+    """Why a configuration-arm VALUE may not load, or ``None`` (the arm's rule, then #756's).
+
+    The arm's own shapes were drawn against a moved host or path. A Cloudflare id
+    (``[A-Za-z0-9_-]``) can still be ``_`` or ``REPLY``, which the shell
+    reads like any value: measured in fix round 1 on bash 3.2,
+    ``CLOUDFLARE_GATEWAY_ID=_`` from a repo ``.env`` made
+    ``ls files/* >/dev/null; echo $((CLOUDFLARE_GATEWAY_ID))``, which the classifier
+    allows, run a repo file name ``z[$(touch PWNED)]``. So rule 2 above holds here
+    too; the GCP shape already excludes it. A leading ``-`` is allowed, as in
+    rule 1 (fix round 2, the lead's call).
+    """
+
+    if not rule.shape.match(value):
+        return rule.why
+    if _dotenv_names_a_shell_variable(value):
+        return _SHELL_NAME_WHY
+    return None
+
+
+def _dotenv_value_refusal(key: str, value: str, hatched: bool) -> str | None:
+    """Why a ``.env`` may not load ``value`` under ``key``, or ``None`` (#756).
+
+    A name the credential rule admits is held to the credential shape. So is a
+    credential-suffixed name that ``_DOTENV_NEVER`` takes back (``NPM_TOKEN``,
+    ``SSH_KEY``, ``SERVICE_URL_KEY``) once the hatch would load it: the hatch names
+    the key, and the code is in the value. Any other name the hatch would load is
+    held to the hatched-value rule. A name nothing would load is not checked here:
+    the loader refuses it by name, so a hatched-off ``NPM_TOKEN`` gets the notice
+    that names the hatch whatever its value, as every other such name does, and
+    the value notice comes only once the hatch is open (fix round 2).
+    """
+
+    if _dotenv_key_allowed(key) or (hatched and key.endswith(_CREDENTIAL_SUFFIXES)):
+        return None if _dotenv_credential_value_ok(value) else _CREDENTIAL_VALUE_WHY
+    if hatched and not (_dotenv_credential_value_ok(value) or _dotenv_url_value_ok(value)):
+        return _HATCHED_VALUE_WHY
+    return None
 
 
 def _dotenv_user_allowlist() -> frozenset[str]:
@@ -430,7 +670,7 @@ def _dotenv_user_allowlist() -> frozenset[str]:
     the pasted one-liner is ``_DOTENV_LOCKED`` — see its criterion above.
 
     The ``- _DOTENV_LOCKED`` below is DEFENSE-IN-DEPTH, not the lock. Measured:
-    deleting it turns 0 of the 133 admission tests red, because
+    deleting it turns 0 of the 341 admission tests red, because
     :func:`load_dotenv` tests ``_DOTENV_LOCKED`` in its own branch BEFORE it looks
     at this set. It is kept so that the returned set can be read as "names a repo
     may set" without having to hold the loader's branch order in your head.
@@ -671,11 +911,15 @@ def load_dotenv(path: str = ".env") -> None:
     are skipped; surrounding single/double quotes on the value are stripped.
 
     SECURITY: this is admission-controlled — see the block above. It admits
-    provider credentials, plus the short, value-shape-checked
-    ``_DOTENV_CONFIG_VALUES`` list, because this runs before the Project Trust
+    provider credentials whose values are credential-shaped (#756,
+    :func:`_dotenv_credential_value_ok` — a shell reading the variable in
+    arithmetic would otherwise run a ``$(…)`` in it), plus the short,
+    value-shape-checked ``_DOTENV_CONFIG_VALUES`` list, because this runs before the Project Trust
     gate and a cloned repo's ``.env`` would otherwise be able to spawn processes,
-    relocate the global settings file and redirect API traffic. Anything refused
-    is still available by exporting it in your own shell.
+    relocate the global settings file and redirect API traffic. A name you list
+    in ``AELIX_DOTENV_ALLOW`` loads only a credential-shaped value or a URL
+    (:func:`_dotenv_value_refusal`). Anything refused is still available by
+    exporting it in your own shell.
 
     PRECEDENCE, stated precisely because the previous three sentences on this
     were false:
@@ -758,10 +1002,17 @@ def load_dotenv(path: str = ".env") -> None:
             # UNCONDITIONAL, and ahead of the hatch on purpose — the hatch names
             # a KEY, and for these names the danger is in the VALUE.
             rule = _DOTENV_CONFIG_VALUES[key]
-            if not rule.shape.match(value):
-                badvalue.append((key, rule.why))
+            if why := _dotenv_config_refusal(rule, value):
+                badvalue.append((key, why))
                 continue
             admit = config
+        elif key not in os.environ and (why := _dotenv_value_refusal(key, value, key in extra)):
+            # #756 — ahead of the hatch and the sibling guard, for the config
+            # arm's reason: the hatch names a KEY, the code is in the VALUE. A key
+            # already in the environment is skipped: this line would not set it,
+            # and the notice's "export it" would tell you to do what you did.
+            badvalue.append((key, why))
+            continue
         elif key in extra:
             # The hatch and the credential rule are an OR, not a partition: a
             # user may list a name the rule already admits. Report it as what it

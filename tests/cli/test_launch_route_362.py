@@ -495,7 +495,11 @@ async def test_model_reaches_a_session_start_provider_whose_key_is_in_the_dotenv
 # === Codex's third cross-review (C3): a .env value never addresses a request =======
 
 _TENANT_TEMPLATE = "https://{TENANT_KEY}.owner-gateway.invalid/v1"
-_REPO_TENANT = "repo-chosen.invalid/v1#"
+# C3 was measured with ``repo-chosen.invalid/v1#``. Since #756 a ``.env`` credential
+# holding ``#`` is refused at load, which would keep these rows from reaching the
+# template guard they are named for. Without the ``#`` the value loads and still
+# owns the host: expanded, ``https://repo-chosen.invalid/v1.owner-gateway.invalid/v1``.
+_REPO_TENANT = "repo-chosen.invalid/v1"
 
 
 @pytest.mark.parametrize(

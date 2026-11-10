@@ -18,7 +18,8 @@ how the abort paths are exercised. Pick N from the model, not from habit: a fast
 model finishes reasoning in under a second and the interrupt lands in the answer
 instead, which looks like a pass.
 
-Reads provider credentials from the environment and, if present, ``.env``.
+Reads provider credentials from the environment and, if present, ``.env``,
+admitting from the file only what aelix itself would.
 
 **The detector has a positive control, and that is not decoration.** Counting an
 escape sequence that never matches looks exactly like counting an event that
@@ -75,17 +76,22 @@ def _load_dotenv(env: dict[str, str], explicit: str | None, repo: str) -> str | 
     here is the checkout the script lives in, which for a git WORKTREE is not the
     checkout holding the (untracked) ``.env`` — assuming otherwise produced
     "No API key for provider" against a perfectly good build.
+
+    The file goes through aelix's own ``load_dotenv`` (ADR-0203, #756), not a
+    parser of this script's: ``$PWD/.env`` may be a cloned repo's, and a value
+    this script copied unchecked reached the child's ``bash -c`` although aelix
+    refuses it. What aelix admits is added to ``env`` with its
+    ``AELIX_DOTENV_ADMITTED`` record; its notices name keys, never values.
     """
+
+    from aelix_coding_agent.cli.runtime_bootstrap import load_dotenv
 
     for path in (explicit, os.path.join(os.getcwd(), ".env"), os.path.join(repo, ".env")):
         if not path or not os.path.exists(path):
             continue
-        with open(path) as fh:
-            for raw_line in fh:
-                line = raw_line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    env.setdefault(key, value)
+        before = dict(os.environ)
+        load_dotenv(path)
+        env.update({k: v for k, v in os.environ.items() if before.get(k) != v})
         return path
     return None
 

@@ -161,23 +161,56 @@ ADR-0203 replaced the unfiltered read with **default-deny admission control**
 inside `load_dotenv`. A repo `.env` may set:
 
 - **credential-shaped names** — anything ending `_API_KEY`, `_KEY`, `_TOKEN`,
-  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:124`), because supplying your
-  own provider key from your own project is the workflow this must not break;
+  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:125`), because supplying your
+  own provider key from your own project is the workflow this must not break —
+  and only when the **value** looks like a key: letters, digits and
+  `- _ . + / ~ : %`, up to two `=` at the end, and naming none of the shell's
+  own variables such as `_`, `IFS`, `REPLY` or `KSH_MATCH` (#756).
+  Every bash command inherits what the `.env` loaded, and bash evaluates a
+  variable read in arithmetic, so `EVIL_API_KEY=a[$(touch PWNED)]` turned
+  `echo $((EVIL_API_KEY))`, a command `auto` runs without asking, into
+  `touch PWNED`; `UNDERSCORE_TOKEN=_` did the same through a repo file's name
+  after `ls files/*`. Such a line is ignored with a notice; `AELIX_DOTENV_ALLOW`
+  cannot open it, and exporting the value can. Synthetic samples of 31 key
+  formats load (`tests/cli/test_dotenv_admission.py`). Most are the vendors'
+  published prefixes (AWS secrets with `/` and `+`, STS tokens ending `==`, JWTs,
+  `sk-ant-…`, `sk-or-v1-…`, `ghp_…`, …), not fetched. Entra client secrets (`~`),
+  Telegram bot tokens (`:`) and X bearer tokens (`%`) are from their vendors'
+  pages. A random key in which a lone `_`, or another of those names, has no
+  letter, digit or `_` on either side is refused and needs an export: measured
+  over 200,000 random values per shape, 0.262 % of Entra-alphabet values,
+  0.176 % of JWTs, 0.063 % of unprefixed base64url keys and 0.054–0.110 % of
+  `sk-ant-` and `sk-proj-` keys;
 - a short list of **provider-configuration names whose values are shape-checked**
-  (a base URL must look like a URL, and so on).
+  (a Vertex location or project must be a plain lowercase name, a Cloudflare id a
+  plain id).
 
 Everything else is refused. A subtraction rule (`_DOTENV_NEVER`,
-`runtime_bootstrap.py:146-149`) takes back the credential-shaped names that are
+`runtime_bootstrap.py:147-150`) takes back the credential-shaped names that are
 really paths, URLs, programs, or aelix's own knobs — so a future aelix variable
 named `*_KEY` cannot become repo-settable by accident.
 
 There is a per-key escape hatch, `AELIX_DOTENV_ALLOW`, read from the **real**
 environment only — a `.env` cannot widen the gate it is judged by. Underneath it
-sits a floor of 14 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:358-385`) that
+sits a floor of 15 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:359-386`) that
 the hatch cannot open, on one criterion: *the hatch may let a repo redirect; it
 may never let a repo execute, and never let a repo choose the global settings or
 auth store.* `AELIX_SETTINGS_PATH`, `AELIX_CODING_AGENT_DIR`, `HOME`,
 `AELIX_MCP_CONFIG`, `BASH_ENV`, `LD_PRELOAD`, `EDITOR` and friends are on it.
+Since #756 the hatch also checks the value of a name it opens: it loads only a
+key-shaped value (as above) or a URL (`scheme://…` with no spaces, none of
+`$`, a backtick, `<` or `>`, and `[` `]` only around an IPv6 host such as
+`[::1]`). Before, a hatched `OPENROUTER_BASE_URL=a[$(touch PWNED)]` ran `touch`
+in `echo $((OPENROUTER_BASE_URL))`, `https://x.example/$(touch${IFS}PWNED)` ran
+it in `let "y=a[$OPENROUTER_BASE_URL]"`, and `https://x.example/]+(PATH=0)+m[x`
+closed that `[` itself: zsh's `echo $(( a[$OPENROUTER_BASE_URL] ))` assigned
+`PATH=0`, and the next `ls` ran the repo's `./0/ls`. This changes which hatched
+values load: a comma-separated `NO_PROXY`, a path with a space or an IPv6 zone
+id (`[fe80::1%lo0]`) now needs an export. Of 129 URLs measured in 46 command
+forms on 9 shells and bash 5.3, the 53 the rule admits ran nothing through a
+read by name or a subscript. A URL is still a path: `https://x.example/*` ran a
+repo file `https:/x.example/v1` through `$X`, which aelix asks before. Other
+forms and shells are not measured.
 
 **A key from a repo `.env` authenticates a route; it never chooses one**
 ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md),

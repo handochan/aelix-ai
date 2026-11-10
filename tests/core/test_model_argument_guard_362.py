@@ -1037,7 +1037,10 @@ _TENANT_TEMPLATE = "https://{TENANT_KEY}.owner-gateway.invalid/v1"
         (
             "dotenv fills the template",
             {},
-            "TENANT_KEY=repo-chosen.invalid/v1#\nOPENROUTER_API_KEY=repo-router-fake\n",
+            # Measured with ``…/v1#``; since #756 a ``.env`` credential holding ``#``
+            # is refused at load, before this guard. Without it the value loads
+            # and still owns the host once expanded.
+            "TENANT_KEY=repo-chosen.invalid/v1\nOPENROUTER_API_KEY=repo-router-fake\n",
             False,
         ),
         (

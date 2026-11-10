@@ -2336,22 +2336,22 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:519-519": [
    "if stripped == \"/reload\":"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:124-124": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:125-125": [
    "_CREDENTIAL_SUFFIXES = (\"_API_KEY\", \"_KEY\", \"_TOKEN\", \"_SECRET\", \"_PASSWORD\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:146-149": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:147-150": [
    "_DOTENV_NEVER = re.compile(",
    "r\"^(AELIX|PI|PYTHON|LD|BASH|NODE|PERL|RUBY|GIT|SSH|NPM|npm)_\"",
    "r\"|URL|PATH|DIR|HOME|SHELL|PROXY|OPTS|OPTIONS|PRELOAD|COMMAND\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:31-34": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:32-35": [
    "Provider registration + ``.env`` load run from the real console entry",
    "(:func:`aelix_coding_agent.cli.entry.main_sync`), NOT from ``_async_main`` — so",
    "embedders / tests that call ``_async_main`` directly keep deterministic,",
    "side-effect-free behavior."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:358-385": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:359-386": [
    "_DOTENV_LOCKED = frozenset(",
    "{",
    "# A. store / identity locators — every \"GLOBAL scope only\" read is only",
