@@ -1674,6 +1674,24 @@ unwritten. Add them with the next release.
   returns, or raises a `TimeoutError`, is not seen: the load and the run go on,
   as before.
 
+- **Ctrl+C during an extension's `setup()` at launch ends aelix with one line
+  when an extension loaded earlier left the main task's cancel count up (#712,
+  ADR-0284).** On 3.11 and 3.12 an `asyncio.TaskGroup` one of whose tasks failed
+  after its body, caught or not, leaves that count one up (a CPython bug fixed in
+  3.13), and on any Python so does a `setup()` that swallowed a cancel of its own
+  task. A Ctrl+C during a later extension's `setup()` then ended `-p` and the TUI
+  in a `CancelledError` traceback and exit 1, instead of "aelix: interrupted
+  while the extension … was running its setup()" and exit 130: Python reports the
+  Ctrl+C as that left-over cancel. It now prints the line and exits 130. Measured
+  on macOS with a real SIGINT 0.5–0.6 s into a later `setup()` that holds the
+  loop for 3 s: after a `TaskGroup`, caught or not, on 3.11.15 and 3.12.13 (3.14.5
+  printed the line before too); after a swallowed cancel on 3.11.15, 3.12.13,
+  3.13.13 and 3.14.5; in `-p`, and in the TUI after a `TaskGroup` on 3.11 and a
+  swallowed cancel on 3.14. A `CancelledError` an extension raises itself, with
+  no Ctrl+C, still ends in a traceback and exit 1. A Ctrl+C later in a run after
+  such a `TaskGroup`, while the model answers (#620), is unchanged: on 3.11 and
+  3.12 it still ends in a `CancelledError` traceback and exit 1.
+
 - **An `-e` extension that failed to load says so in `/extension` (#683,
   ADR-0284).** Its row read `-e` and "Locked on: loaded by -e for this run", and
   its load error was nowhere in the panel, while a failed global extension read

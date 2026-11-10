@@ -144,6 +144,9 @@ def _launch(
         PI_OFFLINE="1",
         PYTHONIOENCODING="utf-8",
     )
+    # A pytest started with SIGINT ignored (a shell ``&`` job) hands that on, and the
+    # child would never see the SIGINT these rows send: give it the default back.
+    ignored = sys.platform != "win32" and signal.getsignal(signal.SIGINT) == signal.SIG_IGN
     return subprocess.Popen(
         [
             sys.executable,
@@ -168,7 +171,12 @@ def _launch(
         text=True,
         encoding="utf-8",
         errors="replace",
+        preexec_fn=_sigint_by_default if ignored else None,
     )
+
+
+def _sigint_by_default() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
 _ASYNC = (
