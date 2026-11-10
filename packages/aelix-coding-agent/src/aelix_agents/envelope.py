@@ -953,7 +953,7 @@ def build_result(
     # A child can make several runs (an auto-retry is a second one), and one
     # whose last run was cut off is not finished because an earlier run was.
     # Only as far as the channel folds: the print channel folds every line, and
-    # ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:431``),
+    # ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:432``),
     # so for it the latest run is the first one.
     closed = latest_run_closed(state)
     no_terminator = not closed and state.dropped_lines == 0

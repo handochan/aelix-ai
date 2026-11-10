@@ -2178,3 +2178,30 @@ on a real background delegation, with every signal recorded on `stop` and on `/r
 walked start time, and `root_started` adds the root and the group it leads
 (`ProcessTree._kill_posix`'s `moved`). Every other kill path does not go through
 `stop_and_collect` and keeps the residual as stated.
+
+### 2026-11-10: the delegation stop legs check identity before every signal (#758, #611 S2a)
+
+The residual accepted above is narrowed on the delegation stop legs too (ADR-0291's 2026-11-10
+note): `reaper.kill_tree` and `reap`'s eager leg and escalation, reached by both channels'
+`_eager_abort` and by `abort_child`, signal a walked pid only while it still has the start time the
+walk read with its parent — through a pidfd on Linux, after a start-time check right before the
+signal elsewhere — and a group a walked process leads only while that leader verifies, before the
+leader's own kill (`tests/agents_ext/test_identity_legs_611.py`, each case red on `3cab5d16`). What
+stays there is ADR-0291's R1–R3 and R2b: a fork after the walk, the check-to-signal window on macOS
+and the check-to-`killpg` window on Linux, a number reused within one clock tick of the walked
+process's start (the pidfd is opened at the first signal), and a parent's number reused between the
+walk's reads. Groups go deepest first since #758's fix round 1. These legs
+are ungated; they send a subset of what they sent before. `RpcClient.stop()` and the hook, `!command`,
+`bash`-tool and `run_contained` legs signal their own spawned group or job, not a walk, and are
+unchanged.
+
+The job service's legs (behind `jobs/activation.py` `ACTIVE = False`) gain the same rules where
+#723 left gaps: a pid the hard leg walked in THIS collection is checked like an earlier one
+(`ProcessTree._kill_posix`; `tests/jobs/test_stop_evidence_posix_611.py::test_a_fresh_pid_whose_stamp_changed_gets_no_kill`,
+red on `3cab5d16`), a live walked leader whose start time was never read gives no authority over
+its group (`::test_a_null_stamp_live_leader_is_never_signalled`, red on `3cab5d16`, where
+`_moved(g, None)` was False), and the tree path walks the root only while the root's number is its
+own (`::test_the_tree_path_checks_the_roots_identity_before_walking`, red on `3cab5d16`; #731
+item 2). A leader that is gone or a zombie still gives authority (the owner's OQ-D answer,
+2026-11-10; ADR-0293's 2026-11-10 note states the residual).
+

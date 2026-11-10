@@ -42,7 +42,8 @@ from typing import Any
 
 import pytest
 from aelix_agents import reaper
-from aelix_agents.reaper import kill_tree, reap
+from aelix_agents.reaper import WalkEntry, kill_tree, reap
+from aelix_ai.utils import _process_identity
 
 # The POSIX case runs on the windows leg too, where this name does not exist —
 # so it is lent, exactly as ``tests/agents_ext/test_reaper_kill_signal_win32.py``
@@ -52,6 +53,29 @@ SIGKILL = getattr(signal, "SIGKILL", 9)
 
 CHILD_PID = 4321
 DESCENDANT_PID = 99
+STAMP = 1000.0
+#: The walk's entry for the descendant: its pid with the start time the walk read
+#: (#611 S2a). A bare pid carries none and is never signalled.
+DESCENDANT = WalkEntry(DESCENDANT_PID, STAMP, CHILD_PID)
+
+
+@pytest.fixture(autouse=True)
+def _the_descendant_is_still_the_process_walked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``DESCENDANT_PID`` still reads the walk's start time, and no pidfd is opened.
+
+    The pids here are fake, and since #611 S2a a walked pid is signalled only
+    while its start time is the one the walk read: the reader is pinned for it
+    (a real process may hold 99 on the runner, as pid 10 did in #723), and
+    ``pidfd_open`` is taken away so Linux compares start times as macOS does.
+    """
+
+    real = _process_identity.process_started
+    monkeypatch.setattr(
+        _process_identity,
+        "process_started",
+        lambda pid: STAMP if pid == DESCENDANT_PID else real(pid),
+    )
+    monkeypatch.delattr(reaper.os, "pidfd_open", raising=False)
 
 GRACE = 0.2
 """Small on purpose. Two cases assert a timestamp against ``GRACE / 2``, so the
@@ -335,7 +359,7 @@ def test_win32_kill_tree_uses_the_job_and_signals_no_pids(
     _simulate_win32(monkeypatch)
     tree = _Tree()
 
-    kill_tree(_Dead(), [DESCENDANT_PID], tree=tree)
+    kill_tree(_Dead(), [DESCENDANT], tree=tree)
 
     assert tree.names == ["hard_kill"], tree.calls
     # Including pid 99: deleting the tree arm leaves the descendant loop, which
@@ -358,7 +382,7 @@ async def test_win32_without_a_tree_is_todays_sequence(
     _simulate_win32(monkeypatch)
 
     rc = await asyncio.wait_for(
-        reap(proc, grace=GRACE, eager_kill=True, descendants=[DESCENDANT_PID], tree=None),
+        reap(proc, grace=GRACE, eager_kill=True, descendants=[DESCENDANT], tree=None),
         5.0,
     )
 
@@ -393,7 +417,7 @@ async def test_win32_closed_tree_falls_back_to_the_signal_legs(
     tree = _Tree(closed=True)
 
     rc = await asyncio.wait_for(
-        reap(proc, grace=GRACE, descendants=[DESCENDANT_PID], tree=tree), 5.0
+        reap(proc, grace=GRACE, descendants=[DESCENDANT], tree=tree), 5.0
     )
 
     assert rc == 1
@@ -441,7 +465,7 @@ async def test_posix_tree_uses_the_signal_legs_and_then_the_group(
     tree = _Tree(gate=proc.gate, events=events)
 
     rc = await asyncio.wait_for(
-        reap(proc, grace=GRACE, descendants=[DESCENDANT_PID], tree=tree), 5.0
+        reap(proc, grace=GRACE, descendants=[DESCENDANT], tree=tree), 5.0
     )
 
     assert rc == 1
@@ -482,7 +506,7 @@ async def test_win32_reap_takes_no_walk_on_its_tree_arm(
 
     sent = _record_signals(monkeypatch)
     _simulate_win32(monkeypatch)
-    monkeypatch.setattr(reaper, "descendant_pids", _must_not_walk)
+    monkeypatch.setattr(reaper, "descendant_identities", _must_not_walk)
     monkeypatch.setattr(reaper, "group_leaders", _must_not_walk, raising=False)
     proc = _Wedged()
     tree = _Tree(gate=proc.gate)
@@ -523,7 +547,7 @@ async def test_reap_escalates_on_its_event_inside_the_grace(
         reap(
             proc,
             grace=long_grace,
-            descendants=[DESCENDANT_PID],
+            descendants=[DESCENDANT],
             tree=tree,
             escalate=escalate,
         )
@@ -550,18 +574,20 @@ async def test_reap_escalates_on_its_event_inside_the_grace(
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
-async def test_posix_reap_reads_the_groups_with_its_walk_and_kills_them_after_the_pids(
+async def test_posix_reap_reads_the_groups_with_its_walk_and_kills_each_before_its_leader(
     platform: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The groups the walked processes lead: read before the SIGTERM, killed after (#691).
+    """The groups the walked processes lead: read before the SIGTERM, killed first (#691, #611 S2a).
 
     ``(cmd &)`` leaves ``cmd`` in the group of the ``bash`` tool's shell with PPID
     1, where no walk can name it, so each walked process that leads its own group
-    gets a ``killpg`` after the pids. The pgid is read in the snapshot, before any
-    signal, and never again: on this grace leg the kill comes a grace later, and
-    a pgid read then may be a stranger's. One log, so "before", "once" and
-    "after the pids, before Q1" are measurements. ``getpgid`` / ``killpg`` are lent,
-    so the windows leg runs it too.
+    gets a ``killpg``. The pgid is read in the snapshot, before any signal, and
+    never again: on this grace leg the kill comes a grace later, and a pgid read
+    then may be a stranger's. Since #611 S2a the group goes BEFORE its leader's
+    own SIGKILL, while that leader still verifies (Codex N5: a leader killed and
+    reaped first frees the number the ``killpg`` names); until then it went after
+    every pid. One log, so "before", "once" and "before the pids, before Q1" are
+    measurements. ``getpgid`` / ``killpg`` are lent, so the windows leg runs it too.
     """
 
     _simulate_posix(monkeypatch, platform)
@@ -574,7 +600,7 @@ async def test_posix_reap_reads_the_groups_with_its_walk_and_kills_them_after_th
         events.append(("getpgid", pid))
         return pid
 
-    monkeypatch.setattr(reaper, "descendant_pids", lambda _pid: [DESCENDANT_PID])
+    monkeypatch.setattr(reaper, "descendant_identities", lambda _pid: [DESCENDANT])
     monkeypatch.setattr(reaper.os, "getpgid", _getpgid, raising=False)
     monkeypatch.setattr(
         reaper.os,
@@ -594,9 +620,9 @@ async def test_posix_reap_reads_the_groups_with_its_walk_and_kills_them_after_th
     assert events == [
         ("getpgid", DESCENDANT_PID),
         ("kill", CHILD_PID, signal.SIGTERM),
+        ("killpg", DESCENDANT_PID, SIGKILL),
         ("kill", DESCENDANT_PID, SIGKILL),
         ("kill", CHILD_PID, SIGKILL),
-        ("killpg", DESCENDANT_PID, SIGKILL),
         ("hard_kill",),
     ], events
 
@@ -631,9 +657,9 @@ async def test_pids_handed_in_without_their_groups_get_no_group_looked_up(
     )
 
     rc = await asyncio.wait_for(
-        reap(proc, grace=GRACE, eager_kill=eager, descendants=[DESCENDANT_PID], tree=tree), 5.0
+        reap(proc, grace=GRACE, eager_kill=eager, descendants=[DESCENDANT], tree=tree), 5.0
     )
-    kill_tree(_Dead(), [DESCENDANT_PID])
+    kill_tree(_Dead(), [DESCENDANT])
 
     assert rc == 1
     assert sent == [
@@ -687,7 +713,7 @@ async def test_a_grace_leaves_no_waiter_on_the_event_however_it_ends(
             reap(
                 proc,
                 grace=GRACE if ends_by == "timeout" else 60.0,
-                descendants=[DESCENDANT_PID],
+                descendants=[DESCENDANT],
                 tree=tree,
                 escalate=escalate,
             )
@@ -742,7 +768,7 @@ async def test_a_reaper_cancelled_in_its_grace_escalates_instead_of_ending(
         reap(
             proc,
             grace=60.0,
-            descendants=[DESCENDANT_PID],
+            descendants=[DESCENDANT],
             tree=tree,
             escalate=asyncio.Event(),
         )
@@ -767,3 +793,24 @@ async def test_a_reaper_cancelled_in_its_grace_escalates_instead_of_ending(
             (DESCENDANT_PID, SIGKILL),
             (CHILD_PID, SIGKILL),
         ]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_bare_pid_carries_no_start_time_and_is_never_signalled(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``kill_tree`` handed a pid with no start time signals it not at all (#611 S2a).
+
+    Every product caller hands it the walk's entries; a bare number cannot be
+    told from another process that took it. The entry beside it, with the start
+    time the walk read, is signalled. Fails on ``3cab5d16``, which signalled
+    every pid it was handed.
+    """
+
+    _simulate_posix(monkeypatch, platform)
+    sent = _record_signals(monkeypatch)
+    monkeypatch.setattr(reaper.os, "killpg", lambda *_a: None, raising=False)
+
+    kill_tree(_Dead(), [DESCENDANT_PID + 1, DESCENDANT])
+
+    assert sent == [(DESCENDANT_PID, SIGKILL)]

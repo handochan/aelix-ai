@@ -70,10 +70,11 @@ from aelix_agents.print_channel import (
     resolve_child_cwd,
 )
 from aelix_agents.prompt_file import _pid_is_live
-from aelix_agents.reaper import descendant_pids, kill_tree, pdeathsig, reap
+from aelix_agents.reaper import WalkEntry, descendant_pids, kill_tree, pdeathsig, reap
 from aelix_agents.runtime import _TERMINAL_STATES as _RUNTIME_TERMINAL
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_ai.streaming import Model
+from aelix_ai.utils import _process_identity
 from aelix_ai.utils._process_tree import (
     CREATE_NEW_PROCESS_GROUP,
     ProcessTree,
@@ -2106,12 +2107,12 @@ async def test_the_reap_leg_does_not_walk_a_reaped_child(
 
     walked: list[int] = []
 
-    def _walk(pid: int) -> list[int]:
+    def _walk(pid: int) -> list[WalkEntry]:
         walked.append(pid)
-        return [_SQUATTER_PID]
+        return _walked(_SQUATTER_PID)
 
-    monkeypatch.setattr(pc, "descendant_pids", _walk)
-    monkeypatch.setattr(rc, "descendant_pids", _walk)
+    monkeypatch.setattr(pc, "descendant_identities", _walk)
+    monkeypatch.setattr(rc, "descendant_identities", _walk)
     row = RunningChild(id="sub-reap-reaped", profile="scout")
     # ``returncode = 0``: dead and reaped. Built inside the loop (its StreamReader).
     proc = _RecordingProc()
@@ -2388,7 +2389,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1352-1356``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1369-1373``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2440,11 +2441,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1509``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1526``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:265``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:268``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -3336,7 +3337,8 @@ async def test_descendant_pids_finds_a_grandchild() -> None:
         # Deepest first: the grandchild precedes anything it spawned under it.
         assert all(pid != proc.pid for pid in found)
     finally:
-        kill_tree(proc, descendant_pids(proc.pid))
+        # The walk's entries, with the start times it read: a bare pid is never signalled (#611 S2a).
+        kill_tree(proc, rp.descendant_identities(proc.pid))
         await proc.wait()
 
 
@@ -3391,7 +3393,8 @@ async def test_descendant_pids_names_every_generation_deepest_first() -> None:
             named[tag] = int(pid)
         assert descendant_pids(proc.pid) == [named["GREAT"], named["GRAND"]]
     finally:
-        kill_tree(proc, descendant_pids(proc.pid))
+        # The walk's entries, with the start times it read: a bare pid is never signalled (#611 S2a).
+        kill_tree(proc, rp.descendant_identities(proc.pid))
         await proc.wait()
         for pid in named.values():
             with contextlib.suppress(OSError):
@@ -3983,7 +3986,7 @@ async def test_a_non_setsid_grandchild_dies_on_the_escalation(
     """
 
     # ``_reap`` takes the snapshot through this module's name for the walk.
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: [])
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
     # ONE ``try`` around everything after the spawn, and the pid is read from
@@ -4039,7 +4042,8 @@ async def test_the_drain_after_exit_leg_is_the_job_on_win32_only(
     """
 
     monkeypatch.setattr(pc, "POST_EXIT_DRAIN_SECONDS", 0.05)
-    monkeypatch.setattr(pc, "pipe_holder_pids", lambda _links: [_SQUATTER_PID])
+    monkeypatch.setattr(pc, "pipe_holders", lambda _links: _walked(_SQUATTER_PID))
+    _still_walked(monkeypatch, _SQUATTER_PID)
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
     # THE LEND COMES WITH THE PLATFORM PATCH, always. ``rp.sys is sys``, so the
@@ -4075,6 +4079,31 @@ _SQUATTER_PID = 2**22 - 1
 """A pid that cannot exist, used only as a value ``os.kill`` is spied on for."""
 
 _SIGKILL = getattr(signal, "SIGKILL", 9)
+
+#: The start time an injected walk records for each fake pid (#611 S2a).
+_STAMP = 1000.0
+
+
+def _walked(*pids: int) -> list[WalkEntry]:
+    """An injected walk's entries: each fake pid with the start time it was read with."""
+
+    return [WalkEntry(pid, _STAMP, None) for pid in pids]
+
+
+def _still_walked(monkeypatch: pytest.MonkeyPatch, *pids: int) -> None:
+    """``pids`` still read the walk's start time, and no pidfd is opened (#611 S2a).
+
+    A walked pid is signalled only while its start time is the walk's. These
+    pids are fake, so the reader is pinned for them (a real process may hold one
+    on the runner, as pid 10 did in #723) and Linux compares start times as the
+    other hosts do.
+    """
+
+    real = _process_identity.process_started
+    monkeypatch.setattr(
+        _process_identity, "process_started", lambda pid: _STAMP if pid in pids else real(pid)
+    )
+    monkeypatch.delattr(os, "pidfd_open", raising=False)
 """``signal.SIGKILL``, or 9 where the NAME does not exist.
 
 Windows has no ``SIGKILL`` attribute at all, so any case here that injects a
@@ -4306,7 +4335,8 @@ def test_the_eager_abort_leg_reaches_the_tree_per_platform(
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
     monkeypatch.setattr(rp.sys, "platform", platform)
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [_SQUATTER_PID])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: _walked(_SQUATTER_PID))
+    _still_walked(monkeypatch, _SQUATTER_PID)
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
 
@@ -4359,7 +4389,7 @@ async def test_the_eager_aborts_group_kill_is_withheld_from_a_reaped_child(
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
     monkeypatch.setattr(rp.sys, "platform", "linux")
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: [])
     monkeypatch.setattr(rp.os, "kill", lambda _pid, _sig: None)
 
     tree = _StubTree()
@@ -4390,14 +4420,15 @@ async def test_the_eager_abort_does_not_walk_a_reaped_child(
     walked: list[int] = []
     signalled: list[tuple[int, int]] = []
 
-    def _walk(pid: int) -> list[int]:
+    def _walk(pid: int) -> list[WalkEntry]:
         walked.append(pid)
-        return [_SQUATTER_PID]
+        return _walked(_SQUATTER_PID)
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
     monkeypatch.setattr(rp.sys, "platform", "linux")
-    monkeypatch.setattr(pc, "descendant_pids", _walk)
-    monkeypatch.setattr(rc, "descendant_pids", _walk)
+    monkeypatch.setattr(pc, "descendant_identities", _walk)
+    monkeypatch.setattr(rc, "descendant_identities", _walk)
+    _still_walked(monkeypatch, _SQUATTER_PID)
     monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
 
     row = RunningChild(id="sub-eager-reaped", profile="scout")
@@ -4431,7 +4462,7 @@ async def test_the_eager_aborts_group_kill_defers_to_a_running_reaper(
 
     monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
     monkeypatch.setattr(rp.sys, "platform", "linux")
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: [])
     monkeypatch.setattr(rp.os, "kill", lambda _pid, _sig: None)
 
     tree = _StubTree()
@@ -4480,7 +4511,7 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
     """
 
     # ``_eager_abort`` walks through this module's name for the walk.
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: [])
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
     row = RunningChild(id="sub-cancel-grandchild", profile="scout")
@@ -4687,15 +4718,16 @@ class _DiesOnTheKill(_LiveProc):
 
 
 @pytest.mark.parametrize("channel", ["print", "rpc"])
-def test_the_eager_abort_reads_the_walks_groups_first_and_kills_them_last(
+def test_the_eager_abort_reads_the_walks_groups_first_and_kills_each_before_its_leader(
     monkeypatch: pytest.MonkeyPatch, channel: str
 ) -> None:
     """#691: what ``_eager_abort`` does with the groups its walk's processes lead.
 
     Read with the walk, before any signal — ``getpgid`` first in the log, once
     per pid, and never again once a kill has gone out (a pgid read then may be a
-    stranger's); killed after every pid; and only a pid that leads its own group
-    is one, so a walked member of somebody else's group adds nothing. That member
+    stranger's); killed before the pids since #611 S2a, while the leader still
+    verifies (Codex N5; until then after every pid); and only a pid that leads
+    its own group is one, so a walked member of somebody else's group adds nothing. That member
     is in the CHILD's group here, as a non-``setsid`` grandchild is: the child's
     own group is Q1's, behind Q1's guards, and never one of these (reading every
     walked pid's group instead would kill it here, past those guards). Both
@@ -4708,8 +4740,9 @@ def test_the_eager_abort_reads_the_walks_groups_first_and_kills_them_last(
     proc = _LiveProc()
     leader, member = _SQUATTER_PID - 1, _SQUATTER_PID - 2
     events = _lend_the_group_calls(monkeypatch, {leader: leader, member: proc.pid})
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [member, leader])
-    monkeypatch.setattr(rc, "descendant_pids", lambda _pid: [member, leader])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: _walked(member, leader))
+    monkeypatch.setattr(rc, "descendant_identities", lambda _pid: _walked(member, leader))
+    _still_walked(monkeypatch, member, leader)
 
     row = RunningChild(id="sub-eager-groups", profile="scout")
     if channel == "print":
@@ -4721,10 +4754,10 @@ def test_the_eager_abort_reads_the_walks_groups_first_and_kills_them_last(
     assert events == [
         ("getpgid", member),
         ("getpgid", leader),
+        ("killpg", leader, _SIGKILL),
         ("kill", member, _SIGKILL),
         ("kill", leader, _SIGKILL),
         ("kill", proc.pid, _SIGKILL),
-        ("killpg", leader, _SIGKILL),
     ], events
 
 
@@ -4740,8 +4773,8 @@ async def test_the_reap_leg_hands_its_reaper_the_groups_of_its_walk(
     real-process case for that
     (``test_a_stopped_delegation_takes_what_its_bash_left_in_the_shells_group``);
     the rpc channel has none, so this is its pin. The log is the eager abort's
-    above: read with the walk, before the reaper's SIGTERM, killed after every
-    pid, and never the child's own group. ``eager_kill`` is set, so the reaper
+    above: read with the walk, before the reaper's SIGTERM, killed before the
+    pids (#611 S2a), and never the child's own group. ``eager_kill`` is set, so the reaper
     kills at once. No process is started.
     """
 
@@ -4750,8 +4783,9 @@ async def test_the_reap_leg_hands_its_reaper_the_groups_of_its_walk(
     proc = _DiesOnTheKill()
     leader, member = _SQUATTER_PID - 1, _SQUATTER_PID - 2
     events = _lend_the_group_calls(monkeypatch, {leader: leader, member: proc.pid})
-    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [member, leader])
-    monkeypatch.setattr(rc, "descendant_pids", lambda _pid: [member, leader])
+    monkeypatch.setattr(pc, "descendant_identities", lambda _pid: _walked(member, leader))
+    monkeypatch.setattr(rc, "descendant_identities", lambda _pid: _walked(member, leader))
+    _still_walked(monkeypatch, member, leader)
     row = RunningChild(id="sub-reap-groups", profile="scout")
     row.proc = proc
     row.eager_kill = True
@@ -4761,10 +4795,10 @@ async def test_the_reap_leg_hands_its_reaper_the_groups_of_its_walk(
         ("getpgid", member),
         ("getpgid", leader),
         ("kill", proc.pid, signal.SIGTERM),
+        ("killpg", leader, _SIGKILL),
         ("kill", member, _SIGKILL),
         ("kill", leader, _SIGKILL),
         ("kill", proc.pid, _SIGKILL),
-        ("killpg", leader, _SIGKILL),
     ], events
 
 

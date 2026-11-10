@@ -653,7 +653,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1093``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1096``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -1305,7 +1305,7 @@ class _SubagentRuntimeImpl:
             while self._children:
                 # ABORT THE WHOLE WAVE, THEN JOIN IT — not abort-join per child.
                 # ``abort_child`` signals and ``reap`` waits out a 5 s grace
-                # (``reaper.py:176``), so joining child *k* before child *k+1* has
+                # (``reaper.py:184``), so joining child *k* before child *k+1* has
                 # even been signalled would serialise N graces into N × 5 s of
                 # teardown.
                 wave = list(self._children.values())
@@ -1683,9 +1683,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:265``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:268``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1509-1515``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1526-1532``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

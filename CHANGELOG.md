@@ -1418,6 +1418,24 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Stopping a delegated agent on macOS or Linux checks each process it walked before signalling it
+  (#758, #611, ADR-0291).** Esc, Esc Esc, a signal to `-p`, `stop`, `stop_all` and the escalation
+  after a grace walk the child's descendants and SIGKILL them with the groups they lead. A number
+  handed on between that walk and the kill went to whoever took it, and so did that process's group.
+  Now each walked process is signalled only while it still has the start time the walk read with
+  its parent — through a pidfd on Linux — and each group only while its leader does, deepest first
+  and before that leader; a leader whose start time could not be read gets nothing
+  (`tests/agents_ext/test_identity_legs_611.py`, real processes, the reuse simulated by a start-time
+  reader 1000 s off; red on `3cab5d16` through all three doors). What stays (ADR-0291's note): on
+  macOS the check and the signal are two calls, and on Linux so are a leader's check and its group's
+  `killpg` (R2); a number reused within one 10 ms clock tick of the walked process's start passes
+  the Linux check (R2b); a process forked between the walk and the kill can still be missed (limit 1),
+  and more of them than before: in a stand-in measurement with a helper forking every millisecond, a
+  stop left a mean of 1.88 such processes against 1.21 on `3cab5d16` on macOS (24 trials), and 2.50
+  against 1.23 in Linux docker (40 trials). Live with the real print channel and a stand-in child, on
+  macOS and in Linux docker, Esc and
+  `stop` still left nothing of a `setsid` command, a shell's `(cmd &)` or a non-`setsid` grandchild.
+
 - **`/resume` and `aelix -r` list only the sessions `aelix -c` would continue (#754, ADR-0239).**
   Since #709 `-c` skips a session whose branch carries no conversation, but the two pickers still
   listed every session file, newest-used first. A launch quit without a prompt, an unused `/new`,

@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import aelix_coding_agent
+from aelix_ai.utils import _process_identity
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
@@ -106,8 +107,10 @@ from aelix_agents.posture import resume_clamp
 from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
-    descendant_pids,
-    group_leaders,
+    HeldWalk,
+    WalkEntry,
+    descendant_identities,
+    hold_walk,
     kill_group_if_live,
     kill_tree,
     pdeathsig_preexec,
@@ -1263,10 +1266,23 @@ def pipe_holder_pids(links: set[str]) -> list[int]:
     directory and is skipped — it cannot be holding our pipe anyway.
     """
 
+    return [holder.pid for holder in pipe_holders(links)]
+
+
+def pipe_holders(links: set[str]) -> list[WalkEntry]:
+    """:func:`pipe_holder_pids`, each with the start time read when it was found (#611 S2a).
+
+    ``kill_tree`` signals a holder only while its number still has that start
+    time, so a squatter that exits and hands its number on before the kill is
+    not replaced by the process that took it. The time is read after the ``fd``
+    directory opened and before its links are read; a holder whose time cannot
+    be read is named with none, and is not signalled.
+    """
+
     if not links or not _PROC_DIR.is_dir():
         return []
     me = os.getpid()
-    holders: list[int] = []
+    holders: list[WalkEntry] = []
     try:
         entries = list(_PROC_DIR.iterdir())
     except OSError:
@@ -1282,13 +1298,14 @@ def pipe_holder_pids(links: set[str]) -> list[int]:
         except OSError:
             # Exited between the listing and the read, or somebody else's.
             continue
+        stamp = _process_identity.process_started(pid)
         for fd in fds:
             try:
                 link = os.readlink(fd)
             except OSError:
                 continue
             if link in links:
-                holders.append(pid)
+                holders.append(WalkEntry(pid, stamp, None))
                 break
     return holders
 
@@ -1906,9 +1923,9 @@ class PrintChannel:
             # The owner's evidence first, then its hard leg; then the squatters
             # the inode walk named, which no walk of a dead root can.
             owner.stop_now()
-            kill_tree(proc, pipe_holder_pids(links), tree=None)
+            kill_tree(proc, pipe_holders(links), tree=None)
         else:
-            kill_tree(proc, pipe_holder_pids(links), tree=tree)
+            kill_tree(proc, pipe_holders(links), tree=tree)
         await asyncio.wait({pumps}, timeout=POST_EXIT_DRAIN_SECONDS)
         # Cancelled unconditionally: a pump still blocked on a pipe some
         # unkillable holder owns would otherwise outlive the delegation.
@@ -1938,14 +1955,14 @@ class PrintChannel:
         task = row.reaper_task
         if task is None or task.done():
             live = getattr(proc, "returncode", None) is None
-            walk = descendant_pids(proc.pid) if live else []
+            # Held for the reaper, which closes it (#611 S2a).
+            walk = hold_walk(descendant_identities(proc.pid)) if live else HeldWalk()
             task = asyncio.ensure_future(
                 reap(
                     proc,
                     grace=self._grace,
                     eager_kill=row.eager_kill,
                     descendants=walk,
-                    groups=group_leaders(walk),
                     tree=row.tree,
                     escalate=row.escalate,
                     # A service-owned row is stopped by its owner (#611 S1c).
@@ -2007,9 +2024,16 @@ class PrintChannel:
         # reaped: its descendants were reparented when it died, so the walk
         # could name nothing of its own — only the children of whoever got the
         # pid next (``reaper``'s PID-recycling hazard).
+        #
+        # Each walked pid is signalled only while it is still the process
+        # walked, and each group only while its leader is, before that leader
+        # (#611 S2a, ``kill_tree``).
         live = getattr(proc, "returncode", None) is None
-        walk = descendant_pids(proc.pid) if live else []
-        kill_tree(proc, walk, tree=row.tree, groups=group_leaders(walk))
+        walk = hold_walk(descendant_identities(proc.pid)) if live else HeldWalk()
+        try:
+            kill_tree(proc, walk, tree=row.tree)
+        finally:
+            walk.close()
         # Q1 ON THE CANCEL PATH (#220 review round 2, posix2/P2). ``kill_tree``
         # deliberately runs no group kill of the CHILD's group, so the line
         # above reaches only what the walk named, the groups those processes
@@ -2060,6 +2084,7 @@ __all__ = [
     "narrow_context_files",
     "narrow_tools",
     "pipe_holder_pids",
+    "pipe_holders",
     "profile_identity",
     "resolve_child_cwd",
     "resume_cwd",

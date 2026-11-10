@@ -462,7 +462,7 @@ async def test_rpc_batch_cancel_reports_every_child_after_slow_pipe_cleanup(
     from aelix_agents.rpc_channel import RpcChannel
 
     monkeypatch.setattr(channel_module, "POST_EXIT_DRAIN_SECONDS", 0.8)
-    monkeypatch.setattr(channel_module, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(channel_module, "descendant_identities", lambda _pid: [])
     marker = tmp_path / "helper.pid"
     source = "\n".join(
         [

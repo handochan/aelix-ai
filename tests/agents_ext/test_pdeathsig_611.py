@@ -378,3 +378,30 @@ def test_a_parent_killed_after_the_recheck_still_ends_the_child(tmp_path: Path) 
         if middle.poll() is None:
             middle.kill()
             middle.wait()
+
+
+def test_the_hook_lives_in_aelix_ai_and_reaper_reexports_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#611 S2a: the hook moved to ``aelix_ai.utils._parent_death``, unchanged.
+
+    A spawn site in ``aelix_coding_agent`` (S2d's background ``bash``) can take
+    it there; product-core may not import ``aelix_agents`` (the band rule,
+    ``tests/agents/test_p2_band_boundaries.py``). ``reaper`` re-exports both
+    names, so its callers and the cases above reach the same functions, and
+    the preexec built through ``reaper`` binds the moved hook and this
+    process's pid. The new module imports nothing from ``aelix_agents``.
+    Fails on ``3cab5d16`` (no such module), and with the re-export dropped.
+    """
+
+    from aelix_ai.utils import _parent_death
+
+    assert reaper.pdeathsig is _parent_death.pdeathsig
+    assert reaper.pdeathsig_preexec is _parent_death.pdeathsig_preexec
+    monkeypatch.setattr(reaper.sys, "platform", "linux", raising=True)
+    hook = reaper.pdeathsig_preexec()
+    assert isinstance(hook, functools.partial)
+    assert hook.func is _parent_death.pdeathsig
+    assert hook.args[0] == os.getpid()
+    source = Path(_parent_death.__file__).read_text(encoding="utf-8")
+    assert "aelix_agents" not in "".join(
+        line for line in source.splitlines() if line.startswith(("import ", "from "))
+    )

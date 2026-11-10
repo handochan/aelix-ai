@@ -445,6 +445,42 @@ user may configure, under core's hard maxima; product-core declares `HARD_MAX_PE
   a helper that leaves its group AND whose parent exited before the soft leg is not named (S2's
   subreaper and launch ledger). A group named at the soft leg is killed at the hard leg after the
   grace, so ADR-0291's group-number recycling residual has that grace as its window.
+
+  *2026-11-10 note (#758, #611 S2a; behind `ACTIVE = False`):* the hard leg now checks a pid its
+  own collection walked as it checks an earlier one (`ProcessTree._kill_posix`; on `3cab5d16` it
+  was killed with no check,
+  `tests/jobs/test_stop_evidence_posix_611.py::test_a_fresh_pid_whose_stamp_changed_gets_no_kill`),
+  and the start time it checks against is the one the walk read with the pid's parent
+  (`descendant_identities`), not one read after a pid-only walk, which recorded a replacement's
+  time when the child was replaced in between (`::test_a_child_replaced_between_the_walk_and_its_stamp_gets_no_signal`,
+  red on `f3e9b814`; Codex #2 on #758's first round). Every group — the root's own, a group the
+  client registered, one a walked pid leads — is signalled only while its leader gives authority:
+  gone, a zombie, or alive with the start time recorded for it, or for the root, the service's own
+  unreaped `Process`; never a live leader whose start time was not read
+  (`::test_a_null_stamp_live_leader_is_never_signalled`, red on `3cab5d16`;
+  `::test_a_root_number_naming_a_live_leader_of_unknown_start_time_is_not_group_killed` and
+  `::test_a_registered_group_whose_live_leader_has_no_start_time_is_not_killed`, every leg, red on
+  `f3e9b814`, where the root branches still read an unknown time as "not moved";
+  `::test_the_jobs_own_unreaped_root_still_gives_authority_over_its_group`, green throughout). Groups
+  go before pids. The tree path and `stop_descendants` walk the root only while its number is its
+  own (#731 item 2, `::test_the_tree_path_checks_the_roots_identity_before_walking`, red on
+  `3cab5d16`). A gone leader's group is killed (the owner's OQ-D answer, 2026-11-10;
+  `::test_a_dead_leader_group_with_no_verifiable_member_is_killed`, green before and after). Its
+  residual, as the #611 S2 contract (r3 §1 #3) states it: after the leader was recorded and before
+  the check, its group emptied and a stranger took the number, made it a group, started members and
+  exited; the check then reads a gone leader and the stranger's members are killed. That window is
+  the time since the group was recorded, not microseconds. The confirm step alone counts a zombie as
+  gone — a walked pid that is one, and a group whose every member is one
+  (`::test_confirm_counts_a_zombie_walked_pid_as_gone`, `::test_confirm_counts_a_zombie_only_group_as_empty`,
+  and under a Linux subreaper `::test_confirm_counts_an_adopted_zombie_as_gone_under_a_subreaper`;
+  red on `3cab5d16`, which waited to the deadline) — so a job is `stopped` while such a zombie waits
+  for its parent to reap it. A group listing that skips a process it could not read is unknown, not
+  "only zombies" (`::test_an_unreadable_member_makes_the_listing_unknown`, red on `f3e9b814`, Codex
+  #7). The barrier does not wait on a recorded group whose leader's number reads as another process,
+  read again on every poll (#731 item 1, `::test_confirm_does_not_wait_on_a_recorded_group_whose_leader_moved`,
+  red on `3cab5d16`; `::test_a_leader_whose_number_moves_during_the_wait_is_not_waited_on`, red on
+  `f3e9b814`, Codex #11); a live leader whose start time was never read is still waited on, and its
+  job reads `unresolved` at the deadline (`::test_a_live_leader_whose_start_time_was_never_read_is_still_waited_on`).
 - **SIGINT** is handled in the drain only; a Ctrl+C during the user's own prompt ends the run as it
   did before #722, and the jobs are then stopped by the dispose's `session_shutdown`. SIGTERM does
   not flush (a parent's stop of a child).

@@ -389,3 +389,78 @@ macOS, scripted model: TUI Esc, Esc Esc and SIGTERM, `-p` SIGTERM and rpc SIGTER
 the `(sleep X &)` and #228 rows are in §5 and §7; a child whose earlier `bash` call had already
 returned after `(sleep X &)` left X, on the first commit and here (§5, limit 2). Evidence is local
 and untracked: the lanes' reports and probes under `.omc/specs/691-*` and `.omc/probes/691/`.
+
+## Note (2026-11-10, #758, #611 S2a): every signal checks the identity the walk read
+
+**Limit 4 is narrowed.** The walk records each process's start time in the same kernel read as its
+parent (`reaper.descendant_identities`: one `/proc/<pid>/stat` read on Linux, one
+`proc_pidinfo(PROC_PIDTBSDINFO)` on macOS, a child kept only while that read names the parent being
+walked). Every leg of this ADR — `_eager_abort` in both channels (Esc, Esc Esc, a signal to `-p`),
+`reap(eager_kill=True)` (`stop`, `stop_all`, the teardown), the escalation after a grace and
+`_drain_after_exit` — signals a walked pid only while it is still that process: on Linux through a
+pidfd opened right before its first signal and kept only if the pid then had the walk's start time;
+where `pidfd_open` is missing or fails (macOS, Windows, an old kernel, `EMFILE`), after reading the
+start time again right before the signal. A pid whose start time the walk could not read is not
+signalled by pid. The pidfd is opened at the signal, not right after the walk (the lead's call),
+because opening every one up front lengthened the stop enough to widen R1: in the implementation
+round, with groups then sent shallowest first, M5's fork loop (below) left 2–7 forks per stop in
+Linux docker that way against 1–2 on the base, and 0–3 opened at the signal. What that choice
+leaves is R2b below. On `3cab5d16` each door SIGKILLed a walked number that read as another process
+(`tests/agents_ext/test_identity_legs_611.py::test_a_walked_pid_whose_stamp_changed_gets_no_signal`,
+the three doors, real processes, the reuse simulated by a start-time reader 1000 s off;
+`::test_linux_signals_go_through_a_pidfd`, Linux).
+
+**§5's groups go first, and only with a verified leader.** Each group a walked process leads is now
+signalled BEFORE the pids, deepest leader first as the walk is ordered, and only while its leader
+still verifies (pidfd live, or its walked start time again). Deepest first because a deeper leader
+can depend on a shallower one: with `G → H`, both leading groups, `X` orphaned in `H`'s group and
+`H` reading a pipe `G` writes, killing `G`'s group first ends `H` before its group is read, and `H`
+then fails its check and its group — with `X` — is withheld. The implementation round sent them
+shallowest first and did exactly that
+(`::test_a_leader_that_dies_with_its_ancestors_group_still_has_its_group_signalled`, the interleaving
+forced by waiting for `H` to end after `G`'s `killpg`: red on `f3e9b814`, green on `3cab5d16` and
+here; `::test_groups_and_pids_go_deepest_first` pins the order; Codex #1 on #758's first round). On `3cab5d16` the groups went after every pid, so a leader killed and reaped first could
+free the number the `killpg` then named (Codex N5 on the S2 contract), and a leader whose number now
+named another process, or whose start time nobody had read, still had its group killed
+(`::test_a_walked_leaders_group_goes_before_the_leader`,
+`::test_a_walked_leaders_group_is_signalled_before_the_leader_and_only_while_it_verifies`,
+`::test_a_live_leader_with_an_unknown_stamp_is_never_group_killed`, the three doors each, all red on
+`3cab5d16`). A dead or unverified leader's group gets nothing on these legs. §5's two order cases
+were renamed for it: `test_the_eager_abort_reads_the_walks_groups_first_and_kills_each_before_its_leader`
+and `test_posix_reap_reads_the_groups_with_its_walk_and_kills_each_before_its_leader`. The success
+drain still sends no group and gained the per-pid check only
+(`::test_the_success_drain_still_signals_no_group`, green on `3cab5d16` and after). Q1, the child's
+own group, is unchanged. Live, macOS, the real `PrintChannel` with a stand-in child (a `setsid`
+command, a `setsid` shell with `(sleep B &)` in its group, a non-`setsid` grandchild): Esc and
+`stop` left nothing and signalled no pid outside the tree read by `ps` before the stop; with the
+command's and the shell's numbers made to read as other processes, those two, `B` and the shell's
+next `sleep` were left and nothing else was signalled (`.omc/probes/758-759/impl/live/`); the same
+rows in Linux docker after fix round 1 (`.omc/probes/758-759/fix-r1/live/`), the signals through
+pidfds and the groups deepest first.
+
+What stays, as #758 states it:
+
+- **R1 is limit 1, unchanged.** A process forked between the walk and the kill can be missed. In
+  the #611 S2 design's measurement M5 (a stand-in helper forking a `setsid`, `env -i` child every
+  1 ms, `_eager_abort`), 1–4 such processes were left in each of 8 trials on macOS and Linux
+  (`.omc/probes/611-s2-design/late-fork-*.out`). The same probe after fix round 1 (groups deepest
+  first), 8 trials each: macOS 2–3 left per stop (the base, same machine, earlier that day: 2);
+  Linux docker 2–5 without a subreaper and 3–4 with one, against the base's 1–3 and 1–3 in the same
+  image and hour; the whole stop took 7.8–9.7 ms on macOS and 5.4–6.6 ms on Linux, the base's
+  2.7–4.5 ms on Linux (`.omc/probes/758-759/fix-r1/live/`). The round-2 verify measured the same
+  stand-in over more trials on `c74e280b`: a mean of 1.88 left per stop against the base's 1.21 on
+  macOS (24 trials), and 2.50 against 1.23 in Linux docker (40 trials). So with a helper that forks
+  every millisecond this change leaves more such processes per stop than the base, on macOS and on
+  Linux: the identity checks and the deepest-first group order lengthen the window. No test claims
+  R1 fixed.
+- **R2.** On macOS the start-time check and the `kill` are two calls; the window between them was not
+  measured. On Linux the same window is in front of a group's `killpg` (a pidfd names a process, not
+  a group) and in front of the `kill` of a pid whose `pidfd_open` failed.
+- **R2b, the lazy pidfd.** A walked number handed on between the walk and that pid's first signal
+  to a process whose `/proc/<pid>/stat` start time falls in the same clock tick as the walked one's
+  (10 ms at `USER_HZ` 100) passes the check, and is signalled through the pidfd then opened for it
+  (Codex #3 on #758's first round, an injected countermodel; not measured on a real host). That needs
+  the number reused within one tick of the walked process's own start. Opening every pidfd during
+  the walk would close it, at the R1 cost measured above.
+- **R3.** A walked parent whose number is reused between the read of the parent and the reads of its
+  children makes a stranger's children look walked.
