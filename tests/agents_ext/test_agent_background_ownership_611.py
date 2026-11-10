@@ -11,8 +11,9 @@ Contract §2.3 ("Eager paths") and §3 rows 7 and 8, for the delegation client:
   the job's evidence legs instead — ``_eager_abort``, ``abort_child``,
   ``reap`` — so nothing signals before the evidence the barrier confirms
   against is collected (ADR-0293 §5);
-* on POSIX the cleanup duty answers ``unverified`` until S2 (#719), and the
-  notice says so (row 8, S1 part);
+* on POSIX the cleanup duty sweeps the launch ledger (#719): ``confirmed`` when
+  the armed agent cleaned up and nothing is left, ``unverified`` with why — and
+  the notice says so — when it did not (row 8);
 * a finished agent's process group is stopped and confirmed inside the barrier
   (``normal_exit="stop_descendants"``; contract row 2 for this kind).
 
@@ -150,19 +151,79 @@ async def test_service_owned_directory_survives_channel_and_stop_all_until_helpe
 # === row 8, S1 part ===============================================================
 
 
-@POSIX
-async def test_s1_reports_helpers_unverified(tmp_path: Path, jobs_on: Any) -> None:
-    """Until S2 (#719) POSIX cannot confirm a helper that left the agent's group: it says so."""
+def _armed_script(*, exit_cleanup: bool) -> str:
+    """A stub child that arms its launch ledger as a real agent does, answers, and maybe cleans up (#719)."""
 
-    rig = await _rig(tmp_path)
-    _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
-    snap = await _settled(rig)
-    assert snap.state == "done"
+    # Without its cleanup it ends as a crash would (``os._exit``): an ordinary
+    # exit runs it anyway, from the hook arming registers. On ``478ffd13``
+    # there is no ``launch_ledger``; the stub then runs unarmed, so these tests
+    # fail there on the answer, not on the import.
+    cleanup = (
+        "if launch_ledger is not None:\n    asyncio.run(launch_ledger.exit_cleanup())\n"
+        if exit_cleanup
+        else "sys.stdout.flush()\nos._exit(0)\n"
+    )
+    return _stub(
+        "import asyncio\n"
+        "try:\n"
+        "    from aelix_coding_agent.tools import launch_ledger\n"
+        "except ImportError:\n"
+        "    launch_ledger = None\n"
+        "if launch_ledger is not None:\n"
+        "    launch_ledger.arm_from_environment()\n"
+        "start()\n"
+        "say('the background answer')\n"
+        "done()\n"
+        'if os.environ.get("AELIX_JOBS_PROTOCOL") == "1":\n'
+        '    emit({"type": "aelix_print_done"})\n' + cleanup
+    )
+
+
+async def _cleanup_fact(rig: Any) -> dict[str, Any]:
     facts = [
         e.data for e in await rig.session.get_entries() if e.type == "custom" and e.custom_type == JOB_FACT_TYPE
     ]
     (cleanup,) = [f for f in facts if f["fact"] == "cleanup"]
-    assert cleanup["helpers"] == "unverified" and "#719" in cleanup["reason"]
+    return cleanup
+
+
+@POSIX
+async def test_posix_helpers_confirmed_when_the_sweep_leaves_nothing(tmp_path: Path, jobs_on: Any) -> None:
+    """N (#719): an armed agent that ran its own exit cleanup, whose sweep finds nothing, is ``confirmed``.
+
+    Replaces S1's ``test_s1_reports_helpers_unverified``. Fails on ``478ffd13``:
+    ``helpers='unverified'``, "… not tracked until the launch ledger (#719)" —
+    POSIX could only ever answer that.
+    """
+
+    rig = await _rig(tmp_path, script=_armed_script(exit_cleanup=True))
+    _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
+    snap = await _settled(rig)
+    assert snap.state == "done"
+    cleanup = await _cleanup_fact(rig)
+    assert cleanup["helpers"] == "confirmed", cleanup
+    await rig.service.shutdown()
+
+
+@POSIX
+async def test_posix_helpers_unverified_when_the_agent_ended_without_its_cleanup(
+    tmp_path: Path, jobs_on: Any
+) -> None:
+    """N (#719): an armed agent that exited on its own with no ``exit`` line reads ``unverified``.
+
+    The stated residual (r3 §3.3): a crash, ``os._exit`` or a SIGKILL that was
+    not aelix's own stop skips the agent's exit cleanup, and an adopted helper
+    that left its group and cleared its environment is then found by nothing.
+    Fails on ``478ffd13``: the reason is S1's "#719" placeholder, not this one.
+    """
+
+    rig = await _rig(tmp_path, script=_armed_script(exit_cleanup=False))
+    _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
+    snap = await _settled(rig)
+    assert snap.state == "done"
+    cleanup = await _cleanup_fact(rig)
+    assert cleanup["helpers"] == "unverified"
+    assert "the agent ended without its own cleanup" in cleanup["reason"], cleanup
     (notice,) = rig.harness.undelivered_notices()
     assert "not confirmed stopped" in notice.body
     await rig.service.shutdown()
@@ -618,3 +679,53 @@ async def test_no_signal_reaches_a_reused_pid_or_a_group_another_process_leads(
     late = [entry for entry in to_child if entry[3]]
     assert late == [], f"signalled after its number became another process's: {late}"
     await rig.service.shutdown()
+
+
+@POSIX
+async def test_unverified_targets_are_in_the_cleanup_fact_without_a_session_file(
+    tmp_path: Path, jobs_on: Any
+) -> None:
+    """N (contract r2 §3.1, verify F8): no child session file, so the ledger is the prompt directory's.
+
+    The child records a launch whose leader lives and whose start time it
+    could not read (the leader's environment is empty, so no token names it
+    either); the sweep may not signal it, and the job's ``cleanup`` fact names
+    that group and why — the only report there is, since the
+    directory goes after the cleanup.
+    """
+
+    pidfile = tmp_path / "leader.pid"
+    script = _stub(
+        "import json\n"
+        "leader = subprocess.Popen(['/bin/sleep', '60'], start_new_session=True, env={},"
+        " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"announce({str(pidfile)!r}, leader.pid)\n"
+        "path = os.environ['AELIX_LAUNCH_LEDGER']\n"
+        "sub = True if sys.platform == 'linux' else None\n"
+        "records = [{'v': 1, 't': 'armed', 'pid': os.getpid(), 'subreaper': sub},\n"
+        "           {'v': 1, 't': 'intent', 'n': 1},\n"
+        "           {'v': 1, 't': 'launch', 'n': 1, 'pid': leader.pid, 'pgid': leader.pid, 'started': None},\n"
+        "           {'v': 1, 't': 'exit', 'cleanup': 'confirmed', 'reason': None, 'killed': 0}]\n"
+        "with open(path, 'a') as handle:\n"
+        "    handle.write(''.join(json.dumps(r) + '\\n' for r in records))\n"
+        "start()\n"
+        "say('recorded a live leader')\n"
+        "done()\n"
+        'if os.environ.get("AELIX_JOBS_PROTOCOL") == "1":\n'
+        '    emit({"type": "aelix_print_done"})\n'
+    )
+    rig = await _rig(tmp_path, script=script, bucket=False)
+    leader: int | None = None
+    try:
+        _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
+        await _settled(rig)
+        leader = int(pidfile.read_text())
+        cleanup = await _cleanup_fact(rig)
+        assert cleanup["helpers"] == "unverified", cleanup
+        assert f"process group {leader}: leader identity unknown" in cleanup["reason"], cleanup
+        os.kill(leader, 0)
+    finally:
+        if leader is not None:
+            with contextlib.suppress(OSError):
+                os.kill(leader, signal.SIGKILL)
+        await rig.service.shutdown()

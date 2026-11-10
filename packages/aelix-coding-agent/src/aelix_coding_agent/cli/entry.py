@@ -2766,6 +2766,12 @@ async def _finish_refused_turns(harness: AgentHarness) -> None:
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
+    # #719 (ADR-0296): a delegated agent whose parent handed it a launch ledger
+    # arms it — and, on Linux, becomes a child subreaper — before it starts
+    # anything. Every other process finds no ledger and is unchanged.
+    from aelix_coding_agent.tools import launch_ledger
+
+    launch_ledger.arm_from_environment()
     from aelix_coding_agent.cli.args import classify_root_command
     from aelix_coding_agent.util.offline import export_if_offline
 
@@ -5298,6 +5304,10 @@ async def _async_main(argv: list[str]) -> int:
         # error here is swallowed because the run already completed.
         with contextlib.suppress(Exception):
             await runtime.dispose()
+        # #719, #750 — the delegated runs' cleanup tasks that dispose started:
+        # a second dispose returns at once, so this is what keeps the loop open
+        # until they end or are reported (``CLEANUP_BOUND``).
+        await _drain_delegation_cleanups(agents_ext)
         # #722 — the dispose's ``session_shutdown`` stopped the session's jobs;
         # this ends the liveness loop and whatever outlived that bound.
         if jobs_service is not None:
@@ -5313,6 +5323,20 @@ async def _async_main(argv: list[str]) -> int:
         set_launch_extension_off(None)
         if relaxation_notice_off is not None:
             relaxation_notice_off()
+
+
+async def _drain_delegation_cleanups(agents_ext: Any) -> None:
+    """Join the delegation extension's run cleanups (#719, #750); never raises.
+
+    Duck-typed, as every touch of ``agents_ext`` here is: product-core names
+    ``aelix_agents`` at one import site only (ADR-0197 §(a)).
+    """
+
+    drain = getattr(agents_ext, "drain_cleanups", None)
+    if drain is None:
+        return
+    with contextlib.suppress(Exception):
+        await drain()
 
 
 def _stdout_to_devnull() -> None:

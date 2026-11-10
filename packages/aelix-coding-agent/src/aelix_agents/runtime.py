@@ -44,6 +44,7 @@ import contextlib
 import dataclasses
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -96,6 +97,7 @@ from aelix_agents.envelope import (
 )
 from aelix_agents.posture import posture_rank
 from aelix_agents.print_channel import (
+    CleanupDuty,
     PrintChannel,
     RunningChild,
     SpawnPlan,
@@ -103,6 +105,7 @@ from aelix_agents.print_channel import (
     abort_child,
     apply_cost_fallback,
     fresh_limits,
+    join_cleanup,
     profile_identity,
     resolve_child_cwd,
     resume_cwd,
@@ -493,6 +496,10 @@ class SubagentHost:
     is free — or raises with the sentence the model reads. ``None`` — every host
     while jobs are off, and every host before #611 — is the per-session
     :data:`MAX_LIVE_CHILDREN` registry count, as before."""
+    has_ui: Callable[[], bool] = lambda: False
+    """Whether a TUI is up (#719): a delegated run's cleanup still running at
+    :data:`CLEANUP_BOUND` is reported in the log there, and on stderr in
+    ``-p`` / ``--mode json``, where the log is not read."""
 
 
 @dataclass(frozen=True)
@@ -653,7 +660,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1096``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1120``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -696,6 +703,15 @@ class _SubagentRuntimeImpl:
     _settling: set[asyncio.Task[None]] = field(default_factory=set, init=False)
     """Settles in flight (:func:`_shielded_append`): the strong references the
     loop does not keep, and what :meth:`stop_all` joins before it returns."""
+    _cleanups: dict[str, CleanupDuty] = field(default_factory=dict, init=False)
+    """Every run's cleanup task still running, by run key (#719, #750, r3 §3.4).
+
+    Given to each row before ``PrintChannel.run`` is called; the channel adds a
+    run's task in the same synchronous step that creates it, and the task
+    removes itself when it ends. It outlives the row — ``_run`` pops the row
+    first on the cancel path — so :meth:`stop_all` still joins it."""
+    _drain: asyncio.Future[None] | None = field(default=None, init=False, repr=False)
+    """The drain in progress, shared by every concurrent caller (Codex N9)."""
 
     # ── Admission (P2 review, MEDIUM #2) ──────────────────────────
 
@@ -1248,8 +1264,16 @@ class _SubagentRuntimeImpl:
 
         child = self._children.get(id)
         if child is None:
+            # Esc ended the run and ``_run`` popped its row, but its cleanup
+            # may still be running: a stop of that id waits for it (Codex 5).
+            await join_cleanup(self._cleanups.get(id))
             return
         await abort_child(child)
+        # The same cleanup task the run's own end joins (#719, #750): the sweep
+        # of what its bash left, and the killed child awaited. A row stopped
+        # while its spawn was in flight has it too, published before the
+        # spawn; it ends once the run has killed what that spawn started.
+        await join_cleanup(child.cleanup)
 
     async def stop_all(self) -> None:
         """Kill every child and JOIN every reaper. Leaves NOTHING running.
@@ -1260,9 +1284,12 @@ class _SubagentRuntimeImpl:
         3-band rule bans, and it holds a ``Process`` whose exit status nobody
         would ever collect.
 
-        Removes each child's temp prompt directory too: this is the last of the
-        three owners named in ``prompt_file``'s docstring, and the one that runs
-        when a session exits with a child still registered.
+        Removes the temp prompt directory of each child that never got a
+        process: this is the last of the three owners named in ``prompt_file``'s
+        docstring. A child with a process has its run's cleanup task (#719,
+        #750), which removes the directory after its sweep, and every such task
+        — also one whose row is already gone — is joined here through
+        :meth:`drain_cleanups`.
 
         CLOSE THE DOOR, THEN DRAIN — AND THAT ORDER IS THE WHOLE FIX. Under P2
         one ``agent()`` call was one child, so once the registry snapshot had
@@ -1317,7 +1344,11 @@ class _SubagentRuntimeImpl:
                     if task is not None:
                         with contextlib.suppress(Exception):
                             await asyncio.shield(task)
-                    if child.owner is None:
+                    if child.owner is None and child.cleanup is None:
+                        # A row with a process has a cleanup task, which
+                        # removes the directory once it read what is kept
+                        # there (#719); only one that never got a process is
+                        # cleared here.
                         remove_prompt_dir(child.prompt)
                         child.prompt = None
                     # A SERVICE-OWNED row's directory is the job's (#611 S1c,
@@ -1328,9 +1359,69 @@ class _SubagentRuntimeImpl:
                     # would drop a row the ``_draining`` gate let through in the
                     # window before it was set.
                     self._children.pop(child.id, None)
+            # EVERY CLEANUP, ALSO ONE WHOSE ROW IS GONE (#719, #750; Codex #2,
+            # N8, N9). Shared with any concurrent drain, shielded, bounded.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self.drain_cleanups())
             await _join_settles(self._settling)
         finally:
             self._draining = False
+
+    def drain_cleanups(self) -> asyncio.Future[None]:
+        """Join every run's cleanup task to quiescence, within :data:`CLEANUP_BOUND` (r3 §3.4).
+
+        ONE future per drain generation, shared by every concurrent caller —
+        the session-shutdown hook, the CLI's ``finally``, print mode's SIGTERM
+        disposal — so a second disposer waits for the first one's drain instead
+        of returning past it (Codex N9). It re-reads the registry until it is
+        empty, or until the bound; a spawn in flight is in it already, its duty
+        published before the spawn (Codex 3). The bound is per drain
+        generation of this runtime, counted from the drain's start — after
+        ``stop_all``'s reaper joins — and the extension drains each runtime it
+        built with its own. A task still running then stays in the registry, a
+        later drain joins it again, and it is reported in one line each:
+        ``aelix: cleanup of delegated run <key> did not finish (<step>)`` — on
+        stderr in ``-p`` and ``--mode json``, only in the log (DEBUG) under the
+        TUI.
+        """
+
+        drain = self._drain
+        if drain is None or drain.done():
+            drain = asyncio.ensure_future(self._drain_once())
+            self._drain = drain
+        return drain
+
+    async def _drain_once(self) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLEANUP_BOUND
+        while self._cleanups:
+            left = deadline - loop.time()
+            if left <= 0:
+                break
+            tasks = [duty.task for duty in self._cleanups.values() if duty.task is not None]
+            await asyncio.wait(tasks, timeout=min(left, DRAIN_POLL_SECONDS))
+        for duty in list(self._cleanups.values()):
+            self._report_unfinished(
+                f"aelix: cleanup of delegated run {duty.key} did not finish ({duty.step})"
+            )
+
+    def _report_unfinished(self, line: str) -> None:
+        """ONE line on stderr in ``-p`` and ``--mode json``; nothing on a live TUI's terminal.
+
+        The log gets it at DEBUG either way: a WARNING with no handler
+        configured reaches stderr through ``logging.lastResort``, which printed
+        it twice headless and painted it over the TUI (verify F1; the rule
+        ``loop.py`` and ``harness/core.py`` follow since #546).
+        """
+
+        logger.debug("%s", line)
+        try:
+            ui = bool(self.host.has_ui())
+        except Exception:  # noqa: BLE001 — a stale host is a headless one here
+            ui = False
+        if not ui:
+            with contextlib.suppress(Exception):
+                print(line, file=sys.stderr)
 
     # ── Internals ─────────────────────────────────────────────────
 
@@ -1530,6 +1621,9 @@ class _SubagentRuntimeImpl:
             # second resume of it is refused (``resume_refusal``) at once.
             session_id=resume.target.session_id if resume is not None else None,
             owner=owner,
+            # The registry the channel publishes this run's cleanup task to
+            # (#719, #750), before the channel is called.
+            cleanups=self._cleanups,
         )
         self._children[spawn_id] = child
         # What the argv will carry, so the id shown is the id launched — read
@@ -1683,9 +1777,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:268``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:278``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1526-1532``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1959-1965``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2034,6 +2128,15 @@ class _SubagentRuntimeImpl:
             with contextlib.suppress(Exception):
                 tap(progress)
 
+
+CLEANUP_BOUND = 10.0
+"""How long a drain waits for the runs' cleanup tasks (the lead's call, r3 §3.4).
+
+A task is the child's exit (the grace), its sweep and its confirm (2 s), so a
+normal one is well inside it; one past it is kept and reported, never dropped."""
+
+DRAIN_POLL_SECONDS = 0.05
+"""How often a drain re-reads the registry while a run is still inside the channel."""
 
 SETTLE_JOIN_SECONDS = 5.0
 """How long :meth:`_SubagentRuntimeImpl.stop_all` waits for settles in flight.

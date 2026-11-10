@@ -235,7 +235,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3359-3375`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3365-3381`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -414,6 +414,11 @@ class AgentsExtension:
     _delegation_jobs: DelegationJobs | None = field(default=None, init=False)
     """This process's background agents (``jobs_client``), made on the first
     build that registers the kind and kept across every build after it."""
+    _built: list[Any] = field(default_factory=list, init=False)
+    """Every runtime a build made that may still hold a run's cleanup task
+    (#719, #750): an older build's ``stop_all`` left any it could not finish
+    within its bound in that runtime's registry, and :meth:`drain_cleanups`
+    joins them again at the process's end."""
 
     # ── setup ─────────────────────────────────────────────────────
 
@@ -423,6 +428,8 @@ class AgentsExtension:
         self._api = aelix
         self._progress = SubagentProgressBridge(aelix)
         self._runtime = _SubagentRuntimeImpl(host=self._host(), channel=self.channel)
+        self._built = [built for built in self._built if built._cleanups]
+        self._built.append(self._runtime)
 
         runtime = aelix.runtime
         try:
@@ -621,6 +628,7 @@ class AgentsExtension:
             on_progress=self._publish_progress,
             on_disclosure=self._publish_disclosure,
             session=self._host_session,
+            has_ui=self._host_has_ui,
         )
 
     def _host_cwd(self) -> str:
@@ -1130,7 +1138,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1514-1524``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1605-1615``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1456,7 +1464,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1495-1504``).
+        seam is released on teardown, ``extension.py:1503-1512``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1516,6 +1524,20 @@ class AgentsExtension:
                 # null the slot for whatever runtime happens to hold it, which
                 # on a rebuild is somebody else's.
                 api.runtime.unbind_subagents(runtime)
+
+    async def drain_cleanups(self) -> None:
+        """Join every delegated run's cleanup task still running, in every runtime built (#719, #750).
+
+        The CLI's ``finally`` calls it after its last dispose: a second dispose
+        returns at once (``HookBus`` cleared its list), so without this a
+        SIGTERM to ``-p`` closed the loop under the first dispose's drain. Each
+        runtime's drain is the one shared future its ``stop_all`` awaits, and is
+        bounded by ``runtime.CLEANUP_BOUND``.
+        """
+
+        for built in list(self._built):
+            with contextlib.suppress(Exception):
+                await asyncio.shield(built.drain_cleanups())
 
     async def _shutdown(self, runtime: Any | None = None) -> None:
         """Kill this runtime's children and forget every session-scoped decision.
@@ -1721,7 +1743,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1525``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1616``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1743,7 +1765,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2031-2035``) with no ``await`` between them, so THIS
+            # (``runtime.py:2125-2129``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

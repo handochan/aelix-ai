@@ -481,6 +481,15 @@ user may configure, under core's hard maxima; product-core declares `HARD_MAX_PE
   red on `3cab5d16`; `::test_a_leader_whose_number_moves_during_the_wait_is_not_waited_on`, red on
   `f3e9b814`, Codex #11); a live leader whose start time was never read is still waited on, and its
   job reads `unresolved` at the deadline (`::test_a_live_leader_whose_start_time_was_never_read_is_still_waited_on`).
+
+  *2026-11-10 note (#719, ADR-0296):* for a delegated agent, the helper that left its group after
+  its parent exited is now the launch ledger's and the subreaper's: the agent's `bash` records each
+  shell's group, the run's sweep kills it with authority and kills what carries the run's marker,
+  and on Linux the agent adopts such orphans and walks them at its exit. The delegation client's
+  `helper_cleanup` answers `confirmed` on POSIX only when that sweep confirmed everything it
+  identified (ADR-0296 §6; behind `ACTIVE`). A gone-leader ledger group follows OQ-D's rule above.
+  On macOS a helper that left its group and cleared its environment, or is a platform binary out
+  of its group, is still not named (ADR-0296's residuals). Other kinds are unchanged.
 - **SIGINT** is handled in the drain only; a Ctrl+C during the user's own prompt ends the run as it
   did before #722, and the jobs are then stopped by the dispose's `session_shutdown`. SIGTERM does
   not flush (a parent's stop of a child).

@@ -1418,6 +1418,36 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **What a delegated agent's finished `bash` call left in the background stops with the delegation
+  (#719, #750, ADR-0296).** A `cmd &`, `(cmd &)` or `nohup cmd &` helper — an `npm run dev &`, say —
+  of a `bash` call that had already returned kept running after the delegation ended or was stopped,
+  with PPID 1, on macOS and Linux. Now every delegated agent records each `bash` shell's process
+  group in a launch ledger beside its session, and the delegation's run ends by stopping each
+  recorded group and each process that still carries the run's token in `AELIX_DELEGATION_MARKER`;
+  on Linux the agent is also a child subreaper, so a `setsid` or double-forked helper is stopped
+  too. With a real child on a scripted model, every row — those three shapes through the run's end,
+  Esc, `stop` and `stop_all`, and on Linux the `setsid` and env-cleared double forks — left nothing
+  on macOS and Linux (`tests/agents_ext/test_delegated_helpers_719.py`, red on `478ffd13` on every
+  macOS row). Your own `bash` calls outside a delegation still leave their helpers running (#232).
+  What stays (ADR-0296): on macOS a helper that left its group and cleared its environment, or is a
+  system binary outside its group, is not found; on Linux, one whose agent died without its own
+  cleanup; under the subreaper, a helper that exits stays a zombie until the agent exits. A
+  delegation's result now waits for this cleanup — the child's exit within the stop grace, the scan,
+  up to 2 s to confirm and up to 2 s for the child's pipes. Teardown waits for it up to 10 s per
+  delegation runtime, counted after its stops; a cleanup still running then is kept, joined again
+  at the next teardown, and named in one line on stderr in `-p` and `--mode json` (`aelix: cleanup
+  of delegated run <key> did not finish (<step>)`) — under the TUI only in the log. Esc does not
+  wait for it; the run's retained cleanup task awaits the child the cancel killed, and once that
+  child is reaped closes the parent's ends of its pipes if a holder nothing may signal still has
+  them, so its subprocess transport is not left to a closed loop (#750). Each wait has its own
+  test: the wait for the killed child's exit,
+  `tests/agents_ext/test_run_cleanup_719.py::test_the_sweep_runs_after_the_child_has_exited`, and
+  the release of its pipes, `::test_a_pipe_holder_the_sweep_cannot_name_does_not_keep_the_transport_open`.
+  The whole-file rate of `tests/agents_ext/test_print_channel_spawn.py` with unraisable-exception
+  warnings as errors is not claimed fixed: in Linux docker it failed 5 of 16 runs on `478ffd13`,
+  and 1 of 32 on this change, whose leaked transport was collected in
+  `test_the_soft_signal_is_delivered_and_survived`, before the #750 cancel cases ran, so its source
+  is not identified.
 - **Stopping a delegated agent on macOS or Linux checks each process it walked before signalling it
   (#758, #611, ADR-0291).** Esc, Esc Esc, a signal to `-p`, `stop`, `stop_all` and the escalation
   after a grace walk the child's descendants and SIGKILL them with the groups they lead. A number
