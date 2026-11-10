@@ -4052,6 +4052,64 @@ unwritten. Add them with the next release.
   `3963bea9`; all are refused with the files kept now. An ASK under `-p` still runs, as every ASK
   does there. Tests: `tests/builtin/test_bash_heredoc_end_742.py`.
 
+- **`auto` asks before `[ … ]`, `[[ … ]]` or `test` compares with an arithmetic operand that is not
+  a plain decimal number, a lone count like `$#` or a `$((…))` holding only digits, blanks and
+  operators, so any bare name asks, alone or behind a sign, `!`, `~` or `(`, and before `[ … ]` or
+  `test` holds a glob, or `[ … ]` a ksh pattern such as `!(x)` or `~(E)…` (#743, ADR-0158).** bash
+  and ksh93 evaluate an operand of `-eq`, `-ne`, `-lt`, `-le`, `-gt` or `-ge` as an arithmetic
+  expression, array subscripts included, so `[[ 1 -eq 'a[$(touch PWNED)]' ]]` created `PWNED` in
+  bash 3.2.57 and 5.2.37, macOS ksh93u+ and mksh, and `[ 1 -eq 'a[$(touch PWNED)]' ]` in macOS
+  ksh93u+ and mksh, for each of the six operators and either side of it (zsh, dash and Linux ksh
+  93u+m ran none). Both were allowed on `b160b8f7`, where only `test 1 -eq 'a[$(touch PWNED)]'`
+  asked: the parser makes `[ … ]` the same node as `[[ … ]]`, whose check looked only at expansions
+  and assignments. Every arithmetic operator's two neighbouring words are now judged however the
+  parser grouped them (`[ x = x -a 1 -eq 'a[$(touch PWNED)]' ]` and `[[ 1 -eq 2 || 1 -eq 'a[$(touch
+  PWNED)]' ]]` ask too), and `$'a[…]'` and `"a[\$(…)]"` spellings, which ran the same way, ask. The
+  parser splits a sign, `!`, `~` or `(` off an operand and reads `-FOO` as an operator, so such a
+  token beside the operator now asks too, unless it is a `-` or `+` before a number or `[`, `[[`,
+  `!`, `(`, `&&`, `||`, `-a` or `-o` before the operator: `[[ 1 -eq +'a[$(touch PWNED)]' ]]` created
+  `PWNED` in bash 3.2.57, 5.2.37 and 5.3.20, macOS ksh93u+ and mksh, `[ 1 -eq -'a[$(touch PWNED)]'
+  ]` in macOS ksh93u+ and mksh, and both were allowed until this rule; `[[ 1 -eq -1 ]]`, `[ -1 -lt 0
+  ]` and `[ ! 1 -eq 2 ]` stay allowed. More ways in ran code with no dialog and now ask. A bare
+  name's value is evaluated again, and the command itself can fill it (`[[ 'a[$(touch PWNED)]' =~ .*
+  && BASH_REMATCH -eq 0 ]]` and `echo 'a[$(touch PWNED)]'; [[ 1 -eq _ ]]` created `PWNED` in bash
+  3.2.57 and 5.2.37), and so can the environment, where aelix's own `.env` loading puts a cloned
+  repository's `*_API_KEY` names: with `EVIL_API_KEY` set to `a[$(touch PWNED)]`, `[[ EVIL_API_KEY
+  -eq 0 ]]` did in bash and macOS ksh93u+ and mksh, and `[ 1 -eq EVIL_API_KEY ]` in macOS ksh93u+
+  and mksh, and with `FOO` set so, `[[ 1 -eq +FOO ]]`, `[[ -FOO -eq 1 ]]` and `[[ 1 -eq ~FOO ]]` in
+  bash 3.2.57 and 5.2.37, macOS ksh93u+ and mksh. So every bare name asks, stricter than names
+  nothing can set would need; the owner can loosen this later. A quoted command substitution inside
+  `$((…))` (`[ 1 -eq $(( '$(touch PWNED)' )) ]` did in bash, zsh, dash, ksh93 and mksh) asks. And a
+  glob or ksh pattern that expands into an operator and its operand asks: with files `+1`, `-eq` and
+  `a[$(touch PWNED)]` in the directory, macOS ksh93u+ and mksh ran `[ * ]`, `[ "$x"* ]`, `test *`,
+  `[ !(x) ]` and `[ 1 = 1 -a !(x) ]`, among others, and macOS ksh93u+ `[ 1 -o * ]` and `[ 1 -eq
+  ~(E)^a ]`; bash, zsh and dash reject the ksh patterns, and `[[` does not glob and is unchanged
+  there. `=~` and `-t` operands ran nothing in any shell and are unchanged. Now asking where no
+  shell measured ran anything: `[ -e *.log ]`, `[ x = * ]`, `[ -e !(x) ]`, `[[ 1 -eq '*' ]]`, `[ 1
+  -eq '1,2' ]`, `[ 1 -lt 'x[1]' ]`, `[ 0x10 -eq 16 ]`, `[ $(( $# + 1 )) -gt 2 ]`, `[ $((x+1)) -eq 2
+  ]`, `[[ x -eq 0 ]]`, `[[ count -gt 3 ]]`, `[[ 1 -eq ~1 ]]` and `[ ~(E)^a ]`. `[ "$a" = "$b" ]`,
+  `[[ -f x ]]`, `[ 1 -eq 2 ]`, `[ $# -eq 0 ]`, `[ "$?" -ne 0 ]`, `[ $((1+1)) -eq 2 ]` and quoted
+  patterns such as `[ "!(x)" = y ]` stay allowed. Against `80ff2cc2`, of 31,348 corpus, test and
+  realistic strings, no test string outside the new tests changed, and of 157 realistic lines these
+  went to ask: `[ -e *.log ]`, `[ -f *.txt ]`, `[ -d src/*/ ]`, `test -e *.pyc`, `[ 0x10 -eq 16 ]`,
+  `[ $(( $# + 1 )) -gt 2 ]`, `[[ x -eq 0 ]]`, `[[ count -gt 3 ]]`, `[ $((x+1)) -eq 2 ]` and `[[ $((x
+  + 1)) -eq 2 ]]` (31 more probe lines add `[[ HOME -eq 0 ]]`, `[[ n -gt 0 ]]`, `[ !(x) ]` and `[ -e
+  !(x) ]`); the split-off and `~(` rules change none of these strings or of 199 more probe lines.
+  Not covered, and allowed on `80ff2cc2` too: the same values outside `[`, `[[` and `test` (`echo
+  $((_))`, `(( _ ))`, `echo $(( '$(touch PWNED)' ))`, `echo $((FOO))` with `FOO` in the
+  environment), `${#x[FOO]}` as an operand (macOS ksh93u+ and mksh ran `[[ 1 -eq ${#x[FOO]} ]]`),
+  and an unquoted expansion `[` splits into operators (with `FOO='1 -eq a[$(touch${IFS}PWNED)]'`,
+  macOS ksh93u+ and mksh ran `[ $FOO = x ]`; `test $FOO` asks); these go with #756. Live, in a pty
+  TUI under `auto`, `[[ 1 -eq 'a[$(touch PWNED)]' ]]` with `SHELL=/bin/bash` and `[ 1 -eq 'a[$(touch
+  PWNED)]' ]` with `/bin/ksh` ran with no dialog and created `PWNED` on `b160b8f7`, the
+  `BASH_REMATCH` form and `[ 1 -eq $(( '$(touch PWNED)' )) ]` with `/bin/bash` and `[ * ]` with
+  `/bin/ksh` and the files planted did on `61eda564`, and `[ !(x) ]` with `/bin/ksh` and the files
+  planted, and `[[ EVIL_API_KEY -eq 0 ]]` with `/bin/bash` and `[ 1 -eq EVIL_API_KEY ]` with
+  `/bin/ksh` under a work folder `.env` holding it, did on `ce3cc695`, and `[[ 1 -eq +'a[$(touch
+  PWNED)]' ]]` and `[[ 1 -eq +EVIL_API_KEY ]]` with `/bin/bash` and `[ 1 -eq -'a[$(touch PWNED)]' ]`
+  with `/bin/ksh` did on `3963bea9`; all now show the dialog. Under `-p` an ASK still runs, as every
+  ASK does there. Tests: `tests/builtin/test_bash_test_command_743.py`.
+
 - **`auto` asks at least for a command with words written after a redirect's target, and also
   reads those words as the command's arguments (#710, ADR-0158).** The parser keeps every word
   after a redirect inside it — in `find . </dev/null -delete` the `-delete` sits in the `<`
