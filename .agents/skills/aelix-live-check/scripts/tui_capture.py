@@ -18,7 +18,8 @@ ISOLATION. The child gets a scratch ``HOME`` (``USERPROFILE`` too), a scratch
 ``AELIX_CODING_AGENT_DIR`` and a scratch cwd, all under ``--scratch``. Its
 environment is built from scratch rather than copied from yours, so a provider key
 exported in your shell does not reach it. ``--key NAME`` copies one variable by
-name, from your environment or from ``--dotenv FILE``, without printing it.
+name, from your environment or from ``--dotenv FILE``, without printing it. From
+``--dotenv`` it takes only what aelix itself would load from that file.
 ``--cwd`` runs it somewhere else (for example the checkout, to see what aelix does
 there). Then do not send a tool-using prompt, and do not pass ``yolo`` or ``auto``.
 
@@ -89,16 +90,28 @@ PASSED_THROUGH = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT")
 
 
 def read_dotenv(path: Path, name: str) -> str | None:
-    """The value of one variable in a dotenv file, or None. Nothing else is read out."""
+    """One variable's value from a dotenv file if aelix itself would load it from there, or None.
 
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if line.startswith("export "):
-            line = line[len("export ") :]
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == name:
-            return value.strip().strip("'\"")
-    return None
+    The file goes through aelix's own ``load_dotenv`` (ADR-0203, #756) in this
+    process, and the environment is put back afterwards. So a value aelix refuses
+    from a project ``.env`` (a name it never admits, a credential whose value is
+    not key-shaped, an ``export`` line) does not reach the child either. Nothing
+    is printed and nothing else is read out.
+    """
+
+    import contextlib
+    import io
+
+    from aelix_coding_agent.cli.runtime_bootstrap import load_dotenv
+
+    saved = os.environ.copy()
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            load_dotenv(str(path))
+        return os.environ.get(name)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def child_env(args: argparse.Namespace, scratch: Path) -> dict[str, str]:

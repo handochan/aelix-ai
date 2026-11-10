@@ -2,7 +2,11 @@
 
 Status: Accepted (2026-08-01) — residual risk 1 and the provider-configuration arm amended by
 ADR-0250 (2026-10-02, #362); the `ANTHROPIC_AUTH_TOKEN` paragraph of residual risk 1 narrowed
-by ADR-0254 (2026-10-06, #374)
+by ADR-0254 (2026-10-06, #374); the credential arm's VALUE shape-checked by the #756 note
+(2026-11-10, owner decision) below, and in its fix round 1 (2026-11-10) the hatch's values too;
+its fix round 2 (2026-11-10, the lead's calls) narrows the hatched URL and drops the leading
+`-`/`.` refusal; its narrow-and-finish round (2026-11-10, the lead's call) loads a hatched URL's
+`[` and `]` only as an IPv6 host
 Date: 2026-08-01
 Supersedes: the scope line in ADR-0149 ("explicit `-e`/`$AELIX_MCP_CONFIG`/entry_points
 are user choices, never gated") — still the behaviour, but it now rests on a
@@ -197,6 +201,30 @@ artifact — the list is only its current application:
 > the hatch may let a repo REDIRECT; it may never let a repo EXECUTE, and it may
 > never let a repo choose the global settings/auth store or widen the gate itself.
 
+**#756 fix round 1 (2026-11-10).** Until then the floor held the criterion only by NAME: a
+name the hatch opened loaded any value, and a value is read again by the shell. Measured on
+`ced24970`, with `AELIX_DOTENV_ALLOW=OPENROUTER_BASE_URL` exported and
+`OPENROUTER_BASE_URL=a[$(touch PWNED)]` in a repo `.env`, `echo $((OPENROUTER_BASE_URL))` created
+`PWNED` in bash. Now a hatched name loads only a credential-shaped value or a URL (the #756 note
+below). Fix round 1 claimed that the criterion then held for the value too. The round-2 verify
+showed it did not: a URL pasted as text into an array subscript (`let "y=a[$V]"`) ran a `$(…)`, a
+backtick or a `<(…)` after `://`. Fix round 2 refuses `$`, a backtick, `<` and `>` in the URL.
+The round-3 verify showed a URL with none of them that closed the subscript itself: with
+`https://x.example/]+(PATH=0)+m[x` hatched, `echo $(( a[$V] ))` in zsh and
+`typeset -A m; let "y=m[$V]"` in bash 5.2 and 5.3, zsh and ksh93 assigned `PATH=0`, and the
+next `ls` ran the repo's `./0/ls`. The narrow-and-finish round loads a URL's `[` and `]` only
+as an IPv6 host. What is measured since, and all that is claimed: in 46 command forms (the
+variable read by name; its value pasted into arithmetic, an array or associative-array
+subscript or a test; or expanded plainly) in 10 shells (macOS bash 3.2, zsh, dash and ksh93u+;
+Linux docker bash 5.2 and 5.3, zsh 5.9, dash, ksh93u+m and mksh), of the 53 URLs the rule
+admits among 129 measured, none ran anything through a read by name or a subscript
+(`.omc/probes/756/finish/grid/`). The criterion does not hold for every hatched value even
+there, because a value is also a path: a key-shaped one such as `marker` or `./marker` reaches
+a repo script through `sh "$X"`, `. $X` or `$X`, and a URL such as `https://x.example/*`, which
+globs to a repo file `https:/x.example/v1`, through `$X` or `. $X`; the classifier asks before
+each (the #756 note's residual (e)). Other forms and shells are not measured, and the note's
+other residuals apply too.
+
 The first version of `_DOTENV_LOCKED` used a different criterion ("these decide
 where aelix's global settings live") and therefore omitted `AELIX_MCP_CONFIG` —
 the only chain that fires under `--no-approve`, and the only one that is arbitrary
@@ -236,6 +264,442 @@ overridden: it is gh's precedence, not ours, and `GITHUB_TOKEN` is an ambient
 platform default in GitHub Codespaces while a `.env` `GH_TOKEN` is a deliberate
 user choice. Measured, closing it printed `shadowed [('GH_TOKEN','GITHUB_TOKEN')]`
 and broke that setup in every Codespace. It gets a disclosure line instead.
+
+
+## #756 note (2026-11-10): a credential's VALUE is shape-checked too
+
+Owner decision, 2026-11-10, on #756's direction: **"적재 시 값 모양 검사 (권장)"** — a `.env`
+credential whose value carries shell metacharacters such as `$`, a backtick, `[` or `(` is not
+loaded, and the user is told.
+
+**Why the name was not enough.** The Decision above treats any value under a credential-shaped
+name as inert data. A shell does not: the bash tool hands `os.environ` to every `bash -c`, and in
+arithmetic a variable's value is evaluated as an expression of its own. Measured in
+`.omc/probes/756/impl/out/grid-mac.jsonl` (bash 3.2.57, zsh, dash and ksh93u+ on macOS) and
+`grid-linux.jsonl` (bash 5.2.37, zsh 5.9, dash, ksh 93u+m and mksh R59 in Linux docker), 13
+command forms each, with `EVIL_API_KEY` holding:
+
+- `a[$(touch PWNED)]`: `echo $((EVIL_API_KEY))`, `(( EVIL_API_KEY ))` and
+  `echo ${a[EVIL_API_KEY]}` created `PWNED` in both bash builds, macOS ksh93u+ and mksh, and not
+  in zsh, dash or ksh 93u+m;
+- `1 -eq a[$(touch${IFS}PWNED)]`: the unquoted `[ $EVIL_API_KEY = x ]` created `PWNED` in macOS
+  ksh93u+ and mksh;
+- `PATH=0`: an arithmetic ASSIGNMENT. The `ls` after it ran the work folder's `./0/ls` in bash,
+  zsh, both ksh builds and mksh (22 runs on macOS, 30 on Linux). So `=` inside a value is code too.
+
+At `467f9a52` the classifier allows `echo $((EVIL_API_KEY))`, `(( EVIL_API_KEY ))`,
+`echo ${a[EVIL_API_KEY]}`, `echo $[EVIL_API_KEY]` and `[ $EVIL_API_KEY = x ]` (`out/cls-head.txt`).
+Live, in a pty TUI under `--permission-mode auto` with a scripted model, `467f9a52` ran
+`echo $((EVIL_API_KEY))` (bash) and `[ $EVIL_API_KEY = x ]` (ksh, the split value) with no dialog,
+and `PWNED` appeared (`out/live-base-bash.txt`, `out/live-base-ksh.txt`).
+
+**The rule.** A name the credential rule admits (its suffix, or `ENV_API_KEYS`) is loaded from a
+cwd `.env` only if its value is credential-shaped (`_dotenv_credential_value_ok`). As first
+shipped (`ced24970`) that was the regex `\A(?:[A-Za-z0-9._+/-]+={0,2})?\Z`. Fix round 1 made it
+two rules:
+
+1. Characters: letters, digits and `- _ . + / ~ : %`, at most two `=` at the end (base64
+   padding): `\A(?:[A-Za-z0-9._+/~:%-]+={0,2})?\Z`. Fix round 1 also refused a leading `-` or
+   `.`; fix round 2 dropped that (residual (e) and (f)).
+2. No name in the value (a run of letters, digits and `_`) may be `_` or one of the shell's own
+   variables (`_SHELL_OWN_NAMES`), and nothing may start ksh93's `.sh.` namespace. `.sh.match` at
+   the start of a value is still refused by that last clause
+   (`test_a_value_naming_a_shell_variable_is_refused[ksh-sh-match-lead]`).
+
+Where the characters come from:
+- The vendors' published prefixes and character sets as the first lane knew them, NOT fetched:
+  OpenAI `sk-`/`sk-proj-`, Anthropic `sk-ant-api03-`/`sk-ant-oat01-`, OpenRouter `sk-or-v1-`,
+  Google `AIza…`, Azure hex, AWS key ids, secrets (`/`, `+`) and STS session tokens (`=` padding),
+  Bedrock long-term keys (`=` padding), GitHub `ghp_`/`ghu_`/`github_pat_`, Hugging Face `hf_`,
+  JWTs (`.`), Z.ai `<hex>.<id>`.
+- Pages the #756 verify fetched (`.omc/probes/756/verify-r1/key-formats-handback.md`):
+  - Entra client secrets: up to 40 of `a-z 0-9 - _ . ~` (Microsoft Purview's pattern page,
+    fetched again in fix round 1).
+  - Telegram bot tokens: `<id>:<secret>`.
+  - X app-only bearer tokens, which carry `%`.
+  - Azure storage account keys (end in `==`) and GitLab `glpat-` tokens, which the first rule
+    already admitted.
+  - Django's `SECRET_KEY` generator (`!@#$%^&*(-_=+)`), which neither version admits.
+- Fix round 1 admitted `~`, `:` and `%` for the first three. They were measured inert (below).
+
+31 synthetic samples built at runtime are loaded: the first round's 28 plus Entra, Telegram and X
+(`test_every_documented_key_format_is_still_admitted`). All 31 `ENV_API_KEYS` names, each carrying
+its vendor's format, are loaded too (`test_every_shipped_provider_key_is_admitted_in_its_own_format`).
+Four vendors (ant-ling, kimi, opencode, xiaomi) publish no prefix this lane could cite, and are
+measured with the generic `sk-` plus alphanumerics shape. The owner's own OpenRouter key matches
+the first rule (checked in-process and printed as a boolean only).
+
+**What a loaded value could not do, measured.**
+- First round. 50 values the first rule admitted ran nothing in 5,850 shell runs (9 shells, 13
+  forms; each run folder carried `./0/ls`, `./1/ls` and `./-1/ls` traps, so a `PATH` assignment
+  would have shown). They were 31 format samples (one of them empty) and 19 hostile values built
+  only from the allowed characters: `FOO_TOKEN+1`, `_`, `PATH=`, `PATH==`, `x+PATH=`, `-PATH=`,
+  `PATH+=`, `PATH-=`, `PATH/=`, `IFS++`, `++IFS`, `--PATH`, `.sh.version`, `a.b`, `1.5`, `0x41`,
+  `/etc/passwd`, `-eq` and `-t`. A trailing `=` cannot assign, because no operand follows it.
+  Fix round 1 refused 14 of those 19: every one that names a shell variable or starts with `-` or
+  `.`. Since fix round 2, `-eq` and `-t` load again; the other 12 name a shell variable or start
+  ksh93's `.sh.`.
+- Fix round 1, on the verify's 17 forms, the same 9 shells (`.omc/probes/756/fix-r1/grid/`). The
+  40 values the new rules admit ran nothing in 6,120 runs. They are:
+  - 26 credential-shaped values: Entra (two), Telegram, X, Elastic `id:key`, Anthropic and STS
+    samples, and 19 hostile values over the widened set such as `~x`, `~~FOO_TOKEN`, `:FOO_TOKEN`,
+    `1%0`, `FOO%BAR`, `~a:b%c`, `x++`, `+x` and `/bin/sh`;
+  - 14 URL values the hatch then admitted: the verify's `?a=1&PATH=0` and `?1?PATH=0:0` URLs,
+    `https://x.example/_?IFS++&_`, and 11 payload URLs with no space, such as
+    `https://x.example/a[$(touch${IFS}PWNED)]`, the same after an upper-case or `git+ssh.x`
+    scheme, `https://x.example/;touch${IFS}PWNED` and
+    `https://x/${IFS}-eq${IFS}a[$(touch${IFS}PWNED)]`. Those 17 forms read the variable by
+    name or paste it as arithmetic text, and none put it inside an array subscript.
+- The round-2 verify added 23 forms that paste the value into an array subscript, a test, a
+  command name or an argument (40 in all), on the same 9 shells and bash 5.3
+  (`.omc/probes/756/verify-r2/grid/url-*.jsonl`). Of 90 values only the URL rule admitted, 43
+  ran something, all through a subscript: `let "y=a[$U]"` and `typeset -i y; y="a[$U]"` in bash
+  3.2, 5.2 and 5.3, macOS ksh93u+ and mksh; `unset "x[$U]"` in the three bash builds and mksh;
+  `$(( a[$U] ))`, `(( a[$U] ))` and `(( m[$U]++ ))` in bash 3.2 and mksh; `[[ -v a[$U] ]]` and
+  `test -v` in bash 5.2/5.3 and mksh; `printf -v "a[$U]"` in bash 5.2/5.3. Each of the 43 held
+  `$`, a backtick, `<` or `>`: a `$(…)`, a backtick or a `${…}` after `://`, `'$(…)'` (bash
+  5.2/5.3 and mksh), `<(…)` (bash 3.2) or `$((PATH=0))` (the trap `ls` ran in zsh and ksh93u+).
+  The verify found that the classifier asks before all 16 such forms it tried
+  (`verify-r2/out/cls2-fix.txt`).
+- Fix round 2 re-ran that grid (`.omc/probes/756/fix-r2/grid/`, 44,000 runs): the 90 values
+  plus 20 more (6 real base URLs with a port, a query, IPv6 `[::1]`, `%`-encoding, userinfo
+  and a fragment, and 14 hostile ones such as `https://x.example/a[_]`, `x://a[PATH=0]`,
+  `x://IFS++`, `x://'a[1]'` and `https://x.example/;touch`). The 55 values the narrowed rule
+  admits (35 of the 90 and all 20) ran nothing in 22,000 runs. The 55 it refuses include the
+  verify's 43, which fired again in the same shells.
+- The round-3 verify (`.omc/probes/756/verify-r3/`) found that tail still admitted `]`, which
+  closes the subscript a form pastes the value into: `https://x.example/]+(PATH=0)+m[x`,
+  `https://x.example/],PATH=0,m[x` and `http://[::1]:80/]+(PATH=0)+m[x` assigned `PATH=0`, and
+  live under auto, once the dialog was approved, the next `ls` ran a planted `./0/ls`. It
+  reported bash 5.3 inert. That bash 5.3 image, like fix round 2's, had no `/usr/bin/touch`,
+  which its trap `ls` and marker scripts call, so no trap or marker could register there;
+  only a `PWNED` that a `$(touch …)` in the value itself created could
+  (`finish/grid/url-b53-blind.jsonl`).
+- The narrow-and-finish round re-ran it (`.omc/probes/756/finish/grid/`, 59,340 runs): 129
+  values (108 of fix round 2's, 13 of the round-3 verify's, 8 more), 46 forms (fix round 2's 40
+  and the round-3 verify's 6 associative-array and `ls files/*` forms), the same 9 shells and
+  bash 5.3 with `/usr/bin/touch` added. Of the 53 values the rule admits, among them 8 real base
+  URLs (OpenRouter's, `localhost:11434`, a port with a query, `%`-encoding, userinfo with a
+  fragment, `[::1]:8080`, `user@[2001:db8::1]` and `[::ffff:127.0.0.1]`), one ran anything in
+  24,380 runs, and only as a path: `https://x.example/*` (residual (e)). Of the 21 values it
+  refuses that `b95ed1b8` admitted, 4 fired: the verify's three and
+  `https://x.example/]+_+m[x`, whose `_` after `ls files/*` created `PWNED` in bash 5.2 and 5.3.
+- Through the loader (`finish/out/repro-matrix.txt`): the round-3 verify's three forms,
+  `echo $(( a[$U] ))`, `let "y=a[$U]"` and `typeset -A m; let "y=m[$U]"`, with `U` set to what
+  `load_dotenv` left of 25 hatched values (the verify's 14, 8 bracket rows and 3 IPv6 base
+  URLs), in the same 10 shells, 750 runs a tree. On `b95ed1b8` all 25 loaded, and 5 ran the
+  planted `./0/ls` in bash 5.2 and 5.3, zsh, ksh93u+ and ksh93u+m (not in bash 3.2, mksh or
+  dash). On the fix 10 loaded and none did.
+- Among the 21 values the rules refuse, the positive controls fired in the same grid.
+  `a[$(touch PWNED)]` created `PWNED` in both bash builds, macOS ksh93u+ and mksh. `PATH=0` ran a
+  trap `ls`. `_` and `1+_` created `PWNED` in both bash builds, through `ls files/*` and through
+  `cd` into a planted folder. `~CDPATH++` and `--CDPATH` moved `cd src` into `1/src` in both bash
+  builds and mksh.
+
+**Where it sits.** The check runs ahead of the hatch and of the sibling guard, for the config arm's
+reason: the hatch names a KEY, and the code is in the VALUE
+(`test_the_hatch_cannot_override_a_credential_value_shape`). Since fix round 1 the check also
+covers a credential-suffixed name that `_DOTENV_NEVER` takes back (`NPM_TOKEN`, `NODE_AUTH_TOKEN`,
+`GIT_TOKEN`, `SSH_KEY`, `PROXY_PASSWORD`, `SERVICE_URL_KEY`), which only the hatch can load
+(`test_a_hatched_credential_name_still_has_its_value_checked`). It also covers every other name the
+hatch opens: such a value loads if it is credential-shaped or a URL (a scheme, `://`, then
+printable ASCII with no space and, since fix round 2, none of `$`, a backtick, `<` or `>`; since
+the narrow-and-finish round, `[` and `]` only as an IPv6 host: `[userinfo@]`, then hex digits,
+`:` and `.` in brackets, an optional `:port`, then `/`, `?`, `#` or the end), and
+the scheme is held to rule 2
+(`test_a_hatched_non_credential_value_that_is_not_a_url_or_key_is_refused`,
+`test_a_hatched_url_flag_or_model_id_still_loads`). A configuration-arm value is held to rule 2
+(`_dotenv_config_refusal`), because a Cloudflare id (`[A-Za-z0-9_-]`) can be `_` or `REPLY`: on
+`ced24970`, `CLOUDFLARE_GATEWAY_ID=_` from a repo `.env` made bash 3.2 run a repo file name
+through `ls files/* >/dev/null; echo $((CLOUDFLARE_GATEWAY_ID))`, which the classifier allows
+(`test_exploit_an_underscore_cloudflare_id_never_reaches_a_repo_file_name_in_bash`,
+`fix-r1/cfg/`). That one is this lane's call in fix round 1, found after the verify; the GCP
+shape already excludes it. Fix round 1 also refused a Cloudflare id led by `-`; fix round 2
+dropped that with rule 1's (`test_a_cloudflare_id_led_by_dash_loads`). Read by name, a URL stops
+at the `:` after its scheme. Pasted as text into an array subscript it does not, which is why
+fix round 2 refuses the four characters (above), and a `]` there closes the subscript, which is
+why the narrow-and-finish round holds the brackets to an IPv6 host. The scheme itself is read
+first: measured, `Y://h.example/v1` with `Y=a[$(touch PWNED)]` created `PWNED` in bash 3.2 and
+macOS ksh93u+ (`fix-r1/probe/scheme-mac.jsonl`). The URL rule is the lead's call in fix rounds 1
+and 2 and in the narrow-and-finish round, not the owner's. It holds this ADR's floor criterion
+only as far as it was measured: for the URLs it admits, read by name or pasted into a subscript,
+in the 46 forms and 10 shells above. A URL is still a path (residual (e)), and the rule changes
+which hatched values load.
+A credential-suffixed name only the hatch loads gets the name notice while the hatch is closed,
+whatever its value, as every other such name does; its value is checked once the hatch names it
+(`test_a_hatched_off_credential_name_gets_the_name_notice_whatever_its_value`). On `141b6430` a
+bad value got the value notice first, and fixing the value surfaced the name notice. A key already in the environment is skipped
+without a notice, as the base loader skipped it: the line would not set it
+(`test_a_key_you_exported_gets_no_notice_for_its_dotenv_duplicate`). A refused value gets the existing
+bad-value notice: one stderr line per key, naming the key and never the value
+(`test_a_credential_value_a_shell_could_run_is_refused`,
+`test_the_credential_value_notice_says_why_and_offers_no_hatch`). Its remedy is an export, not the
+hatch. A refused line is not recorded in `AELIX_DOTENV_ADMITTED`
+(`test_a_refused_credential_value_is_not_recorded_as_supplied`). Live on the fix, the same TUI
+rows left the variable unset, nothing was created, and the notice showed above the banner
+(`out/live-fix.txt`). One real model (`openai/gpt-4.1-mini` on OpenRouter, the key exported to the
+child only) ran `echo $((EVIL_API_KEY))` under auto and got `0`. No `PWNED` appeared, while
+`MY_SERVICE_API_KEY` (Anthropic format) and `AWS_SESSION_TOKEN` (STS format, ending `==`) loaded.
+The notices stayed on stderr: `-p` stdout held only the answer, all 41 `--mode json` stdout lines
+parsed as JSON, and `--mode rpc` wrote 0 stdout bytes in its first 8 seconds (`out/real-run.txt`,
+`out/rpc-check.txt`).
+
+**Behaviour that changed with it, measured.**
+- A NUL in a credential value made `load_dotenv` raise `ValueError: embedded null byte` at launch on
+  `467f9a52`. The line is now refused with the notice
+  (`test_a_nul_in_a_credential_value_is_refused_not_a_crash`).
+- `OPENAI_API_KEY=sk-… # work key` used to load with the comment as part of the key. It is now
+  refused with the notice (`test_a_credential_value_with_a_trailing_comment_is_refused`).
+- A `*_PASSWORD` value with a character outside the set (`$`, `!`, `@`, `#`, a space, …) no longer
+  loads from a `.env` (`test_one_character_outside_the_key_formats_is_refused`). Export it in your
+  shell.
+- Fix round 1, each refused with the notice. These loaded on `ced24970`:
+  - A credential value that starts with `-` or `.` (until fix round 2, below).
+  - A value with a lone `_` (no letter or digit on either side) or another shell variable's
+    name. Re-measured in fix round 2 over 200,000 random keys per shape (`fix-r2/fp/fp3.txt`):
+    0.262 % of 40-character values over the Entra alphabet, 0.176 % of JWTs, 0.123 % of Elastic
+    `id:key` pairs, 0.110 % of `sk-proj-` keys, 0.071 % of Telegram-shaped tokens, 0.063 % of
+    unprefixed 40-character base64url keys and 0.054 % of `sk-ant-api03-` keys, nearly all for a
+    lone `_`; a name other than `_`, at most 4 in 200,000 of a shape.
+  - A Cloudflare account or gateway id that is `_` or names another shell variable.
+  - A hatched value that is neither credential-shaped nor a URL. Measured with the hatch open for
+    each (`fix-r1/probe/hatched-changes-*.txt`), `NO_PROXY=localhost,127.0.0.1` and a path with a
+    space loaded on `ced24970` and are refused now. A base URL, `PI_OFFLINE=1`, a
+    `vendor/model:beta` id and a `GOOGLE_APPLICATION_CREDENTIALS` path still load.
+- Fix round 2 (the lead's calls, not the owner's):
+  - A credential value, a hatched value or a Cloudflare id that starts with `-` or `.` loads
+    again, as on `ced24970` (`test_a_value_led_by_dash_or_dot_loads`,
+    `test_a_cloudflare_id_led_by_dash_loads`, the `-delete` and `./marker` rows of
+    `test_a_hatched_url_flag_or_model_id_still_loads`). With that rule, the round-2 verify measured
+    3.228 % of Entra-alphabet values, 1.697 % of Elastic pairs and 1.603 % of unprefixed
+    base64url keys refused; without it, 0.262 %, 0.123 % and 0.063 % (`verify-r2/out/fp2.txt`,
+    re-measured in `fix-r2/fp/fp3.txt` with the same generator).
+  - A hatched URL holding `$`, a backtick, `<` or `>` is refused with the notice. Each of the
+    seven `url-*` rows of `test_a_hatched_non_credential_value_that_is_not_a_url_or_key_is_refused`
+    loaded on `141b6430`.
+  - A value naming `KSH_MATCH`, `EXECSHELL`, `TEXTDOMAIN`, `TEXTDOMAINDIR`, `ZSH_DEBUG_CMD`,
+    `HISTORY_IGNORE`, `REPORTTIME`, `REPORTMEMORY`, `CORRECT_IGNORE` or `CORRECT_IGNORE_FILE` is
+    refused. Over the 19 shapes × 200,000 values above, these ten refused none
+    (`fix-r2/fp/fp3.txt`).
+  - Live, in a pty TUI under auto with a scripted model and
+    `OPENROUTER_BASE_URL=https://x.example/$(touch${IFS}PWNED)` hatched,
+    `let "y=a[$OPENROUTER_BASE_URL]"` and `echo $(( a[$OPENROUTER_BASE_URL] ))` asked; approved,
+    each created `PWNED` on `141b6430`. On the fix the line was refused with the notice above the
+    banner, and the approved commands created nothing. A hatched
+    `https://gw.example:8443/api/v1?org=acme&tier=2` and a key led by `-` loaded; a hatched-off
+    `NPM_TOKEN` holding `a[$(touch PWNED)]` got the notice that names the hatch
+    (`fix-r2/out/live-tui-*.txt`).
+- Narrow-and-finish (the lead's call, not the owner's):
+  - A hatched URL whose `[` or `]` is anything but an IPv6 host is refused with the notice: a
+    `]` or `[` in the path, query or fragment, a second `]`, a bracketed host that is not hex
+    digits, `:` and `.`, text after the host, or a bracket in userinfo. The 12 bracket rows of
+    `test_a_hatched_non_credential_value_that_is_not_a_url_or_key_is_refused` loaded on
+    `b95ed1b8`. `http://[::1]:8080/v1`, `https://user@[2001:db8::1]/api?x=1` and
+    `http://[::ffff:127.0.0.1]/` still load (`test_a_hatched_url_flag_or_model_id_still_loads`).
+  - It refuses an IPv6 zone id too, which now needs an export: httpx 0.28.1 on macOS reached a
+    local server at `http://[fe80::1%lo0]:PORT/v1` (`url-ipv6-zone-id`).
+  - Over the 51,490-value corpus under 7 names, the only change from `b95ed1b8` is 286 values
+    refused under the two hatched non-credential names, each a `://` value holding a bracket.
+    Nothing loads that `b95ed1b8` or `467f9a52` refused (`finish/out/only-raises.txt`).
+  - Live, in a pty TUI under auto with a scripted model and `SHELL=/bin/zsh`, a hatched
+    `https://x.example/]+(PATH=0)+m[x` loaded on `b95ed1b8`, and the approved
+    `echo $(( a[$OPENROUTER_BASE_URL] )); ls` printed `0` and no listing and created
+    `RAN_PLANTED_LS`.
+    On the fix the line was refused with the notice above the banner, and the approved command
+    printed `0` and the real `ls` listing and created nothing. A hatched `http://[::1]:8080/v1`
+    loaded, and `echo "U=$OPENROUTER_BASE_URL"` printed it (`finish/out/live-tui-*.txt`).
+- Fix round 1, each now loaded:
+  - Credential values with `~`, `:` or `%`.
+  - A NUL in a hatched value now gets the notice instead of `ValueError` at launch.
+- Fix round 1: the dev helpers that start aelix (`scripts/diag_tui_live.py`, the aelix-live-check
+  skill's `tui_capture.py`) now run a `.env` through `load_dotenv`. Before, their own parsers copied
+  every line into the child, so `EVIL_API_KEY=a[$(touch PWNED)]` and `BASH_ENV=./marker` reached
+  its `bash -c` (Codex). `tests/test_dev_helper_dotenv_756.py` pins both helpers.
+
+**Residual, not closed by this rule.**
+- (a) A loaded value can still NAME an ordinary variable, which the shell then evaluates. Every
+  value a `.env` supplies is checked now: credentials, configuration, and since fix round 1 the
+  names the hatch opens. So a variable another `.env` line supplies holds nothing that runs.
+  - On `ced24970` this was open through the hatch. With `AELIX_DOTENV_ALLOW=OPENROUTER_BASE_URL`
+    exported, a `.env` holding `OPENROUTER_BASE_URL=a[$(touch PWNED)]` and
+    `EVIL_API_KEY=OPENROUTER_BASE_URL` loaded both, and `echo $((EVIL_API_KEY))` created `PWNED`
+    in bash, macOS ksh93u+ and mksh. That breached this ADR's own floor criterion.
+  - Now the first line is refused, and a URL there, read by name through `EVIL_API_KEY`, stops
+    at its `:` (`test_a_credential_that_names_a_hatched_variable_carries_nothing`, both rows).
+  - What remains: variables you exported yourself, and variables the command assigns, which are
+    the classifier's to judge.
+- (b) The shell also fills some variables from the command itself.
+  - Fix round 1 refuses a value that names `_`, `REPLY`, `OPTARG`, `BASH_REMATCH`, ksh93's
+    `.sh.match` or any other name in `_SHELL_OWN_NAMES`. It said the value side was closed. It
+    was not: the round-2 verify found mksh's `KSH_MATCH`, which `[[ x = pattern ]]` and `case`
+    fill. With `EVIL_API_KEY=KSH_MATCH` loaded, `[[ $(cat files/r) == *x* ]] && echo
+    $((EVIL_API_KEY))` and the same through `case` ran the `$(…)` in `files/r` in mksh R59
+    (`verify-r2/out/ksh_match-linux.txt`). Fix round 2 adds it and nine other names the verify
+    found in the shell binaries (`EXECSHELL`, `TEXTDOMAIN`, `TEXTDOMAINDIR`, `ZSH_DEBUG_CMD`,
+    `HISTORY_IGNORE`, `REPORTTIME`, `REPORTMEMORY`, `CORRECT_IGNORE`, `CORRECT_IGNORE_FILE`;
+    the verify judged these to change behaviour only and did not test them further)
+    (`test_exploit_a_ksh_match_value_never_reaches_what_a_pattern_matched_in_mksh`, which runs
+    where `mksh` is installed).
+  - `_SHELL_OWN_NAMES` is every upper-case name the 9 shells define under `env -i`, plus the
+    names their manuals say they set on demand or read (`fix-r1/names/derive.py`), plus those
+    ten. The round-2 verify found no other name defined under `env -i` in bash 5.3, mksh and zsh
+    with its modules loaded. It is still a best-effort list: a shell release can add a name, so
+    the value side is closed only as far as the list reaches.
+  - Measured by the verify on `ced24970`: `UNDERSCORE_TOKEN=_` plus a repo file
+    `files/z[$(touch PWNED_VIA_UNDERSCORE)]` made a real model under auto run
+    `ls files/* >/dev/null; echo $((UNDERSCORE_TOKEN))` with no dialog, and the marker appeared
+    (`verify-r1/out/live-real.txt`). In its grid, bash 3.2 and 5.2 ran it.
+  - `0+REPLY` after `read REPLY < files/r` created `PWNED` in bash 3.2 and macOS ksh93u+.
+    `0+.sh.match` after a ksh pattern match did so in ksh93u+.
+  - Those are refused now (`test_exploit_an_underscore_value_never_reaches_a_repo_file_name_in_bash`,
+    `test_exploit_a_reply_value_never_reaches_what_read_read_in_bash`).
+  - Still open: the same reads with no `.env` at all. The classifier allows
+    `ls files/*; echo $((_))` and `[[ … =~ .* ]] && echo $((BASH_REMATCH))` at `467f9a52`, and
+    bash 3.2 and 5.2 ran both. That is a classifier gap this loader cannot close. A draft issue
+    is in `.omc/probes/756/fix-r1/issue/`.
+- (c) A loaded value can still change state without running anything.
+  - On `ced24970`, `IFS++` set `IFS` to `1` in bash and ksh93u+. `OPTIND++` made `getopts` skip an
+    option in bash, zsh and ksh (Codex). `CDPATH++`, `++CDPATH` and `--CDPATH` moved `cd src` into
+    `1/src` in bash 3.2, bash 5.2 and mksh (the verify).
+  - These name shell variables, so fix round 1 refuses them, also inside a longer value
+    (`0+IFS++`, `~CDPATH++`).
+  - An ordinary name can still be stepped (`x++`), and `1/0` or `1%0` still stops the command.
+    Codex: with `1/0`, `echo $((X)); printf reached > REACHED` never reached the `printf`. With
+    `1%0`, `echo $((X)); echo reached` stopped at a division by zero in macOS bash, zsh and ksh,
+    and dash refused the value (`fix-r1/probe/mod-zero-mac.txt`).
+  - `--` and `++` occur by chance in base64url and base64 keys, so they stay allowed.
+- (d) Not every refused character is code on its own. A bare backtick or `{a,b}` value ran nothing,
+  and whitespace alone only rewrites a test: `[ $X = y ]` with `x = x -o x` is true in bash, ksh
+  and dash (`out/ws-backtick-mac.txt`). Each measured attack combines several of them, so
+  `test_one_character_outside_the_key_formats_is_refused` pins each character on its own.
+- (e) Options and paths. Codex measured `find victim $X` deleting `victim` with `X=-delete`, and
+  `sh "$X"` running the repo's script with `X=./marker`. Both still load since fix round 2.
+  - A bare relative name such as `marker` names a repo file to `sh "$X"` just the same: measured
+    in bash 3.2 (`fix-r1/probe/codex4.jsonl`), and by the round-2 verify in all 9 shells through
+    `$X`, `. $X` and `sh "$X"`. So the leading `.` was not what stood between a value and a repo
+    file.
+  - The classifier asks before `find … $X`, `sh "$X"`, `. $X` and `$X` (Codex, the round-2
+    verify). It allows `cmd $X` and `cmd $X README.md` for 37 read-only commands, and the round-2
+    verify ran those 37 with 37 values led by `-` or `.`, 2,590 runs in macOS bash (BSD tools)
+    and 2,590 in Linux bash (GNU tools): nothing ran, was written or was deleted; only `tail -f`
+    and `top` hung (`verify-r2/grid/lead-*.jsonl`). `echo $X` with `-n` only drops a newline.
+  - A URL is a path too. In the narrow-and-finish grid the admitted `https://x.example/*`
+    globbed to a repo file `https:/x.example/v1`, which `$X` and `. $X` ran in every shell
+    measured but zsh, and which dash ran through `(( $X ))`, two nested subshells to it. The
+    classifier asks before all three in every dialect (`finish/out/cls-finish.txt`).
+  - So what remains: a key-shaped hatched value (`marker`, `./marker`, `-delete`) or a URL
+    reaches `sh "$X"`, `find … $X`, `. $X`, `$X` and the like, which the classifier asks before.
+    Forms and shells outside the measured grid are not measured.
+- (f) The leading-character rule, fix round 1 to fix round 2. It was the lead's call in fix
+  round 1, on the premise that no documented key format starts with `-` or `.`; Microsoft's Entra
+  pattern page allows either first. With it, 3.228 % of 40-character Entra-alphabet values and
+  1.603 % of unprefixed base64url keys were refused; without it, 0.262 % and 0.063 %, all for a
+  shell name (`verify-r2/out/fp2.txt`). Fix round 2 dropped it on both arms, the credential arm
+  (and with it the hatched values that are key-shaped) and the Cloudflare-id arm. That is the
+  lead's call, not the owner's, on the measurement in (e).
+
+**Tests.** First round: the admission file grew from 133 to 220 cases. The 58 new refusal rows
+failed on `467f9a52` (the loader and this file are byte-identical at `6caaae09`):
+- the 10 shell-code rows, the 29 one-character rows and the hatch, record, notice and
+  trailing-comment rows with the value loaded;
+- the 8 real-`bash` rows with `PWNED` created;
+- the 6 line-break rows with both fragments loaded;
+- the NUL row with `ValueError` (`out/base-run-final.txt`).
+
+The 28 format rows and the 31-name test pass on base by design. Their mutation is a narrower set:
+dropping `/`, `+`, `.` or both padding characters turns 2–3 of them red, and allowing one `=`
+instead of two turns 1 red. Of the first round's 18 mutants, 16 were killed (`out/mutants.json`).
+The verify found two more survivors: `{0,3}` and `=*`.
+
+Fix round 1: the file has 302 cases (`fix-r1/out/`).
+- 85 rows were added and 3 removed: the `~`, `:` and `%` one-character rows, which are allowed
+  now.
+- 56 of the new rows fail on `ced24970`:
+  - with the value loaded: the 6 hatched-credential rows, the URL-on-a-credential-name row, 12 of
+    the 13 hatched-value rows, 24 of the 25 shell-name and leading-character rows and the 4
+    Cloudflare-id rows;
+  - with the value refused: the Entra, Telegram and X format rows;
+  - with `PWNED` created: the `_`, `REPLY`, chain and Cloudflare `_` rows;
+  - with the notice printed: the exported-key row;
+  - with `ValueError`: the hatched NUL row.
+- The other 29 pass there by design, each pinning a mutant or a workflow:
+  - padding (7): `{0,3}`, `=*`, an optional first character, a refused empty value;
+  - whole-name matching (5);
+  - the hatch's URL, flag and model-id values (6) and a key-shaped `NPM_TOKEN` (1);
+  - the URL payloads in a real `bash -c` (7) and the admitted-URL chain (1);
+  - `é` against a `\w` class (1);
+  - `~CDPATH++` (1), which `ced24970` refused for its `~`.
+- `tests/test_dev_helper_dotenv_756.py` (2 cases) fails on `ced24970` with the hostile values in
+  the child's environment.
+- 46 mutants of the new lines (the verify's 18, adapted, and 28 of this round's) killed 43
+  (`fix-r1/mut/`, `fix-r1/mut2/`). The three survivors are equivalent:
+  - `\Z` to `$`: a value never holds a newline, since the file is split into lines first;
+  - a second `.strip(' ')`: the value is already stripped;
+  - the suffix alone instead of `_dotenv_key_allowed(key) or` the suffix: every `ENV_API_KEYS`
+    name ends in a suffix, measured.
+- Re-measured on the 302-case file: deleting the `^AELIX_` alternation turns exactly one test red.
+  The `ENV_API_KEYS` fallback, the hatch's `- _DOTENV_LOCKED` and the `_DOTENV_NEVER` substring
+  alternation turn none red (`fix-r1/mutcited/`).
+
+Fix round 2: the file has 341 cases (`fix-r2/out/`).
+- 47 rows were added and 8 removed. The 8 are refusal rows whose values load now: 5 credential
+  values and 2 hatched values led by `-` or `.`, and the Cloudflare `-delete` row; each reappears
+  as a loading row. 23 rows moved with two renamed tests, whose names lost "or led by dash".
+- 35 of the new rows fail on `141b6430` on macOS (bash 3.2), 38 in Linux docker (bash 5.2.37,
+  mksh R59):
+  - with the value loaded: the 8 `url-*` hatched-value rows and 12 shell-name rows (`KSH_MATCH`
+    twice, the nine other names, and a Cloudflare id of `KSH_MATCH`);
+  - with the value refused: 6 credential and 2 hatched values led by `-` or `.`, and 2 Cloudflare
+    ids led by `-`;
+  - with the old notice: the hatched-off `NPM_TOKEN` row;
+  - with `PWNED` created through `let "y=a[$OPENROUTER_BASE_URL]"`: `url-cmdsub`, `url-brace` and
+    `url-backtick-brace` on both systems, `url-procsub` in bash 3.2 and `url-squoted-cmdsub` in
+    bash 5.2;
+  - with `PWNED` created in mksh: the 3 `KSH_MATCH` rows (Linux only; they skip where no `mksh`
+    is installed).
+- The other new rows pass there by design: 4 real base URLs (a port with a query, IPv6, a
+  `%`-encoded path and query, userinfo with a fragment), a scheme with no `//`, `.sh.match` at
+  the start of a value (`141b6430` refused it for its `.`), `PWD`, and the inert
+  `url-semicolon` payload.
+- `tests/test_dev_helper_dotenv_756.py` gains a third case: an inherited `AELIX_DOTENV_ADMITTED`
+  reaches the child with this `.env`'s names added. It passes on `141b6430`, whose helper already
+  kept the record; it kills the verify's surviving mutant that copies only keys new to the
+  environment.
+- 59 mutants (`fix-r2/mut/`): the round-2 verify's 34 adapted to 33 (its two leading-character
+  mutants became one that restores the rule), killing 32, and 26 of this round's on the delta
+  (the URL tail's characters one by one, each new name, the notice order, the notices' reasons),
+  killing 25. The two survivors:
+  - a name token that must start with a letter or `_`, stricter than the rule: the round-2
+    verify measured the digit-led tokens it would refuse (`1_`, `9REPLY`, `0xREPLY`, …) inert in
+    10 shells, so it is left as is;
+  - a URL tail of at least one character: equivalent, because `scheme://` with nothing after it
+    is credential-shaped unless its scheme names a shell variable, which both rules refuse.
+- Re-measured on the 341-case file: deleting the `^(AELIX|PI|…)_` alternation now turns two
+  tests red, `test_repo_dotenv_cannot_set_control_plane[AELIX_FUTURE_API_KEY]` and
+  `test_a_hatched_off_credential_name_gets_the_name_notice_whatever_its_value`, which reaches it
+  through `NPM_TOKEN`'s `NPM_`; only the first pressures the `AELIX_` branch. The other three
+  still turn none red (`fix-r2/mutcited/`).
+
+Narrow-and-finish: the file has 358 cases (`finish/out/`).
+- 17 rows were added: 12 bracket refusal rows, 2 IPv6 base URLs that load
+  (`user@[2001:db8::1]` and `[::ffff:127.0.0.1]`), and 3 real-shell rows
+  (`test_exploit_a_hatched_url_cannot_close_the_subscript_it_is_pasted_into`, in zsh, ksh and
+  bash, each skipped where that shell is not installed).
+- On `b95ed1b8` 14 of them fail on macOS and 15 in Linux docker (bash 5.2, zsh 5.9, ksh93u+m,
+  mksh R59): the 12 refusal rows with the value loaded, and the real-shell rows with `PWNED`
+  created, zsh and ksh on both systems and bash in Linux only (macOS bash 3.2 stops at the
+  `://`). The 2 loading rows pass there by design; with the `[::1]:8080` row they pin the
+  host's userinfo, `.` and port.
+- 13 mutants of the new lines, all killed (`finish/mut/`): each bracket check dropped; the host
+  class opened to anything, opened to a zone id, or without `.`; no lookahead after the host;
+  userinfo dropped or opened to brackets; the port dropped; `search` for `match`; the host not
+  skipped; the scheme check dropped.
+
+pi has no cwd `.env` loader to compare: at `origin/main` `b2aabe029`, `git grep -i
+"dotenv\|loadEnv\|'\.env'\|\"\.env\""` over `packages/coding-agent/src` and `packages/ai/src`
+finds nothing. The same grep at `a05e3a077` (fix round 1), at `ffd3329bb` (fix round 2) and at
+`e8ec20291` (narrow-and-finish) finds nothing either, so the hatch's value rule has no pi
+counterpart to follow.
 
 ## Consequences
 

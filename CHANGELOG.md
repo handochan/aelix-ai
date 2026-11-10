@@ -3978,6 +3978,73 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **A value from a cloned repo's `.env` loads only if it looks like a key, or for a name you
+  unlocked with `AELIX_DOTENV_ALLOW` like a URL (#756, ADR-0203 #756 note).** aelix loads a cwd
+  `.env` before it asks whether you trust the directory, and every bash command inherits what it
+  loaded. bash, mksh and macOS's ksh93u+ evaluate a variable read in arithmetic as an expression
+  and run a `$(…)` in its array subscript, so with
+  `EVIL_API_KEY=a[$(touch PWNED)]` in a repo's `.env`, `auto` ran `echo $((EVIL_API_KEY))` with no
+  dialog and `PWNED` appeared (pty TUI, `467f9a52`; ksh did the same for `[ $EVIL_API_KEY = x ]`
+  with a value that splits into an `-eq` test). A value of `PATH=0` is an arithmetic assignment:
+  the `ls` after it ran the repo's `./0/ls` in bash, zsh, ksh and mksh. A value of `_` reads
+  bash's last argument, so after `ls files/*` it read a repo file named `z[$(touch PWNED)]`, and a
+  real model under `auto` ran that with no dialog.
+  - A name that the credential rule loads (`*_API_KEY`, `*_KEY`, `*_TOKEN`, `*_SECRET`,
+    `*_PASSWORD`) now loads from a `.env` only when its value has letters, digits and
+    `- _ . + / ~ : %`, up to two `=` at the end, and names none of the shell's own variables
+    (`_`, `IFS`, `REPLY`, `PATH`, `CDPATH`, mksh's `KSH_MATCH`, … and ksh93's `.sh.`).
+    Any other value is ignored, with a stderr notice that names the key and never the value.
+    `AELIX_DOTENV_ALLOW` cannot open it, and an export can.
+  - The same rule holds for `NPM_TOKEN`, `GIT_TOKEN`, `SSH_KEY` and the other credential-shaped
+    names only `AELIX_DOTENV_ALLOW` can load, once it names them; until then they get the notice
+    that names it, whatever the value. Any other name it opens loads only such a value or a URL
+    (`scheme://…` with no spaces, none of `$`, a backtick, `<` or `>`, and `[` `]` only around
+    an IPv6 host such as `[::1]`). Before, a hatched `OPENROUTER_BASE_URL=a[$(touch PWNED)]` ran
+    in `echo $((OPENROUTER_BASE_URL))`, and a hatched `https://x.example/$(touch${IFS}PWNED)` ran
+    in `let "y=a[$OPENROUTER_BASE_URL]"` in bash 3.2, 5.2 and 5.3, macOS ksh93u+ and mksh, a form
+    the classifier asks before. A hatched `https://x.example/]+(PATH=0)+m[x` closed that `[`
+    itself: `echo $(( a[$OPENROUTER_BASE_URL] ))` in zsh and
+    `typeset -A m; let "y=m[$OPENROUTER_BASE_URL]"` in bash 5.2 and 5.3, zsh and ksh93 assigned
+    `PATH=0`, and the next `ls` ran the repo's `./0/ls`, also forms the classifier asks before.
+    A hatched comma-separated `NO_PROXY`, a path with a space or an IPv6 zone id
+    (`[fe80::1%lo0]`) now needs an export.
+  - A Cloudflare account or gateway id is held to the shell-name rule too:
+    `CLOUDFLARE_GATEWAY_ID=_` made bash 3.2 run a repo file name through
+    `ls files/* >/dev/null; echo $((CLOUDFLARE_GATEWAY_ID))`.
+  - Measured:
+    - Synthetic samples of 31 key formats still load, and so do all 31 provider key names in
+      their vendor's format. Most come from the vendors' published prefixes, not fetched, such
+      as `sk-ant-api03-…`, `sk-or-v1-…`, `AIza…`, AWS secrets with `/` and `+`, STS tokens ending
+      `==`, `github_pat_…` and JWTs. Entra client secrets (`~`), Telegram bot tokens (`:`) and X
+      bearer tokens (`%`) are from their vendors' pages.
+    - 40 key-shaped and URL values the rules admit ran nothing in 6,120 runs across 17 command
+      forms on bash 3.2 and 5.2, zsh, dash, two ksh93 builds and mksh
+      (`.omc/probes/756/fix-r1/`). Of 129 URLs across 46 forms on the same 9 shells and bash
+      5.3 (59,340 runs, `.omc/probes/756/finish/grid/`), the 53 the URL rule admits, 8 of them
+      real base URLs with a port, a query, IPv6 or `%`-encoding, ran nothing through a read by
+      name or a subscript, while URLs it refuses fired there; one admitted URL ran a repo file
+      as a path (below).
+    - The rules refuse a random key in which a lone `_`, or another shell name, has no letter,
+      digit or `_` on either side: over 200,000 random values per shape, 0.262 % of
+      Entra-alphabet secrets, 0.176 % of JWTs, 0.110 % of `sk-proj-` keys, 0.063 % of unprefixed
+      base64url keys and 0.054 % of `sk-ant-api03-` keys. Such a key needs an export. A key that
+      starts with `-` or `.` loads.
+  - A `.env` credential line with a trailing `# comment` or a NUL is now ignored with the
+    notice. The first used to load with the comment inside the key, and the second (also in a
+    hatched value) stopped aelix at launch with `ValueError`. A key you already exported gets no
+    notice for its `.env` duplicate. A `*_PASSWORD` value with other punctuation needs an export.
+  - The dev helpers that start aelix (`scripts/diag_tui_live.py` and the aelix-live-check skill's
+    `tui_capture.py`) now pass a `.env` through the same loader instead of copying every line
+    into the child.
+  - Not closed: a value may name an ordinary variable, step one (`x++`), stop a command
+    (`1/0`), or be an option or a path a command acts on (`find victim $X` with `-delete`,
+    `sh "$X"` with `./marker` or a bare `marker`, and `$X` or `. $X` with the URL
+    `https://x.example/*`, which globbed to a repo file `https:/x.example/v1`; the classifier asks
+    before each). The shell-name
+    list is best effort: a shell release can add a name. Only the forms and shells above are
+    measured. The classifier still allows `ls files/*; echo $((_))` with no `.env` at all, which
+    bash 3.2 and 5.2 ran; that is a classifier gap.
+
 - **`auto` asks at least, and refuses what it can see would run, where bash, zsh, dash or ksh end a
   here-document's body on another line than the parser does (#742, ADR-0158).** tree-sitter-bash
   0.25.1 compares body lines with the delimiter as written unless it starts with a quote or a
