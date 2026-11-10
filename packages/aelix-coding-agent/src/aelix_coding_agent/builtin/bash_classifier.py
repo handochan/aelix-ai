@@ -767,13 +767,23 @@ def _test_arguments_evaluate(command: Any) -> bool:
 
     args = _command_args(command)
     words: list[str | None] = []
+    globs: list[bool] = []
     for arg in args:
         word = _static_word(arg)
         if word is None and arg.type != "string":
             return True  # an unquoted expansion is split into any words
         words.append(None if word is None else word.text)
+        globs.append(word is not None and word.glob)
     if words and words[-1] == "]":
         words.pop()
+        globs.pop()
+    # #743 fix round 1: a glob anywhere can expand to an operator and its
+    # operand: with files ``-eq`` and ``a[$(cmd)]`` planted, macOS ksh93 ran
+    # ``cmd`` for ``test 1 *``, ``test *`` and ``test 1 -o *`` (measured).
+    # A ksh pattern (``test !(x)``, :func:`_has_extglob`) is a parse error to
+    # tree-sitter after a command word, so it asks before reaching here.
+    if any(globs):
+        return True
     if None in words:
         n = len(words)
         shapes = (
@@ -792,7 +802,7 @@ def _test_arguments_evaluate(command: Any) -> bool:
         if word == "-t" and after is not None and _index_danger(after):
             return True
         if word in _ARITHMETIC_TEST_OPERATORS and any(
-            side is not None and _index_danger(side) for side in (before, after)
+            side is not None and _arith_word_danger(side) for side in (before, after)
         ):
             return True
     return False
@@ -835,8 +845,10 @@ def _node_evaluates(node: Any) -> bool:
 
 
 def _test_command_evaluates(node: Any) -> bool:
-    """``[[ … ]]``: an arithmetic / ``-t`` operand that assigns or is dynamic, a ``-v`` non-name."""
+    """``[`` / ``[[``: an arithmetic operand that could run code or assign (:func:`_test_operands_evaluate`), a ``-t`` operand that assigns or is dynamic, a ``-v`` non-name."""
 
+    if node.type == "test_command" and _test_operands_evaluate(node):
+        return True
     if node.type in ("binary_expression", "unary_expression"):
         ops = [child for child in node.children if child.type == "test_operator"]
         operands = [c for c in node.children if c.is_named and c.type != "test_operator"]
@@ -850,6 +862,197 @@ def _test_command_evaluates(node: Any) -> bool:
             if not all(w is not None and _IDENTIFIER.fullmatch(w.text) for w in words):
                 return True
     return any(_test_command_evaluates(child) for child in node.children)
+
+
+# What tree-sitter groups a ``[`` / ``[[`` expression into; their leaves, in
+# source order, are the words the shell's test reads (#743).
+_TEST_GROUPS = frozenset({"binary_expression", "unary_expression", "parenthesized_expression"})
+
+
+def _test_words(node: Any) -> list[Any]:
+    """The operand and operator nodes of a ``[`` / ``[[`` expression, in source order."""
+
+    out: list[Any] = []
+    for child in node.children:
+        if child.type in _TEST_GROUPS:
+            out.extend(_test_words(child))
+        else:
+            out.append(child)
+    return out
+
+
+def _test_operands_evaluate(test: Any) -> bool:
+    """Whether a ``[`` / ``[[`` arithmetic operator has an operand the shell could run code from (#743).
+
+    bash (``[[``) and ksh93 (``[`` and ``[[``) evaluate an operand of ``-eq``,
+    ``-ne``, ``-lt``, ``-le``, ``-gt`` or ``-ge`` as an arithmetic expression,
+    array subscripts included: ``[[ 1 -eq 'a[$(cmd)]' ]]`` ran ``cmd`` in bash
+    3.2 and 5.2 and macOS ksh93u+, and ``[ 1 -eq 'a[$(cmd)]' ]`` in macOS
+    ksh93u+, on either side of the operator (measured; zsh, dash and Linux
+    ksh 93u+m ran none). tree-sitter makes ``[ … ]`` a ``test_command`` like
+    ``[[ … ]]``, so neither reached the ``test`` command's check. Every
+    arithmetic operator's neighbours are judged, whatever tree-sitter grouped
+    them with: it reads ``[ ! 1 -ge x -a 2 -eq 3 ]`` as ``((! 1 -ge x) -a 2)
+    -eq 3``.
+
+    Fix round 1: under ``[`` a word with an unquoted glob anywhere asks, as it
+    can expand to an operator and its operand: with files ``+1``, ``-eq`` and
+    ``a[$(cmd)]`` planted, macOS ksh93 ran ``cmd`` for ``[ * ]``, ``[ ! * ]``,
+    ``[ * = x ]``, ``[ 1 = 1 -a * ]``, ``[ 1 -o * ]`` and ``[ "$x"* ]``
+    (measured; ``[[`` does not glob, and no shell ran ``[[ x == * ]]`` or
+    ``[[ 1 -eq * ]]`` with the files planted). Fix round 2: so does a ksh
+    pattern (:func:`_has_extglob`).
+    """
+
+    bracket = bool(test.children) and test.children[0].type == "["
+    words = _test_words(test)
+    if bracket and (_has_extglob(test) or any(_has_unquoted_glob(word) for word in words)):
+        return True
+    for i, word in enumerate(words):
+        if word.type != "test_operator":
+            continue
+        if word.text.decode(errors="replace") not in _ARITHMETIC_TEST_OPERATORS:
+            continue
+        for j in (i - 1, i + 1):
+            if not 0 <= j < len(words):
+                continue
+            side = words[j]
+            if not side.is_named or side.type == "test_operator":
+                if not _split_off_operand_is_plain(words, j, left=j < i):
+                    return True
+                continue
+            if _arith_operand_danger(side):
+                return True
+    return False
+
+
+# Fix round 3: tree-sitter splits a sign, ``!``, ``~`` or ``(`` off an
+# operand (``+'a[$(cmd)]'`` is ``+`` and a ``raw_string``) and reads ``-FOO``
+# as a ``test_operator``, so the operand beside an arithmetic operator was
+# a bare token the loop skipped. ``[[ 1 -eq +'a[$(touch PWNED)]' ]]``
+# created ``PWNED`` in bash 3.2.57, 5.2.37 and 5.3.20, macOS ksh93u+ and
+# mksh, ``[ 1 -eq -'a[$(touch PWNED)]' ]`` in macOS ksh93u+ and mksh, and
+# with ``FOO='a[$(touch PWNED)]'`` exported ``[[ 1 -eq +FOO ]]``,
+# ``[[ -FOO -eq 1 ]]`` and ``[[ 1 -eq ~FOO ]]`` in bash 3.2.57 and 5.2.37,
+# macOS ksh93u+ and mksh (the round-3 verify, ``.omc/probes/742/verify-r3/``).
+# Such a token asks unless it is a sign before a ``number`` on the right, or
+# one of these on the left.
+_PLAIN_LEFT_OF_ARITHMETIC = frozenset({"[", "[[", "!", "&&", "||", "-a", "-o", "("})
+
+
+def _split_off_operand_is_plain(words: list[Any], j: int, *, left: bool) -> bool:
+    """Whether the token ``words[j]`` beside an arithmetic operator is no operand of its own (#743 fix round 3).
+
+    Plain: a ``-`` or ``+`` right of the operator with a ``number`` after it
+    (``[[ 1 -eq -1 ]]``), or a bracket, ``!``, ``(``, ``&&``, ``||``, ``-a``
+    or ``-o`` left of it (``[ ! 1 -eq 2 ]`` reads ``!`` two words before).
+    """
+
+    side = words[j]
+    if left:
+        return side.type in _PLAIN_LEFT_OF_ARITHMETIC
+    after = words[j + 1] if j + 1 < len(words) else None
+    return side.type in ("-", "+") and after is not None and after.type == "number"
+
+
+def _has_unquoted_glob(node: Any) -> bool:
+    """Whether a word holds a ``*``, ``?`` or ``[`` no quote or backslash protects, in any part."""
+
+    if node.type == "word":
+        chars: list[tuple[str, bool]] = []
+        _unescape(node.text.decode(errors="replace"), chars, quoted=False)
+        return any(ch in _GLOB_CHARS and not lit for ch, lit in chars)
+    if node.type == "concatenation":
+        return any(_has_unquoted_glob(child) for child in node.children)
+    return False
+
+
+def _has_extglob(node: Any) -> bool:
+    """Whether ``node``'s text holds ``!(``, ``@(``, ``+(``, ``?(``, ``*(`` or ``~(`` outside quotes (#743).
+
+    Fix round 2: ksh93 and mksh expand these patterns in ``[`` and ``test``,
+    and tree-sitter reads ``!(x)`` in ``[ … ]`` as ``!`` and a parenthesised
+    group, which :func:`_has_unquoted_glob` does not see. With files ``+1``,
+    ``-eq`` and ``a[$(cmd)]`` planted, macOS ksh93u+ and mksh ran ``cmd``
+    for ``[ !(x) ]``, ``[ !(x) = y ]`` and ``[ 1 = 1 -a !(x) ]`` (measured;
+    bash, zsh and dash reject them, Linux ksh 93u+m ran none). After
+    ``test`` such a pattern is a parse error to tree-sitter, so it asks
+    already.
+    """
+
+    text = bytearray(node.text)
+    for lo, hi in _ranges(node, _QUOTED_WORDS):
+        text[lo - node.start_byte : hi - node.start_byte] = b" " * (hi - lo)
+    return _EXTGLOB.search(text) is not None
+
+
+# What :func:`_has_extglob` looks for, and the quoted words it skips. Fix
+# round 3 adds ksh93's ``~(…)``: with files ``+1``, ``-eq`` and
+# ``a[$(touch PWNED)]`` planted, ``[ 1 -eq ~(E)^a ]`` ran ``touch`` in macOS
+# ksh93u+ (no other shell measured did; the round-3 verify).
+_EXTGLOB = re.compile(rb"[!@+?*~]\(")
+_QUOTED_WORDS = frozenset({"string", "raw_string", "ansi_c_string"})
+
+
+def _arith_operand_danger(node: Any) -> bool:
+    """Whether one ``[`` / ``[[`` arithmetic operand could run code or assign when evaluated.
+
+    Safe: a static word :func:`_arith_word_danger` clears (a plain decimal
+    number); a lone numeric expansion (``$#``, ``"${#a[@]}"``); or a
+    ``$((…))`` :func:`_arith_expansion_danger` clears. Anything else asks:
+    ``$'a[$(cmd)]'`` and ``"a[\\$(cmd)]"`` ran ``cmd`` like the single-quoted
+    form.
+    """
+
+    word = _static_word(node)
+    if word is not None:
+        return _arith_word_danger(word.text)
+    parts = [c for c in node.children if c.type != '"'] if node.type == "string" else [node]
+    if len(parts) != 1:
+        return True
+    if parts[0].type == "arithmetic_expansion":
+        return _arith_expansion_danger(parts[0])
+    return not _numeric_expansion(parts[0])
+
+
+# #743 fix round 2: a comparison operand is a plain decimal number, nothing
+# else (``'1,2'``, ``'*'`` and ``0x10`` ask since fix round 1). A bare name
+# asks too, the lead's call in fix round 2, not the owner's, and one the
+# owner can loosen: its value is evaluated again, and it can come from the
+# line (``_``, ``BASH_REMATCH``, ``read x``, ``=~``) or from the environment,
+# where aelix's own ``load_dotenv`` puts a cloned repository's ``*_API_KEY``
+# names (with ``FOO='a[$(touch PWNED)]'`` exported, ``[[ FOO -eq 0 ]]`` ran
+# ``touch`` in bash 3.2 and 5.2, macOS ksh93u+ and mksh; measured).
+_ARITH_OPERAND = re.compile(r"[ \t\n]*[-+]?[0-9]+[ \t\n]*")
+# A ``$((…))`` operand counts as static only when it holds nothing but digits,
+# blanks and operator characters: no name, as above, and no ``$``, backtick,
+# quote, backslash or ``[``, the ways a value or code gets in. With no name
+# in it nothing can be assigned either.
+_STATIC_ARITHMETIC = re.compile(r"[0-9 \t\n+\-*/%<>=!&|^~?:(),]*")
+
+
+def _arith_word_danger(text: str) -> bool:
+    """Whether a static arithmetic operand is anything but a plain decimal number."""
+
+    return _ARITH_OPERAND.fullmatch(text) is None
+
+
+def _arith_expansion_danger(node: Any) -> bool:
+    """Whether a ``$((…))`` operand could run code or assign: static only as digits and operators.
+
+    Codex: ``[ 1 -eq $(( '$(cmd)' )) ]`` ran ``cmd`` in bash, zsh, dash and
+    ksh93 and ``"a[\\$(cmd)]"`` in macOS ksh93, while tree-sitter holds the
+    ``$(…)`` in a string node :func:`_arith_danger` does not read; a name in
+    it asks as a bare name does (``$((_))``, ``$((FOO))``).
+    """
+
+    kids = node.children
+    inner = (
+        node.text[len(kids[0].text) : len(node.text) - len(kids[-1].text)]
+        if len(kids) > 1
+        else node.text
+    )
+    return _STATIC_ARITHMETIC.fullmatch(inner.decode(errors="replace")) is None
 
 
 def _evaluates_while_expanding(root: Any, source: bytes) -> bool:

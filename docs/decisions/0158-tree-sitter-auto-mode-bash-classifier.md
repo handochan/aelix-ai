@@ -457,6 +457,251 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     with `/bin/bash` deleted the files with no dialog on `61eda564` and are
     refused with the files kept now; `cat <<'EOF'` + `find . -name 'keep*'
     -delete` + `EOF` runs with no dialog on all three.
+  - **Dated note 2026-11-10 (#743).** **An arithmetic operand of `[ … ]` or
+    `[[ … ]]` is asked about as an operand of `test` is: it asks unless it is
+    a plain decimal number, a lone numeric expansion (`$#`, `"${#a[@]}"`)
+    or a `$((…))` holding only digits, blanks and operator characters; a
+    bare name asks (fix round 2). The operands judged are the words beside
+    each arithmetic operator as tree-sitter splits them, and a token it
+    splits off an operand (a sign, `!`, `~` or `(`, or `-FOO` read as an
+    operator) asks unless it is a `-` or `+` before a plain number on the
+    right, or `[`, `[[`, `!`, `(`, `&&`, `||`, `-a` or `-o` on the left
+    (fix round 3). A glob anywhere in `[ … ]` or `test`, or a ksh pattern
+    (`!(`, `@(`, `+(`, `?(`, `*(` or `~(`) in `[ … ]`, asks. An unquoted
+    expansion in `[ … ]` that the shell splits into operators, and the
+    values listed under "Not covered here", are not covered.** bash (`[[`) and
+    ksh93 (`[` and `[[`) evaluate an operand of `-eq`, `-ne`, `-lt`, `-le`,
+    `-gt` or `-ge` as an arithmetic expression, array subscripts included:
+    `[[ 1 -eq 'a[$(touch PWNED)]' ]]` created `PWNED` in bash 3.2.57, bash
+    5.2.37 and macOS ksh93u+, and `[ 1 -eq 'a[$(touch PWNED)]' ]` in macOS
+    ksh93u+, for all six operators on either side (measured with
+    `<shell> -c` on macOS and in Linux docker; zsh 5.9, dash and Linux ksh
+    93u+m/1.0.10 ran none; `.omc/probes/743/impl/`). Both were ALLOW on
+    `b160b8f7` while `test 1 -eq 'a[$(touch PWNED)]'` asked: tree-sitter
+    makes `[ … ]` a `test_command` like `[[ … ]]`, never a `command`, so
+    ADR-0288's "`test` / `[` command" check reached only `test`, and the
+    `test_command` check asked only about expansions and assignments.
+    `_test_operands_evaluate` now reads a `test_command`'s words in source
+    order, whatever tree-sitter grouped them into (it reads
+    `[ ! 1 -ge x -a 2 -eq 3 ]` as `((! 1 -ge x) -a 2) -eq 3`), and judges
+    each word beside an arithmetic operator with `_arith_operand_danger`.
+    `$'a[$(…)]'` and `"a[\$(…)]"`, which ran `touch` the same way, ask.
+
+    **Fix round 1 (2026-11-10): rules that only raise.** The round-1 verify
+    and a Codex review found operands and globs the first version let
+    through; each is now closed by a rule that can only make the verdict
+    ASK, measured in the same eight shells, in an empty directory and again
+    with files `+1`, `-eq` and `a[$(touch PWNED)]` planted
+    (`.omc/probes/743/fix-r1/`):
+    - *A bare name was safe only if nothing on the line could have put
+      text in it* (fix round 2 replaces this: every bare name asks). bash
+      fills `_` with the previous command's last argument and
+      `BASH_REMATCH` with what `=~` matched, and evaluates their value again:
+      `[[ 'a[$(touch PWNED)]' =~ .* && BASH_REMATCH -eq 0 ]]`,
+      `echo 'a[$(touch PWNED)]'; [[ 1 -eq _ ]]` and
+      `echo 'a[$(touch PWNED)]'; [ 1 -eq $((_)) ]` created `PWNED` in bash
+      3.2.57 and 5.2.37 (zsh, dash and ksh did not) and were ALLOW. Round 1
+      made a name ask when bash 5.2's manual lists it as set by the shell
+      (`_`, `BASH_REMATCH`, `REPLY`, `MAPFILE`, `OPTARG`, `BASH_ARGV`,
+      `BASH_COMMAND`, `FUNCNAME`, …), or when the line assigned, read into
+      or matched into anything (`=~` anywhere, an assignment or
+      declaration, a `for` / `select`, or a command such as `read`,
+      `mapfile`, `getopts`, `printf`, `wait`, `let`, `eval` or one whose
+      name is not known). An explicit setter was already ASK on `61eda564`
+      by itself (`x=…`, `read x`, `printf -v x`, `declare`, `local`,
+      `export`, `for x in`, `getopts`, `mapfile`; bash 5.2 ran each, bash
+      3.2 each but `mapfile`, which it lacks), and still is.
+    - *A glob anywhere in `[ … ]` or `test` asks* (`_has_unquoted_glob`):
+      with the files planted, macOS ksh93u+ created `PWNED` for `[ * ]`,
+      `[ ! * ]`, `[ * = x ]`, `[ 1 = 1 -a * ]`, `[ 1 -o * ]`, `[ "$x"* ]`,
+      `test *`, `test ! *` and `test 1 -o *`, and for `test 1 *` with only
+      `-eq` and `a[$(touch PWNED)]` planted (Codex); all were ALLOW. No
+      other shell ran them, nor Linux ksh 93u+m. `[[` does not glob: no
+      shell ran `[[ x == * ]]`, `[[ * == x ]]`, `[[ x =~ * ]]` or
+      `[[ 1 -eq * ]]` with the files planted, and the pattern side of `==`
+      is matched, not expanded, so those stay as they were.
+    - *A `$((…))` operand counted as static only with no `$`, backtick,
+      quote, backslash or `[` inside, and its names followed the rule above*
+      (`_arith_expansion_danger`; fix round 2 narrows it to digits, blanks
+      and operator characters). Codex: `[ 1 -eq $(( '$(touch PWNED)' )) ]`
+      and its `[[` form created `PWNED` in bash, zsh, dash and ksh93 on both
+      systems, and `[ 1 -eq $(( "a[\$(touch PWNED)]" )) ]` in macOS
+      ksh93u+; tree-sitter keeps that `$(…)` inside a string node
+      `_arith_danger` does not read, and all were ALLOW.
+    - *An operand is a plain decimal number*, not one of `_SAFE_INDEX`'s
+      subscript forms: `[ 1 -eq '1,2' ]`, `[[ 1 -eq '1,2' ]]`,
+      `test 1 -eq '1,2'`, `[[ 1 -eq '*' ]]` and `[[ 1 -eq * ]]` ask (no
+      shell ran anything for them).
+
+    **Fix round 2 (2026-11-10).** Measured with `<shell> -c` in the same
+    eight shells and in Linux mksh 59c, which is in `_CLASSIFIABLE_SHELLS`
+    too: empty, with the three files planted, and with `FOO` and
+    `EVIL_API_KEY` set to `a[$(touch PWNED)]` in the environment
+    (`.omc/probes/743/fix-r2/`).
+    - *Every bare name asks* (`_arith_word_danger`). This is the lead's
+      call in this round, not the owner's, and the owner can loosen it.
+      The environment can hold the text: aelix's own `load_dotenv` puts a
+      cloned repository's `*_API_KEY` names into the process environment
+      before the trust check, and every bash call inherits it. With the two
+      variables set, `[[ FOO -eq 0 ]]`, `[[ 1 -eq FOO ]]`,
+      `[[ EVIL_API_KEY -eq 0 ]]`, `[[ 1 -eq $((FOO)) ]]`,
+      `[ 1 -eq $((FOO)) ]` and `test 1 -eq $((FOO))` created `PWNED` in
+      bash 3.2.57 and 5.2.37, macOS ksh93u+ and mksh, and `[ 1 -eq FOO ]`,
+      `test 1 -eq FOO` and `[ 1 -eq EVIL_API_KEY ]` in macOS ksh93u+ and
+      mksh; zsh, dash and Linux ksh 93u+m ran none. All but
+      `test 1 -eq $((FOO))` were ALLOW on `ce3cc695`. This replaces round
+      1's exception for names nothing on the line could have filled, and
+      its two lists. A `$((…))` operand is static only when it holds
+      nothing but digits, blanks and operator characters
+      (`_STATIC_ARITHMETIC`), so a name, `$`, backtick, quote, backslash or
+      `[` in it asks. `$#`, `"$#"`, `$?`, `"${#x}"`, plain decimal numbers
+      and a `$((…))` such as `$((1+1))` stay ALLOW.
+    - *A ksh pattern in `[ … ]` asks* (`_has_extglob`). tree-sitter reads
+      `!(x)` as `!` and a parenthesised group, which the glob rule above
+      did not see. With the three files planted, `[ !(x) ]`, `[ ! !(x) ]`,
+      `[ !(x) = y ]`, `[ !(x) -eq 1 ]`, `[ 1 = 1 -a !(x) ]`, `[ !(\-) ]`
+      and `[ !(x) ] && echo hi` created `PWNED` in macOS ksh93u+ and mksh,
+      and `[ 1 -o !(x) ]` in macOS ksh93u+; all were ALLOW on `ce3cc695`.
+      `!(`, `@(`, `+(`, `?(` or `*(` outside quotes in `[ … ]` now asks.
+      After `test`, tree-sitter cannot parse such a pattern, so it asked
+      already. bash, zsh and dash reject these forms. `[[` matches, it does
+      not expand, so `[[ x == !(y) ]]` stays ALLOW, and so do quoted forms
+      such as `[ "!(x)" = y ]`.
+    - *mksh*, in this round's runs, ran every row macOS ksh93u+ ran,
+      except `[ 1 -o * ]`, `test 1 -o *`, `[ 1 -o !(x) ]` and the
+      double-quoted `$(( "a[\$(touch PWNED)]" ))` pair. It also ran
+      `f() { local x='a[$(touch PWNED)]'; [[ x -eq 0 ]]; }; f`, which
+      ksh93 did not. Every row either shell ran asks.
+
+    **Fix round 3 (2026-11-10): the round-3 verify's measured rules**
+    (`.omc/probes/742/verify-r3/`, `test_bash_test_command_743.py`, the
+    fix-round-3 rows; the shells per row are in `.omc/probes/743/finish/`).
+    - *A token tree-sitter splits off an operand asks.* tree-sitter reads
+      `+'a[$(touch PWNED)]'` as `+` and a `raw_string`, `~FOO` as `~` and a
+      word, and `-FOO` as a `test_operator`, so the word beside `-eq` was a
+      bare token the check skipped. `[[ 1 -eq +'a[$(touch PWNED)]' ]]`
+      created `PWNED` in bash 3.2.57, 5.2.37 and 5.3.20, macOS ksh93u+ and
+      mksh, `[ 1 -eq -'a[$(touch PWNED)]' ]` in macOS ksh93u+ and mksh, and
+      with `FOO` set to `a[$(touch PWNED)]` in the environment
+      `[[ 1 -eq +FOO ]]`, `[[ -FOO -eq 1 ]]` and `[[ 1 -eq ~FOO ]]` in bash
+      3.2.57 and 5.2.37, macOS ksh93u+ and mksh; `!`, `-+`, the `$'…'` and
+      `"a[\$(…)]"` spellings, `_` and `BASH_REMATCH` filled by the line, a
+      signed `$((…))` (`[ 1 -eq -$(( '$(touch PWNED)' )) ]` in all nine
+      shells) and a signed parenthesised operand (macOS ksh93u+) did the
+      same. All were ALLOW on `3963bea9` and `80ff2cc2`. Such a token now
+      asks unless it is a `-` or `+` right of the operator with a `number`
+      after it, or `[`, `[[`, `!`, `(`, `&&`, `||`, `-a` or `-o` left of it
+      (`_split_off_operand_is_plain`). Of the verify's 672 prefix and 280
+      infix forms, the 99 that ran in some shell ask, and so do the 12
+      name and ksh-pattern rows that did; `[[ 1 -eq -1 ]]`,
+      `[ -1 -lt 0 ]` and `[ ! 1 -eq 2 ]` stay ALLOW. A `number` there is
+      tree-sitter's, so `-0x1` and `-36#FOO`, constants, stay ALLOW too, and
+      so do more words after a signed number (`[[ 1 -eq -1 + FOO ]]` and
+      `[ 1 -eq -1 + FOO ]` ran nothing with `FOO` set in any of the nine
+      shells, nor `-36#FOO` and `-0x1`; `.omc/probes/743/finish/`).
+    - *A ksh93 `~(…)` pattern in `[ … ]` asks* (`_EXTGLOB`): with the three
+      files planted, `[ 1 -eq ~(E)^a ]`, `[ 1 -eq ~(E)a ]`,
+      `[ 1 -eq ~(G)a ]` and `[ 1 -eq ~(E)^a. ]` ran `touch` in macOS ksh93u+
+      and no other shell. Those already ask by the rule above; `[ ~(E)^a ]`
+      and `[ ~(x) = x ]`, which no shell ran, now ask too.
+    - *Unchanged and not covered*, all pre-existing (ALLOW on `80ff2cc2`):
+      an unquoted expansion that `[` splits into operators, which macOS
+      ksh93u+ and mksh ran with `FOO='1 -eq a[$(touch${IFS}PWNED)]'` in the
+      environment for `[ $FOO ]`, `[ $FOO = x ]`, `[ x = x -a $FOO ]`,
+      `[ ${FOO} ]` and `[ $FOO -o x = y ]` (bash, zsh, dash and Linux ksh
+      did not; `test $FOO` asks), which needs a decision because
+      `[ $x = y ]` is a common idiom and #756 records it as well; and
+      `[[ 1 -eq ${#x[FOO]} ]]` and `[ 1 -eq ${#x[FOO]} ]`, which macOS
+      ksh93u+ and mksh ran with `FOO` in the environment, the
+      `${a[FOO]}` class below.
+
+    **Not covered here:** the same values outside `[`, `[[` and `test`, in
+    #657's arithmetic rule — `echo 'a[$(touch PWNED)]'; echo $((_))`,
+    `(( _ ))`, `echo ${a[_]}`, `[[ … =~ .* ]] && echo $((BASH_REMATCH))`
+    (bash ran each) and `echo $(( '$(touch PWNED)' ))` (all four shells ran
+    it) are ALLOW; so are `echo $((FOO))`, `(( FOO ))` and `echo ${a[FOO]}`
+    with `FOO` in the environment, which bash, macOS ksh93u+ and mksh ran
+    (fix round 2), and, inside `[` and `[[`, `${#x[FOO]}` (fix round 3).
+    These go with #756 (a `.env` value evaluated as shell arithmetic), as
+    does the field splitting of an unquoted expansion in `[ … ]` above.
+
+    **Accepted cost** — ASK where no shell measured ran anything: a glob
+    anywhere in `[` or `test` (`[ -e *.log ]`, `[ x = * ]`), a ksh pattern
+    in `[` (`[ x = !(y) ]`, `[ -e !(x) ]`), an operand that is not a plain
+    decimal number (`[[ 1 -eq '*' ]]`, `[ 1 -eq '1,2' ]`,
+    `[ 0x10 -eq 16 ]`), any bare name, whatever the environment holds
+    (`[[ x -eq 0 ]]`, `[[ count -gt 3 ]]`, `[[ _ -gt 0 ]]`), and anything
+    but digits, blanks and operators inside a `$((…))` operand
+    (`[ $(( $# + 1 )) -gt 2 ]`, `[ $((x+1)) -eq 2 ]`); fix round 3 adds a
+    token tree-sitter splits off an operand that is not a sign before a
+    plain number (`[[ 1 -eq ~1 ]]`, `[ 1 -eq -(2) ]`) and a `~(…)` pattern
+    in `[` (`[ ~(E)^a ]`), and changes none of the 31,348 corpus, test and
+    realistic strings or the round-3 verify's 199 lines. `[ "$a" = "$b" ]`,
+    `[[ -f x ]]`, `[ 1 -eq 2 ]`, `[ $# -eq 0 ]`, `[ "$?" -ne 0 ]` and
+    `[ $((1+1)) -eq 2 ]` stay ALLOW.
+
+    **Measured only raising.** At `61eda564` against the #742 commit: of
+    23,296 grid forms (28 operand spellings × 11 operators under `[`, `[[`
+    and `test`, plus unary, `-a` / `||` / `!` / parenthesised and redirected
+    shapes) none went down; of its 14,774 ALLOW forms, the 2,552 where a
+    macOS shell ran `touch` (948 on Linux) asked, and 2,343 asked with no
+    effect, each over an operand `test` asks about as well. Fix round 1,
+    against `80ff2cc2`: the verify's 7,560-form grid (35 operands × 9
+    operators × `[`/`[[`/`test` × 4 wrappers × 2 sides) has none below
+    `80ff2cc2` or `61eda564`; 546 forms went from ALLOW to ASK, all with
+    operands no shell ran anything for (`BASH_REMATCH`, `1,2`, `'*'`, `*`,
+    `?`, `[a]`), and the 2,535 still ALLOW ran nothing in the eight shells.
+    Of 30,841 corpus strings and 132 realistic lines, under UNKNOWN and
+    POSIX, the one this round changed from `61eda564` is `[[ 1 -eq * ]]`.
+    The #710 sweep with redirects also inserted before and after every
+    `[` / `[[` (1,909,470 forms) has none below `80ff2cc2`. Fix round 2,
+    on the final classifier against `80ff2cc2` and `ce3cc695`: the #710
+    sweep (25,275 argv strings, 1,930,140 forms), the 108,960
+    here-documents, the 7,560-form grid and the 936-form substitution set
+    have none below either and no exception caught by `classify`; the
+    grid's 42 changes from `ce3cc695` are #742's. Of 31,348 corpus, test
+    and realistic strings under UNKNOWN and POSIX, against `80ff2cc2` no
+    test string outside the new tests changed, and of the round-2 verify's
+    157 realistic lines these went from ALLOW to ASK: `[ -e *.log ]`,
+    `[ -f *.txt ]`, `[ -d src/*/ ]`, `test -e *.pyc`, `[ 0x10 -eq 16 ]` and
+    `[ $(( $# + 1 )) -gt 2 ]` (fix round 1), and `[[ x -eq 0 ]]`,
+    `[[ count -gt 3 ]]`, `[ $((x+1)) -eq 2 ]` and `[[ $((x + 1)) -eq 2 ]]`
+    (the name rule); this round's own 31 probe lines add `[[ HOME -eq 0 ]]`,
+    `[[ n -gt 0 ]]`, `[ !(x) ]` and `[ -e !(x) ]`.
+    Live, in a pty TUI under `auto` with a scripted model:
+    `[[ 1 -eq 'a[$(touch PWNED)]' ]]` (`SHELL=/bin/bash`) and
+    `[ 1 -eq 'a[$(touch PWNED)]' ]` (`/bin/ksh`) ran with no dialog and
+    created `PWNED` on `b160b8f7` and open the dialog now; the
+    `BASH_REMATCH` form and `[ 1 -eq $(( '$(touch PWNED)' )) ]` with
+    `/bin/bash`, and `[ * ]` with `/bin/ksh` and the three files planted, ran
+    with no dialog and created `PWNED` on `61eda564`, and open the dialog now
+    (answered with Esc, nothing is created); `[ "$HOME" = x ] ||
+    [[ -f keep1.txt ]]` runs with no dialog on all three. Over RPC
+    `permissions/evaluate` those three answer `allow` on `61eda564` and
+    `ask` now, and the headless block gate (`-p` with
+    `AELIX_SUBAGENT_DEPTH=1`) ran them on `61eda564` and blocks them now.
+    Fix round 2, with the three files planted, `[ !(x) ]` and
+    `[ 1 = 1 -a !(x) ]` with `/bin/ksh`, and, with a work folder `.env`
+    holding `EVIL_API_KEY=a[$(touch PWNED)]` and a scratch home,
+    `[[ EVIL_API_KEY -eq 0 ]]` with `/bin/bash` and `[ 1 -eq EVIL_API_KEY ]`
+    and `[ 1 -eq $((EVIL_API_KEY)) ]` with `/bin/ksh` ran with no dialog
+    and created `PWNED` on `ce3cc695`; all five open the dialog now, and
+    nothing is created after Esc.
+    Fix round 3, on the final classifier against `80ff2cc2` and `3963bea9`:
+    the round-3 verify's attack sets (1,523 distinct forms, its 672 prefix
+    and 280 infix forms among them), the #710 sweep (25,292 argv strings,
+    1,930,980 forms), the 108,960 here-documents, the 7,560-form grid, the
+    936-form substitution set and the 704-form `${…}` grid have none below
+    either, under UNKNOWN and POSIX, and no exception caught by `classify`;
+    the #710 sweep and the four grids keep every verdict of `3963bea9`, and
+    the attack sets went up only. Live, in a pty TUI under `auto` with a
+    scripted model, `[[ 1 -eq +'a[$(touch PWNED)]' ]]` with `/bin/bash`,
+    `[ 1 -eq -'a[$(touch PWNED)]' ]` with `/bin/ksh` and, with a work folder
+    `.env` holding `EVIL_API_KEY=a[$(touch PWNED)]`,
+    `[[ 1 -eq +EVIL_API_KEY ]]` with `/bin/bash`, which ran with no dialog
+    and created `PWNED` on `3963bea9` and `80ff2cc2` in the verify's run,
+    open the dialog now, and nothing is created after Esc;
+    `[ "$#" -eq 0 ] && [ -f keep1.txt ]` runs with no dialog.
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any
