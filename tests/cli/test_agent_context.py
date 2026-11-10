@@ -29,6 +29,23 @@ from aelix_coding_agent.tools import create_all_tools
 pytestmark = pytest.mark.usefixtures("own_agent_dir")
 
 
+@pytest.fixture
+def own_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """#733: a cwd with no project resources, for the tests that build options without one.
+
+    ``_build_harness_options`` called with no ``project_trusted`` loads the
+    cwd's ``.aelix/extensions``. Run from a checkout that has some (a
+    contributor's own, as the main checkout of this repository does), these
+    tests imported and ran that code; a sweep with a marker extension planted
+    in the cwd caught these 12.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    return project
+
+
 # Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
 # REQUIRED, so every call here has to say which session it is describing. The
 # blocks these tests assert on are themselves tool-gated: the docs signpost
@@ -1045,6 +1062,7 @@ def test_signpost_token_cost_stays_bounded() -> None:
     assert prose < 1700, prose
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_harness_options_carry_the_signpost() -> None:
     """The block reaches the REAL harness prompt, not just the helper."""
 
@@ -1053,6 +1071,7 @@ async def test_harness_options_carry_the_signpost() -> None:
     assert "def setup(aelix)" in options.system_prompt
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_explicit_system_prompt_still_drops_the_signpost() -> None:
     """``--system-prompt`` remains a full override (no silent injection)."""
 
@@ -1130,17 +1149,20 @@ def test_discover_context_files_truncates_oversized(tmp_path) -> None:
 # --- _build_harness_options wiring -------------------------------------------
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_wires_seven_tools() -> None:
     options = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     assert {t.name for t in options.tools} == _TOOL_NAMES
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_sets_coding_agent_system_prompt() -> None:
     options = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     assert options.system_prompt  # non-empty (was "" → no identity)
     assert "Aelix" in options.system_prompt
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_explicit_system_prompt_overrides() -> None:
     parsed = Args(system_prompt="CUSTOM PROMPT")
     options = await _build_harness_options(parsed, Session(MemorySessionStorage()))
@@ -1158,6 +1180,7 @@ def test_resolve_active_tools() -> None:
     assert _resolve_active_tools(Args()) is None
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_wires_active_tool_names() -> None:
     """--tools / --no-tools flow into AgentHarnessOptions.active_tool_names."""
 
@@ -1175,6 +1198,7 @@ async def test_build_harness_options_wires_active_tool_names() -> None:
     assert opts_none.active_tool_names == []
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_drops_tools_filter_on_reload() -> None:
     """#24-FU (adversarial-review MEDIUM): on reload the factory must build
     UNFILTERED (active_tool_names=None) instead of re-applying the launch --tools
@@ -1194,6 +1218,7 @@ async def test_build_harness_options_drops_tools_filter_on_reload() -> None:
     assert opts_build.active_tool_names == ["read"]
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_appends_mcp_tools() -> None:
     """MCP tools passed to _build_harness_options join the harness toolset."""
 
@@ -1269,6 +1294,7 @@ async def test_build_harness_options_no_warning_without_on_disk(
 # --- issue #44: settings_manager harness seam wiring -------------------------
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_threads_settings_manager() -> None:
     """Issue #44: a passed SettingsManager reaches AgentHarnessOptions.settings_manager
     — the dormant enabler that makes harness.reload() stop raising invalid_state in
@@ -1283,6 +1309,7 @@ async def test_build_harness_options_threads_settings_manager() -> None:
     assert opts.settings_manager is sm
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_settings_manager_defaults_none() -> None:
     """Issue #44: omitting settings_manager preserves the pre-#44 default (None),
     so no caller is forced to thread it and existing behavior is unchanged."""
@@ -1293,6 +1320,7 @@ async def test_build_harness_options_settings_manager_defaults_none() -> None:
 # --- steering / follow-up mode seed from persisted settings ------------------
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_seeds_steering_and_follow_up() -> None:
     """A persisted /settings steering / follow-up change must SURVIVE restart:
     the harness options are seeded from the SettingsManager (they had get/set
@@ -1308,6 +1336,7 @@ async def test_build_harness_options_seeds_steering_and_follow_up() -> None:
     assert opts.follow_up_mode == "all"
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_build_harness_options_steering_defaults_one_at_a_time() -> None:
     """No SettingsManager (or unset) → the pi-parity default "one-at-a-time",
     matching the AgentHarnessOptions dataclass default (no behaviour change)."""

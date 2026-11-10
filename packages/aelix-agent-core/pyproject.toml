@@ -70,6 +70,9 @@ packages = ["src/aelix_agent_core"]
 exclude = [
   ".claude",
   ".claude/settings.json",
+  ".claude/skills",
+  ".claude/agents",
+  ".agents",
   ".uv-cache",
   ".omc",
   "__pycache__",
@@ -88,6 +91,9 @@ exclude = [
 exclude = [
   ".claude",
   ".claude/settings.json",
+  ".claude/skills",
+  ".claude/agents",
+  ".agents",
   ".uv-cache",
   ".omc",
   "__pycache__",

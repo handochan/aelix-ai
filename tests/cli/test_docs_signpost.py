@@ -46,6 +46,22 @@ from aelix_coding_agent.help import bundled_docs_dir, topic_names
 pytestmark = pytest.mark.usefixtures("own_agent_dir")
 
 
+@pytest.fixture
+def own_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """#733: a cwd with no project resources, for the tests that build options without one.
+
+    ``_build_harness_options`` called with no ``project_trusted`` loads the
+    cwd's ``.aelix/extensions``. Run from a checkout that has some, as the main
+    checkout of this repository does, the two harness tests here imported and
+    ran that code (a marker extension planted in the cwd caught both).
+    """
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    return project
+
+
 # Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
 # REQUIRED, so every call here has to say which session it is describing. The
 # blocks these tests assert on are themselves tool-gated: the docs signpost
@@ -350,6 +366,7 @@ def test_the_names_line_carries_no_path_the_model_must_assemble_twice() -> None:
     assert not re.search(r"\bdocs/[\w.-]+\.md", stripped), stripped
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_the_block_reaches_the_real_harness_prompt() -> None:
     """Not just the helper — the prompt the harness is actually built with."""
 
@@ -358,6 +375,7 @@ async def test_the_block_reaches_the_real_harness_prompt() -> None:
     assert "extension-authoring" in options.system_prompt
 
 
+@pytest.mark.usefixtures("own_cwd")
 async def test_explicit_system_prompt_still_drops_the_block() -> None:
     """``--system-prompt`` is a full override; #101 must not smuggle a block
     back in, for the same reason the signpost does not.

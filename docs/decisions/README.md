@@ -36,6 +36,20 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0303 — The way this repository is worked on is committed: agent skills, a verifier agent, a session hook and one gate runner](0303-the-way-this-repository-is-worked-on-is-committed-skills-a-verifier-and-a-session-hook.md)
+  (Accepted 2026-11-09; #733). Seven Agent Skills (`aelix-preflight`, `aelix-live-check`,
+  `aelix-tests-that-bite`, `aelix-close-out`, `aelix-issue-run`, `aelix-handoff`, `aelix-land`)
+  live in `.agents/skills/`, which aelix reads in a trusted project, with a byte-identical mirror in
+  `.claude/skills/` for Claude Code that `scripts/sync_agent_skills.py` writes and
+  `tests/test_agent_skills.py` gates, beside the `aelix-verifier` subagent. A tracked
+  `.claude/settings.json` runs `scripts/session_brief.py` at session start: read-only
+  (`--no-optional-locks`, the index watched by a test), no network, no `uv run`, bounded,
+  Python 3.9, always exit 0. `scripts/preflight.py` runs the gates a change can fail from a
+  one-row-per-gate table, `--plan` says which and why, `--claims` writes the PR's verification
+  block, and it never runs the full suite. The coarse-clock pytest plugin is promoted to
+  `tests/plugins/`. `.agents`, `.claude/skills` and `.claude/agents` are in every exclude list
+  (measured with real builds). The owner's 2026-11-09 decisions: everything committed, and the
+  one-session-one-task rule removed. `AGENTS.md` and `CLAUDE.md` stay local.
 - [0300 — A function's complexity only goes down: Ruff C901 over 20 is listed by name and score, and the list only shrinks](0300-a-functions-complexity-only-goes-down.md)
   (Accepted 2026-11-09; #293). The owner's 2026-09-19 decision was recorded as using the C901 "already
   in CI"; it was not there. Now CI's `Complexity ratchet (ruff C901)` step runs

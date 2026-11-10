@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 from aelix_ai.providers._trust_store import record_injection, reset_injection_record
@@ -28,6 +29,19 @@ def _clean_record() -> object:
     reset_injection_record()
     yield
     reset_injection_record()
+
+
+@pytest.fixture(autouse=True)
+def _own_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#733: ``_collect`` resolves project trust from the cwd.
+
+    From a checkout holding project resources (``.agents/skills``, a
+    contributor's own ``.aelix/``) it reads the agent dir's ``trust.json``,
+    which these tests never pin, and the #458/#497 guard fails them at
+    teardown. A cwd of their own has no project resources.
+    """
+
+    monkeypatch.chdir(tmp_path)
 
 
 async def _report() -> dict[str, object]:

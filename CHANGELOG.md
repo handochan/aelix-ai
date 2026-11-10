@@ -23,6 +23,29 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Contributors: the way this repository is worked on is in the tree (#733, ADR-0303).**
+  `scripts/preflight.py` reads your change (the commits since the merge base with `origin/main`,
+  then what is staged, unstaged and untracked) and runs the gates it can fail: `--plan` lists them
+  with the path that triggered each and runs nothing, `--claims FILE` writes the pull request's
+  "How it was verified" block with each command, exit status, duration and the end of its output
+  (`--claims -` prints it), and the full suite is never run but named last as what you still owe
+  (`tests/test_preflight.py`).
+  Seven agent skills live in `.agents/skills/` (the gates, live checks, tests that bite, close-out,
+  the issue lane, handoffs, landing), with a byte-identical copy in `.claude/skills/` for Claude
+  Code that `scripts/sync_agent_skills.py` writes and `tests/test_agent_skills.py` gates, loading
+  each skill with aelix's own loader; `.claude/agents/aelix-verifier.md` is an independent
+  verifier. A tracked `.claude/settings.json` runs `scripts/session_brief.py` when a Claude Code
+  session starts: it writes nothing (`tests/test_session_brief.py` watches the index), uses no
+  network (not even a partial clone's lazy fetch), is bounded and always exits 0.
+  `tests/plugins/coarse_clock.py` gives `time.monotonic` the 15.625 ms tick of Windows on Python
+  3.12 and older, on request. What ships: the three new `scripts/` files are in the root sdist, as
+  every `scripts/` file is, and in no wheel; `.agents`, `.claude` and `tests/plugins/` are in no
+  artifact (`uv build --all-packages`, measured for #733). `.agents`, `.claude/skills` and
+  `.claude/agents` are in every exclude list, and `tests/packaging_gate/test_build_hygiene.py`
+  plants all three. Because `.agents/skills/` now holds skills, aelix run in this checkout, a new
+  worktree or a fresh clone asks the project trust question once, and `-p` prints a Notice line
+  until the folder is trusted (ADR-0281).
+
 - **Background jobs, built and switched off (#722, #611 S1b, ADR-0293).** A generic job
   service in product-core (`aelix_coding_agent/jobs/`), the kernel's notice inbox
   (`AgentHarness.post_notice`, `prompt_notices`), monitoring (a 5 s liveness loop, a footer

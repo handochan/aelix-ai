@@ -53,7 +53,7 @@ env.txt
 #
 # Publishing is NOT what this rule protects — the wheel and sdist are guarded
 # independently by the `exclude` blocks in each pyproject, proven by
-# `tests/packaging/test_build_hygiene.py`: strip `.omc` from those excludes and
+# `tests/packaging_gate/test_build_hygiene.py`: strip `.omc` from those excludes and
 # planted state leaks into the wheel even with this file untouched.
 /.omc/*
 !/.omc/specs/
@@ -88,20 +88,23 @@ aelix-session-*.html
 # `.claude/` is developer state, and the repo root's copy is ignored wholesale
 # (all but one file — see the exception below). Publishing is guarded
 # independently by the `exclude` blocks in every pyproject (most of
-# tests/packaging/test_build_hygiene.py deletes this file before building,
+# tests/packaging_gate/test_build_hygiene.py deletes this file before building,
 # precisely so the excludes are what gets measured) — this rule is the belt.
 #
 # The live agent worktrees under `.claude/worktrees/` are registered in
 # `.git/worktrees/`, not by being tracked, so ignoring the directory does not
 # disturb them: `git worktree list` is unaffected.
 #
-# ONE EXCEPTION, `.claude/settings.json`: Claude Code's documented CHECKED-IN
+# THREE EXCEPTIONS. `.claude/settings.json` is Claude Code's documented CHECKED-IN
 # team configuration (`settings.local.json` is the personal sibling and stays
-# ignored). Nothing tracks it today — `git ls-files .claude/` is empty — so this
-# breaks nothing now; it exists so that a maintainer who adds team settings
-# tomorrow does not watch git silently swallow them.
+# ignored); since #733 it is tracked and holds the read-only SessionStart hook
+# (`scripts/session_brief.py`). `.claude/skills/` is the committed mirror of the
+# project's agent skills (canonical copy `.agents/skills/`, gated byte-identical
+# by tests/test_agent_skills.py) and `.claude/agents/` holds the committed
+# subagents, both #733 (ADR-0303). Everything else under `.claude/` stays
+# ignored, `worktrees/` above all.
 #
-# THE FOUR LINES ARE NOT INTERCHANGEABLE. Git cannot re-include a path whose
+# THE FIRST FOUR LINES ARE NOT INTERCHANGEABLE. Git cannot re-include a path whose
 # parent directory is excluded, so the obvious `.claude/` + `!/.claude/settings.json`
 # does NOT work — measured, the file stays ignored by `.claude/`. The root
 # directory has to be re-admitted (`!/.claude/`), its contents re-excluded
@@ -136,13 +139,23 @@ aelix-session-*.html
 #
 # With both in place the halves are independent again, as intended: git MAY track
 # that one file, and it still reaches no artifact.
-# tests/packaging/test_build_hygiene.py proves the second half by building with
+# tests/packaging_gate/test_build_hygiene.py proves the second half by building with
 # this file present — the older fixtures there delete it on purpose and so cannot
 # see this interaction at all.
+#
+# The two DIRECTORY negations (#733) do not outrank `.claude` the same way, and
+# that was measured rather than assumed: a sdist built with these lines and only
+# `.claude` in the pyproject list shipped neither a planted
+# `.claude/skills/x/SKILL.md` nor `.claude/agents/x.md`; with `.claude` dropped
+# from that list both shipped. Every pyproject list names `.claude/skills` and
+# `.claude/agents` exactly anyway, so either entry alone keeps them out (also
+# measured), and the static check in that test pins all of them.
 /.claude/
 !/.claude/
 /.claude/*
 !/.claude/settings.json
+!/.claude/skills/
+!/.claude/agents/
 
 # Name-reservation build output (scripts/reserve_*_names.py) — regenerable
 /dist-reservation/

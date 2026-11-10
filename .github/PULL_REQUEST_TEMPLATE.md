@@ -45,6 +45,9 @@ model, not a mock.
 
 - [ ] `uv sync --all-packages` (the bare `uv sync` cannot collect the suite)
 - [ ] Behaviour change is pinned by a test that fails without the fix
+- [ ] `uv run --frozen python scripts/preflight.py --claims -`, and the block
+      it prints pasted under "How it was verified" (it does not run the full
+      suite; a `--claims` file belongs outside the checkout)
 - [ ] `uv run python scripts/check_citations.py --fix` if this shifts line
       numbers (it fails `tests/test_citation_drift.py` in files you never
       touched — this has caught most outside PRs so far)

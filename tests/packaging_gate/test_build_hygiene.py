@@ -179,6 +179,14 @@ REQUIRED_EXCLUDES = {
     # negates this one path so git may track the team config, and in hatchling's
     # combined spec that file-level negation outranks the directory pattern.
     ".claude/settings.json",
+    # #733 (ADR-0303): the committed skill mirror and subagents, negated in
+    # `.gitignore` as directories, and the canonical skill tree, which nothing
+    # in `.gitignore` covers. A directory negation did not outrank `.claude` in
+    # hatchling's spec (measured), so the first two are named for the next
+    # negation that might; `.agents` is load-bearing on its own.
+    ".claude/skills",
+    ".claude/agents",
+    ".agents",
     ".uv-cache",
     ".omc",
     "__pycache__",
@@ -217,6 +225,9 @@ def _is_developer_state(name: str) -> bool:
     parts = Path(name).parts
     return (
         ".claude" in parts
+        # #733 — not local state but the project's agent tooling (the canonical
+        # skills); tracked in git and never part of a distribution.
+        or ".agents" in parts
         or ".uv-cache" in parts
         or ".omc" in parts
         or "__pycache__" in parts
@@ -289,6 +300,9 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     # on the root probes below, which only the sdist ever sees.
     _plant(pkg / ".claude" / "settings.local.json", '{"probe": "packaging-hygiene"}')
     _plant(pkg / ".uv-cache" / "CACHEDIR.TAG", "Signature: 8a477f597d28d172\n")
+    # #733: a nested `.agents/skills` reaches the wheel unless `.agents` is
+    # excluded; nothing in `.gitignore` names it.
+    _plant(pkg / ".agents" / "skills" / "packaging-probe" / "SKILL.md", "---\nname: packaging-probe\n---\n")
 
     # --- repo-root scratch: what the sdist swept in.
     _plant(
@@ -321,6 +335,13 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "# uncommitted work in progress, never publish\n",
     )
 
+    # --- #733: the committed agent tooling. `.agents/skills` is canonical and
+    # tracked, so a clean checkout HAS it, and only the `.agents` exclude keeps
+    # it out; the `.claude` mirror and subagents are tracked too.
+    _plant(root / ".agents" / "skills" / "packaging-probe" / "SKILL.md", "---\nname: packaging-probe\n---\n")
+    _plant(root / ".claude" / "skills" / "packaging-probe" / "SKILL.md", "---\nname: packaging-probe\n---\n")
+    _plant(root / ".claude" / "agents" / "packaging-probe.md", "---\nname: packaging-probe\n---\n")
+
     # --- #143 follow-up: `.uv-cache`, a repo-local `UV_CACHE_DIR`. The exact five
     # names main's real sdist shipped at ee1623c. Note `.uv-cache/.gitignore`
     # among them: uv writes `*` into it, git therefore reports every one of these
@@ -348,6 +369,10 @@ def test_the_build_tree_really_has_no_gitignore_belt(build_tree: Path) -> None:
         build_tree / CODING_AGENT_REL / "AGENTS.md",
         build_tree / CODING_AGENT_REL / ".claude" / "settings.local.json",
         build_tree / CODING_AGENT_REL / ".uv-cache" / "CACHEDIR.TAG",
+        build_tree / CODING_AGENT_REL / ".agents" / "skills" / "packaging-probe" / "SKILL.md",
+        build_tree / ".agents" / "skills" / "packaging-probe" / "SKILL.md",
+        build_tree / ".claude" / "skills" / "packaging-probe" / "SKILL.md",
+        build_tree / ".claude" / "agents" / "packaging-probe.md",
         build_tree / ".omc" / "specs" / "packaging-probe-internal-plan.md",
         build_tree / ".claude" / "worktrees" / "packaging-probe-session" / "pyproject.toml",
         build_tree / ".uv-cache" / "CACHEDIR.TAG",
@@ -377,6 +402,34 @@ def coding_agent_wheel(
     assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
     with zipfile.ZipFile(wheels[0]) as zf:
         yield zf.namelist()
+
+
+@pytest.fixture(scope="module")
+def coding_agent_direct_wheel(
+    build_tree: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[list[str]]:
+    """The same wheel built straight from the source tree (``uv build --wheel``), not from its sdist.
+
+    ``--package`` builds the sdist first and the wheel from it, so a path the
+    sdist list excludes never reaches the wheel's own list. Built directly, only
+    the wheel's exclude list stands between a nested ``.agents`` (or ``.omc``,
+    ``.claude``) and the artifact (#733 verify F12: without ``.agents`` there,
+    this build shipped ``aelix_coding_agent/.agents/skills/p/SKILL.md``).
+    """
+    out_dir = tmp_path_factory.mktemp("directwheel")
+    _build(["--wheel", "--package", "aelix-coding-agent"], build_tree, out_dir)
+    wheels = list(out_dir.glob("aelix_coding_agent-*.whl"))
+    assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
+    with zipfile.ZipFile(wheels[0]) as zf:
+        yield zf.namelist()
+
+
+def test_the_wheel_built_directly_carries_no_developer_state(coding_agent_direct_wheel: list[str]) -> None:
+    leaked = [name for name in coding_agent_direct_wheel if _is_developer_state(name)]
+    assert leaked == [], f"developer state leaked into the directly built aelix-coding-agent wheel: {leaked}"
+    # Guards the guard: it is the real package, built from the planted tree
+    # (test_the_build_tree_really_has_no_gitignore_belt checks the probes are there).
+    assert "aelix_coding_agent/__init__.py" in coding_agent_direct_wheel
 
 
 @pytest.fixture(scope="module")
@@ -496,6 +549,12 @@ def belted_root_sdist(tmp_path_factory: pytest.TempPathFactory) -> Iterator[list
         root / ".claude" / "worktrees" / "belted-probe" / "probe_unreleased.py",
         "# uncommitted work in progress, never publish\n",
     )
+    # #733: the paths `.gitignore` now negates as directories (the skill mirror
+    # and the subagents) and the canonical skill tree it never ignored. With the
+    # belt on, git would track all three; none may ship.
+    _plant(root / ".claude" / "skills" / "belted-probe" / "SKILL.md", "---\nname: belted-probe\n---\n")
+    _plant(root / ".claude" / "agents" / "belted-probe.md", "---\nname: belted-probe\n---\n")
+    _plant(root / ".agents" / "skills" / "belted-probe" / "SKILL.md", "---\nname: belted-probe\n---\n")
 
     out_dir = tmp_path_factory.mktemp("beltedsdist")
     _build(["--sdist"], root, out_dir)
@@ -805,6 +864,10 @@ def test_the_release_sdist_carries_nothing_it_does_not_declare(
     # rather than as a nameless allow-list violation.
     for gone in ("tests", "citations.lock.json", "SLICE-STATUS.md"):
         assert gone not in top, f"{gone} is back in the published sdist"
+    # #733: tracked, and still not published — the hook settings now, the
+    # skills and subagents once they are committed.
+    for gone in (".claude", ".agents"):
+        assert gone not in top, f"{gone}/ reached the published sdist"
     # `.env.example` ships on purpose; a blanket `.env*` exclusion would take it
     # with the credentials and this is where that would be noticed.
     assert ".env.example" in top
@@ -920,5 +983,9 @@ def test_the_predicate_itself_knows_a_credential_file() -> None:
     assert _is_developer_state("aelix-0.1.0b1/.env")
     assert _is_developer_state("aelix-0.1.0b1/.env.local")
     assert not _is_developer_state("aelix-0.1.0b1/.env.example")
+    # #733: the agent tooling, tracked or not, at the root or nested.
+    assert _is_developer_state("aelix-0.1.0b1/.agents/skills/x/SKILL.md")
+    assert _is_developer_state("aelix_coding_agent/.agents/skills/x/SKILL.md")
+    assert _is_developer_state("aelix-0.1.0b1/.claude/skills/x/SKILL.md")
     # And the predicate is not simply returning True for everything.
     assert not _is_developer_state("aelix-0.1.0b1/README.md")
