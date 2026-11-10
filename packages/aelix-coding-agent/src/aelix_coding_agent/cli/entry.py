@@ -5392,13 +5392,13 @@ def main_sync() -> None:
     first read, and every diagnostic the later steps can emit already needs an
     encodable stdout.
     """
-
+    ended: list[tuple[asyncio.Task[Any], int]] = []  # #712, _ctrl_c_in_an_extension
     harden_stdio()
     _inject_truststore()
     load_dotenv()
     register_providers()
     try:
-        exit_code = asyncio.run(_async_main(sys.argv[1:]))
+        exit_code = asyncio.run(_async_main_noting_a_cancel(sys.argv[1:], ended))
         # Flush INSIDE the guard: if the stdout consumer vanished mid-run
         # (``aelix -p ... | head -1``), buffered bytes surface here as
         # BrokenPipeError instead of as the interpreter's noisy
@@ -5419,11 +5419,11 @@ def main_sync() -> None:
     except BaseException as exc:
         # #664 — a ``KeyboardInterrupt`` while an extension's import or
         # ``setup()`` ran: the run ends (130, 128+SIGINT) with one line naming
-        # the extension instead of a traceback. #685 — that is an
-        # ``ExtensionInterrupted`` only when the extension raised it; a real
-        # Ctrl+C arrives as ``asyncio.run``'s own ``KeyboardInterrupt``, over the
-        # main task's ``CancelledError`` the loader marked on its way through.
-        interrupted = interrupted_extension(exc) if isinstance(exc, KeyboardInterrupt) else None
+        # the extension instead of a traceback. #685 — a real Ctrl+C arrives as
+        # ``asyncio.run``'s own ``KeyboardInterrupt`` over the main task's
+        # ``CancelledError`` the loader marked; #712 — with a cancel count left
+        # over (3.11, 3.12), as that ``CancelledError`` itself.
+        interrupted = _ctrl_c_in_an_extension(exc, ended)
         if interrupted is not None:
             with contextlib.suppress(Exception):
                 sys.stdout.flush()
@@ -5811,6 +5811,52 @@ def _reload_keeps_its_model(seed: ReloadSeed | None) -> bool:
     if seed is None or seed.model is None:
         return False
     return seed.restore or getattr(seed.model, "api", "") != "unknown"
+
+
+# === #712 — a Ctrl+C that asyncio.run reports as the main task's cancel =====
+
+
+async def _async_main_noting_a_cancel(
+    argv: list[str], ended: list[tuple[asyncio.Task[Any], int]]
+) -> int:
+    """:func:`_async_main`, noting the main task's cancel count if it ends cancelled (#712).
+
+    ``asyncio.run`` takes back the cancel its SIGINT handler made (``Task.uncancel()``)
+    only after a SIGINT, and raises ``KeyboardInterrupt`` only when that brings the
+    count to 0. On 3.11 and 3.12 a ``TaskGroup`` whose child fails after its body
+    finished leaves the count one up (a CPython bug, fixed in 3.13; ADR-0284), so
+    there a Ctrl+C ends the run in the ``CancelledError`` itself. A count lower after
+    the run than here is how :func:`_ctrl_c_in_an_extension` knows it was taken back.
+    """
+
+    try:
+        return await _async_main(argv)
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None:
+            ended.append((task, task.cancelling()))
+        raise
+
+
+def _ctrl_c_in_an_extension(
+    exc: BaseException, ended: list[tuple[asyncio.Task[Any], int]]
+) -> KeyboardInterrupt | None:
+    """The extension a Ctrl+C interrupted, when *exc* is how that ended the run (#685, #712).
+
+    A ``KeyboardInterrupt``: ``asyncio.run``'s, over the ``CancelledError`` the loader
+    marked, or an extension's own ``ExtensionInterrupted``. A marked ``CancelledError``
+    only when ``asyncio.run`` took a cancel back after the main task ended (*ended*),
+    which it does only after a SIGINT: one an extension raised, or a cancel no Ctrl+C
+    made, stays a traceback. That assumes nothing else calls ``uncancel()`` on the main
+    task once it ended; none was found in the stdlib, anyio or this repo.
+    """
+
+    if isinstance(exc, KeyboardInterrupt) or (
+        isinstance(exc, asyncio.CancelledError)
+        and any(task.cancelling() < count for task, count in ended)
+    ):
+        return interrupted_extension(exc)
+    return None
 
 
 __all__ = [

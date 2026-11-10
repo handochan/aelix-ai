@@ -306,6 +306,27 @@ private counter, and wrapping the process's SIGINT handler around each load
 `setup()` whose `TaskGroup` leaves the count up and which then fails with a
 cancel of its own in the error's chain (a second `TaskGroup` failing while its
 body waits) reads as interrupted.
+*2026-11-10 note (#712):* "`main_sync` finds the mark under `asyncio.run`'s
+`KeyboardInterrupt`" held only while the main task's cancel count was clean.
+`asyncio.run` turns the cancel its SIGINT handler made into `KeyboardInterrupt`
+only when `Task.uncancel()` brings the count back to 0. On 3.11 and 3.12 the
+count an earlier extension's `TaskGroup` left up keeps it at 1, so `asyncio.run`
+raised the marked `CancelledError` itself: a Ctrl+C 0.6 s into a later
+extension's `time.sleep(3)` `setup()` ended `-p` and the pty TUI in a
+`CancelledError` traceback and exit 1 (measured on macOS, 3.11.15 and 3.12.13;
+3.14.5 printed the line). `main_sync` now takes the mark from that
+`CancelledError` too, but only when the main task's count after `asyncio.run` is
+lower than when `_async_main` ended: `asyncio.run` calls `uncancel()` only after a
+SIGINT. That tells a Ctrl+C apart from a `CancelledError` an extension raised, or
+a cancel no Ctrl+C made, without the runner's private counter or a wrapped SIGINT
+handler; with no Ctrl+C during the launch, those still end in a traceback and
+exit 1 (`tests/cli/test_ctrl_c_after_a_left_over_cancel_count_712.py`: real `-p`
+runs after a `TaskGroup` on 3.11 and 3.12 or a swallowed cancel of its own task
+on every Python, and in-process rows under the real `asyncio.run` with
+`signal.raise_signal`). It is known only after the run, so the stated limit above
+is unchanged. A Ctrl+C later in the run (#620) carries no mark and is unchanged:
+on 3.11 and 3.12, with the count left up, `-p` mid-stream still ends in a
+`CancelledError` traceback and exit 1 (measured on macOS).
 
 *2026-11-06 note (#704):* "nothing otherwise" left a successful `/reload` with no
 line at all, so a `/reload` after a `/skill` change read as ignored (owner report,
