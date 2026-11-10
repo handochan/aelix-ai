@@ -86,6 +86,16 @@ Claude 초기 문서의 3,592블록도 재현됐다. 이는 클래스 요약과 
 갱신된 Claude 문서의 중첩 closure 포함 집계도 재현했다: **함수·메서드·closure 4,774개,
 CC 20 초과 74개, 50 초과 5개**. 앞으로 비교할 때는 이 재귀 집계를 같은 방식으로 사용한다.
 
+*2026-11-09 정정 (#293, [ADR-0300](decisions/0300-a-functions-complexity-only-goes-down.md) §9):
+radon 6.0.1의 `cc -j`는 메서드 하나를 파일 최상위와 그 클래스의 `methods`에 두 번 싣고, 위 4,331과
+4,774는 둘 다 셌다. `026bd15`를 `git archive`로 꺼내 다시 재면 그 방식으로 4,331 / 73 / 5와
+4,774 / 74 / 5가 그대로 나오고, 메서드를 한 번씩 세면 2,984 / 64 / 5와 3,320 / 65 / 5다(3,592블록도
+최상위에 실린 메서드 1,347개를 포함한다). 2026-09-19 오너 결정의 추세값은 위 방식, 곧 메서드를 두 번 세는
+재귀 집계(4,774 / 74 / 5)였다. 오너는 2026-11-09 추세값을 메서드를 한 번씩 센 값으로 바꾸기로 결정했다:
+앞으로 릴리스마다 메서드를 한 번씩 센 값(`026bd15`에서 3,320 / 65 / 5)을 추세값으로 적고, 비교를 위해
+예전 방식 값도 옆에 함께 적는다. `uv run python scripts/check_complexity.py --trend`는 첫 줄에 추세값을,
+둘째 줄에 예전 방식 값을 "메서드를 두 번 센다"고 표시해 찍고, 릴리스마다 두 줄을 모두 적는다(RELEASING.md).*
+
 추가 도구는 Ruff 0.15.13이다.
 명령: `uv run --no-sync ruff check --select C901 --config 'lint.mccabe.max-complexity=40' --output-format json packages src`.
 종료 코드 1, C901 진단 **6개**:
@@ -629,6 +639,14 @@ in-process 확장을 sandbox로 표현하는 약속은 제품 근거와 맞지 �
 `# noqa: C901`은 쓰지 않는다 — 숨기면 악화를 못 본다. 40 초과 여섯은 #284 아래 개별 이슈와 목표 점수를 갖고, `run_tui`와
 `_async_main`+`parse_args`를 먼저 한다(열린 버그 #289·TUI 배치와 겹친다). Radon 재귀 집계(4,774 / CC>20 74)는 게이트가 아니라
 릴리스마다 적는 추세값이다.
+
+*2026-11-09 정정 (#293, [ADR-0300](decisions/0300-a-functions-complexity-only-goes-down.md)): 첫 문장의
+"이미 CI에 있는 Ruff `C901`"은 사실이 아니었다. 루트 `pyproject.toml`의 `select`는 E·W·F·I·UP·B·SIM이고
+CI는 `uv run ruff check .`만 돌렸다. 게이트는 #293이 새로 만든 CI 단계 `Complexity ratchet (ruff C901)`
+(`scripts/check_complexity.py --check`)다. 같은 명령으로 잰 20 초과 함수는 `026bd15` 30개, `6caaae09` 53개,
+#723 머지 뒤 이 변경이 들어간 `80ff2cc2` 54개이고, 40 초과는 6개, 14개, 14개다. 마지막 문장의 Radon 재귀 집계(4,774 / CC>20 74)는 메서드를 두 번 센 값이었다(§2의
+정정). 오너는 2026-11-09 추세값을 메서드를 한 번씩 센 값(`026bd15`에서 3,320 / 65 / 5)으로 바꾸고, 예전 방식
+값은 비교를 위해 옆에 함께 적기로 결정했다(ADR-0300 §9).*
 
 **6번 확인 결과 (2026-09-19, 실제 모델 1회 + 코드).** 명령: scratch cwd에서
 `aelix --agents --provider openrouter --model anthropic/claude-haiku-4.5 --permission-mode plan --session-dir <scratch> --mode json -p "<explorer에게 note.txt를 읽게 하는 지시>"`,

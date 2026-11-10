@@ -125,6 +125,38 @@ jobs:
       - name: Lint (ruff check)
         run: uv run ruff check .
 
+      # #293 (ADR-0300): no function in packages/ or src/ may score over 20 under
+      # Ruff C901 unless complexity-baseline.json lists it, and none may rise
+      # above its listed score. The script runs its own ruff with --isolated and
+      # --ignore-noqa over the .py/.pyi files git tracks there, so neither the
+      # lint config above nor a `# noqa` can take a function out of it.
+      #
+      # The history check (the baseline must not gain an entry or a score) needs
+      # the full clone the Checkout step makes, and --require-base makes it
+      # mandatory. What it compares with, per event (ADR-0300 section 6):
+      # - pull_request: the merge base of GitHub's merge ref with origin/main,
+      #   i.e. main when the merge ref was made. A run made before another PR
+      #   landed is not made again when it lands.
+      # - push to any other branch: the branch point with origin/main.
+      # - push to main (--github-event): the commit the push replaced, the
+      #   event's `before`, since the merge base with origin/main is HEAD there.
+      #   This is where two PRs that each passed against an older main, and
+      #   together add an entry, fail. When a newer push cancels a main run
+      #   (concurrency, above), no completed run is guaranteed to compare the
+      #   cancelled push: the newer run compares with the commit it replaced.
+      #   The cancelled run may already have run this step, which comes right
+      #   after sync and lint (read from the step order, not measured on
+      #   GitHub). A force push to main fails this step only when its `before`
+      #   is not in the clone; when another branch still holds the old tip, it
+      #   compares with the merge base of HEAD and `before`.
+      #
+      # On every leg, not once per run: it took about 1 s on a laptop, and the
+      # Windows legs are where ruff's paths arrive with drive letters and
+      # backslashes; those must come out as the same POSIX identities the
+      # baseline lists. A job of its own would cost a checkout, uv and a sync.
+      - name: Complexity ratchet (ruff C901)
+        run: uv run python scripts/check_complexity.py --check --require-base --github-event
+
       # Not a bare `uv run pyright`: this gate spent its whole life analysing 8
       # of 247 files because an include glob matched nothing, and a gate that
       # sees nothing reports zero errors and looks clean. check_types.py asserts

@@ -182,6 +182,9 @@ exclude = [
   # The citation gate's lockfile — 136 KB embedding 470 verbatim source
   # snippets, for a gate that only ever runs against a checkout.
   "citations.lock.json",
+  # #293 (ADR-0300) — the complexity ratchet's baseline: the input of another
+  # gate that only runs against a checkout. Not in .gitignore: it is committed.
+  "complexity-baseline.json",
   # An internal work-in-progress memo about the Windows slice.
   "SLICE-STATUS.md",
   # #387 — the demo recording (2,338,184 B, ~40% of the tarball) and the
