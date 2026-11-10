@@ -50,10 +50,11 @@ keep `>=3.11,<3.14` (#278, ADR-0265).
 
 ## The gates your PR has to pass
 
-CI runs exactly these three, in this order. Run them locally before pushing:
+CI runs exactly these four, in this order. Run them locally before pushing:
 
 ```bash
 uv run ruff check .                    # linter only — `ruff format` is NOT enforced
+uv run python scripts/check_complexity.py --check   # the complexity ratchet (gate 5 below)
 uv run python scripts/check_types.py   # the pyright gate, not a bare `uv run pyright`
 uv run pytest -p no:cacheprovider -q   # the full suite, ~6 min on a laptop
 ```
@@ -62,13 +63,14 @@ uv run pytest -p no:cacheprovider -q   # the full suite, ~6 min on a laptop
 hand-laid formatting that `ruff format` would collapse. Match the surrounding
 code; do not reformat files you are not changing.
 
-`uv run --frozen python scripts/preflight.py` runs the first two above, then the
-gates below and the tests that the files you touched can fail. `--plan` shows
-which, and why, without running anything, and `--claims -` prints the block for
-the PR's "How it was verified". It never runs the full suite, so that one is
-still yours.
+`uv run --frozen python scripts/preflight.py` runs the linter and the type gate
+above, then gates 1 to 4 below and the tests that the files you touched can fail.
+`--plan` shows which, and why, without running anything, and `--claims -` prints
+the block for the PR's "How it was verified". It does not run the complexity
+ratchet yet (gate 5; run it as above), and it never runs the full suite, so
+those two are still yours.
 
-### Four gates that are easy to miss
+### Five gates that are easy to miss
 
 **1. The citation lock.** Comments and tests in this repo cite source locations
 by path and line number, and `citations.lock.json` pins the text each citation
@@ -132,6 +134,29 @@ gate cannot stop an edit to the list, so review does: ADR-0015 lets an entry
 change only to follow a listed import that moved to another file or under
 `TYPE_CHECKING` (change its file or kind), or to go away with its import
 (delete it, or lower its count, in the same commit).
+
+**5. Complexity only goes down.** CI's `Complexity ratchet (ruff C901)` step
+measures every function in `packages/` and `src/` with Ruff's C901 (ADR-0300).
+A function may score at most 20 unless `complexity-baseline.json` lists it, and
+a listed one may not score above its listed number. When it fails, make the
+function simpler: give a responsibility its own home, not split it into pieces
+only to lower the number. Three things are refused: `# noqa: C901` (the
+measurement ignores it anyway), a ruff ignore naming C901, and an entry added or
+raised by hand (the step compares the baseline with the merge base's). When your
+change lowers a listed score, or removes a listed function, run
+
+```bash
+uv run python scripts/check_complexity.py --update
+```
+
+and commit the baseline with it, or the step fails: the lower number is the new
+ceiling. The same command rewrites same-named definitions (a `def` in each arm
+of an `if`) that a reorder or a stub above them renumbered. If you renamed or
+moved a listed function, carry its entry with `--rename OLD NEW` instead (the
+failure text names the entry it no longer finds). Moving a listed one out from
+before a same-named definition, or in above a listed one, takes two changes;
+ADR-0300's Consequences give the route. The step measures the files git tracks,
+so `git add` a new file before checking it locally.
 
 ### Tests are not optional here
 
