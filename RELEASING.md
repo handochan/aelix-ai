@@ -190,6 +190,23 @@ lineage's last entry.
    `## [X.Y.Z] - YYYY-MM-DD` section, and refresh the compare/links at the
    bottom.
 
+   Write the complexity trend value into that section too (#293, ADR-0300 §9).
+   It is not a gate, only the number each release is compared by:
+
+   ```bash
+   uv run python scripts/check_complexity.py --trend
+   ```
+
+   It runs radon 6.0.1 through `uvx` (fetched on first use; nothing is added
+   to `uv.lock`) over `packages/` and `src/` and prints how many functions,
+   methods and closures there are and how many score over 20 and over 50,
+   counted two ways. Copy both lines. The first is the trend value: each
+   function, method and closure counted once, as the owner decided on
+   2026-11-09 (3,320 on `026bd15`). The second is the trend value as the owner
+   set it on 2026-09-19 (docs/05, 4,774 then), radon's recursive count, which
+   lists every method twice; the 2026-11-09 decision keeps it written beside
+   the trend value for comparison, not instead of it.
+
 3. **Update the update-check feed** — `site/latest-version.json` is what tells
    every already-installed user that this release exists. It is published to
    GitHub Pages from `site/`, so it goes live when this commit lands on `main` —

@@ -36,6 +36,24 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0300 — A function's complexity only goes down: Ruff C901 over 20 is listed by name and score, and the list only shrinks](0300-a-functions-complexity-only-goes-down.md)
+  (Accepted 2026-11-09; #293). The owner's 2026-09-19 decision was recorded as using the C901 "already
+  in CI"; it was not there. Now CI's `Complexity ratchet (ruff C901)` step runs
+  `scripts/check_complexity.py --check --require-base --github-event` on every leg: a function in a
+  `.py`/`.pyi` file git tracks in `packages/` or `src/` scoring over 20 under the ruff `uv.lock` pins
+  must be listed in `complexity-baseline.json`, and none may rise above its listed score. A score
+  that falls is written down with `--update` in the same change (a stale entry fails), a renamed or
+  moved function's entry is carried with `--rename` (a listed one moved out from before a same-named
+  definition, or in above a listed one, takes two changes), and `--init` is only for the first
+  baseline and a ruff upgrade. Ruff runs `--isolated --ignore-noqa`, and `# noqa: C901` or a ruff
+  ignore naming a selector that covers it fails the step. A function is `<path>::<qualname>` with
+  `/` on every OS, same-named definitions numbered in source order and held as a set, so a
+  renumbering is an `--update` and a score can pass from one of them to another, an unlisted one
+  included, as long as the set does not rise. The baseline may not gain an entry or a score against
+  the merge base with `origin/main`, or on a push to `main` against the `main` it replaced, unless it
+  is a rename of a function that is gone or a renumbering. The per-release trend value is radon's count with each
+  method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
+  twice, is printed and written beside it for comparison.
 - [0295 — A delegated agent can run in the background as a job of its session](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)
   (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3). Delegation is the job service's
   first client (ADR-0293): `agent(action="spawn")` runs ONE task as a job of the session and

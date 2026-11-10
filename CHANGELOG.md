@@ -548,6 +548,41 @@ unwritten. Add them with the next release.
   first publication would have added 288 ids against `main`'s catalog, over
   the 100 cap.
 
+- **Contributors: CI now fails when a function gets more complex (#293, ADR-0300).** A new
+  step on every CI leg, `Complexity ratchet (ruff C901)`, runs
+  `uv run python scripts/check_complexity.py --check --require-base --github-event` over the `.py`
+  and `.pyi` files git tracks in `packages/` and `src/`, wherever they are
+  (`tests/test_complexity_ratchet_293.py::test_every_tracked_file_is_measured_wherever_it_is`).
+  A function may score at most 20 under Ruff's C901 unless `complexity-baseline.json` lists it,
+  and a listed one may not score above its listed number
+  (`::test_a_new_function_over_twenty_fails_and_one_at_twenty_passes`,
+  `::test_a_raised_score_fails_with_old_and_new`); same-named definitions in one file (a `def` in
+  each arm of an `if`) are held as a set, so a score can pass from one of them to another, an
+  unlisted one included, as long as the set does not rise (ADR-0300 §2). The functions already over 20 when the gate
+  landed are the list; `run_tui` tops it. A change that lowers a listed score must run `--update`
+  and commit the lower number with it, or the step fails, so the lower number is the new ceiling
+  (`::test_a_lowered_score_fails_until_update_lowers_the_baseline`); `--rename OLD NEW` carries an
+  entry when a listed function is renamed or moved, except that moving a listed one out from before
+  a same-named definition, or in above a listed one, takes two changes (ADR-0300 Consequences,
+  `::test_moving_a_listed_definition_out_from_before_a_same_named_one_takes_two_changes`); and
+  `--update` also rewrites same-named definitions that a reorder or a stub above them renumbered
+  (`::test_reordered_same_named_definitions_are_renumbered_by_update`). `# noqa: C901`, or one
+  naming `C90`, `C9` or `C`, and ruff ignores naming those or `ALL` fail the step, and the
+  measurement ignores both anyway: it runs ruff with `--isolated --ignore-noqa`
+  (`::test_a_noqa_naming_c901_is_refused_and_does_not_hide_the_function`). Raising the list by hand
+  fails too: the baseline may not gain an entry or a higher score against the merge base with
+  `origin/main`, or, on a push to `main`, against the `main` that push replaced, except a rename of a
+  function that is gone or a renumbering (`::test_a_baseline_raised_by_hand_fails_against_the_merge_base`,
+  `::test_a_push_to_main_compares_with_the_commit_it_replaced`). Scores are those of the ruff
+  `uv.lock` pins; a change that upgrades ruff runs `--init` and changes nothing else, and the step
+  lists what the re-measurement changed in the job summary. A function is named
+  `<path>::<qualname>` with `/` on every OS (`::test_a_windows_path_becomes_the_same_posix_identity`,
+  which reads a Windows path with `PureWindowsPath` on macOS; the first CI run on a Windows leg is
+  the first measurement there). RELEASING.md writes radon's trend value into each release's notes
+  in two lines: first the trend value, each method once (3,320 on `026bd15`), as the owner decided
+  on 2026-11-09, then for comparison the owner's 2026-09-19 count, which lists each method twice
+  (4,774 there) (`::test_the_trend_value_counts_each_method_once_and_the_old_count_follows`).
+
 - **Contributors: CI now fails when a package imports one above it (#292,
   ADR-0015).** The packages stack as `aelix-ai` <- `aelix-agent-core` <-
   `aelix-coding-agent` <- `aelix-server` and `aelix`, and a package may import
