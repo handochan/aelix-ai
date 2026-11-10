@@ -69,6 +69,23 @@ unwritten. Add them with the next release.
   `tests/cli/test_print_mode_background_611.py`, `tests/cli/test_notice_inbox_wiring_722.py`,
   `tests/tui/test_wake_611.py`, `tests/tui/test_restore_611.py`,
   `tests/tui/test_notice_never_touches_dialogs_611.py`.
+- **Background delegation, built and switched off (#723, #611 S1c, ADR-0295).** Delegation is
+  the job service's first client: `agent(action="spawn")` runs one task as a job of the session,
+  and `wait`, `status`, `stop` and `result` answer for the session's own agents — all **behind
+  `jobs/activation.py` `ACTIVE = False`**, so nothing of it is visible yet. With the gate off the
+  `agent` tool's schema and description are what they were, a `spawn` is refused exactly as
+  before, `/agents run` reserves nothing, and the live-children count and batch semaphore decide
+  as before (`tests/agents_ext/test_agent_background_611.py::test_with_the_gate_off_the_tool_is_what_it_was`).
+  With the gate off a `--mode json` run writes no `aelix_print_done` line, even when
+  `AELIX_JOBS_PROTOCOL=1` is inherited
+  (`tests/cli/test_print_done_protocol_611.py::test_with_the_gate_off_an_inherited_request_changes_nothing`),
+  and a delegated child no longer inherits that variable or `AELIX_JOB` from whatever launched
+  aelix (`tests/agents_ext/test_agent_background_611.py::test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not`);
+  a delegated run's envelope reads the line only when its parent asked for it
+  (`tests/agents_ext/test_latest_run_611.py`). #611 S3 turns it on. Tests:
+  `tests/agents_ext/test_agent_background_611.py`,
+  `tests/agents_ext/test_agent_background_ownership_611.py`,
+  `tests/agents_ext/test_child_recovery_611.py`, `tests/cli/test_print_done_protocol_611.py`.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`
@@ -1366,6 +1383,58 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`auto` no longer asks before a read that merges or moves output with `2>&1` or `>&2` (#710,
+  ADR-0158).** The classifier read the descriptor number after `>&` as a file name, so `cat a
+  2>&1`, `rg -w foo src 2>&1`, `git status 2>&1`, `ls >/dev/null 2>&1` and `cat a >&2` were ASK,
+  and under `auto` the TUI asks before an ASK runs (measured for `cat keep1.txt 2>&1` on
+  `6caaae09`, pty TUI with a scripted model; it now runs there with no dialog). A `>&` or `<&` is
+  a descriptor copy, and allowed as a redirect, only when its target is ASCII digits with nothing
+  but blanks before them and a blank, the end of the command, one of `;&|()<>` or the backtick
+  that closes its `` `…` `` substitution right after (`` echo `ls 2>&1` `` no longer asks; the
+  four shells write no file): `>&0x1`, `>&1#x`, `>&1x`, `` >&1`echo .txt` `` and `>&1` followed by
+  `\r`, `\v`, `\f` or a no-break space (each written as a file by bash and zsh, measured on macOS
+  bash 3.2 and zsh 5.9 and on Linux bash 5.2 and zsh 5.9), `>&out.txt`, `>1` and `&>1` are still
+  checked as file writes, and a `<&` target that is not a descriptor number is now checked as a
+  path too (`echo x <&/etc/passwd` is refused; every shell tried rejects that form). Only a
+  redirect with nothing after its target is allowed this way: a word written after the target
+  makes the command ask at least, so `ls 2>&1 -la` still asks, as it did before, and the words are
+  also judged as the command's arguments, which can refuse it (see Security): `find . 2>&1 -delete
+  -maxdepth 1` is refused like `find . -delete -maxdepth 1`. Over 24,597 command strings from the
+  classifier tests and a hand list, with one of 29 redirects put before each argument and before
+  the command name (1,808,498 forms), none came out allowed where the same command without the
+  redirect asks or is refused; 2,122 forms ask where it is refused, 2,115 of them because the
+  grammar cannot parse the redirect form (`rm 2>&- -rf /`) and 7 on a line every shell tried
+  rejects. Tests: `tests/builtin/test_bash_fd_dup_710.py`, for the classifier under the UNKNOWN
+  and POSIX dialects, for the gate with bash, zsh or sh and for RPC with bash, zsh or ksh as the
+  resolved shell; PowerShell and cmd are unchanged (cmd's `dir 2>&1` still asks).
+- **`aelix -c` continues the last conversation, not an empty session left after it (#709,
+  ADR-0239).** aelix writes a session file when a session starts, so a launch closed without a
+  prompt, a `/new` or RPC `new_session` never used, or a launch whose only prompt was withdrawn
+  with Esc left the newest file in the folder, and `-c` opened that one: the model was sent only
+  the new prompt (`["continued?"]` instead of `["hello", "continued?"]`, measured with a scripted
+  model in the real TUI and over RPC on `6caaae09`, and again after the fix). `-c` now opens the
+  most recent session whose branch carries a turn the model gets back when it is opened — a user
+  or assistant message, or a compaction or branch summary whose text is not blank; a custom
+  message alone does not count, as in pi — and starts a new session when there is none. What
+  counts is what opening the file restores: a file with `\r` line endings counts as it opens, and
+  a file of at most 1 MiB that is not UTF-8, on which `-c` exited with a `UnicodeDecodeError`
+  traceback, is skipped. A larger one counts without being read, so when it is the newest `-c`
+  still exits with that traceback, as on `6caaae09` (measured with a 1,127,396-byte file). So, as
+  with pi, a level changed in a launch that never sent a prompt does not come back through `-c`
+  (it did on `6caaae09`); it does through `--session <file>`, and `defaultThinkingLevel` keeps a
+  level across launches (the owner's decision, ADR-0239). Reading a session's header stops after
+  the header line, at most one read buffer into the line after it, instead of reading that whole
+  line: for a 134-byte header in front of a 2 MiB first prompt, the sniff and the header read took
+  2,105,636 bytes on `6caaae09` and take 16,384 now on Python 3.12 (139,264 on 3.14), counted by
+  the test's reader. Each newer file of up to 1 MiB
+  without a conversation is read and parsed, so the cost grows with the number of such files:
+  one conversation under 20 of them, each just under 1 MiB, took about 25 ms against 0.5 ms
+  before, and 333–358 ms against about 1 ms when those files are made of many small entries
+  (macOS, medians of 5 and 7). Known limits: each `aelix -c` quit without a prompt in a folder
+  with no conversation leaves one more empty session file; the `/resume` list and the `aelix -r`
+  menu still show such sessions as `(no messages)`; and a prompt appended to the newest file
+  after `-c` has read it is missed, so `-c` opens an older file. Tests:
+  `tests/session/test_find_most_recent_conversation_709.py`.
 - **A session line that reached the disk and then failed no longer leaves the conversation on a
   hidden branch (#721, ADR-0242 rule 5).** When a session append wrote its whole line and the
   write then raised (for example the disk filling exactly at the line's final newline, or a second
@@ -3803,6 +3872,49 @@ unwritten. Add them with the next release.
   in aelix, which is filed separately. (#263)
 
 ### Security
+
+- **`auto` asks at least for a command with words written after a redirect's target, and also
+  reads those words as the command's arguments (#710, ADR-0158).** The parser keeps every word
+  after a redirect inside it — in `find . </dev/null -delete` the `-delete` sits in the `<`
+  redirect, in `find . <<EOF -delete` in the here-document — where no argument check saw it, while
+  bash and zsh take the first word as the target and pass the rest to the command, and so do dash
+  and ksh except after `&>` (measured on macOS and on Linux). So `find . </dev/null -delete`,
+  `find . <&0 -delete`, `find . 2>/dev/null -delete -o -path /dev/null`, `find . 2>&- -delete` and
+  `find . <<EOF -delete` were allowed on `6caaae09`; `find . </dev/null -delete` ran with no
+  prompt in a pty TUI under `auto` and deleted the files in its directory, and `find . 2>&-
+  -delete` did the same under `-p --permission-mode auto`. Each now asks at least, and is also
+  classified as its command with those words as arguments — `find . -delete`, which is refused —
+  in the TUI, under `-p`, through the block gate and through RPC `permissions/evaluate`. That
+  includes whether `test` or `[` evaluates an operand: `test </dev/null -v 'a[$(cmd)]'`, allowed
+  on `6caaae09`, runs `cmd` in Linux bash 5.2 and now asks like `test -v 'a[$(cmd)]'`, as do `test
+  2>&1 -v …` and, for macOS ksh93, `test 2>&1 1 -eq 'a[$(cmd)]'` (live: a pty TUI under `auto`
+  opens a dialog for both). That second reading only raises the verdict: tree-sitter does not
+  always read such a line as the shells do, and in a draft where it could lower it the `&>` and
+  `0>&1` forms below ran with no dialog in a pty TUI under `auto`. dash (macOS and Linux) and
+  macOS ksh93 read `&>` as `&` and then `>`, so `echo hi &>/dev/null find . -name 'keep*' -delete`
+  deleted the files; the words after an `&>` or `&>>` target are now also judged as a command of
+  their own, and the form is refused like `find . -delete` (live: refused with the files kept
+  under `SHELL=/bin/dash` and `/bin/ksh`). One digit written right before `<` or `>` is the
+  redirect's descriptor in all four shells while the parser read a `0` there as an argument, so
+  `test 1 -eq 0>&1 'a[$(touch PWNED)]'`, which created PWNED in macOS ksh93, asks (live: a dialog,
+  nothing created) and `0>&1 mkfs /dev/sda` is refused; a descriptor of two or more digits, which
+  zsh, dash and ksh pass to the command as a word (`git branch 10>&1` created a branch `10` in
+  them), makes the command ask. A line that no longer parses with its redirects blanked out asks:
+  words after the redirect of a compound command (`{ ls; } 2>&1 x`, which bash rejects) ask, and a
+  DENY elsewhere on the line stays DENY. A bare close (`2>&-`) is still allowed; a word glued to
+  one (`2>&-1`, or `` 2>&-`echo 1` ``, which zsh writes as a file named `-1`) asks. A `/dev/null`
+  target with `\r`, `\v`, `\f` or a no-break space glued to it is a new file under `/dev` (as
+  root, Linux bash wrote `/dev/null\r`), so it is refused instead of allowed as a sink. An ASK
+  under `-p` still runs, as every ASK does there. Tests: `tests/builtin/test_bash_fd_dup_710.py`.
+
+  Closed here as well, open since ADR-0158: tree-sitter reads a here-document delimiter on past
+  `;`, `>`, `|` or `&&` without a parse error when the end line is written the same way, so in
+  `cat <<A; find . -name 'keep*' -delete` (body `b`, end line `A;`) the `find` was never
+  classified. bash, zsh, dash and ksh run it (measured on macOS and Linux), and on `6caaae09` it
+  deleted the files in its directory with no dialog in a pty TUI under `auto`. A delimiter that is
+  not one plain or quoted word now asks, and the rest of its first line is classified: that
+  `find`, `cat <<A>~/.bashrc` and `cat <<A|sh` are refused, and `cat <<A; touch x` asks. `<<EOF`,
+  `<<'EOF'`, `<<"EOF"`, `<<-EOF` and `<<\EOF` are unchanged. Tests: the same file.
 
 - **`auto` no longer refuses a command only because it discards output to
   `/dev/null` (#678).** `/dev` is a protected write prefix, so a write redirect

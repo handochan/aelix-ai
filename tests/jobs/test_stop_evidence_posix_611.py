@@ -335,3 +335,152 @@ def test_an_earlier_walks_pid_still_that_process_has_the_group_it_leads_read_aga
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(member, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("tree", [True, False], ids=["tree", "bare"])
+def test_a_group_whose_recorded_leader_number_now_leads_another_process_gets_no_signal(
+    procs: list[subprocess.Popen[bytes]], tree: bool
+) -> None:
+    """#611 S1c (item 18): the root's number reads as a process that started at another
+    time — reused, and leading a group of its own — so neither its group nor the
+    number itself is signalled, by the soft leg or the hard one.
+
+    Fails on ``b387b4b5``: the hard leg ``killpg``-ed the recorded group number
+    whatever led it now (the residual ADR-0238 accepts for trees).
+    """
+
+    newcomer = _sleeper_proc(own_group=True)
+    procs.append(newcomer)
+    record = evidence.ProcessRecord(
+        pid=newcomer.pid, started=_started(newcomer) - 1000.0, pgid=newcomer.pid
+    )
+    if tree:
+        record.tree = ProcessTree.attach(newcomer.pid)
+        record.receipt = StopReceipt("stop", newcomer.pid, groups=(newcomer.pid,))
+    else:
+        record.groups.append(newcomer.pid)
+
+    asyncio.run(evidence.stop_legs([record], grace=0.1))
+    evidence.stop_descendants([record])
+    # The soft leg on its own: ``stop_legs`` sends it only to a root not yet
+    # gone, which a moved number never is, so it is driven directly.
+    evidence._signal_record(record, hard=False)
+
+    time.sleep(0.2)
+    assert newcomer.poll() is None, "another process's group was signalled"
+
+
+# === #723 fix round 2: gone is not moved (verify-r2 SF1) ======================
+#
+# The leader check above must not cost the ordinary case its kill: a job's root
+# that exited on its own while a member of its group lives on. Its number is
+# gone, not another process's, so the group still gets its ``killpg``. A zombie
+# leader is read with no start time on macOS and with the recorded one on
+# Linux; either way it is not a reuse.
+
+_EXITING_LEADER = (
+    "import os, subprocess, sys, time\n"
+    "from pathlib import Path\n"
+    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+    " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    "Path(sys.argv[1]).write_text(str(p.pid))\n"
+    "while not os.path.exists(sys.argv[2]):\n"
+    "    time.sleep(0.01)\n"
+)
+
+
+def _zombie(pid: int) -> bool:
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return state.stdout.strip().startswith("Z")
+
+
+@pytest.mark.parametrize("legs", ["stop_descendants", "stop_legs"])
+@pytest.mark.parametrize("leader_end", ["reaped", "zombie"])
+@pytest.mark.parametrize("tree", [True, False], ids=["tree", "bare"])
+def test_a_group_whose_recorded_leader_is_gone_is_still_killed(
+    tmp_path: Path, procs: list[subprocess.Popen[bytes]], tree: bool, leader_end: str, legs: str
+) -> None:
+    """The root leads its group and exits on its own, leaving a member in it;
+    the legs then run. The group gets its ``killpg``, and the barrier confirms
+    it empty.
+
+    Kills verify-r2's S04c, which reads "a start time recorded, none readable
+    now" as a moved number in the record-with-no-tree legs: with it the member
+    outlives the legs in the ``bare`` cases (the ``bare-zombie`` ones on macOS
+    only, where a zombie has no start time). The ``tree`` cases are guards of
+    ``ProcessTree``'s own reading of the root.
+    """
+
+    marker, go = tmp_path / "member.pid", tmp_path / "go"
+    leader = subprocess.Popen(
+        [sys.executable, "-c", _EXITING_LEADER, str(marker), str(go)],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    procs.append(leader)
+    end = time.monotonic() + 5
+    while not marker.exists() or not marker.read_text():
+        assert time.monotonic() < end, "the leader never started its member"
+        time.sleep(0.01)
+    member = int(marker.read_text())
+    try:
+        assert os.getpgid(member) == leader.pid, "the member is in the leader's group"
+        record = evidence.ProcessRecord(pid=leader.pid, started=_started(leader), pgid=leader.pid)
+        if tree:
+            record.tree = ProcessTree.attach(leader.pid)
+        else:
+            record.groups.append(leader.pid)
+        go.write_text("")
+        if leader_end == "reaped":
+            leader.wait(5)
+        else:
+            end = time.monotonic() + 5
+            while not _zombie(leader.pid):
+                assert time.monotonic() < end, "the leader never exited"
+                time.sleep(0.01)
+        assert pid_is_live(member) is True
+
+        if legs == "stop_descendants":
+            evidence.stop_descendants([record])
+        else:
+            asyncio.run(evidence.stop_legs([record], grace=0.1))
+        leader.wait(5)  # the zombie's reap is its parent's: the service's ``proc.wait()``
+
+        confirmed, why = asyncio.run(evidence.confirm_gone([record], time.monotonic() + 5))
+        assert confirmed, why
+        assert pid_is_live(member) is False, "a member of the group outlived the barrier"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(member, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("moved", [True, False], ids=["moved", "same"])
+def test_a_root_that_leads_no_group_is_killed_only_while_its_number_is_its_own(
+    procs: list[subprocess.Popen[bytes]], moved: bool
+) -> None:
+    """A tree whose root leads no group (it stayed in ours): its hard leg has no
+    group to kill, so the root gets a SIGKILL of its own — but not once its
+    number reads as a process that started at another time.
+
+    ``moved`` kills verify-r2's S02, which drops that check from
+    ``ProcessTree._kill_posix``'s root kill: the newcomer is killed. ``same``
+    is a guard: the root that is still the one recorded is killed.
+    """
+
+    root = _sleeper_proc(own_group=False)
+    procs.append(root)
+    stamp = _started(root)
+    record = evidence.ProcessRecord(pid=root.pid, started=stamp - 1000.0 if moved else stamp)
+    record.tree = ProcessTree.attach(root.pid)
+    assert not record.tree.contained, "the root stayed in this process's group"
+
+    evidence.kill_now(record)
+
+    assert record.receipt is not None and record.receipt.groups == ()
+    if moved:
+        time.sleep(0.2)
+        assert root.poll() is None, "a process that only took the root's number was killed"
+    else:
+        assert root.wait(5) == -signal.SIGKILL

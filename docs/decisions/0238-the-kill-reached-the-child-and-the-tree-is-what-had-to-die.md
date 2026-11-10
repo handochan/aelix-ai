@@ -2156,3 +2156,25 @@ attempts through the case and records what it hands on: the command timeouts
 20, 40 and 80 s, and `_bounded`'s outer bounds 25, 45 and 85 s. It pins both
 lists, and that the three recorded bounds stay at least 60 s under pytest's
 240-second `faulthandler_timeout`.
+
+### 2026-11-09: the job service's legs read the leader before a group kill (ADR-0295, #723)
+
+The residual accepted above — a group's number recycled and its new holder made a group leader
+before a late `killpg` — is closed for the job service's callers (ADR-0293's evidence legs,
+behind `jobs/activation.py` `ACTIVE = False` until #611 S3). `ProcessTree.stop_and_collect` takes
+`root_started`, the root's start time as recorded while it lived; with it and the `started` reader
+it already receives, a group — the tree's own, or one a walked pid led — whose leader's number now
+names a process that started at another time is skipped, and so is the root itself
+(`tests/jobs/test_stop_evidence_posix_611.py::test_a_root_that_leads_no_group_is_killed_only_while_its_number_is_its_own`).
+A leader that is gone — reaped, or a zombie — is not a moved number, and its group is still killed
+(`::test_a_group_whose_recorded_leader_is_gone_is_still_killed`). The kernel
+reuses a leader's number only once its group is empty, so such a group is no longer the tree's.
+`jobs/evidence.py` applies the same check to a record with no tree and to the soft leg
+(`tests/jobs/test_stop_evidence_posix_611.py::test_a_group_whose_recorded_leader_number_now_leads_another_process_gets_no_signal`;
+on a real background delegation, with every signal recorded on `stop` and on `/reload`,
+`tests/agents_ext/test_agent_background_ownership_611.py::test_no_signal_reaches_a_reused_pid_or_a_group_another_process_leads`).
+`jobs/evidence.py` is the only caller of `stop_and_collect` and passes both readers (a search of
+`packages/` on 2026-11-10); `started` alone already judges a group a walked pid led by that pid's
+walked start time, and `root_started` adds the root and the group it leads
+(`ProcessTree._kill_posix`'s `moved`). Every other kill path does not go through
+`stop_and_collect` and keeps the residual as stated.

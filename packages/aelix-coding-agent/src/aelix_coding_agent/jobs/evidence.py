@@ -156,8 +156,28 @@ def collect(record: ProcessRecord, *, policy: str = "stop") -> None:
             record.groups.append(group)
 
 
+def _moved(pid: int, stamp: float | None) -> bool:
+    """Whether ``pid`` now names a process that started at another time than ``stamp`` — a reused number.
+
+    ``False`` when it is the same process, when it is gone, or when either time
+    is unknown: only a positive reading of ANOTHER start time is a reuse. The
+    kernel reuses a group leader's number only once its group is empty, so a
+    group whose leader's number moved is no longer the job's (#611 S1c).
+    """
+
+    if stamp is None:
+        return False
+    now = process_started(pid)
+    return now is not None and now != stamp
+
+
 def _signal_record(record: ProcessRecord, *, hard: bool) -> None:
-    """One kill leg for one record, its evidence collected first. Never raises; never signals an unverified bare pid."""
+    """One kill leg for one record, its evidence collected first. Never raises; never signals an unverified bare pid.
+
+    Never a group whose recorded leader's number now belongs to another
+    process (:func:`_moved`; #611 S1c): the root's own group, a walked
+    leader's, or the tree's.
+    """
 
     if record.tree is not None and not record.tree.closed:
         if hard:
@@ -168,10 +188,12 @@ def _signal_record(record: ProcessRecord, *, hard: bool) -> None:
                 started=process_started,
                 prior=record.receipt,
                 same=same_process,
+                root_started=record.started,
             )
         else:
             collect(record)
-            record.tree.soft_kill(whole_group=True)
+            if not _moved(record.pid, record.started):
+                record.tree.soft_kill(whole_group=True)
         return
     if sys.platform == "win32":
         if record.proc is not None and getattr(record.proc, "returncode", None) is None:
@@ -186,16 +208,25 @@ def _signal_record(record: ProcessRecord, *, hard: bool) -> None:
                 with contextlib.suppress(OSError):
                     os.kill(pid, sig)
         for group in record.groups:
-            if group != record.pgid:
+            if group != record.pgid and not _moved(group, _leader_stamp(record, group)):
                 with contextlib.suppress(OSError):
                     os.killpg(group, sig)  # pyright: ignore[reportAttributeAccessIssue]
     if record.pgid is not None:
-        with contextlib.suppress(OSError):
-            os.killpg(record.pgid, sig)  # pyright: ignore[reportAttributeAccessIssue]
+        if not _moved(record.pgid, _leader_stamp(record, record.pgid)):
+            with contextlib.suppress(OSError):
+                os.killpg(record.pgid, sig)  # pyright: ignore[reportAttributeAccessIssue]
         return
     if record.identity_holds():
         with contextlib.suppress(OSError):
             os.kill(record.pid, sig)
+
+
+def _leader_stamp(record: ProcessRecord, group: int) -> float | None:
+    """The start time recorded for ``group``'s leader: the root's, or a walked pid's; else unknown."""
+
+    if group == record.pid:
+        return record.started
+    return record.walked.get(group)
 
 
 def kill_now(record: ProcessRecord) -> None:
@@ -245,8 +276,13 @@ def stop_descendants(records: list[ProcessRecord]) -> None:
                 started=process_started,
                 prior=record.receipt,
                 same=same_process,
+                root_started=record.started,
             )
-        elif record.pgid is not None and _group_alive(record.pgid):
+        elif (
+            record.pgid is not None
+            and _group_alive(record.pgid)
+            and not _moved(record.pgid, _leader_stamp(record, record.pgid))
+        ):
             with contextlib.suppress(OSError):
                 os.killpg(record.pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
 

@@ -897,7 +897,7 @@ Modes:
   --mode rpc            Headless JSONL command/response protocol
 
 Session:
-  --continue, -c        Continue the most recent session
+  --continue, -c        Continue the most recent session that has a conversation
   --resume, -r [<id>]   Resume a session by id/prefix, or pick interactively
   --no-session          Run with an in-memory session (not persisted)
   --session <path>      Open a specific session file

@@ -191,6 +191,20 @@ async def test_the_lock_is_a_sidecar_the_repo_cannot_see(tmp_path: Path) -> None
     """
 
     repo, path = await _fresh_session(tmp_path)
+    # A conversation, so ``find_most_recent`` below has a candidate (#709).
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "u1",
+                    "parentId": None,
+                    "timestamp": "2026-11-09T00:00:01.000Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "x"}]},
+                }
+            )
+            + "\n"
+        )
     lock = SessionWriterLock(path)
     assert lock.lock_path == lock_path_for(path) == f"{path}.lock"
     assert not lock.lock_path.endswith(".jsonl")

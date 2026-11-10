@@ -67,7 +67,7 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:800``, ``consent.py:556``, ``posture.py:222``,
+literal ``"project"`` (``runtime.py:807``, ``consent.py:556``, ``posture.py:222``,
 ``profile.py``'s ``extensions:`` cut, ``discovery.py:357``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 
@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4883-4900``."""
+``cli/entry.py:4886-4903``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {

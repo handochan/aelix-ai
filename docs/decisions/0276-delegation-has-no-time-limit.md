@@ -992,3 +992,23 @@ ended the child with no survivor, and the next prompt's provider request
 carried the report with one header, one open and one close tag, no control or
 format character and no escape residue, every forgery left visible behind its
 `&lt;` or `&#91;`.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+- **D4 is kept, and narrowed for one kind of run.** A child that closed its latest run and then
+  lingered past the 30 s post-EOF bound stays `ok` with `LINGERED_NOTE`, as #611 S1a left it. A
+  background job's run — the only run whose parent sets `AELIX_JOBS_PROTOCOL=1` — also needs the
+  versioned `{"type": "aelix_print_done"}` line its child writes after its drain
+  (`build_result(print_done_required=True)`); without it the linger is unfinished
+  (`tests/agents_ext/test_latest_run_611.py::test_protocol_run_lingering_without_print_done_fails`,
+  `::test_legacy_linger_is_judged_as_before_with_or_without_the_line`). The line counts only as the
+  LATEST run's: a later `agent_start` takes it back, and a line of another shape, or one inside an
+  open run, is not it (`::test_an_earlier_runs_print_done_never_vouches_for_a_later_run`).
+- **D14 is unchanged** for every foreground call. An Esc never reaches a background agent: it is a
+  job of the session, stopped only by `agent(action="stop")`, `/jobs stop`, the session's end or a
+  `/reload`, and every such stop goes through the job's barrier — the process confirmed gone
+  before `stopped` is recorded, its partial answer in the notice
+  (`tests/agents_ext/test_agent_background_611.py::test_stop_goes_through_the_barrier_and_its_partial_result_comes_back`).
+- No timeout is added: `agent(action="wait")` ends the wait, never the agent (ADR-0295 §2).
+Inert until #611 S3.
+

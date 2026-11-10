@@ -454,3 +454,60 @@ user may configure, under core's hard maxima; product-core declares `HARD_MAX_PE
   S3's acceptance.
 - Delegation (`agent(action=spawn|…)`), the versioned `print_done`, background `bash`, the
   launch ledger, Ctrl+B, the rich panel and the flip are S1c, S2 and S3.
+
+## Note (2026-11-08, ADR-0295, #723)
+
+S1c registered the first client, delegation (ADR-0295), and needed two generic additions, both
+kind-agnostic: `JobContext.register_process` returns the `ProcessRecord` it registered — the same
+object the barrier reads — so a client that must kill before its `run` returns does so through
+`jobs/evidence.py` on that record (evidence first, §5); and the extension facade
+(`ExtensionAPI.jobs`) gained `reserve(kind, wanted)`, `start(…, reservation=…)`, `changed()`,
+`snapshot`/`snapshots` (the service's reading names for `status`/`list`) and `stop(…, reason=…,
+wait=…)`, each checked against the gate, the facade's lifetime and the kinds its extension
+registered, as every facade call is. The versioned `aelix_print_done` line and its request,
+`JobContext.protocol_env` (`JOBS_PROTOCOL_ENV`, `PRINT_DONE_EVENT` in `jobs/contract.py`), are in
+the tree: a json print run writes the line when its environment asks and its own gate is on
+(ADR-0198's note).
+
+S1c's fix round 1 (2026-11-09) changed §6's restart reading, kind-agnostically (the AST scan,
+`tests/jobs/test_core_is_kind_agnostic_611.py`, stays green):
+- **`recovered` is a state of its own** (`JobState`, in `TERMINAL_STATES`), never shown as `done`:
+  `jobs/records.py` said a recovered outcome "shows as done", and the service turned it into
+  `done` at the restart and again when it read the outcome back. A kind's `recovered` is
+  recorded only once every process the job recorded is confirmed gone; while one is alive or
+  cannot be told gone, the job stays `unresolved` with its slot, and the liveness recheck asks the
+  kind again once the evidence says gone
+  (`tests/jobs/test_restart_611.py::test_a_kinds_reading_is_recovered_never_done_and_waits_for_its_process`).
+- **A kind's own `unresolved` keeps its reason**: OS evidence that its processes are gone gives
+  back the slot but never makes it `lost`, which §6's "a process that has since gone makes it
+  `lost`" said of every restored job
+  (`::test_a_kinds_own_unresolved_reason_survives_os_evidence`,
+  `::test_a_kinds_own_unresolved_with_a_live_process_holds_its_slot_and_reason`).
+- **`KindCapabilities.noun`**: a kind may name what it runs, `(one, many)`, and the admission
+  refusal counts by it ("1 delegated agent already runs"); without one it is "N background jobs of
+  this kind already run" (`tests/jobs/test_admission_611.py::test_a_kinds_noun_counts_what_runs_with_its_plural`).
+- **`JOB_MARKER_ENV` and `JOB_INTERNAL_ENV`** name the variables a job hands only to a process it
+  owns; the delegation client's `PrintChannel` removes them from every other child it starts (the
+  `RpcChannel`, which nothing in the product constructs, does not).
+- **§5's group kills read the leader first.** The evidence legs skip a group — and a root — whose
+  recorded leader's number now names a process that started at another time
+  (`ProcessTree.stop_and_collect(root_started=…)`; `tests/jobs/test_stop_evidence_posix_611.py::test_a_group_whose_recorded_leader_number_now_leads_another_process_gets_no_signal`),
+  closing for the service the residual ADR-0238 accepts. A leader that is gone is not a moved
+  number: its group is still killed and confirmed empty
+  (`::test_a_group_whose_recorded_leader_is_gone_is_still_killed`).
+
+S1c's fix round 2 (2026-11-10), kind-agnostic as well:
+- **`JobSnapshot.rechecking`** says whether this process checks an `unresolved` job again. A
+  restored job's `unresolved` notice, posted once at the restart, says "it keeps checking" only
+  when the liveness loop will check it then, and otherwise that aelix "is not watching this job";
+  a notice that said it keeps checking is not corrected if the loop later stops (ADR-0295 Limits)
+  (`tests/jobs/test_restart_611.py::test_live_match_is_unresolved_not_lost`,
+  `::test_a_kinds_own_unresolved_reason_survives_os_evidence`). That corrects S1b's notice too for
+  the restored jobs the loop never rechecked — `unreadable`, `adapter_missing`, `recover_error`,
+  `relation_error` — which said "it keeps checking"; an `adapter_missing` or `adapter_too_old` job
+  is still read again when its kind registers
+  (`tests/jobs/test_generations_611.py::test_missing_adapter_is_unresolved_and_reevaluated_on_registration`).
+- **The `maxTotal` refusal** names no kind and calls nothing a background job, since a kind may
+  count what runs in the foreground: "3 run across every kind, and settings
+  backgroundJobs.maxTotal allows 3." (`tests/jobs/test_admission_611.py::test_the_total_limit_names_no_kind_and_calls_nothing_a_background_job`).
+

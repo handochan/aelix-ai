@@ -119,7 +119,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:959-962``), and NO process is
+into a blocked call the model reads (``extension.py:1093-1096``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -131,12 +131,14 @@ advertising a mode the parser refuses. Mirrors ``SubagentMode``
 evaluating it at runtime would pull a product-core symbol into this module's
 import graph to save one tuple."""
 
-AgentAction = Literal["run", "resume"]
-"""What one ``agent`` call does (#610 D1, ADR-0277).
+AgentAction = Literal["run", "resume", "spawn", "wait", "status", "stop", "result"]
+"""What one ``agent`` call does (#610 D1, ADR-0277; #611 S1c, ADR-0295).
 
 ``run`` is everything this tool did before #610 — delegate new work, in one of
 :data:`_MODES`. ``resume`` continues ONE agent this conversation delegated
-earlier, on its own session file, inside the limits it ran with."""
+earlier, on its own session file, inside the limits it ran with. The other five
+are the BACKGROUND actions (:data:`_BACKGROUND_ACTIONS`), which exist only where
+background jobs do."""
 
 _ACTIONS: tuple[AgentAction, ...] = ("run", "resume")
 """The one spelling of the action set — :data:`_MODES`' rule, for :data:`_MODES`'
@@ -147,6 +149,23 @@ unknown ``action`` untouched and the parser ignored it, so a model that asked to
 resume got a fresh delegation and believed it had resumed (#610 design D1) — and
 #611's background actions, sent to a build that does not know them, must not
 start the foreground run they were not."""
+
+_BACKGROUND_ACTIONS: tuple[AgentAction, ...] = ("spawn", "wait", "status", "stop", "result")
+"""The background actions (#611 S1c, ADR-0295), offered ONLY where background
+jobs are on and the host can carry them (``jobs/activation.py``, and not an
+RPC/ACP host until #612). Elsewhere the schema does not list them and
+:func:`parse_agent_call` refuses them with exactly the refusal it gave before
+#611 — an action this build does not know.
+
+* ``spawn`` — ONE task, run as a job of this session: the call returns once the
+  child has launched, and its result comes back later as one system notice.
+  No ``mode``, no ``tasks`` (owner, 2026-11-07: single-task spawn).
+* ``wait`` — wait for one agent (``id``) or any of this session's, up to
+  ``timeout`` seconds; it never stops one (#604).
+* ``status`` — how one agent, or each, is doing.
+* ``stop`` — stop one agent; its partial result still comes back as its notice.
+* ``result`` — read a finished agent's whole result again, paged by ``offset``.
+"""
 
 RESUME_TASK_MAX_BYTES = MAX_TASK_BYTES - RESUME_PREAMBLE_RESERVE
 """The most a resume's instruction may carry, in UTF-8 bytes (#610 D1).
@@ -253,7 +272,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:959-962``) with no process created.
+    # (``extension.py:1093-1096``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -266,6 +285,75 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # profile that does not match before it meets a dialog.
     "required": ["profile"],
 }
+
+WAIT_MIN_SECONDS = 30.0
+"""The shortest ``agent(action="wait")`` (#611, owner 2026-11-07, design D1).
+
+A shorter one is RAISED to this and the result says so: a child is a whole
+process doing minutes of work, its notice makes waiting optional, and a model
+polling every few seconds pays for every poll (openai/codex#39854)."""
+WAIT_DEFAULT_SECONDS = 120.0
+"""A ``wait`` with no ``timeout``."""
+WAIT_MAX_SECONDS = 1800.0
+"""The longest ``wait``; a longer one is cut to this and the result says so."""
+EMPTY_WAITS_REFUSED_AT = 3
+"""The ``wait`` that is refused: the THIRD in a row, in one prompt, that ended
+with nothing finished (design D1). The notice is the delivery; a model that
+keeps waiting for it is told so instead of being kept waiting again."""
+
+
+def agent_tool_parameters(*, background: bool) -> dict[str, Any]:
+    """The ``agent`` schema: :data:`AGENT_TOOL_PARAMETERS`, or with the background actions.
+
+    ``background=False`` is the schema as it was before #611, key for key. With
+    it, ``action`` lists :data:`_BACKGROUND_ACTIONS` too, ``id`` says what they
+    take, and two keys are APPENDED after every key a model writes before them
+    (the #634 order rule): ``timeout`` (a wait's seconds) and ``offset`` (a
+    result's page). ``required`` is then empty, because a ``wait`` or a
+    ``status`` names no profile; :func:`parse_agent_call` asks for ``profile``
+    of every action that starts an agent.
+    """
+
+    if not background:
+        return dict(AGENT_TOOL_PARAMETERS)
+    properties = dict(AGENT_TOOL_PARAMETERS["properties"])
+    properties["action"] = {
+        "type": "string",
+        "enum": [*_ACTIONS, *_BACKGROUND_ACTIONS],
+        "default": "run",
+        "description": (
+            "run (default): delegate new work, as 'mode' describes. "
+            "resume: continue ONE agent you delegated earlier — its 'id', the "
+            "'profile' it ran as, and its next instruction in 'task'. "
+            "spawn: start ONE agent in the background ('profile', 'task', "
+            "optional 'cwd'); its result arrives later as a notice. "
+            "wait / status / stop / result: about a spawned agent, by 'id'."
+        ),
+    }
+    properties["id"] = {
+        "type": "string",
+        "description": (
+            "resume: the agent's Session id, from its result. wait, status, "
+            "stop, result: the id spawn returned (or the job id its notice "
+            "shows); wait and status without one cover every agent you "
+            "spawned. Not a file path."
+        ),
+    }
+    properties["timeout"] = {
+        "type": "number",
+        "description": (
+            f"action=wait only: seconds to wait, {int(WAIT_MIN_SECONDS)} to "
+            f"{int(WAIT_MAX_SECONDS)} (default {int(WAIT_DEFAULT_SECONDS)}). "
+            "The wait ends; the agent does not."
+        ),
+    }
+    properties["offset"] = {
+        "type": "integer",
+        "minimum": 0,
+        "description": "action=result only: where to continue reading, in bytes.",
+    }
+    return {"type": "object", "properties": properties, "required": []}
+
 
 _DESCRIPTION_HEAD = (
     "Delegate self-contained tasks to subagents — separate aelix processes, each "
@@ -305,6 +393,31 @@ _DESCRIPTION_HEAD = (
 once an agent can be resumed into the one it had — and added the last paragraph,
 which names both actions the way the list above names every mode
 (``test_the_contract_text_stays_inside_its_own_budget`` pins both sets)."""
+
+BACKGROUND_HEAD_MAX_BYTES = 1024
+"""The ceiling on :data:`_BACKGROUND_HEAD`, beside :data:`DESCRIPTION_HEAD_MAX_BYTES`.
+
+Its own budget rather than a raise of the head's: the head is what every
+session pays today, and the background paragraph is paid only where the
+background actions exist (#611 S1c). Measured at 627 bytes."""
+
+_BACKGROUND_HEAD = (
+    'action="spawn" starts ONE agent in the background instead: pass '
+    "'profile' and one 'task'. The call returns its id once the agent has "
+    "started, and you can go on with other work: its result comes back to you "
+    "once, later, as a system notice. Do not poll or sleep for it. "
+    'action="status" shows how one (\'id\') or each is doing; '
+    'action="wait" waits up to \'timeout\' seconds '
+    f"({int(WAIT_MIN_SECONDS)}–{int(WAIT_MAX_SECONDS)}, default "
+    f"{int(WAIT_DEFAULT_SECONDS)}) and never stops it; "
+    'action="stop" stops it, and its partial result still comes back; '
+    'action="result" reads a finished agent\'s whole result again '
+    "(\'offset\' pages it). Spawned agents count against the same limit "
+    "as the ones you wait for."
+)
+"""What the model reads about the background actions, appended to
+:data:`_DESCRIPTION_HEAD` only where they exist (#611 S1c, ADR-0295)."""
+
 
 def _no_profiles_message() -> str:
     """The "nothing to delegate to" refusal, naming the COMPUTED directory.
@@ -368,11 +481,18 @@ class AgentCall:
     construction of :func:`parse_agent_call`, so every reader of the single
     shape reads a resume correctly; only the hook and ``execute()`` branch on it."""
     id: str | None = None
-    """``action="resume"`` only: the child SESSION id the model passed — the id
+    """``action="resume"``: the child SESSION id the model passed — the id
     on a result's ``Session:`` line, never a path (the parser refuses a
     path-shaped one). ``None`` when it named none: the hook answers that with
     the list of agents it could resume (#610 D7), which a parser refusal could
-    not carry."""
+    not carry. For ``wait`` / ``status`` / ``stop`` / ``result`` (#611 S1c) it
+    is the id ``spawn`` returned, or the job id a notice shows."""
+    timeout: float | None = None
+    """``action="wait"`` only: the seconds the model asked for, unclamped —
+    the clamp is applied where the wait runs, so its result can say it was
+    (``jobs_client.wait_bounds``). ``None`` is the default wait."""
+    offset: int | None = None
+    """``action="result"`` only: where the page starts, in bytes."""
 
     @property
     def task(self) -> str:
@@ -431,6 +551,12 @@ class PendingSpawn:
     shown, with the limits that were on screen, and never looks the id up
     again. ``None`` for every ``run``; trailing and defaulted so no ``run``
     constructor changes."""
+    reservation: Any = None
+    """The slots the hook reserved BEFORE the dialog while background jobs are
+    on (#611 S1c, ADR-0199 (d) as amended): a ``spawn`` hands its one to the
+    job, a ``run`` or ``resume`` holds them while its children live and
+    releases them when the call ends. ``None`` while jobs are off — the
+    per-session registry count decides, as before."""
 
 
 def _parse_mode(raw: object) -> SubagentMode:
@@ -451,7 +577,7 @@ def _parse_mode(raw: object) -> SubagentMode:
     return raw  # type: ignore[return-value]  # narrowed by the _MODES membership test
 
 
-def _parse_action(raw: object) -> AgentAction:
+def _parse_action(raw: object, *, background: bool = False) -> AgentAction:
     """#610 D1. Absent (or an explicit ``null``) means ``"run"``.
 
     :func:`_parse_mode`'s rule exactly, ``null`` clause included: a provider that
@@ -464,11 +590,14 @@ def _parse_action(raw: object) -> AgentAction:
 
     if raw is None:
         return "run"
-    if raw not in _ACTIONS:
+    # ``background`` widens the set only where the background actions exist
+    # (#611 S1c); elsewhere a ``spawn`` is refused exactly as before #611.
+    allowed = (*_ACTIONS, *_BACKGROUND_ACTIONS) if background else _ACTIONS
+    if raw not in allowed:
         raise AgentCallError(
-            f"action={raw!r} is not an action. Use one of: {', '.join(_ACTIONS)}."
+            f"action={raw!r} is not an action. Use one of: {', '.join(allowed)}."
         )
-    return raw  # type: ignore[return-value]  # narrowed by the _ACTIONS membership test
+    return raw  # type: ignore[return-value]  # narrowed by the membership test
 
 
 _ID_IS_FOR_RESUME = (
@@ -559,7 +688,7 @@ def _parse_resume_id(raw: object) -> str | None:
     return child_id
 
 
-def _parse_resume(args: Mapping[str, Any]) -> AgentCall:
+def _parse_resume(args: Mapping[str, Any], *, background: bool = False) -> AgentCall:
     """``action="resume"`` — ONE agent, its next instruction, nothing else (#610 D1).
 
     A resume continues an agent where and as it ran: the directory it ran in,
@@ -604,7 +733,7 @@ def _parse_resume(args: Mapping[str, Any]) -> AgentCall:
             "it ran in."
         )
     if args.get("background"):
-        raise AgentCallError(_BACKGROUND_REFUSED)
+        raise AgentCallError(_BACKGROUND_IS_SPAWN if background else _BACKGROUND_REFUSED)
     task = args.get("task")
     if not isinstance(task, str) or not task.strip():
         raise AgentCallError(_RESUME_NEEDS_TASK)
@@ -694,7 +823,162 @@ def _parse_tasks(raw: object, *, mode: SubagentMode) -> tuple[str, ...]:
     return tuple(tasks)
 
 
-def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
+_BACKGROUND_IS_SPAWN = (
+    "'background' is not a key of agent(): to run an agent in the background, "
+    "call agent(action='spawn', profile=…, task=…)."
+)
+"""``background: true`` where the background actions exist (#611 S1c): the
+model meant ``spawn``, and is told how to ask for it. Where they do not exist
+the refusal is :data:`_BACKGROUND_REFUSED`, as before #611."""
+
+_CONTROL_TAKES_NO_TASK = (
+    "action={action!r} takes no {key!r}: it is about an agent you already "
+    "spawned, by its 'id'."
+)
+_NEEDS_AN_ID = (
+    "action={action!r} needs 'id': the id spawn returned for that agent (its "
+    "notice shows the same agent's job id, which works too)."
+)
+_ID_NOT_A_STRING = "'id' must be the agent's id, as a string."
+_ID_IS_A_PATH_BG = "'id' is the agent's id — the one spawn returned — not a file path."
+
+
+def _parse_agent_id(raw: object) -> str | None:
+    """The id a background action names, or ``None`` when it names none (#611 S1c).
+
+    :func:`_parse_resume_id`'s rule, with its own wording: refused when it is
+    not a string, holds what no argv carries, or is shaped like a path.
+    """
+
+    if _absent(raw):
+        return None
+    if not isinstance(raw, str):
+        raise AgentCallError(_ID_NOT_A_STRING)
+    _refuse_unsendable(raw, where="'id'", resend="the id")
+    agent_id = raw.strip()
+    if not agent_id:
+        return None
+    if "/" in agent_id or "\\" in agent_id or agent_id.lower().endswith(".jsonl"):
+        raise AgentCallError(_ID_IS_A_PATH_BG)
+    return agent_id
+
+
+def _parse_spawn(args: Mapping[str, Any]) -> AgentCall:
+    """``action="spawn"`` — ONE task, in the background (#611 S1c).
+
+    The ``run`` parse for ``mode="single"``, with what a spawn cannot take
+    refused rather than ignored (an ignored key is a model believing something
+    happened that did not): ``tasks`` and any ``mode`` but ``single`` (single-task
+    spawn, owner 2026-11-07), an ``id`` (that is ``resume``), and the
+    ``timeout`` / ``offset`` of the other background actions.
+    """
+
+    profile = args.get("profile")
+    if not isinstance(profile, str) or not profile.strip():
+        raise AgentCallError("action='spawn' needs 'profile': a profile name.")
+    _refuse_unsendable(profile, where="'profile'", resend="the profile name")
+    if not _absent(args.get("id")):
+        raise AgentCallError(
+            "action='spawn' takes no 'id': it starts a new agent. To continue one, "
+            "use action='resume'."
+        )
+    if not _absent(args.get("tasks")):
+        raise AgentCallError(
+            "action='spawn' takes ONE 'task', not 'tasks': spawn each agent with "
+            "its own call."
+        )
+    if not _absent(args.get("background")):
+        # Not a key of agent() at all (verify N5): refused, as on ``run``.
+        raise AgentCallError(
+            "action='spawn' takes no 'background': a spawned agent always runs in "
+            "the background, so leave it out."
+        )
+    mode = args.get("mode")
+    if mode is not None and mode != "single":
+        raise AgentCallError(
+            f"action='spawn' takes no mode={mode!r}: it starts ONE agent, so leave "
+            "'mode' out."
+        )
+    for key in ("timeout", "offset"):
+        if args.get(key) is not None:
+            raise AgentCallError(
+                f"action='spawn' takes no {key!r}: a delegated agent has no time limit."
+                if key == "timeout"
+                else "action='spawn' takes no 'offset'."
+            )
+    task = args.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise AgentCallError(
+            "'task' is required and must describe the whole job — the child has "
+            "no conversation history to fall back on."
+        )
+    _refuse_unsendable(task, where="'task'", resend="the task")
+    try:
+        check_task_size(task)
+    except TaskTooLarge as exc:
+        raise AgentCallError(f"'task': {exc}") from exc
+    cwd = args.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not cwd.strip()):
+        raise AgentCallError("'cwd' must be a directory path inside your own.")
+    if cwd is not None:
+        _refuse_unsendable(cwd, where="'cwd'", resend="the directory")
+    return AgentCall(
+        profile=profile.strip(),
+        tasks=(task,),
+        mode="single",
+        cwd=cwd.strip() if isinstance(cwd, str) else None,
+        action="spawn",
+    )
+
+
+def _parse_control(action: AgentAction, args: Mapping[str, Any]) -> AgentCall:
+    """``wait`` / ``status`` / ``stop`` / ``result`` — about an agent already spawned (#611 S1c).
+
+    No consent and no budget: nothing starts. ``profile`` is not asked for and
+    not read. What would start or steer work — ``task``, ``tasks``, ``mode``,
+    ``cwd`` — is refused, as is a key of another control action. ``stop`` and
+    ``result`` need an ``id``; ``wait`` and ``status`` without one cover every
+    agent this session spawned. ``timeout`` is checked to be a number here and
+    clamped where the wait runs, so the result can say it was.
+    """
+
+    for key in ("task", "tasks", "cwd"):
+        if not _absent(args.get(key)):
+            raise AgentCallError(_CONTROL_TAKES_NO_TASK.format(action=action, key=key))
+    if args.get("mode") is not None:
+        raise AgentCallError(_CONTROL_TAKES_NO_TASK.format(action=action, key="mode"))
+    agent_id = _parse_agent_id(args.get("id"))
+    if agent_id is None and action in ("stop", "result"):
+        raise AgentCallError(_NEEDS_AN_ID.format(action=action))
+    timeout = args.get("timeout")
+    if timeout is not None:
+        if action != "wait":
+            raise AgentCallError(f"action={action!r} takes no 'timeout'; only wait does.")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int | float)
+            or timeout != timeout  # NaN
+            or timeout < 0
+        ):
+            raise AgentCallError("'timeout' must be a number of seconds, 0 or more.")
+    offset = args.get("offset")
+    if offset is not None:
+        if action != "result":
+            raise AgentCallError(f"action={action!r} takes no 'offset'; only result does.")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise AgentCallError("'offset' must be a whole number of bytes, 0 or more.")
+    return AgentCall(
+        profile="",
+        tasks=("",),
+        mode="single",
+        action=action,
+        id=agent_id,
+        timeout=float(timeout) if timeout is not None else None,
+        offset=offset,
+    )
+
+
+def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> AgentCall:
     """Validate one ``agent`` call. Raises :class:`AgentCallError`.
 
     The kernel's own ``validate_tool_arguments`` already ran, but it PRESERVES
@@ -708,7 +992,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:959-962``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:1093-1096``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:604-617``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -716,11 +1000,18 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     ``action`` IS READ FIRST (#610 D1): a ``resume`` takes its own, narrower
     parse (:func:`_parse_resume`), and a ``run`` takes the parse below, which
     answers every call without an ``id`` exactly as it did before #610.
+
+    ``background`` (#611 S1c) says the background actions exist here; without
+    it this function is what it was before #611, refusal texts included.
     """
 
-    action = _parse_action(args.get("action"))
+    action = _parse_action(args.get("action"), background=background)
     if action == "resume":
-        return _parse_resume(args)
+        return _parse_resume(args, background=background)
+    if action == "spawn":
+        return _parse_spawn(args)
+    if action in _BACKGROUND_ACTIONS:
+        return _parse_control(action, args)
     if not _absent(args.get("id")):
         raise AgentCallError(_ID_IS_FOR_RESUME)
 
@@ -809,7 +1100,16 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     # limit left for the value to set. ``background`` is the opposite case: it
     # names something that would NOT happen, so it is refused below.
     if args.get("background"):
-        raise AgentCallError(_BACKGROUND_REFUSED)
+        raise AgentCallError(_BACKGROUND_IS_SPAWN if background else _BACKGROUND_REFUSED)
+    if background:
+        # The background actions' own keys, on a run (#611 S1c): a ``timeout``
+        # here reads as a time limit a delegation does not have.
+        if args.get("timeout") is not None:
+            raise AgentCallError(
+                "'timeout' is for action='wait'. A delegated agent has no time limit."
+            )
+        if args.get("offset") is not None:
+            raise AgentCallError("'offset' is for action='result'.")
 
     return AgentCall(
         profile=profile.strip(),
@@ -853,19 +1153,26 @@ def build_roster(profiles: Iterable[AgentProfile]) -> str:
     return "\n".join(lines)
 
 
-def build_description(roster: str) -> str:
-    """The full tool description: the contract, then the roster."""
+def build_description(roster: str, *, background: bool = False) -> str:
+    """The full tool description: the contract, then the roster.
 
+    ``background`` appends :data:`_BACKGROUND_HEAD` to the contract — only
+    where the background actions exist (#611 S1c); without it the text is what
+    it was before #611.
+    """
+
+    head = f"{_DESCRIPTION_HEAD}\n\n{_BACKGROUND_HEAD}" if background else _DESCRIPTION_HEAD
     body = roster.strip()
     if not body:
-        return f"{_DESCRIPTION_HEAD}\n\n{_no_profiles_message()}"
-    return f"{_DESCRIPTION_HEAD}\n\nAvailable profiles:\n{body}"
+        return f"{head}\n\n{_no_profiles_message()}"
+    return f"{head}\n\nAvailable profiles:\n{body}"
 
 
 def create_agent_tool(
     *,
     description: str,
     execute: Any,
+    parameters: dict[str, Any] | None = None,
 ) -> AgentTool:
     """Build the ``agent`` tool.
 
@@ -891,7 +1198,9 @@ def create_agent_tool(
         # unconditionally and these two never.
         prompt_snippet="Delegate a scoped sub-task to a subagent",
         description=description,
-        parameters=dict(AGENT_TOOL_PARAMETERS),
+        # ``parameters`` is :func:`agent_tool_parameters`' answer for this
+        # build; ``None`` is the schema every build had before #611.
+        parameters=dict(AGENT_TOOL_PARAMETERS if parameters is None else parameters),
         execute=execute,
         execution_mode="sequential",
     )
@@ -964,7 +1273,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:1083-1085`` → ``envelope.py:1060``), which makes it attacker-supplied
+(``stream.py:1097-1099`` → ``envelope.py:1075``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""
