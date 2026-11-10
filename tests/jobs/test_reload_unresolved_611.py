@@ -11,6 +11,7 @@ calls the invalidated extension API from the old runner.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from aelix_coding_agent.jobs.contract import ClientOutcome
 from aelix_coding_agent.jobs.records import fold
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
+from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for, wait_settled
 
 pytestmark = pytest.mark.usefixtures("jobs_active")
 
@@ -228,9 +229,12 @@ async def test_an_ignored_stop_is_ended_by_the_services_own_legs_before_any_canc
     job_id = await service.start(
         _sleeper.KIND, title="nap", params={"seconds": 30, "ignore_stop": True}
     )
+    since = time.monotonic()
     snap = await service.stop(job_id)
     runner = _sleeper.Sleeper.instances[-1]
     assert "request_stop" in runner.calls
+    await wait_settled(service, (job_id,), since=since, state=("done", "stopped"))  # #751
+    snap = service.snapshot(job_id)
     assert runner.proc is not None and runner.proc.returncode is not None
     assert snap is not None and snap.state in ("done", "stopped")
     assert service._jobs[job_id].stop_requested_by_service is None, "never cancelled"

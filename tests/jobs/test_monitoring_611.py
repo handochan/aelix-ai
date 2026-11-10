@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from aelix_coding_agent.jobs.indicator import indicator_text
 from aelix_coding_agent.jobs.tool import create_job_stop_tool, create_job_tool
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
+from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for, wait_settled
 
 pytestmark = pytest.mark.usefixtures("jobs_active")
 
@@ -170,8 +171,12 @@ async def test_job_tool_list_matches_jobs(tmp_path: Path) -> None:
     assert missing.is_error
     refused = await tool.execute({"action": "stop", "id": job_id}, None)
     assert refused.is_error and "job_stop" in refused.content[0].text, "job only reads"
+    since = time.monotonic()
     stopped = await create_job_stop_tool(service).execute({"id": job_id}, None)
-    assert stopped.content[0].text == f"{job_id}: stopped"
+    # #751: the tool reports the state ``stop()`` returned, which is ``stopping``
+    # when the cleanup outlasted ``cleanup_bound``; the stop must still end.
+    assert stopped.content[0].text in {f"{job_id}: stopped", f"{job_id}: stopping"}, stopped
+    await wait_settled(service, (job_id,), since=since)
     result = await tool.execute({"action": "result", "id": job_id}, None)
     assert not result.is_error
     await service.shutdown()

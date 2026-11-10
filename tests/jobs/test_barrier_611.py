@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from aelix_coding_agent.jobs.contract import TERMINAL_STATES
 
 from tests.jobs import _sleeper
-from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
+from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for, wait_settled
 
 pytestmark = pytest.mark.usefixtures("jobs_active")
 
@@ -33,9 +34,12 @@ async def test_no_terminal_before_root_exit_after_cancel(tmp_path: Path) -> None
 
     states: list[str] = []
     service.add_listener(lambda: states.append(service.snapshot(job_id).state))  # type: ignore[union-attr]
+    since = time.monotonic()
     snap = await service.stop(job_id)
 
-    assert snap is not None and snap.state == "stopped"
+    assert snap is not None and snap.state in {"stopping", "stopped"}, snap
+    # #751: ``stop()`` may return at ``cleanup_bound`` while the cleanup runs on.
+    await wait_settled(service, (job_id,), since=since)
     assert runner.proc.returncode is not None, "reaped before the terminal state"
     first_terminal = next(i for i, s in enumerate(states) if s in TERMINAL_STATES)
     assert all(s not in TERMINAL_STATES for s in states[:first_terminal])
