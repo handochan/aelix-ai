@@ -87,6 +87,7 @@ from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
     session_choice_label,
     short_field,
+    with_conversation,
 )
 from aelix_coding_agent.core.extension_selection import (
     EXTENSIONS_PARENT_OFF_ENV,
@@ -1140,7 +1141,9 @@ async def _resume_session_startup(
             )
         return await repo.open(meta, cwd_override=cwd)
 
-    sessions = await repo.list(JsonlSessionListOptions(cwd=cwd))
+    # #754: only sessions ``--continue`` would open, and before the menu cuts
+    # them, so its ``… and N older`` counts sessions it could have listed.
+    sessions = with_conversation(await repo.list(JsonlSessionListOptions(cwd=cwd)))
     if not sessions:
         print(
             "No previous sessions in this folder; starting a new one.",

@@ -11,6 +11,7 @@ erases. Nothing is committed when the session's model came back.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aelix_coding_agent.tui.chrome import AelixChrome
@@ -22,6 +23,7 @@ from prompt_toolkit.output import DummyOutput
 from tests.tui.test_run_tui_smoke import (
     FakeHarness,
     FakeRuntime,
+    _conversation_file,
     _FakeEntry,
     _harness_chrome,
     _input_loop_is_idle,
@@ -70,17 +72,18 @@ class _FallbackResumeRuntime(_ResumeRuntime):
         return await super().switch_session(path, **kw)
 
 
-async def test_resume_commits_the_fallback_line_after_the_swap() -> None:
+async def test_resume_commits_the_fallback_line_after_the_swap(tmp_path: Path) -> None:
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 
+    target_path = _conversation_file(tmp_path, "target.jsonl")  # #754: /resume lists it
     metas = [
         _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-10-08T15:00"),
-        _ResumeMeta("bbbbbbbb", "/s/target.jsonl", "2026-10-08T14:00"),
+        _ResumeMeta("bbbbbbbb", target_path, "2026-10-08T14:00"),
     ]
     repo = _ResumeRepo(metas)
     active = _ResumeSession("/s/active.jsonl", [])
     target = _ResumeSession(
-        "/s/target.jsonl",
+        target_path,
         [
             UserMessage(content=[TextContent(text="q")]),
             AssistantMessage(content=[TextContent(text="a")]),

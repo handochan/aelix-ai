@@ -484,28 +484,43 @@ class JsonlSessionRepo:
         reach.
         """
 
+        return JsonlSessionRepo._read_conversation(path)[0]
+
+    @staticmethod
+    def _read_conversation(
+        path: Path,
+    ) -> tuple[bool, list[SessionTreeEntry] | None]:
+        """:meth:`_has_conversation`'s answer and the entries it decoded — #754.
+
+        The entries are :data:`None` when the answer came without decoding the
+        file: larger than the bound, unreadable, or refused by the loader. The
+        resume pickers ask ``--continue``'s question and also show a session's
+        saved name, which those entries hold, so one read answers both
+        (``cli/session_labels.with_conversation``).
+        """
+
         try:
             with open(path, encoding="utf-8") as f:
                 if os.fstat(f.fileno()).st_size > _CONVERSATION_SCAN_MAX_BYTES:
-                    return True
+                    return True, None
                 content = f.read(_CONVERSATION_SCAN_MAX_BYTES + 1)
         except (OSError, UnicodeDecodeError):
-            return False
+            return False, None
         if len(content) > _CONVERSATION_SCAN_MAX_BYTES:
-            return True  # it grew past the bound after the size was read
+            return True, None  # it grew past the bound after the size was read
         try:
             loaded = _parse_jsonl_content(content, str(path))
         except SessionError:
-            return False
+            return False, None
         by_id = {entry.id: entry for entry in loaded.entries}
         current = by_id.get(loaded.leaf_id) if loaded.leaf_id else None
         seen: set[str] = set()
         while current is not None and current.id not in seen:
             seen.add(current.id)
             if _carries_conversation(current):
-                return True
+                return True, loaded.entries
             current = by_id.get(current.parent_id) if current.parent_id else None
-        return False
+        return False, loaded.entries
 
     async def delete(self, metadata: JsonlSessionMetadata) -> None:
         """Pi `delete` (``jsonl-repo.ts:126-131``)."""
