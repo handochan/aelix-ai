@@ -2098,7 +2098,7 @@ async def _build_harness_options(
     # chat model with no identity and no ability to touch files). The 7 built-in
     # tools (read/write/edit/bash/grep/find/ls) + the base prompt make it an
     # actual coding agent. An explicit ``--system-prompt`` still overrides.
-    tools = list(create_all_tools(cwd, _tool_options_from_env()).values())
+    tools = list(create_all_tools(cwd, _tool_options_for(app_mode)).values())
     # MCP (Tier 4) tools, connected once in _async_main and shared across
     # harness rebuilds, join the built-in toolset (``<server>__<tool>`` names).
     if mcp_tools:
@@ -3346,7 +3346,7 @@ async def _async_main(argv: list[str]) -> int:
             settings=settings_manager.get_background_jobs_settings,
             warn=lambda text: print(f"Warning: {text}", file=sys.stderr),
         )
-        jobs_activation.install_service(jobs_service)
+        jobs_activation.install_service(_with_bash_kind(jobs_service))
         jobs_ext = JobsExtension(jobs_service)
 
     # === Agent delegation (ADR-0197 §(a)/§(b), P2) ============================
@@ -5884,6 +5884,41 @@ def _ctrl_c_in_an_extension(
     ):
         return interrupted_extension(exc)
     return None
+
+
+def _tool_options_for(app_mode: str | None) -> dict[str, dict[str, Any]]:
+    """:func:`_tool_options_from_env`, plus what the ``bash`` tool learns of its host (#760, ADR-0297).
+
+    ``background_host`` is fail-closed (Codex #14): true only for the TUI,
+    ``-p`` and json, so RPC — and ACP, which drives aelix over it — never
+    offers ``run_in_background`` until #612, and an unknown mode offers nothing.
+    ``unattended`` is true unless a person watches the run (the TUI): there a
+    background command gets no default time limit (owner OQ-B, 2026-11-10).
+    Both are read through the bash tool only while background jobs are on, on
+    the first harness and on every rebuilt one alike.
+    """
+
+    options: dict[str, dict[str, Any]] = dict(_tool_options_from_env())
+    options["bash"] = {
+        **options.get("bash", {}),
+        "background_host": lambda: app_mode in ("interactive", "print", "json"),
+        "unattended": lambda: app_mode != "interactive",
+    }
+    return options
+
+
+def _with_bash_kind(service: Any) -> Any:
+    """Register background ``bash``'s job kind on ``service``, and hand it back (#760, ADR-0297).
+
+    Called once, inside the CLI's ``if jobs_activation.is_active():`` block, so
+    the kind exists only while background jobs are on, before any harness is
+    bound — a restart's reconciliation reads the kind's restored jobs.
+    """
+
+    from aelix_coding_agent.tools.bash_background import register
+
+    register(service)
+    return service
 
 
 __all__ = [

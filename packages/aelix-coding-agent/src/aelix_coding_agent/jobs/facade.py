@@ -76,11 +76,14 @@ class JobsFacade:
         params: Mapping[str, Any] | None = None,
         notify: bool | None = None,
         reservation: Reservation | None = None,
+        client_start: Mapping[str, Any] | None = None,
     ) -> str:
         """Start a job of ``kind`` for the current session; its id. See ``JobService.start``.
 
         ``reservation`` is one :meth:`reserve` returned (#611 S1c): the job's
         slot is taken out of it, so a consented start is never refused.
+        ``client_start`` is the kind's own launch data, recorded in the job's
+        ``start`` fact and handed back on its snapshots (#611 S2d).
         """
 
         from aelix_coding_agent.jobs.service import JobStartRefused
@@ -89,7 +92,12 @@ class JobsFacade:
         if not self._mine(kind):
             raise JobStartRefused(f"job kind {kind!r} is not one this extension registered")
         return await self._service.start(
-            kind, title=title, params=params, notify=notify, reservation=reservation
+            kind,
+            title=title,
+            params=params,
+            notify=notify,
+            reservation=reservation,
+            client_start=client_start,
         )
 
     def list(self) -> list[JobSnapshot]:

@@ -76,9 +76,9 @@ and 1.65 ms max under load, against a shell that reaches its first ``fork`` at
 when the process is resumed with ``NtResumeProcess``, which needs only the
 process handle ``Popen`` keeps (``Popen`` closes the THREAD handle, which is
 what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
-``attach(suspended=True)`` are that primitive (#611 S2b), and nothing spawns
-suspended yet — the background ``bash`` of #611 S2d is the first caller. Every
-spawn today keeps the window. Belt and braces:
+``attach(suspended=True)`` are that primitive (#611 S2b); its one caller is the
+background ``bash`` of #611 S2d (behind the job gate, ADR-0297). Every other
+spawn keeps the window. Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.
@@ -986,7 +986,7 @@ class ProcessTree:
         ``False``, so the caller still owns a job whose close kills. Once
         ``PRESERVED``, every kill entry is a no-op. POSIX, and a win32 tree with
         no job: ``close`` never kills there, so it is ``PRESERVED`` at once.
-        Nothing calls it yet; S2d's background ``bash`` is the first caller.
+        Its one caller is S2d's background ``bash``, at a normal exit (ADR-0297).
         """
 
         with self._lock:

@@ -307,3 +307,14 @@ Measured with a real `-m aelix_coding_agent` child on a scripted local model
   `AgentsExtension` `drain_cleanups()`. Each defaults to what every caller had.
 - `tools/bash.py`'s `Popen` moved into `_spawn_shell`/`_popen_shell`; `_LocalBashOperations.exec`
   gained no branch (the complexity ratchet, ADR-0300).
+
+## Note (2026-11-11, ADR-0297, #760)
+
+A background `bash` command (ADR-0297, behind the job gate) spawns through the same `_spawn_shell`,
+so in an armed agent its `intent` and `launch` lines are in the ledger with the shell's group
+(`tests/tools/test_bash_background_611.py::test_in_an_armed_agent_its_spawn_is_in_the_ledger`), and
+its group is among those the agent's exit cleanup sweeps — a sweep not run against a background
+command in #760's tests. `_spawn_shell` gained only a `popen` argument, for the background shell's
+own spawn kwargs. The job's end calls `launch_ledger.after_call()`, a no-op when unarmed, which
+retires the group it left empty
+(`tests/tools/test_bash_background_611.py::test_the_job_end_retires_its_group_in_an_armed_agents_ledger`).

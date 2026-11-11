@@ -193,6 +193,8 @@ class _Job:
     # A failed ``helper_cleanup`` is retried on this schedule (Codex #7).
     cleanup_attempt: int = 0
     cleanup_due: float = 0.0
+    # What the kind handed ``start`` as ``client_start`` (#611 S2d), as recorded.
+    client_start: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def adapter(self) -> JobKindAdapter:
@@ -233,6 +235,9 @@ class _Restored:
     # The kind's own ``unresolved`` reason (#611 S1c): a recheck's OS evidence
     # never replaces it.
     kind_reason: bool = False
+    # The start fact's ``client`` (#611 S2d, Codex #12): the kind's own launch
+    # data, read back as recorded rather than derived again in this process.
+    client_start: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -514,6 +519,7 @@ class JobService:
         notify: bool | None = None,
         session: Any = None,
         reservation: Reservation | None = None,
+        client_start: Mapping[str, Any] | None = None,
     ) -> str:
         """Start a job of ``kind`` for the current session; its id once the runner reported its launch.
 
@@ -527,6 +533,12 @@ class JobService:
         start is never refused for want of a slot (Codex #16). Until the job
         exists and its finalizer owns the slot, every way out of this call — a
         refusal, a raise, a cancel — gives the slot back (Codex #15).
+
+        ``client_start`` is the kind's own launch data (#611 S2d, Codex #12),
+        opaque here: it is written into the confirmed ``start`` fact as
+        ``client`` and handed back on every snapshot of the job
+        (``JobSnapshot.client_start``), a restart's included, and to the
+        kind's ``restored_note``.
         """
 
         if self._closed:
@@ -578,6 +590,7 @@ class JobService:
                         created=created,
                         settings_key=adapter.settings_key,
                         supervisor=ev.supervisor_evidence(),
+                        **({"client": dict(client_start)} if client_start is not None else {}),
                     ),
                 )
             except RecordWriteFailed as exc:
@@ -608,6 +621,7 @@ class JobService:
                 started_at=self._clock(),
                 reservation=own,
                 runner=runner,
+                client_start=dict(client_start or {}),
             )
             job.last_activity = job.started_at
             loop = asyncio.get_running_loop()
@@ -1369,6 +1383,7 @@ class JobService:
             created=float(start.get("created", 0.0) or 0.0),
             state="unresolved",
             folded=folded,
+            client_start=_client_start_of(start),
         )
         restored.session = session
         self._restored[folded.job_id] = restored
@@ -1507,7 +1522,8 @@ class JobService:
                         title=restored.title,
                         status="unresolved",
                         elapsed=None,
-                        body=_restored_unresolved_body(reason, recheck=recheck),
+                        body=_restored_unresolved_body(reason, recheck=recheck)
+                        + self._restored_note(restored, registration),
                     ),
                     details={"v": 1, "job_id": restored.job_id, "status": "unresolved"},
                     brief=nt.cut_brief(f'{restored.label} "{restored.title}" unresolved: {reason}'),
@@ -1515,6 +1531,24 @@ class JobService:
                 restored.notice_state = "pending"
                 self._post(restored.notice, restored_ref=restored)
         self._ensure_liveness()
+
+    def _restored_note(self, restored: _Restored, registration: Registration | None) -> str:
+        """The kind's line for a restored ``lost`` or ``unresolved`` notice, after a newline; ``""`` without one (#611 S2d).
+
+        Asked of the kind with the job's ``start`` fact (``restored_note``, a
+        required adapter method); a raise or an answer that is no text adds
+        nothing, as a failed ``finalize_at_placement`` does (ADR-0293 §3).
+        """
+
+        folded = restored.folded
+        if registration is None or folded is None:
+            return ""
+        try:
+            line = registration.adapter.restored_note(dict(folded.start or {}))
+        except Exception:  # noqa: BLE001 — no extra line
+            _log.debug("restored_note of %s raised", restored.job_id, exc_info=True)
+            return ""
+        return f"\n{line}" if isinstance(line, str) and line else ""
 
     def _settle_restored(self, restored: _Restored) -> None:
         restored.recheck = False
@@ -1577,6 +1611,8 @@ class JobService:
                     next_action = rendered.next_action
                 except Exception:  # noqa: BLE001
                     text, next_action = _GENERIC_NOTICE.format(status=status), None
+            if status == "lost":
+                text += self._restored_note(restored, registration)
             cleanup = folded.cleanup if folded is not None else None
             if cleanup is None or cleanup.get("helpers") == "unverified":
                 # Contract §2.3: no cleanup fact for a job that never ended, or an
@@ -1700,6 +1736,7 @@ class JobService:
             unresolved_reason=job.unresolved_reason,
             payload=dict(job.outcome.payload) if job.outcome is not None else {},
             rechecking=job.state == "unresolved" and job.unresolved_reason != "settle_error",
+            client_start=dict(job.client_start),
         )
 
     def _snap_restored(self, restored: _Restored) -> JobSnapshot:
@@ -1720,6 +1757,7 @@ class JobService:
             unresolved_reason=restored.reason,
             payload=dict(restored.payload),
             rechecking=restored.state == "unresolved" and restored.recheck,
+            client_start=dict(restored.client_start),
         )
 
     def unsettled(self, owner: str | None = None) -> bool:
@@ -1822,6 +1860,13 @@ class JobService:
 
 def _terminal(status: Any) -> JobState:
     return status if status in TERMINAL_STATES else "unresolved"  # type: ignore[return-value]
+
+
+def _client_start_of(start: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``client`` a ``start`` fact recorded (#611 S2d); empty when it has none or it is not a mapping."""
+
+    client = start.get("client")
+    return dict(client) if isinstance(client, Mapping) else {}
 
 
 def _notice_record(notice: Notice | None) -> dict[str, Any]:
