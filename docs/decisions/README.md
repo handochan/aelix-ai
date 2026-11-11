@@ -218,7 +218,16 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   doctrine), ADR-0197 §(e) (the same gate refuses a headless child). Review round 1 (2026-11-04):
   arguments are read as static shell words with each tool's own option grammar (a non-static
   argument asks), `git config`/`branch`/`tag`/`remote` allow only proven read shapes, and an
-  assignment written as a statement or made inside an expansion asks.
+  assignment written as a statement or made inside an expansion asks. Dated note 2026-11-11 (#762): a bare
+  name in arithmetic or an index stays a read only if the shell does not fill it itself — `_`,
+  `BASH_REMATCH`, `KSH_MATCH`, `REPLY`, `OPTARG` and the rest of bash's, ksh93's and mksh's
+  text-filled names now ask in `$((…))`, `$[…]`, `(( ))`, `${a[…]}` and `${x:…}`, and so does a
+  quote or backslash in arithmetic text (measured in nine shells); `RANDOM`, `SECONDS`, `LINENO`,
+  `PPID` and `OPTIND`, which none of them let hold text, stay ALLOW. Its fix round 1 (2026-11-12):
+  a command holding a backslash-newline is also read with it joined, as the shells read it
+  (`$(\⏎(` is `$((` to them), and a length or a base-N literal (`${#PWD}`, `36#REPLY`) stays ALLOW.
+  Its fix round 2 (2026-11-12): a `'…'` the shells read as literal text is joined too, and a `#`
+  tree-sitter reads as a comment where the shells start none asks and is re-read in its word.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the

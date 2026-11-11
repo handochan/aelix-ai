@@ -624,6 +624,42 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     (fix round 2), and, inside `[` and `[[`, `${#x[FOO]}` (fix round 3).
     These go with #756 (a `.env` value evaluated as shell arithmetic), as
     does the field splitting of an unquoted expansion in `[ … ]` above.
+    *Dated note 2026-11-11 (#762):* the `_`, `BASH_REMATCH` and quoted
+    `$(…)` forms in that list ask now, outside `[`, `[[` and `test` too,
+    with every other name bash, ksh93 or mksh fills itself (`KSH_MATCH`,
+    `REPLY`, …) and any quote or backslash in `$((…))`, `$[…]` or `(( ))`
+    text (ADR-0288's #762 note has the list, the shells and the cost). The
+    environment-set names (`echo $((FOO))`, `${#x[FOO]}`) and the field
+    splitting stay as written here. #762 fix round 1 (2026-11-12): a
+    command holding a backslash-newline is also read with it joined, as the
+    shells read it, and takes the higher verdict, because tree-sitter-bash
+    reads `$(\⏎(` as a command substitution where the shells read `$((`
+    (`echo $(\⏎(echo '$(: > MARK)'))` created `MARK` in eight of the nine
+    shells and was ALLOW on `71f837eb`); `\⏎` is kept in a `'…'` or `$'…'`
+    that quotes, a comment the shells start and a quoted here-document,
+    where all nine shells keep it at the top level of a command. Nested,
+    some remove it there (the round-3 verify's printf probes): inside
+    backticks all nine, inside `$(…)` in a here-document body seven of nine
+    and inside `"$(…)"` macOS bash 3.2. Keeping it hides no code (a quote
+    that still quotes keeps its content literal, and a comment the shells
+    continue only hides the next line from them), but a quoted argument's
+    text can differ: ``echo `find . '-de\⏎lete'` `` is ALLOW, as on
+    `71f837eb`, and inside backticks the nine shells turn `'-de\⏎lete'` into
+    `-delete` (not covered; ADR-0288's #762 note). #762 fix round 2
+    (2026-11-12): a `'…'` or `$'…'` in a `${…}` operand inside a double-quoted string or an expanded
+    here-document body does not quote, so its `\⏎` is joined
+    (`cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E` created `MARK` in all nine shells
+    and was ALLOW on `eb98b93b`); a `#` tree-sitter reads as a comment
+    after an escaped blank, a vertical tab, a form feed, a carriage return
+    or `]]`, where the shells start none, asks and is re-read as part of
+    its word (`echo \ #$(: > MARK)` created `MARK` in all nine and was ALLOW
+    on `71f837eb`); and a command tree-sitter rejects that holds `\⏎` takes
+    the higher of ASK and its joined reading (`rm -rf / 2>\⏎&1` is DENY).
+    #762 finish (2026-11-12): a `#` right after `<` or `>` asks too, because
+    ksh93 reads `<#` and `>#` as operators (`cat <#$(: > MARK)⏎/dev/null`
+    created `MARK` in macOS ksh93u+ and Linux ksh 93u+m and was ALLOW on
+    `71f837eb`; `cat <#$(rm -rf ~)⏎/dev/null` is DENY).
+    ADR-0288's #762 note has the shells, the cost and the sweeps.
 
     **Accepted cost** — ASK where no shell measured ran anything: a glob
     anywhere in `[` or `test` (`[ -e *.log ]`, `[ x = * ]`), a ksh pattern
