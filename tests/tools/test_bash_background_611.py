@@ -1081,6 +1081,7 @@ def _runner_with(tree: _Tree, stopped_by: str | None = None, *, aborted: bool = 
     runner._tree = tree
     runner._stopped_by = stopped_by
     runner._aborted = aborted
+    runner._record = None
     return runner
 
 
@@ -1114,6 +1115,222 @@ async def test_a_stopped_command_closes_its_tree_without_preserving(stopped_by: 
     tree = _Tree(job=True, preserves=True)
     unconfirmed = await _runner_with(tree, stopped_by).helper_cleanup({"confirmed": False, "policy": policy})
     assert unconfirmed.state == "unverified" and tree.calls == []
+
+
+# ── #760 CI: what a settled job keeps, and every win32 handle a job opens ──
+
+
+@POSIX
+async def test_a_settled_job_keeps_no_reader_sink_or_tree(rig: _Rig) -> None:
+    """#760 CI: the service keeps a settled job for the process's life, so the job lets go of every
+    object that holds a lock or a thread — on win32 CPython 3.12 and older each lock is a kernel
+    semaphore (7 per job measured on windows-latest), on 3.13 and later the reader thread kept its
+    handle (1 per job).
+
+    Fails on ``66e9eca5``: the runner keeps its reader (the thread, its stream, its pin lock), its
+    sink and its tree, and the record keeps the tree.
+    """
+
+    import gc
+    import weakref
+
+    job_id = await rig.start("sleep 0.5; echo short")
+    held = rig.service._jobs[job_id]
+    runner = held.runner
+    await wait_for(lambda: runner._reader is not None and runner._tree is not None, 5.0)
+    refs = {
+        "reader": weakref.ref(runner._reader),
+        "stream": weakref.ref(runner._reader._stream),
+        "sink": weakref.ref(runner._sink),
+        "tree": weakref.ref(runner._tree),
+    }
+    snap = await rig.ended(job_id)
+    assert snap.state == "done" and snap.payload["bytes"] == 6 and "short" in snap.payload["tail"]
+
+    def gone() -> bool:
+        gc.collect()
+        return all(ref() is None for ref in refs.values())
+
+    await wait_for(gone, 5.0)
+    assert (runner._reader, runner._sink, runner._tree, held.processes[0].tree) == (None, None, None, None)
+
+
+class _LedgerKernel:
+    """An injected win32 kernel (the ``_Win32Api`` family) that counts every handle it hands out.
+
+    ``create_job``, ``duplicate`` and ``open_member`` open one; ``close_handle``
+    and ``close_process`` close one. The processes are this host's own: the
+    Job's members are the assigned root and what lives in its process group, and
+    a terminate kills them for real.
+    """
+
+    def __init__(self) -> None:
+        self.next = 1000
+        self.open: dict[int, str] = {}
+        self.opened: list[str] = []
+        self.closed: list[str] = []
+        self.misuse: list[str] = []
+        self.members: dict[int, set[int]] = {}
+        self.pid_of: dict[int, int] = {}
+
+    def _new(self, what: str, pid: int | None = None) -> int:
+        self.next += 1
+        self.open[self.next] = what
+        self.opened.append(what)
+        if pid is not None:
+            self.pid_of[self.next] = pid
+        return self.next
+
+    def _close(self, handle: int) -> None:
+        what = self.open.pop(handle, None)
+        if what is None:
+            self.misuse.append(f"close of {handle}")
+        else:
+            self.closed.append(what)
+
+    @staticmethod
+    def _alive(pid: int) -> bool:
+        return _alive(pid)
+
+    def create_job(self, *, kill_on_close: bool) -> int:
+        job = self._new("job")
+        self.members[job] = set()
+        return job
+
+    def assign(self, job: int, pid: int, handle: int | None) -> None:
+        self.members[job].add(pid)
+
+    def terminate_job(self, job: int) -> None:
+        _kill(*self.job_member_pids(job))
+
+    def close_handle(self, job: int) -> None:
+        self._close(job)
+
+    def ctrl_break(self, pid: int) -> None:
+        with contextlib.suppress(OSError):
+            os.killpg(pid, signal.SIGTERM)
+
+    def taskkill(self, pid: int) -> None:
+        with contextlib.suppress(OSError):
+            os.killpg(pid, signal.SIGKILL)
+
+    def job_member_pids(self, job: int) -> list[int]:
+        from aelix_ai.utils._process_walk import group_members
+
+        roots = self.members.get(job, set())
+        found = set(roots) | {p for root in roots for p in (group_members(root) or [])}
+        self.members[job] = roots | found
+        return sorted(p for p in found if self._alive(p))
+
+    def active_count(self, job: int) -> int:
+        return len(self.job_member_pids(job))
+
+    def open_member(self, pid: int) -> int:
+        return self._new("member", pid)
+
+    def in_job(self, handle: int, job: int) -> bool:
+        return self.pid_of.get(handle) in self.members.get(job, set())
+
+    def terminate_process(self, handle: int) -> None:
+        _kill(self.pid_of[handle])
+
+    def wait_handle(self, handle: int, timeout_ms: int) -> bool:
+        end = time.monotonic() + timeout_ms / 1000
+        while self._alive(self.pid_of[handle]) and time.monotonic() < end:
+            time.sleep(0.01)
+        return not self._alive(self.pid_of[handle])
+
+    def close_process(self, handle: int) -> None:
+        self._close(handle)
+
+    def limit_flags(self, job: int) -> int:
+        return 0x2000
+
+    def set_limit_flags(self, job: int, flags: int) -> None:
+        pass
+
+    def can_resume(self) -> bool:
+        return True
+
+    def resume(self, pid: int, handle: int | None) -> None:
+        pass
+
+    def duplicate(self, handle: int) -> int:
+        return self._new("suspended launch's own copy", self.pid_of.get(handle))
+
+
+class _LedgerHandle:
+    """``Popen._handle`` as the ledger counts it: opened at the spawn, closed by ``Close``."""
+
+    def __init__(self, ledger: _LedgerKernel, pid: int) -> None:
+        self.value = ledger._new("Popen process handle", pid)
+        self.ledger = ledger
+        self.closed = False
+
+    def __int__(self) -> int:
+        return self.value
+
+    def Close(self) -> None:  # noqa: N802 — subprocess.Handle's own name
+        if not self.closed:
+            self.closed = True
+            self.ledger._close(self.value)
+
+
+@POSIX
+@pytest.mark.parametrize("ending", ["normal exit", "job_stop"])
+async def test_every_win32_handle_a_job_opens_is_closed_when_it_settles(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """#760 CI, the kernel side: the job's win32 arm on an injected kernel, across five jobs.
+
+    Per job: the Popen process handle (spawn → reap), the suspended launch's own
+    copy and the Job (attach → the tree's close), and on a stop the member handles
+    its evidence opens (collect → confirm or close). Every one is closed once
+    the job settles, and none is closed twice. A guard: green on ``66e9eca5``
+    too, where fix round 1 had closed the Popen handle.
+    """
+
+    from aelix_ai.utils._process_tree import ProcessTree
+
+    ledger = _LedgerKernel()
+    real_attach = ProcessTree.attach
+    real_popen = _bg()._popen_background
+
+    def popen(*args: Any, **kwargs: Any) -> Any:
+        proc = real_popen(*args, **kwargs)
+        proc._handle = _LedgerHandle(ledger, proc.pid)  # type: ignore[attr-defined]
+        return proc
+
+    def attach(pid: int, **kwargs: Any) -> ProcessTree:
+        return real_attach(
+            pid,
+            kill_on_close=kwargs["kill_on_close"],
+            handle=kwargs["handle"],
+            stop_latched=kwargs["stop_latched"],
+            suspended=True,
+            platform="win32",
+            api=ledger,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(_bg(), "_popen_background", popen)
+    monkeypatch.setattr(_bg().ProcessTree, "attach", staticmethod(attach))
+    for _ in range(5):
+        if ending == "normal exit":
+            job_id = await rig.start("echo short")
+        else:
+            job_id = await rig.start("sleep 30 & echo $! > member; wait")
+            await _read_pid(rig.work / "member")
+            await create_job_stop_tool(rig.service).execute({"id": job_id})
+            (rig.work / "member").unlink()
+        snap = await rig.ended(job_id)
+        assert snap.state == ("done" if ending == "normal exit" else "stopped")
+        assert ledger.open == {}, f"left open after a job: {sorted(ledger.open.values())}"
+    assert ledger.misuse == []
+    assert ledger.opened.count("job") == ledger.closed.count("job") == 5
+    assert ledger.opened.count("Popen process handle") == ledger.closed.count("Popen process handle") == 5
+    assert ledger.opened.count("suspended launch's own copy") == 5
+    if ending == "job_stop":
+        assert ledger.opened.count("member") >= 5, "the stop's evidence opened member handles"
 
 
 # ── windows-latest only (I): the real Job ─────────────────────────────
@@ -1900,8 +2117,14 @@ async def test_the_title_and_dollar_line_are_the_models_command_not_a_prefix(rig
 
 
 @WIN32
-async def test_repeated_short_jobs_hold_no_process_handles(rig: _Rig) -> None:
-    """Codex 7 on the real kernel: twenty short jobs leave this process's handle count where it was."""
+async def test_repeated_short_jobs_hold_no_process_handles(rig: _Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex 7 on the real kernel: twenty short jobs leave this process's handle count where it was.
+
+    It also says, with ``warnings.warn`` (the one channel a ``-q`` log keeps),
+    how the count moves through each job: right after the spawn, the reader's
+    start, the reap, the tree's close and the job's settle, each the mean over
+    the twenty jobs of the count then minus the count before that job began.
+    """
 
     import ctypes
     import gc
@@ -1923,15 +2146,40 @@ async def test_repeated_short_jobs_hold_no_process_handles(rig: _Rig) -> None:
         assert ok, f"GetProcessHandleCount failed: error {ctypes.get_last_error()}"  # type: ignore[attr-defined]
         return int(count.value)
 
+    phases: dict[str, list[int]] = {"spawn": [], "reader start": [], "reap": [], "tree close": [], "job settle": []}
+    origin = {"count": 0}
+
+    def after(name: str, real: Any) -> Any:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            out = real(*args, **kwargs)
+            phases[name].append(handles() - origin["count"])
+            return out
+
+        return wrapped
+
+    from aelix_ai.utils._process_tree import ProcessTree
+
+    monkeypatch.setattr(_bg(), "_popen_background", after("spawn", _bg()._popen_background))
+    monkeypatch.setattr(_bg().BashJobRunner, "_start_reading", after("reader start", _bg().BashJobRunner._start_reading))
+    monkeypatch.setattr(_bg().BashJobRunner, "_settle_root", after("reap", _bg().BashJobRunner._settle_root))
+    monkeypatch.setattr(ProcessTree, "close", after("tree close", ProcessTree.close))
+
     for _ in range(3):  # warm up whatever one-time handles a first job opens
         await rig.ended(await rig.start("echo warm"), 30.0)
     gc.collect()
+    for values in phases.values():
+        values.clear()
     before = handles()
     for _ in range(20):
+        origin["count"] = handles()
         await rig.ended(await rig.start("echo short"), 30.0)
+        phases["job settle"].append(handles() - origin["count"])
     gc.collect()
     grew = handles() - before
-    warnings.warn(f"#760 handle count after 20 short jobs: {grew:+d}", stacklevel=1)
+    means = ", ".join(
+        f"{name} {sum(values) / len(values):+.1f}" if values else f"{name} n/a" for name, values in phases.items()
+    )
+    warnings.warn(f"#760 handle count per job: {means}; after 20 short jobs and a gc: {grew:+d}", stacklevel=1)
     assert grew < 10, f"{grew} handles more after 20 short jobs"
 
 

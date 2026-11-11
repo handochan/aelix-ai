@@ -246,6 +246,29 @@ code, and `Popen`'s own process handle is closed then rather than when the `Pope
 (`::test_a_reaped_command_lets_go_of_its_popen_and_closes_its_process_handle`, a stand-in handle;
 `::test_repeated_short_jobs_hold_no_process_handles` counts the real ones on windows-latest).
 
+The job service keeps a settled job for the rest of the process, so the job keeps nothing that
+holds an OS handle once it settles (#766's CI, 2026-11-12): the reader thread and its stream
+when the capture ends, the sink once its file is closed (its numbers kept), the tree, the
+runner's and the record's, once it is closed or held for aelix's lifetime
+(`::test_a_settled_job_keeps_no_reader_sink_or_tree`). Before that, windows-latest counted 140
+more handles after 20 short jobs on py3.11 and py3.12 and 20 more on py3.13 and py3.14 (PR run
+43068863598). The two numbers are CPython's: up to 3.12 every lock is a kernel semaphore on
+Windows (`Python/thread_nt.h` `AllocNonRecursiveMutex` → `Python/condvar.h:144` `CreateSemaphore`,
+with `_PY_EMULATED_WIN_CV 1` in `Include/internal/pycore_condvar.h:49-50`, branch `3.12`), and the
+job kept seven — the reader thread's started-event and thread-state locks, its pin lock, its held
+pipe's lock and its stream's buffer lock (`Modules/_io/bufferedio.c:810`), the sink's and the
+tree's — while its thread handle was closed at the start (`Python/thread_nt.h:202-215`). From 3.13
+a `_thread.lock` is a `PyMutex` (`Modules/_threadmodule.c:714`, branch `3.13`) and the condition
+variables are native (`_PY_EMULATED_WIN_CV 0`, `Include/internal/pycore_condvar.h:43-44`), so no
+lock holds a handle, but a thread keeps its handle
+until it is joined or its `threading.Thread` is freed (`Lib/threading.py:920`,
+`Python/thread_nt.h:188-244`, `Modules/_threadmodule.c:242`): the kept reader's, one per job.
+Every kernel handle the job's win32 arm opens — the Job, the suspended launch's own copy, the
+members a stop's evidence opens, the `Popen` process handle — is closed once the job settles,
+across five jobs on an injected kernel, on a normal exit and on a stop
+(`::test_every_win32_handle_a_job_opens_is_closed_when_it_settles`). The windows-latest test
+reports the count after each job's spawn, reader start, reap, tree close and settle.
+
 ### 9. Linux: `pdeathsig` on the shell only (owner OQ-C)
 
 The shell gets `pdeathsig` (SIGTERM) with #721's original-parent recheck, through

@@ -468,6 +468,13 @@ class _Sink:
         with self._lock:
             return bytes(self._tail[-_TAIL_BYTES:])
 
+    def summary(self) -> _SinkSummary:
+        """What the outcome reads of it, kept once the sink itself is let go."""
+
+        with self._lock:
+            tail = bytes(self._tail[-_TAIL_BYTES:])
+            return _SinkSummary(self.total, self.discarded, self.write_error, tail)
+
     def close(self) -> None:
         with self._lock:
             fd, self._fd = self._fd, None
@@ -475,6 +482,19 @@ class _Sink:
         if fd is not None:
             with contextlib.suppress(OSError):
                 os.close(fd)
+
+
+@dataclass(frozen=True)
+class _SinkSummary:
+    """A closed sink's numbers and tail: what a settled job keeps instead of the sink and its lock."""
+
+    total: int
+    discarded: int
+    write_error: str | None
+    raw_tail: bytes
+
+    def tail(self) -> bytes:
+        return self.raw_tail
 
 
 # === The process the job holds ===========================================================
@@ -590,6 +610,7 @@ class BashJobRunner:
         self._record: Any = None
         self._tree: ProcessTree | None = None
         self._sink: _Sink | None = None
+        self._summary = _SinkSummary(0, 0, None, b"")
         self._reader: _PipeReader | None = None
         self._state: _ReadState | None = None
         self._exited: asyncio.Event | None = None
@@ -778,8 +799,17 @@ class BashJobRunner:
         self._reading = True
 
     def _close_sink(self) -> None:
-        if self._sink is not None:
-            self._sink.close()
+        """Close the file and let the sink go, keeping its numbers.
+
+        A settled job is kept by the service for the rest of the process: what
+        it holds must not hold an OS handle. On win32 CPython 3.12 and older
+        every lock is a kernel semaphore, the sink's included (#760 CI).
+        """
+
+        sink, self._sink = self._sink, None
+        if sink is not None:
+            sink.close()
+            self._summary = sink.summary()
 
     def _progress(self, total: int) -> None:
         with contextlib.suppress(Exception):
@@ -868,6 +898,12 @@ class BashJobRunner:
         # An armed delegated agent retires the group this command left empty
         # (ADR-0296); a no-op in every unarmed process.
         launch_ledger.after_call()
+        # The reader thread reads on, keeping nothing, until its pipe closes; the
+        # job does not keep it (#760 CI): the thread object, its stream and its
+        # held pipe are each a lock — a kernel semaphore on win32 CPython 3.12
+        # and older — and on 3.13 and later an unjoined thread keeps its handle
+        # while the object lives.
+        self._reader = self._state = None
 
     def _group_has_members(self) -> bool:
         """Whether the command, ended on its own, left processes in its group (win32: its Job).
@@ -891,7 +927,7 @@ class BashJobRunner:
         return not group_only_zombies(pgid)
 
     def _outcome(self) -> ClientOutcome:
-        sink = self._sink
+        sink = self._sink if self._sink is not None else self._summary
         code = self._returncode
         stopped_by = self._stopped_by
         status: Literal["done", "failed", "stopped"]
@@ -904,13 +940,13 @@ class BashJobRunner:
         payload = {
             "exit_code": code,
             "stop_reason": stopped_by,
-            "bytes": sink.total if sink is not None else 0,
-            "discarded": sink.discarded if sink is not None else 0,
+            "bytes": sink.total,
+            "discarded": sink.discarded,
             "tail": _sink_tail(sink),
             "command": self._launch.command_head,
             "output": self._launch.output,
             "timeout": self._launch.timeout,
-            "write_error": sink.write_error if sink is not None else None,
+            "write_error": sink.write_error,
             "job_id": getattr(self._ctx, "job_id", None),
             "output_unconfirmed": self._unconfirmed,
             "left_running": self._left_running,
@@ -949,11 +985,25 @@ class BashJobRunner:
         released = receipt.get("policy") == "release" and self._stopped_by is None and not self._aborted
         if released and tree.job is not None and not tree.preserve_descendants():
             _HELD_FOR_LIFE.append(tree)
+            self._let_go_of_tree()
             return HelperCleanup(
                 "unverified", "Windows could not release its helpers; they end when aelix exits"
             )
         tree.close()
+        self._let_go_of_tree()
         return HelperCleanup("none", "released (#232)" if released else None)
+
+    def _let_go_of_tree(self) -> None:
+        """The settled job keeps no tree: closed, or held by ``_HELD_FOR_LIFE`` (#760 CI).
+
+        Its record is the service's, the same object the barrier read, and the
+        barrier is done with it; its lock is a kernel semaphore on win32 CPython
+        3.12 and older.
+        """
+
+        self._tree = None
+        if self._record is not None:
+            self._record.tree = None
 
     def records(self, outcome: ClientOutcome) -> list[tuple[str, dict[str, Any]]]:
         payload = outcome.payload
@@ -1161,7 +1211,7 @@ def _tail_within(tail: str, room: int) -> tuple[str, bool]:
 # === Helpers ===================================================================================
 
 
-def _sink_tail(sink: _Sink | None) -> str:
+def _sink_tail(sink: _Sink | _SinkSummary | None) -> str:
     if sink is None:
         return ""
     raw = sink.tail()
