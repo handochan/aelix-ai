@@ -354,7 +354,40 @@ def _whole_pid(pid_file: str) -> int | None:
             text = handle.read()
     except FileNotFoundError:
         return None
+    except PermissionError:
+        if sys.platform == "win32":  # most likely the replace moving it in (#471, #765)
+            return None
+        raise
     return int(text) if re.fullmatch(r"[0-9]+\n", text) else None
+
+
+@pytest.mark.parametrize(
+    ("platform", "error", "not_yet"),
+    [
+        ("win32", PermissionError(13, "Permission denied"), True),
+        ("linux", PermissionError(13, "Permission denied"), False),
+        ("win32", OSError(5, "Input/output error"), False),
+    ],
+)
+def test_a_refused_open_of_the_pid_file_is_not_yet_only_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, error: OSError, not_yet: bool
+) -> None:
+    """#765 (and #471's 1-in-258 open): on win32 a ``PermissionError`` while
+    ``os.replace`` moves the pid file in is "not yet"; elsewhere, and for any other
+    ``OSError``, it is still raised. Red on 363accf2 for the win32 case.
+    """
+
+    def refused(*_a: object, **_k: object) -> object:
+        raise error
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr("builtins.open", refused)
+    if not_yet:
+        assert _whole_pid(str(tmp_path / "x.pid")) is None
+    else:
+        with pytest.raises(OSError) as raised:
+            _whole_pid(str(tmp_path / "x.pid"))
+        assert raised.value is error
 
 
 def test_the_abort_cases_pid_reaches_the_test_whole(

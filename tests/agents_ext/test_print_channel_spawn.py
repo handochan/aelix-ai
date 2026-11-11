@@ -166,8 +166,11 @@ sigterm_ignoring_fixture_buildable = pytest.mark.skipif(
 #   holds each one to that. Nothing here claims more than this file.
 # * READER — only digits followed by the newline the writer ends with count, so
 #   an absent file, an empty one and a half-written one are all "not yet",
-#   never a ``ValueError`` and never a truncated pid. It waits inside the
-#   caller's existing deadline; no bound grew and no assertion is retried.
+#   never a ``ValueError`` and never a truncated pid. On win32 so is a read the
+#   kernel refuses, most likely while ``os.replace`` is moving the file in: a
+#   ``PermissionError`` there (#765, three times on windows-latest). It waits
+#   inside the caller's existing deadline; no bound grew and no assertion is
+#   retried.
 _ANNOUNCE = textwrap.dedent(
     """
     def announce(path, pid):
@@ -188,7 +191,44 @@ def _announced_pid(path: Path) -> int | None:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except PermissionError:
+        if sys.platform == "win32":  # most likely the replace moving it in (#765)
+            return None
+        raise
     return int(text) if _ANNOUNCED.fullmatch(text) else None
+
+
+@pytest.mark.parametrize(
+    ("platform", "error", "not_yet"),
+    [
+        ("win32", PermissionError(13, "Permission denied"), True),
+        ("linux", PermissionError(13, "Permission denied"), False),
+        ("win32", OSError(5, "Input/output error"), False),
+    ],
+)
+def test_a_refused_read_of_the_marker_is_not_yet_only_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, error: OSError, not_yet: bool
+) -> None:
+    """#765: on win32 a read the kernel refuses with ``PermissionError`` while
+    ``os.replace`` moves the marker in is "not yet"; any other platform, and any
+    other ``OSError`` on win32, is still a real error.
+
+    Red on 363accf2 for the win32 ``PermissionError`` case: it escaped the reader.
+    """
+
+    marker = tmp_path / "x.pid"
+
+    def refused(self: Path, *_a: object, **_k: object) -> str:
+        raise error
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(Path, "read_text", refused)
+    if not_yet:
+        assert _announced_pid(marker) is None
+    else:
+        with pytest.raises(OSError) as raised:
+            _announced_pid(marker)
+        assert raised.value is error
 
 
 _PRELUDE = textwrap.dedent(
