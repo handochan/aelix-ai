@@ -1,7 +1,8 @@
 # 0288. AUTO mode reads a command's arguments, not just its name
 
 Status: Accepted (2026-11-03; owner decisions 1–4 settled 2026-11-03; review
-rounds 1 and 2 2026-11-04)
+rounds 1 and 2 2026-11-04; #762 dated note 2026-11-11, its fix round 1
+2026-11-12)
 Date: 2026-11-03
 Issue: #657 (found while implementing #646 — the impl report's "Write-path
 sweep"). Owner-approved, one lane, one commit, plus one review-round commit.
@@ -292,7 +293,10 @@ each measured in zsh, bash 3.2 / 5.2, ksh and dash.
   evaluation would assign (measured). That prior command is itself an
   assignment statement, which already asks, so the single command is left a
   read. A dynamic word (`$x`, `$(…)`) in the same position asks, because its
-  value is not bounded.
+  value is not bounded. **Amended 2026-11-11 (#762):** the premise does not
+  hold for a name the shell fills itself (`_`, `BASH_REMATCH`, …), which now
+  asks, nor for a quote or backslash in arithmetic text; see the #762 note at
+  the end.
 - **Guard-name matching is the whole `GIT_*` family (review round 2).** Any
   `GIT_*` token anywhere in the source asks, so `grep GIT_DIR` and `git log
   --grep=GIT_CONFIG` ask too. An exact list of the config/repository names git
@@ -354,3 +358,337 @@ fix round (the owner caps them at two) — what stays open is in Limits above.
   `test -f 'a[1].txt'` false positives run without a prompt again; `echo
   $(( i < 10 ))` was never asked and stays a read. `env --ch dir rm -rf /` is
   now DENY like `env -C`.
+
+### Dated note 2026-11-11 (#762): names the shell fills, and quoted text, in arithmetic
+
+The Limits bullet above leaves a bare name in arithmetic ALLOW because a
+prior assignment statement must set it. bash, ksh93 and mksh fill some names
+without one, from the command's own words, matches and files, and evaluate
+the value again when arithmetic reads it, array subscripts included. With a
+repository file `files/z[$(touch PWNED)]`, `ls files/* >/dev/null; echo $((_))`
+created `PWNED` in bash 3.2.57 and 5.2.37 (bash fills `_` with the last
+argument, here the glob's file name), and so did `(( _ ))`, `$[_]`,
+`${a[_]}`, `$(( a[_] ))`, `${PATH:_}`, `[ -n "$((_))" ]` and
+`cat <<< $((_))`; `BASH_REMATCH` after `=~` did in both bash builds, and
+`KSH_MATCH` after `[[ x = * ]]` in mksh 59c. tree-sitter also reads a `$(…)`
+inside quotes in arithmetic text as a literal `raw_string`, while the shells
+expand that text first: `echo $(( '$(touch PWNED)' ))` and
+`echo $(( 'a[$(touch PWNED)]' ))` created `PWNED` in all nine shells
+measured. All were ALLOW on `71f837eb`. Measured with `<shell> -c` in a
+scratch directory on macOS bash 3.2.57, zsh 5.9, dash and ksh93u+
+2012-08-01, and in Linux docker bash 5.2.37, zsh 5.9, dash 0.5.12,
+ksh 93u+m/1.0.10 and mksh 59c (`.omc/probes/762/impl/`).
+
+- **A name the shell fills asks** in `$((…))`, `$[…]`, `(( ))`, a `${a[…]}`
+  subscript, a `${x:…}` offset or length, a zsh `$a[…]`, a `${x}[…]` and a
+  `-t` operand (`_SHELL_FILLED_NAMES`, `_names_shell_filled`): the forms
+  measured above and pinned in `tests/builtin/test_bash_arith_names_762.py`,
+  also where a backslash-newline splits the opener (fix round 1, below). The
+  list is this lane's call, not the owner's: the names bash, ksh93 and mksh
+  set from text a command or its files choose. Measured running the
+  planted `$(…)`: `_`, `BASH_REMATCH`, `BASH_ARGV` and `BASH_SOURCE` in
+  bash 3.2 and 5.2, `MAPFILE`, `BASH_ALIASES` and `BASH_CMDS` in bash 5.2,
+  `REPLY` and `OPTARG` in bash, macOS ksh93u+ and mksh, `KSH_MATCH` in
+  mksh and `.sh.match` in macOS ksh93u+. By the shells' manuals, with no
+  measured form running
+  anything: `FUNCNAME`, `BASH_COMMAND`, `BASH_EXECUTION_STRING`, `PWD`,
+  `OLDPWD` and `DIRSTACK` (a path starts with `/`, which arithmetic rejects
+  first), and the completion and `bind -x` names (`COMPREPLY`, `COMP_*`,
+  `READLINE_*`), which a `-c` shell never sets. zsh, dash and Linux ksh
+  93u+m ran none of the name forms.
+- **Still a read:** a name the shell sets only to a number (`RANDOM`,
+  `SECONDS`, `LINENO`, `PPID` and `OPTIND` ran nothing in the nine shells
+  even with `a[$(touch PWNED)]` exported under that name, while `FOO` did in
+  bash, macOS ksh93u+ and mksh); a name whose text the shell fixes
+  (`BASH_VERSINFO`, `HOSTTYPE`); zsh's `MATCH`, `match` and `reply`, which
+  zsh fills but never ran a `$(…)` from (`=~`, a `(#b)` glob and `read -A`
+  measured), and which the other shells leave to assignments; and every name
+  only an assignment or the environment sets, as above. #756 keeps a cloned
+  repository's `.env` from putting such text into the environment.
+- **A quote or backslash in `$((…))`, `$[…]` or `(( ))` text asks**
+  (`_arith_context_danger`). A backtick there is a substitution that already
+  asked, or sits inside a quote.
+- **A length or a base-N literal reads no name** (fix round 1).
+  `$(( ${#PWD} + 1 ))`, `$(( ${#_} ))`, `$(( ${#COMP_WORDS[@]} - 1 ))`,
+  `$((36#REPLY))` and `$((64#_))` asked on the round-1 commit `7cbc282d`
+  and were ALLOW on `71f837eb`; they are ALLOW again. A length is a number,
+  and by the bash, ksh93, mksh and zsh manuals `36#REPLY` is one base-N
+  number. None of 17 length and base-N forms in `$((…))`, `$[…]` or `(( ))`
+  created `MARK` in the nine shells, 16 of them with the name holding
+  `a[$(: > MARK)]` (`_` from the glob, `REPLY` and `OPTARG` exported,
+  `BASH_REMATCH` after `=~`, `KSH_MATCH` after `[[ x = * ]]`) and one on
+  `${#PWD}`, while reading the same names did in the shells listed above
+  (`.omc/probes/762/fix-r1/item2/`). `_names_shell_filled` skips
+  `${#name}`, `${#name[@]}`, `${#name[*]}`, `${#name[N]}` and
+  `<digits>#<word>`; the name anywhere else still asks (`$((PWD))`,
+  `$(( ${#PWD} + _ ))`, `$(( ${#a[_]} ))`, `$((36#REPLY + REPLY))`).
+- **A backslash-newline that splits an opener is read joined** (fix round
+  1). This is the lead's call, not the owner's: an adjacent hole of the same
+  class, already present on `71f837eb`, closed here as #742
+  closed its `${…}` and backtick holes. The shells remove `\⏎` before they
+  read the words around it, and tree-sitter-bash 0.25.1 reads it as a blank
+  between tokens, so `$(\⏎(` is arithmetic to the shells and a command
+  substitution holding a subshell to tree-sitter; no arithmetic check saw
+  it. With `files/z[$(: > MARK)]` planted, `echo $(\⏎(echo '$(: > MARK)'))`
+  created `MARK` in macOS bash 3.2.57, zsh 5.9 and dash and in Linux bash
+  5.2.37, zsh 5.9, dash 0.5.12, ksh 93u+m and mksh 59c (macOS ksh93u+ read a
+  command substitution there, as tree-sitter does);
+  `ls files/* >/dev/null; echo $(\⏎(echo -_))`, `$\⏎[_]`, `$\⏎{a[_]}`,
+  `$\⏎{PATH:_}` and `(\⏎(echo -_))` did in bash 3.2 and 5.2;
+  `echo $\⏎['$(: > MARK)']` and `echo $\⏎{PATH:'$(: > MARK)'}` did in bash
+  and zsh; and #657's assignment rule missed `echo $(\⏎(echo X=5))` the same
+  way. All were ALLOW on `71f837eb` and on `7cbc282d`. Now a command holding
+  `\⏎` is also read with each one joined (`_joined_lines_verdict`), and the
+  verdict is the higher of the two readings. At the top level of a command,
+  all nine shells keep `\⏎` inside a `'…'` or `$'…'`, in the body and on
+  the end line of a here-document whose delimiter is quoted, and at the end
+  of a comment that starts a word, whose next line they run
+  (`.omc/probes/762/fix-r1/grid/keepbn-*.txt` and `heredoc-end-*.jsonl`);
+  where tree-sitter puts the backslash in one of those, it is not joined.
+  Fix round 2 found a `'…'` and a comment where the shells do not keep it
+  (below), and the round-3 verify found nested places where some or all of
+  them remove it and this reading keeps it (*kept where the shells remove
+  it*, under #762 finish below). The joined text is re-read through
+  #742's `_reread`, paid from the same budget: one the budget cannot pay, one
+  nested too deep and one that runs out of stack are ASK, and a joined text
+  tree-sitter rejects goes to `_reread_lines`, which asks and keeps a DENY in
+  a prefix. Of a 345-form grid (`$(`, `$((`, `$[`, `${a[`, `${x:`, `((` and
+  `[[` split by one or two `\⏎` in ten contexts, with `_` or a quoted
+  payload, beside unsplit controls; `.omc/probes/762/fix-r1/grid/`), 265
+  forms created `MARK` in at least one of the nine shells and none of them
+  is ALLOW now; 75 went
+  from ALLOW to ASK against both `71f837eb` and `7cbc282d`, and the 62 still
+  ALLOW ran in no shell (single quotes, `$'…'`, quoted here-document bodies).
+- **Cost of the joined reading.** Over the 31,348 corpus, test and
+  realistic strings, 185 of the round-3 verify's lines and 249 commands
+  continued over two to five lines written for this round (`ls`, `git`,
+  `find`, `docker run`, `curl`, `uv run pytest` and others, each in two
+  indentations; `.omc/probes/762/fix-r1/corpus/`), the only change from
+  `7cbc282d` under
+  UNKNOWN or POSIX is ALLOW to ASK on ``echo `date` \⏎ `hostname` `` in both
+  indentations: its joined line asked on `71f837eb` already, because
+  tree-sitter reads the two backtick substitutions as one. `r\⏎m -rf /` and
+  `find . -de\⏎lete` go from ASK to DENY. Joining inside single quotes and
+  quoted here-documents as well would have added ASK on three test strings
+  (``cat <<'EOF'`` + `x\⏎` + `EOF`, and its `<<\EOF` and `<<E\OF`
+  spellings), and joining a comment would have read
+  `echo hi # x \⏎echo $(\⏎(echo '$(: > MARK)'))` as ALLOW, which eight
+  shells ran. Timings (fix round 2, medians of 7 runs of `classify` on the
+  final head on a loaded 18-core machine,
+  `.omc/probes/762/fix-r2/perf/perf-final.txt`): `classify` is slower than
+  on `7cbc282d`, which had no joined reading, on all three shapes this note
+  named, 4.7 against 2.2 ms on a 2,000-line continued `ls`, 5.6 against 3.4
+  ms on a word joined 5,000 times and 14.2 against 4.3 ms on 1,000 split
+  substitutions. Fix round 1 (`eb98b93b`) scanned every kept range for
+  every continuation, so `echo` and 20,000 `'a\⏎b'` (140,004 bytes) took 4,167 ms
+  there (1,054 ms with 10,000, 46 ms with 2,000); fix round 2 walks the
+  ranges once, in order, beside the continuations, and the same inputs take
+  34.5, 15.2 and 2.8 ms, against 26.0, 11.3 and 2.2 ms on `7cbc282d`.
+- **Fix round 2: a quote that does not quote, a `#` that starts no comment,
+  and a command tree-sitter rejects** (the round-2 verify's findings; shell
+  rows in `.omc/probes/762/fix-r2/shells/`, each run with `<shell> -c` in
+  the nine shells above with `files/z[$(: > MARK)]` planted).
+  - *A `'…'` or `$'…'` in a `${…}` operand inside a double-quoted string or
+    an expanded here-document body is literal text to the shells*, as #742's
+    `_hidden_code_verdict` already reads it, and they remove a `\⏎` in it:
+    `printf "[%s]\n" "${x:-'a\⏎b'}"` printed `['ab']` in eight of the nine
+    shells (Linux ksh 93u+m kept it). `cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E`
+    created `MARK` in all nine, `echo "${x:-'$\⏎(: > MARK)'}"` (also with
+    `${x-…}`, `${x:?…}` and two `\⏎`) in macOS dash and ksh93u+ and Linux
+    dash and mksh, and the `{a[_]}` and `[_]` spellings in the here-document
+    in bash 3.2 and 5.2. All were ALLOW on `71f837eb` and on the round-1 fold
+    `eb98b93b`, and ask now; the `rm -rf ~` twins of the first two are DENY
+    (classified only). `_joined_lines` now joins that `\⏎`, using the same
+    rule as `_hidden_code_verdict` (the nearest node that is not an
+    `expansion` or `concatenation` is a `string` or `heredoc_body`). Linux
+    ksh 93u+m's reading is the unjoined one, which the higher-of-two verdict
+    still counts. A `'…'` in an unquoted `${x:-…}` and one inside `$(…)`
+    within a double-quoted string still quote, and keep the `\⏎`.
+  - *A `#` tree-sitter reads as a comment where the shells start none*
+    (the lead's call, not the owner's: present on `71f837eb`, the same
+    tree-sitter-against-the-shells class). The shells start a comment only
+    at the start of a word; tree-sitter-bash 0.25.1 also starts one after an
+    escaped blank, a vertical tab, a form feed, a carriage return and `]]`
+    (`echo a\r#$(: > MARK)`, ALLOW on `71f837eb`, created `MARK` in all
+    nine; #762 finish), and after `<` and `>`, which #762 finish below
+    takes up. `echo \ #$(: >
+    MARK)`, `cat \ #…`, `echo \⇥#…`, `echo \⏎\ #…`, `\ #…` and `echo` with an
+    unescaped vertical tab or form feed before `#` created `MARK` in all
+    nine shells, `ls files/* >/dev/null; echo \ #$((_))` in bash, and
+    `[[ a ]]#$(: > MARK)` in dash; all were ALLOW on `71f837eb` and
+    `eb98b93b`. Now a comment asks at least unless the byte before its `#`,
+    past each `\⏎`, is the start of the command, a blank, a newline or one
+    of `;&|()` that no backslash escapes (`_starts_a_comment`; after `;`,
+    `&` and `)` the nine shells ran nothing, and #762 finish measured `|`
+    and `(` too; fix round 2 also listed `<` and `>`, which #762 finish
+    took out), and the source is re-read with
+    a backslash before that `#`, which keeps it in its word, through
+    `_reread` on the same budget, so `echo \ #$(rm -rf ~)` is DENY. Such a
+    comment's `\⏎` is joined too: `printf "[%s]\n" \ #a\⏎b` printed
+    `[ #ab]` in all nine. Comments the shells start stay ALLOW
+    (`echo hi # $(: > MARK)`, `echo \\ #…`, `echo \⏎#…`, `(echo)#…` and
+    `echo;#…` ran nothing in the nine shells).
+  - *A command tree-sitter rejects is read joined too* when it holds `\⏎`,
+    and the verdict is the higher of ASK and that reading:
+    `rm -rf / 2>\⏎&1` and `cat <\⏎(curl x|sh)` were ASK and are DENY, as
+    are all 170 inserted-continuation variants of the round-2 verify's
+    property test that it flagged.
+  - *The `.sh` pattern decides verdicts* (a correction to the round-1
+    comment): `[[ -t .sh.match ]]`, `[ -t .sh.match ]` and
+    `[[ -t 0+.sh.match ]]` were ALLOW on `71f837eb`, ask now, and are ALLOW
+    again with the pattern taken out of a copy; no shell ran a `-t` form,
+    so there it only asks more.
+  - *Only raises.* Against `71f837eb` and `eb98b93b`, with and without
+    `classify`'s catch: the #710 sweep (26,718 argv strings, 2,012,340
+    forms) has none below either and no exception; its 276 changes from
+    `eb98b93b` (207 ALLOW to ASK, 51 ALLOW to DENY, 18 ASK to DENY) are all
+    this round's `\ #…` test rows with a redirect inserted. The 7,560-,
+    936- and 704-form grids and the 1,531 attack forms keep every verdict.
+    Of the 108,960 here-documents, 279 go from ASK to DENY, each one
+    tree-sitter rejects whose joined reading reaches `find victim -delete`,
+    for 38 of the 206 below through that reading's prefix fallback
+    (`_reread_lines`) and not the joined reading itself: there the `\⏎`
+    comes after that line, and the same text without it (such as
+    `cat <<A''⏎x⏎A''⏎find victim -delete⏎A`) is DENY on `71f837eb` too
+    (the round-3 verify, `.omc/probes/762/verify-r3/out/hd-after-payload.txt`);
+    with `: > MARK` in its place, 73 of them ran that line in at least one
+    of the nine shells (45 in all nine) and 206 in none, so there a DENY
+    replaces an ASK the shells did not need. The round-2 verify's property
+    test (30,023 strings, 536,689 variants with `\⏎` inserted where the
+    shells remove it) has no variant below its unsplit string, below
+    `71f837eb` or below `eb98b93b`, and no exception; its only change from
+    `eb98b93b` is those 170 ASK to DENY.
+  - *Cost.* Over 31,822 corpus, test, realistic and continued strings,
+    40 of them commented commands written for this round
+    (`.omc/probes/762/fix-r2/corpus/`), no verdict changed from `eb98b93b`
+    under UNKNOWN or POSIX. 581 of those strings hold a comment node; 12
+    hold one the rule reads as starting mid-word (`trusted#release`,
+    `a#b`), and all 12 asked on `71f837eb`, `eb98b93b` and now; of the
+    other 569, 41 are ALLOW and 528 ASK on all three.
+  - *Live* (pty TUI under `auto`, scripted model, scratch HOME, agent dir
+    and cwd, `.omc/probes/762/fix-r2/live/`):
+    `cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E` and `echo \ #$(: > MARK)`, with
+    `SHELL=/bin/bash` and `/bin/zsh`, ran with no dialog and created `MARK`
+    on `71f837eb` and on `eb98b93b`, and open "Run shell command?" now with
+    nothing created after Esc; `echo hi # $(: > MARK)` runs with no dialog
+    and creates nothing on all three.
+- **#762 finish** (2026-11-12, the round-3 verify's findings after the two
+  fix rounds; shell rows in `.omc/probes/762/finish/`, run as above in the
+  nine shells, with executables named `#x` and `x` that create `MARK` first
+  on `PATH`).
+  - *A `#` right after `<` or `>`.* ksh93 reads `<#` and `>#` as operators
+    (a seek), so `_WORD_BREAKS` no longer holds `<` and `>`, and a comment
+    tree-sitter starts right after one asks and is re-read in its word.
+    `cat <#$(: > MARK)⏎/dev/null`, `wc -l <#…`, `cat 0<#…` and
+    `grep x <#…⏎files/r` created `MARK` in macOS ksh93u+ and Linux ksh
+    93u+m and in none of the other seven shells; they were ALLOW on
+    `71f837eb` and on the round-2 fold `b0039212`, and ask now.
+    `cat <#$(rm -rf ~)⏎/dev/null` (ALLOW there) and
+    `echo hi >#$(rm -rf ~)⏎out.txt` (ASK there; its `: > MARK` twin ran in
+    both ksh93 builds) are DENY now (classified only). With a blank after
+    `<`, `cat < #$(: > MARK)⏎/dev/null` ran nothing and stays ALLOW, as do
+    `echo hi >/dev/null # note` and `ls -la  # list files`; after `;`, `&`,
+    `&&`, `||`, `|`, `(`, `$(` and `)` no shell ran `#$(: > MARK)` or `#x`.
+    Only raises, with and without `classify`'s catch, against `71f837eb`
+    and `b0039212`: the #710 sweep (26,724 argv strings, 2,012,640 forms),
+    the 108,960 here-documents, the 7,560-, 936- and 704-form grids, the
+    1,531 attack forms and the round-3 verify's property test (30,082
+    strings, 537,085 variants) have none below either, no exception and no
+    change from `b0039212`; of the 30,097 corpus, test and realistic strings
+    harvested with this round's rows, the only changes from `b0039212` are
+    those rows' `<#` forms, and of the 31,822 cost strings none changed.
+    Live (pty TUI under `auto`, scripted model, scratch HOME, agent dir and
+    cwd, `SHELL=/bin/ksh`, `.omc/probes/762/finish/live/`):
+    `cat <#$(: > MARK)⏎/dev/null` ran with no dialog and created `MARK` on
+    `b0039212`, as the round-3 verify saw on `71f837eb`, and opens "Run
+    shell command?" now with nothing created after Esc;
+    `cat < #$(: > MARK)⏎/dev/null` runs with no dialog and creates nothing
+    on both.
+  - *Kept where the shells remove it.* The round-3 verify's printf probes
+    (`.omc/probes/762/verify-r3/out/kept-cmp.txt` and `kcom-table.txt`):
+    inside backticks all nine shells remove a `\⏎` from a `'…'` or `$'…'`
+    and from the end of a comment; inside `$(…)` in a here-document body
+    seven of the nine do (dash keeps it); inside `"$(…)"` macOS bash 3.2
+    does at the end of a comment and in a `$'…'` in a `${…}` operand. This
+    reading keeps it in all of these. That hides no code from the
+    classifier: a quote that still quotes keeps its content literal, and a
+    comment the shells continue only hides the next line from them, which
+    the classifier still reads. It can change a quoted argument's text,
+    though: ``printf '[%s]\n' `printf %s '-de\⏎lete'` `` printed
+    `[-delete]` in all nine shells, and ``echo `find . '-de\⏎lete'` `` is
+    ALLOW on `71f837eb`, `b0039212` and now (classified only). That and the
+    shells' other unescaping inside backticks (`\\`, `\$`, `` \` ``) are
+    left to a follow-up issue (*Not covered* below).
+- **Every other entry point was checked** (the before and after verdicts are
+  rows of `tests/builtin/test_bash_arith_names_762.py`). These asked on
+  `71f837eb` and still do: `$((…))` in a here-document body (tree-sitter
+  reads `$((` there as `$(` and a subshell), a `${…}` operand holding `$((`
+  (#742's re-read), `for ((…))`, `case`, `select`, `let`, `declare -i`, an
+  operand of a `[`/`[[`/`test` arithmetic operator (#743), `read`, `getopts`,
+  `mapfile` and `alias`, and `printf '%d'` (macOS ksh93u+ evaluates its
+  argument as arithmetic). These were ALLOW and ask now: `$((…))` in a
+  string, a here-string, a brace range, a command or backtick substitution,
+  and `[[ -n … ]]` or `[ -n … ]`. A positional or special parameter reaches
+  arithmetic only as an expansion: `$1`, `$@`, `$-` and `$_` asked already,
+  and `$#`, `$?`, `$$` and `$!` are numbers and stay ALLOW.
+- **Cost.** Of the 31,348 corpus, test and realistic strings, and 185 more of
+  the #742/#743 round-3 verify's 199 lines, none changed under UNKNOWN or
+  POSIX. Of 141 arithmetic lines written for this note
+  (`.omc/probes/762/impl/`), these went from ALLOW to ASK:
+  `[[ $v =~ … ]] && echo "$(( BASH_REMATCH[1] + 1 ))"`, `echo $((REPLY))`,
+  `echo "${a[_]}"`, `echo $(( COMP_LINE ))`, `echo $(( "1" + 2 ))`,
+  `echo $(( '1' + 2 ))` and two `$((…))` continued over a backslash-newline;
+  `echo $(( ${#BASH_REMATCH[@]} ))` asked on `7cbc282d` and is ALLOW again
+  after fix round 1 (`.omc/probes/762/fix-r1/corpus/own-arith-fr1.txt`).
+  `echo $((i+1))`,
+  `echo ${a[i]}`, `echo $((x*2))`, `echo $((RANDOM % 6))`,
+  `(( BASH_VERSINFO[0] >= 4 ))` and `echo "${BASH_REMATCH[1]}"` stay ALLOW;
+  `(( n++ ))` asked already on `71f837eb` (an assignment operator) and still
+  does.
+- **Only raises.** Against `71f837eb`, the #710 sweep (26,620 argv strings,
+  2,007,660 forms, UNKNOWN), the 108,960 here-documents, the 7,560-form
+  `[`/`[[`/`test` grid, the 936-form substitution set, the 704-form `${…}`
+  grid and the round-3 verify's 1,531 attack forms (UNKNOWN and POSIX) have
+  none below it and no exception with or without `classify`'s catch. The
+  grids keep every verdict; the sweep's 1,313 changes are ALLOW to ASK, each
+  a form holding one of these names or a quote in arithmetic. Re-run after
+  fix round 1 (`.omc/probes/762/fix-r1/sweep/`), with this round's test
+  strings in the sweep's harvest (26,674 argv strings, 2,010,240 forms):
+  none below
+  `71f837eb`, 1,389 ALLOW to ASK and no exception; against `7cbc282d` its
+  only changes are 355 ASK to ALLOW, every one a form holding a length or a
+  base-N literal, and the here-documents, the three grids and the 1,531
+  attack forms keep every verdict.
+- **Live.** In a pty TUI under `auto`, with a scripted model and a scratch
+  cwd holding `files/z[$(touch PWNED)]`, `ls files/* >/dev/null; echo $((_))`,
+  `[[ 'a[$(touch PWNED)]' =~ .* ]] && echo $((BASH_REMATCH))` and
+  `ls files/* >/dev/null; echo ${PATH:_}` with `SHELL=/bin/bash`, and
+  `echo $(( '$(touch PWNED)' ))` with `/bin/zsh`, ran with no dialog and
+  created `PWNED` on `71f837eb`; each opens "Run shell command?" now, and
+  nothing is created after Esc. `echo $((1+2)) ${PATH:0:4}` runs with no
+  dialog on both. A real model (OpenRouter `openai/gpt-4.1-mini`) asked to
+  run `ls files/* >/dev/null; echo $((_))` under `--permission-mode auto -p`
+  ran it and created `PWNED` on both trees, because `-p` runs an ASK
+  (ADR-0120, #740); with `AELIX_SUBAGENT_DEPTH=1`, the headless block gate, it
+  ran on `71f837eb` and is refused now. Fix round 1, the same pty TUI with
+  `files/z[$(: > MARK)]` (`.omc/probes/762/fix-r1/live/`):
+  `ls files/* >/dev/null; echo $(\⏎(echo -_))` with `SHELL=/bin/bash` and
+  `echo $(\⏎(echo '$(: > MARK)'))` with `/bin/zsh` ran with no dialog and
+  created `MARK` on `71f837eb` and on `7cbc282d`, and open "Run shell
+  command?" now, with
+  nothing created after Esc; `ls files/* >/dev/null; echo $(( ${#_} + 1 ))`
+  opened the dialog on `7cbc282d` only, and `ls -la \⏎ files/` ran with no
+  dialog on all three. `openai/gpt-4.1-mini` asked to run the first under
+  `auto -p` with `AELIX_SUBAGENT_DEPTH=1` ran it and created `MARK` on
+  `71f837eb`, and is refused now; plain `-p` still runs it, as every ASK.
+- **Not covered:** any name the environment sets (`FOO` above), as before;
+  the shells' unescaping inside backticks, which `_backtick_text_verdict`
+  re-reads only for `` \` `` or a quoted backtick: they undo `\\`, `\$` and
+  `` \` `` and remove `\⏎` there first, so
+  ``echo `echo "${x:-'\$(: > MARK)'}"` `` (all nine shells, the round-3
+  verify's `out/bt2-table.txt`) and ``echo `find . '-de\⏎lete'` `` (above)
+  are ALLOW, as on `71f837eb` (a follow-up issue);
+  Windows Git Bash and the shells' interactive modes were not measured. The
+  round-1 verify ran the issue's eight forms in Linux bash 5.3.20 (docker
+  `bash:5.3`): all eight created the marker there, and `7cbc282d` asks on
+  all eight (`.omc/probes/762/verify-r1/shells/bash53.jsonl`).

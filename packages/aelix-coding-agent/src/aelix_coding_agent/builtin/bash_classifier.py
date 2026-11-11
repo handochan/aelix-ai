@@ -580,7 +580,9 @@ def _has_continuation_join(command: Any) -> bool:
 # A bare numeric or name operand that the model did NOT set in the command
 # (``$(( i < 10 ))``, ``${a[i]}``) is left ALLOW: reaching it needs a prior
 # assignment statement, which already asks. Measured per rule in zsh 5.9, bash
-# 3.2 and 5.2, ksh and dash (``.omc/specs/657-fix-r2-evidence/``).
+# 3.2 and 5.2, ksh and dash (``.omc/specs/657-fix-r2-evidence/``). #762 takes
+# out the names a shell fills without one, and a quote or backslash in
+# arithmetic text (``_SHELL_FILLED_NAMES`` below).
 
 # Every ``GIT_*`` name, wherever the command spells it. git reads dozens for
 # config, repository discovery and programs it runs (``GIT_DIR``,
@@ -597,7 +599,8 @@ _GUARD_NAME = re.compile(r"(?<![A-Za-z0-9_])GIT_[A-Za-z0-9_]")
 # assignment).
 _ASSIGNMENT_OPERATOR = re.compile(r"(?<![=!<>])=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=")
 # A safe array / substring index: ``@``, ``*``, a number (or a ``n,m`` range),
-# or a single bare identifier (``${a[i]}`` reads, it does not assign). Anything
+# or a single bare identifier (``${a[i]}`` reads, it does not assign) that is
+# not one of ``_SHELL_FILLED_NAMES`` (#762, :func:`_index_danger`). Anything
 # with an operator, a ``$`` or a ``=`` falls through to ASK.
 _SAFE_INDEX = re.compile(r"\s*(?:[@*]|[A-Za-z_][A-Za-z0-9_]*|[-+]?[0-9]+(?:\s*,\s*[-+]?[0-9]+)?)\s*")
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -616,6 +619,86 @@ _LITERAL_NODES = frozenset({"raw_string", "ansi_c_string", "comment"})
 _EXPANSION_NODES = frozenset(
     {"simple_expansion", "expansion", "command_substitution", "arithmetic_expansion"}
 )
+
+# --- #762: arithmetic that reads a name the shell fills itself ---
+#
+# bash, ksh93 and mksh evaluate a name's value again when arithmetic reads it,
+# array subscripts included, and some names need no assignment statement to
+# hold text: the shell fills them from the command's own words, matches and
+# files. With a repository file ``files/z[$(touch PWNED)]``,
+# ``ls files/* >/dev/null; echo $((_))`` created PWNED in bash 3.2.57 and
+# 5.2.37, and so did ``(( _ ))``, ``$[_]``, ``${a[_]}`` and ``${PATH:_}``;
+# ``BASH_REMATCH`` after ``=~`` and ``BASH_ARGV`` / ``BASH_SOURCE`` did in bash,
+# ``MAPFILE``, ``BASH_ALIASES`` and ``BASH_CMDS`` in bash 5.2, ``REPLY`` and
+# ``OPTARG`` in bash, macOS ksh93u+ and mksh 59c, ``KSH_MATCH`` after
+# ``[[ x = * ]]`` or ``case`` in mksh, and ``.sh.match`` in macOS ksh93u+
+# (``.omc/probes/762/impl/``; zsh 5.9, dash and Linux ksh 93u+m ran none of
+# these name forms, zsh's own ``MATCH``, ``match`` and ``reply`` included).
+# So the names bash, ksh93 and mksh set from text a command or its files
+# choose ask in ``$((…))``, ``$[…]``, ``(( ))``, a ``${a[…]}`` subscript, a
+# ``${x:…}`` offset or length, a zsh ``$a[…]``, a ``${x}[…]`` and a ``-t``
+# operand, also where a ``\⏎`` the shells remove splits the opener (fix
+# rounds 1 and 2, :func:`_joined_lines`; every split form of the round-2
+# verify's tables that ran in a shell asks): the measured ones, and by
+# their manuals ``FUNCNAME``, ``BASH_COMMAND``, ``BASH_EXECUTION_STRING``,
+# ``PWD`` / ``OLDPWD`` / ``DIRSTACK`` (no form measured ran: a path starts with
+# ``/``), and the completion and ``bind -x`` names a ``-c`` shell never sets.
+# A name the shell sets only to a number stays a read: ``RANDOM``,
+# ``SECONDS``, ``LINENO``, ``PPID`` and ``OPTIND`` ran nothing in the nine
+# shells even with the text exported under that name. So does a name whose
+# text the shell fixes (``BASH_VERSINFO``, ``HOSTTYPE``, a default ``IFS``),
+# and every name only an assignment or the environment sets (ADR-0288).
+_SHELL_FILLED_NAMES = frozenset(
+    {
+        "_",
+        "BASH_ALIASES",
+        "BASH_ARGV",
+        "BASH_CMDS",
+        "BASH_COMMAND",
+        "BASH_EXECUTION_STRING",
+        "BASH_REMATCH",
+        "BASH_SOURCE",
+        "COMPREPLY",
+        "DIRSTACK",
+        "FUNCNAME",
+        "KSH_MATCH",
+        "MAPFILE",
+        "OLDPWD",
+        "OPTARG",
+        "PWD",
+        "REPLY",
+    }
+)
+_SHELL_FILLED_PREFIXES = ("COMP_", "READLINE_")
+# Each identifier in arithmetic or index text, and ksh93's ``.sh`` namespace
+# (``.sh.match``, ``.sh.file``, …). The namespace pattern decides verdicts:
+# ``[[ -t .sh.match ]]``, ``[ -t .sh.match ]`` and ``[[ -t 0+.sh.match ]]``
+# were ALLOW on 71f837eb and ask only through it (fix round 2, measured with
+# the pattern taken out of a copy; no shell measured ran a ``-t`` form, so
+# there it asks more than it must). ``$((.sh.match))``, ``(( .sh.match ))``,
+# ``${a[.sh.match]}`` and ``${PATH:.sh.match}`` asked on 71f837eb already:
+# tree-sitter rejects the name in arithmetic (a parse error asks) and
+# ``_SAFE_INDEX`` in an index.
+_TEXT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_KSH_SH_NAMESPACE = re.compile(r"(?<![A-Za-z0-9_])\.sh(?![A-Za-z0-9_])")
+# #762 fix round 1: text that holds a name but reads no name's value. A
+# length (``${#PWD}``, ``${#COMP_WORDS[@]}``) is a number, and so is a base-N
+# literal (``36#REPLY``, ``64#_``) by the bash, ksh93, mksh and zsh manuals;
+# none of 17 such forms ran anything in the nine shells with the name holding
+# the planted text (``.omc/probes/762/fix-r1/item2/``). The name scan skips
+# both; any other place the same name appears still counts.
+_READS_NO_NAME = re.compile(
+    r"\$\{#[A-Za-z_][A-Za-z0-9_]*(?:\[(?:[@*]|[0-9]+)\])?\}"
+    r"|(?<![A-Za-z0-9_])[0-9]+#[A-Za-z0-9_@]+"
+)
+# #762: a quote or backslash in ``$((…))``, ``$[…]`` or ``(( ))`` text.
+# tree-sitter holds ``$(( '$(touch PWNED)' ))``'s ``$(…)`` in a
+# ``raw_string``, which reads as literal, and every shell measured ran it:
+# that form and ``echo "$(( '$(touch PWNED)' ))"`` in all nine,
+# ``(( '$(touch PWNED)' ))`` in bash 5.2, zsh and both ksh93 builds. A
+# backtick there is a substitution :func:`_dynamic_nonnumeric` already finds,
+# or sits inside one of these.
+_ARITH_QUOTING = re.compile(r"['\"\\]")
 
 
 def _guard_name_pattern() -> re.Pattern[str]:
@@ -664,17 +747,43 @@ def _dynamic_nonnumeric(node: Any) -> bool:
     return False
 
 
+def _names_shell_filled(text: str) -> bool:
+    """Whether arithmetic or index ``text`` reads a name the shell fills itself (#762, ``_SHELL_FILLED_NAMES``).
+
+    A name only inside a length or a base-N literal is not read
+    (``_READS_NO_NAME``, fix round 1).
+    """
+
+    text = _READS_NO_NAME.sub(" ", text)
+    if _KSH_SH_NAMESPACE.search(text):
+        return True
+    return any(
+        name in _SHELL_FILLED_NAMES or name.startswith(_SHELL_FILLED_PREFIXES)
+        for name in _TEXT_NAME.findall(text)
+    )
+
+
 def _arith_danger(node: Any) -> bool:
     """Whether an arithmetic context assigns or evaluates a model-controlled value.
 
-    An assignment operator in its text, or a dynamic word (``$x`` / ``$(…)``)
-    whose VALUE the shell evaluates as an expression. A bare number or name, and
-    ``$#`` / ``${#x}``, are inert.
+    An assignment operator in its text, a dynamic word (``$x`` / ``$(…)``)
+    whose VALUE the shell evaluates as an expression, or a name the shell
+    fills itself (``_``, ``BASH_REMATCH``, :func:`_names_shell_filled`, #762).
+    Any other bare number or name, and ``$#`` / ``${#x}``, are inert.
     """
 
-    return _dynamic_nonnumeric(node) or bool(
-        _ASSIGNMENT_OPERATOR.search(node.text.decode(errors="replace"))
+    text = node.text.decode(errors="replace")
+    return (
+        _dynamic_nonnumeric(node)
+        or bool(_ASSIGNMENT_OPERATOR.search(text))
+        or _names_shell_filled(text)
     )
+
+
+def _arith_context_danger(node: Any) -> bool:
+    """``$((…))``, ``$[…]`` or ``(( ))``: :func:`_arith_danger`, or a quote or backslash in its text (#762)."""
+
+    return _arith_danger(node) or bool(_ARITH_QUOTING.search(node.text.decode(errors="replace")))
 
 
 def _expr_danger(node: Any) -> bool:
@@ -686,9 +795,11 @@ def _expr_danger(node: Any) -> bool:
 
 
 def _index_danger(text: str) -> bool:
-    """Whether a subscript / substring index assigns or is a dynamic word."""
+    """Whether a subscript / substring index assigns, is a dynamic word, or reads a name the shell fills (#762)."""
 
-    return "$" in text or "`" in text or not _SAFE_INDEX.fullmatch(text)
+    return (
+        "$" in text or "`" in text or not _SAFE_INDEX.fullmatch(text) or _names_shell_filled(text)
+    )
 
 
 def _safe_subscript(node: Any) -> bool:
@@ -733,15 +844,21 @@ def _ranges(
     return found
 
 
-def _quoted_heredoc_bodies(root: Any) -> list[tuple[int, int]]:
-    """Byte ranges of here-document bodies whose delimiter is quoted (not expanded)."""
+def _quoted_heredoc_bodies(
+    root: Any, parts: frozenset[str] = frozenset({"heredoc_body"})
+) -> list[tuple[int, int]]:
+    """Byte ranges of here-document bodies whose delimiter is quoted (not expanded).
+
+    ``parts`` names the nodes to take; :func:`_joined_lines` takes the end
+    line too (#762 fix round 1).
+    """
 
     found: list[tuple[int, int]] = []
     stack = [root]
     while stack:
         node = stack.pop()
         if node.type == "heredoc_redirect" and not _heredoc_expands(node):
-            found.extend(_ranges(node, frozenset({"heredoc_body"})))
+            found.extend(_ranges(node, parts))
         stack.extend(node.children)
     return found
 
@@ -817,7 +934,7 @@ def _node_evaluates(node: Any) -> bool:
     arithmetic = t == "arithmetic_expansion" or (
         t == "compound_statement" and node.children and node.children[0].type == "(("
     )
-    if arithmetic and _arith_danger(node):
+    if arithmetic and _arith_context_danger(node):
         return True
     if t == "subscript" and not _safe_subscript(node):
         return True
@@ -2435,9 +2552,16 @@ def _walk_source(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
     the verdict to ALLOW). Under the UNKNOWN and POSIX dialects the words after
     an ``&>`` target are also judged as a command of their own, as dash and
     ksh run them (:func:`_argument_view` with ``background``).
+
+    #762 fix round 1: ``source`` with its line continuations joined, as the
+    shells read it, is judged too (:func:`_joined_lines_verdict`), and the
+    verdict is the higher of the two readings. Fix round 2: so is a comment
+    the shells do not start (:func:`_false_comments_verdict`).
     """
 
     verdict = _judge(root, source, dialect=dialect)
+    verdict = max(verdict, _joined_lines_verdict(root, source, dialect=dialect))
+    verdict = max(verdict, _false_comments_verdict(root, source, dialect=dialect))
     redirects, digits = _scan_redirects(root)
     if not redirects:
         return verdict
@@ -2929,12 +3053,16 @@ def _charge_reread(size: int) -> bool:
     return True
 
 
-def _reread(text: bytes, *, dialect: Dialect, expanded: bool = False) -> Verdict:
+def _reread(
+    text: bytes, *, dialect: Dialect, expanded: bool = False, joined: bool = False
+) -> Verdict:
     """Classify ``text`` the shells run, paid from the budget; ASK when it cannot be read.
 
     ``expanded`` reads it as an expanded here-document body
-    (:func:`_reread_as_expanded`), otherwise as command lines
-    (:func:`_reread_lines`). A re-read the budget cannot pay, one nested
+    (:func:`_reread_as_expanded`), ``joined`` as a whole command whose line
+    continuations were joined (:func:`_reread_joined`, #762 fix round 1),
+    otherwise as command lines (:func:`_reread_lines`). A re-read the budget
+    cannot pay, one nested
     deeper than :data:`_REREAD_DEPTH_LIMIT`, and one that runs out of stack
     are ASK here, so the walk that asked for it keeps any DENY it already
     found (fix round 1: a ``RecursionError`` in a re-read reached
@@ -2949,6 +3077,8 @@ def _reread(text: bytes, *, dialect: Dialect, expanded: bool = False) -> Verdict
     try:
         if expanded:
             return _reread_as_expanded(text, dialect=dialect)
+        if joined:
+            return _reread_joined(text, dialect=dialect)
         return _reread_lines(text, dialect=dialect)
     except RecursionError:
         return Verdict.ASK
@@ -3403,6 +3533,217 @@ def _reread_as_expanded(body: bytes, *, dialect: Dialect) -> Verdict:
     return _walk_source(reread, text, dialect=dialect)
 
 
+# --- #762 fix round 1: the lines a backslash-newline joins ---
+#
+# The shells remove ``\⏎`` before they read the words around it.
+# tree-sitter-bash 0.25.1 reads it as a blank between two tokens, so
+# ``$(\⏎(`` is arithmetic to the shells and a command substitution holding a
+# subshell to tree-sitter, and none of the arithmetic checks saw it. All
+# ALLOW on 71f837eb: ``echo $(\⏎(echo '$(: > MARK)'))`` created MARK in
+# macOS bash 3.2.57, zsh 5.9 and dash and in Linux bash 5.2.37, zsh 5.9,
+# dash 0.5.12, ksh 93u+m and mksh 59c (macOS ksh93u+ read a command
+# substitution there, as tree-sitter does);
+# ``ls files/* >/dev/null; echo $(\⏎(echo -_))``, ``$\⏎[_]``, ``$\⏎{a[_]}``,
+# ``$\⏎{PATH:_}`` and ``(\⏎(echo -_))`` did in bash 3.2 and 5.2, and
+# ``echo $\⏎{PATH:'$(: > MARK)'}`` in bash and zsh; #657's assignment check
+# missed ``echo $(\⏎(echo X=5))`` the same way (``.omc/probes/762/fix-r1/``).
+# So a source holding ``\⏎`` is also read with them joined, and the verdict
+# is the higher of the two readings. A ``\⏎`` is not joined inside a
+# ``'…'`` or ``$'…'`` that quotes, in the body and on the end line of a
+# here-document whose delimiter is quoted, and at the end of a comment. At
+# the top level of a command the nine shells keep it in all three: in a
+# ``'…'`` or ``$'…'`` (bash keeps both bytes, zsh, ksh and mksh decode it to
+# a newline, dash reads ``$`` and a ``'…'``), on a quoted here-document's
+# lines (``cat <<"E\\"`` ends on a line ``E\``), and at the end of a
+# comment, whose next line they run. Joining that comment would read the
+# next line as part of it, and ``echo hi # x \⏎echo $(\⏎(echo '$(: > MARK)'))``
+# ran in eight shells. Nested, the shells remove some of these (the round-3
+# verify's printf probes, ``.omc/probes/762/verify-r3/out/kept-cmp.txt`` and
+# ``kcom-table.txt``): inside backticks all nine do, inside ``$(…)`` in a
+# here-document body seven of nine (dash keeps it), and inside ``"$(…)"``
+# macOS bash 3.2 does at the end of a comment and in a ``$'…'`` in a
+# ``${…}`` operand. Keeping it there hides no code from this reading: a
+# quote that still quotes keeps its content literal, and a comment the
+# shells continue only hides the next line from them. A quoted argument's
+# text can differ, though: ``echo `find . '-de\⏎lete'``` is ALLOW, and the
+# nine shells pass ``-delete`` there (#762 finish, left to a follow-up).
+#
+# Fix round 2 (``.omc/probes/762/fix-r2/shells/``):
+#
+# - A ``'…'`` or ``$'…'`` in a ``${…}`` operand inside a double-quoted
+#   string or an expanded here-document body does not quote: it is literal
+#   text to the shells, though tree-sitter reads a quote there (as
+#   :func:`_hidden_code_verdict` notes). ``printf "[%s]\n" "${x:-'a\⏎b'}"``
+#   printed ``['ab']`` in 8 of the 9 shells (Linux ksh 93u+m kept the
+#   ``\⏎``), and ``cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E`` created MARK in all
+#   nine and was ALLOW on eb98b93b. That ``\⏎`` is joined. Linux ksh 93u+m's
+#   reading is the unjoined one, which still counts.
+# - A comment the shells do not start (:func:`_starts_a_comment`) is
+#   joined too: ``printf "[%s]\n" \ #a\⏎b`` printed ``[ #ab]`` in all nine.
+# - The kept ranges are walked once, in order, beside the continuations. A
+#   scan of every range for every continuation took 3.98 s on ``echo`` and
+#   20,000 ``'a\⏎b'`` (the round-2 verify).
+
+# A run of backslashes that ends a line. An odd run ends in ``\⏎``; in an
+# even one every backslash quotes the next and the newline stays.
+_CONTINUATION = re.compile(rb"\\+\n")
+
+
+def _joined_lines(root: Any, source: bytes) -> bytes:
+    """``source`` with the ``\\⏎`` the shells remove before they read it taken out.
+
+    Each odd run of backslashes that ends a line loses its last backslash and
+    the newline, unless that backslash is in :func:`_kept_text`, where the
+    shells keep it at the top level of a command (nested, some remove it;
+    see the block comment above).
+    """
+
+    kept = _kept_text(root, source)
+    k = 0
+    parts: list[bytes] = []
+    last = 0
+    for match in _CONTINUATION.finditer(source):
+        at = match.end() - 2
+        while k < len(kept) and kept[k][1] <= at:
+            k += 1
+        if (match.end() - match.start()) % 2 or (k < len(kept) and kept[k][0] <= at):
+            continue
+        parts.append(source[last:at])
+        last = match.end()
+    parts.append(source[last:])
+    return b"".join(parts)
+
+
+def _kept_text(root: Any, source: bytes) -> list[tuple[int, int]]:
+    """Where the shells keep a ``\\⏎`` at the top level of a command, as sorted byte ranges.
+
+    Nested inside backticks, ``$(…)`` in a here-document body or ``"$(…)"``,
+    some or all of the shells remove it from these too (see the block
+    comment above :func:`_joined_lines`); the ranges are kept there as well.
+    A ``'…'`` or ``$'…'`` that quotes (not one in a ``${…}`` operand inside
+    a double-quoted string or an expanded here-document body, fix round 2),
+    a comment the shells start (:func:`_starts_a_comment`, fix round 2), and
+    the body and end line of a here-document whose delimiter is quoted.
+    Sorted by their start, which is all :func:`_joined_lines` needs.
+    """
+
+    found = _quoted_heredoc_bodies(root, _HEREDOC_LINES)
+    stack = [(root, False)]
+    while stack:
+        node, literal = stack.pop()
+        t = node.type
+        if t in ("raw_string", "ansi_c_string"):
+            if not literal:
+                found.append((node.start_byte, node.end_byte))
+            continue
+        if t == "comment":
+            if _starts_a_comment(source, node.start_byte):
+                found.append((node.start_byte, node.end_byte))
+            continue
+        if t not in _QUOTE_TRANSPARENT:
+            literal = t in _DOUBLE_QUOTED
+        stack.extend((child, literal) for child in node.children)
+    return sorted(found)
+
+
+def _joined_lines_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """The verdict of ``source`` read with its line continuations joined; ALLOW when none joins.
+
+    The joined text is re-read through :func:`_reread`, paid from the
+    budget: one the budget cannot pay, one nested too deep and one that runs
+    out of stack are ASK, never lower.
+    """
+
+    if b"\\\n" not in source:
+        return Verdict.ALLOW
+    joined = _joined_lines(root, source)
+    if joined == source:
+        return Verdict.ALLOW
+    return _reread(joined, dialect=dialect, joined=True)
+
+
+def _reread_joined(text: bytes, *, dialect: Dialect) -> Verdict:
+    """Classify joined lines as a whole command, as low as ALLOW; a text tree-sitter rejects is :func:`_reread_lines`'s (ASK at least)."""
+
+    if _PARSER is None:
+        return Verdict.ASK
+    reread = _PARSER.parse(text).root_node
+    if reread.has_error:
+        return _reread_lines(text, dialect=dialect)
+    return _walk_source(reread, text, dialect=dialect)
+
+
+# --- #762 fix round 2: a ``#`` tree-sitter reads as a comment and the shells do not ---
+#
+# The lead's call, not the owner's: a hole present on 71f837eb, of the same
+# tree-sitter-against-the-shells class as the joined lines above. The shells
+# start a comment only at the start of a word. tree-sitter-bash 0.25.1 also
+# starts one after an escaped blank, a vertical tab, a form feed, a carriage
+# return or ``]]``, where the shells read the ``#`` and all after it as part
+# of a word, and after ``<`` or ``>``, where ksh93 reads an operator
+# (below). All ALLOW on 71f837eb and eb98b93b, each created MARK in all nine
+# shells: ``echo \ #$(: > MARK)``, ``echo \⇥#…`` and ``echo \⏎\ #…``, and
+# the same after an unescaped vertical tab or form feed;
+# ``[[ a ]]#$(: > MARK)`` did in dash, which has no ``[[``
+# (``.omc/probes/762/fix-r2/shells/``). ``echo a\r#$(: > MARK)``, with a
+# carriage return, was ALLOW on 71f837eb and created MARK in all nine
+# (#762 finish, ``.omc/probes/762/finish/``). Such a comment asks at least,
+# and the source is re-read with a backslash before that ``#``, which keeps
+# it in its word as the shells do, so a DENY there still counts
+# (``echo \ #$(rm -rf ~)``).
+
+# The bytes after which the shells start a comment: a blank, a newline and
+# the metacharacters ``;&|()``. After each of them the nine shells ran no
+# ``#$(: > MARK)``. ``<`` and ``>`` are left out (#762 finish): ksh93 reads
+# ``<#`` and ``>#`` as operators, and ``cat <#$(: > MARK)⏎/dev/null``, ALLOW
+# on 71f837eb and b0039212, created MARK in macOS ksh93u+ and Linux ksh
+# 93u+m (``.omc/probes/762/finish/``), so a ``#`` right after one asks.
+_WORD_BREAKS = frozenset(b" \t\n;&|()")
+
+
+def _escaped(source: bytes, at: int) -> bool:
+    """Whether an odd run of backslashes ends right before byte ``at`` of ``source``."""
+
+    run = 0
+    while run < at and source[at - run - 1] == 0x5C:
+        run += 1
+    return run % 2 == 1
+
+
+def _starts_a_comment(source: bytes, at: int) -> bool:
+    """Whether the shells start a comment at the ``#`` at byte ``at``: whether it starts a word.
+
+    The byte before it, past each ``\\⏎`` the shells remove, is the start of
+    ``source`` or one of ``_WORD_BREAKS`` that no backslash escapes.
+    """
+
+    while at >= 2 and source[at - 1] == 0x0A and _escaped(source, at - 1):
+        at -= 2
+    return at == 0 or (source[at - 1] in _WORD_BREAKS and not _escaped(source, at - 1))
+
+
+def _false_comments_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """ASK at least when tree-sitter reads a comment the shells do not start; worse when their reading is.
+
+    Their reading is ``source`` with a backslash before each such ``#``,
+    re-read through :func:`_reread` and paid from the budget.
+    """
+
+    if b"#" not in source:
+        return Verdict.ALLOW
+    comments = _ranges(root, frozenset({"comment"}))
+    false = sorted(lo for lo, _ in comments if not _starts_a_comment(source, lo))
+    if not false:
+        return Verdict.ALLOW
+    parts: list[bytes] = []
+    last = 0
+    for at in false:
+        parts += [source[last:at], b"\\"]
+        last = at
+    parts.append(source[last:])
+    return max(Verdict.ASK, _reread(b"".join(parts), dialect=dialect))
+
+
 # --- #742 fix round 2: code the parser leaves as text ---
 #
 # tree-sitter-bash 0.25.1 keeps some code as text, where no walk sees it, and
@@ -3688,6 +4029,11 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
     default reads ``sort in.txt /o out.txt``'s ``/o`` as a path and returns
     ALLOW, which is the fail-open shape #204 criterion 2 forbids and would
     require rewriting the pinned assertions to keep them "passing".
+
+    #762 fix round 2: a command tree-sitter rejects that holds ``\\⏎`` is
+    also read with its line continuations joined (:func:`_joined_lines_verdict`),
+    and the verdict is the higher of ASK and that reading
+    (``rm -rf / 2>\\⏎&1`` is DENY).
     """
 
     if not command or not command.strip():
@@ -3698,10 +4044,12 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
         source = command.encode()
         tree = _PARSER.parse(source)
         root = tree.root_node
-        if root.has_error:
+        if root.has_error and b"\\\n" not in source:
             return Verdict.ASK
         token = _REREAD_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
         try:
+            if root.has_error:
+                return max(Verdict.ASK, _joined_lines_verdict(root, source, dialect=dialect))
             return _walk_source(root, source, dialect=dialect)
         finally:
             _REREAD_BUDGET.reset(token)

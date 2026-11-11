@@ -4026,6 +4026,77 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` asks before arithmetic reads a name the shell fills itself, or quoted text, outside `[`,
+  `[[` and `test` too (#762, ADR-0288 #762 note).** bash fills `_` with the previous command's last
+  argument, so with a repository file named `files/z[$(touch PWNED)]`,
+  `ls files/* >/dev/null; echo $((_))` ran `touch` with no dialog: the glob put that name in `_`,
+  and arithmetic evaluates the value again, array subscript included. It created `PWNED` in bash
+  3.2.57 and 5.2.37 (with `<shell> -c` in a scratch directory), and so did `(( _ ))`, `$[_]`,
+  `${a[_]}`, `${PATH:_}`, `[ -n "$((_))" ]` and `cat <<< $((_))`; `BASH_REMATCH` after `=~` did the
+  same in bash, `KSH_MATCH` after `[[ x = * ]]` in mksh 59c, and `echo $(( '$(touch PWNED)' ))`,
+  whose `$(…)` the parser reads as quoted text, in all nine shells measured (macOS bash, zsh, dash
+  and ksh93u+, Linux bash, zsh, dash, ksh 93u+m and mksh). The same forms split by a
+  backslash-newline ran too, because the shells remove it before they read `$((` and the parser
+  reads `$(` and a subshell: `echo $(\⏎(echo '$(: > MARK)'))` created `MARK` in eight of the nine
+  shells, and `ls files/* >/dev/null; echo $(\⏎(echo -_))`, `$\⏎[_]` and `$\⏎{a[_]}` did in bash.
+  All were allowed on `71f837eb`. Now `_`, `BASH_REMATCH`, `KSH_MATCH`, `REPLY`, `OPTARG`,
+  `MAPFILE`, `BASH_ARGV`, `BASH_SOURCE`, `BASH_ALIASES`, `BASH_CMDS`, ksh93's `.sh.…` and the other
+  names bash, ksh93 and mksh set from text a command or its files choose ask in `$((…))`, `$[…]`,
+  `(( ))`, a `${a[…]}` subscript and a `${x:…}` offset, and so does a quote or backslash in
+  `$((…))`, `$[…]` or `(( ))`. A command holding a backslash-newline is also read with it joined, as
+  the shells read it, and takes the higher verdict; it is kept inside a `'…'` or `$'…'` that quotes,
+  a comment the shells start and a quoted here-document, where all nine shells keep it at the top
+  level of a command. Nested, some shells remove it there (printf probes): inside backticks all
+  nine do, inside `$(…)` in a here-document body seven of the nine (not dash), and inside `"$(…)"`
+  macOS bash 3.2 does. Keeping it hides no code from aelix, because a quote that still quotes keeps
+  its content literal and a comment the shells continue only hides the next line from them, but a
+  quoted argument's text can differ: inside backticks the nine shells turn `'-de\⏎lete'` into
+  `-delete` (printf probe), and ``echo `find . '-de\⏎lete'` `` is still allowed, as on `71f837eb`
+  (classified only; not covered yet). A `'…'` in a `${…}` operand inside a double-quoted string
+  or an expanded here-document body is literal text to the shells and is joined:
+  `cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E` created `MARK` in all nine and was allowed on `71f837eb`. A
+  `#` the parser reads as a comment after an escaped blank, a vertical tab, a form feed, a carriage
+  return or `]]`, where the shells start none, or right after `<` or `>`, which ksh93 reads as its
+  `<#` and `>#` operators, asks and is read as part of its word: `echo \ #$(: > MARK)` created
+  `MARK` in all nine shells and was allowed on `71f837eb`, and `echo \ #$(rm -rf ~)` is refused
+  now; `cat <#$(: > MARK)⏎/dev/null` created `MARK` in macOS ksh93u+ and Linux ksh 93u+m and was
+  allowed on `71f837eb`, and `cat <#$(rm -rf ~)⏎/dev/null` is refused now. Comments the shells
+  start stay allowed (`cat < #x⏎/dev/null`, `echo hi >/dev/null # note`). A command the
+  parser rejects that holds a backslash-newline takes the higher of ask and its joined reading, so
+  `rm -rf / 2>\⏎&1` is refused. A length or a base-N literal reads no name and
+  stays allowed (`$(( ${#PWD} + 1 ))`, `$(( ${#COMP_WORDS[@]} - 1 ))`, `$((36#REPLY))`: none of 17
+  such forms ran anything in the nine shells). A name the shell keeps numeric stays allowed:
+  `RANDOM`, `SECONDS`, `LINENO`, `PPID` and `OPTIND` ran nothing in the nine shells even with that
+  text exported under the name. So do zsh's `MATCH`, `match` and `reply` (zsh ran no `$(…)` from a
+  name's value), names only an assignment or the environment sets, `echo $((i+1))`, `echo ${a[i]}`,
+  `echo $((RANDOM % 6))`, `(( BASH_VERSINFO[0] >= 4 ))` and `echo "${BASH_REMATCH[1]}"`. None of
+  31,348 corpus, test and realistic strings changed; of 141 arithmetic lines written for this, these
+  now ask: `echo "$(( BASH_REMATCH[1] + 1 ))"` after `=~`, `echo $((REPLY))`, `echo "${a[_]}"`,
+  `echo $(( COMP_LINE ))`, `echo $(( "1" + 2 ))`, `echo $(( '1' + 2 ))` and a `$((…))` continued
+  over a backslash-newline. Of 249 commands continued over two to five lines, the joined reading
+  makes only ``echo `date` \⏎ `hostname` `` ask, whose joined line already asked on `71f837eb`;
+  `r\⏎m -rf /` is now refused like `rm -rf /`. None of 31,822 corpus, test, realistic, continued
+  and commented strings changed with the quote, comment and rejected-command reading, or with the
+  `<#` reading. Against
+  `71f837eb` no verdict went down in the #710 sweep (2,012,640 forms), the 108,960 here-documents,
+  the 7,560-form `[`/`[[`/`test` grid, the 704-form `${…}` grid or 537,085 strings with a
+  backslash-newline inserted where the shells remove it. 279 of those here-documents, which the
+  parser rejects, went from ask to refused; with `: > MARK` as the payload line, at least one of the
+  nine shells ran it for 73 of them and none did for 206.
+  Live, in a pty TUI under `auto` with a scripted model,
+  `ls files/* >/dev/null; echo $((_))` with `SHELL=/bin/bash` and `echo $(( '$(touch PWNED)' ))`
+  with `/bin/zsh` ran with no dialog and created `PWNED` on `71f837eb`, and show the dialog now
+  (nothing is created after Esc); so do `ls files/* >/dev/null; echo $(\⏎(echo -_))` with
+  `/bin/bash` and `echo $(\⏎(echo '$(: > MARK)'))` with `/bin/zsh`, which created `MARK` on
+  `71f837eb`, and `cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E` and `echo \ #$(: > MARK)` with `/bin/bash`
+  and `/bin/zsh`, and `cat <#$(: > MARK)⏎/dev/null` with `/bin/ksh`, which created it with no
+  dialog on `71f837eb`.
+  Under `-p` an ASK still runs, as every ASK does there: a real model under `auto -p` ran the first
+  form and created `PWNED` on both trees, and the headless block gate (`AELIX_SUBAGENT_DEPTH=1`)
+  refuses it now. The issue's eight forms also created the marker in bash
+  5.3.20, and are asked about now. Not measured: Windows Git Bash. Tests:
+  `tests/builtin/test_bash_arith_names_762.py`.
+
 - **A value from a cloned repo's `.env` loads only if it looks like a key, or for a name you
   unlocked with `AELIX_DOTENV_ALLOW` like a URL (#756, ADR-0203 #756 note).** aelix loads a cwd
   `.env` before it asks whether you trust the directory, and every bash command inherits what it
