@@ -1905,12 +1905,22 @@ async def test_repeated_short_jobs_hold_no_process_handles(rig: _Rig) -> None:
 
     import ctypes
     import gc
+    from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-    count = ctypes.c_ulong()
+    # A private, typed kernel32: untyped, the pseudo-handle GetCurrentProcess
+    # returns (-1) reached GetProcessHandleCount as a 32-bit int and the call
+    # failed (#766's first CI run, every windows leg). The shared
+    # ``ctypes.windll.kernel32`` stays untouched for the product's own calls.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+    count = wintypes.DWORD()
 
     def handles() -> int:
-        assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+        ok = kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+        assert ok, f"GetProcessHandleCount failed: error {ctypes.get_last_error()}"  # type: ignore[attr-defined]
         return int(count.value)
 
     for _ in range(3):  # warm up whatever one-time handles a first job opens
