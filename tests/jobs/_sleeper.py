@@ -54,12 +54,14 @@ class SleeperAdapter:
         fail: frozenset[str] = frozenset(),
         recovered: Recovered | None = None,
         tag: str = "",
+        note: str | None = None,
     ) -> None:
         self.version = version
         self.capabilities = KindCapabilities(default_bound=bound, notify=notify, control_hint=None)
         self.fail = fail
         self.recovered = recovered
         self.tag = tag
+        self.note = note
         self.calls: list[str] = []
 
     def _maybe(self, op: str) -> None:
@@ -122,6 +124,15 @@ class SleeperAdapter:
     def relation(self, facts: Mapping[str, Any]) -> RelationSpec:
         self._maybe("relation")
         return RelationSpec()
+
+    def restored_note(self, facts: Mapping[str, Any]) -> str | None:
+        """``None``, as delegation answers, unless a test set ``note`` (#611 S2d: the routing is the service's)."""
+
+        self._maybe("restored_note")
+        if self.note is None:
+            return None
+        client = facts.get("client") if isinstance(facts.get("client"), Mapping) else {}
+        return self.note.format(**client)
 
 
 class Sleeper:

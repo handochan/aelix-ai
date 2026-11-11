@@ -68,6 +68,18 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   is a rename of a function that is gone or a renumbering. The per-release trend value is radon's count with each
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
+- [0297 — A bash command can run in the background as a job of its session](0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md)
+  (Accepted 2026-11-11; #760, #611 S2d; inert until #611 S3). Background `bash` is the job service's
+  second client (ADR-0293): `bash(run_in_background=true)` returns a job id at once, writes the
+  command's output to a 0600 file of its own (`<tempdir>/aelix-jobs-<user>/`, 1 GiB kept), and
+  leaves one notice with the end of its output, cut to fit 16 KiB, and the file's path;
+  `job(action="result")` pages the file by bytes (`OutputSlice.next_offset`). Only on a local
+  backend and a host that says so: the TUI, `-p` and json, never RPC or ACP (#612). A trailing `&`
+  is refused; four run at once (`backgroundJobs.limits.bash`); `job_stop`, the owner's end and
+  `/reload` stop it; a normal exit releases its helpers (#232; win32 `preserve_descendants`, a
+  failed one held to aelix's exit). In `-p`/json a command without `timeout` gets `bash`'s 600 s
+  default, the TUI none (owner OQ-B). Linux gives the shell alone `pdeathsig` (owner OQ-C). A
+  restart names the output file from the `start` fact (`client_start`, `restored_note`).
 - [0296 — A delegated agent's helpers stop with it](0296-a-delegated-agents-helpers-stop-with-it.md)
   (Accepted 2026-11-10; #719, #750, #611 S2c; ungated, the owner's OQ-A). A delegated agent's
   finished `bash` call's `cmd &`, `(cmd &)` and `nohup cmd &` helpers stop when the delegation ends

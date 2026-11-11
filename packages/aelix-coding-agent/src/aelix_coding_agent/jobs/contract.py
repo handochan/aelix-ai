@@ -126,10 +126,26 @@ class NoticeBody:
 
 @dataclass(frozen=True)
 class OutputSlice:
+    """One page of a job's output, as its kind reads it.
+
+    ``next_offset`` is where the next page starts, opaque to the service and the
+    surfaces (#611 S2d, Codex #13): a kind that pages by something other than
+    characters — bytes of a file — says so here, and ``job(action="result")``
+    and ``/jobs result`` pass it back as ``offset``. ``None`` keeps the reading
+    they always made, ``offset + len(text)``.
+    """
+
     text: str
     offset: int
     total: int | None = None
     more: bool = False
+    next_offset: int | None = None
+
+    @property
+    def continue_at(self) -> int:
+        """The ``offset`` the next page is asked with: ``next_offset``, else ``offset + len(text)``."""
+
+        return self.next_offset if self.next_offset is not None else self.offset + len(self.text)
 
 
 @dataclass(frozen=True)
@@ -187,6 +203,12 @@ class JobSnapshot:
     #: processes confirmed gone, for one; a kind's registration still re-reads
     #: ``adapter_missing`` and ``adapter_too_old`` (#611 S1c).
     rechecking: bool = False
+    #: What the kind handed :meth:`~aelix_coding_agent.jobs.service.JobService.start`
+    #: as ``client_start``, as the job's ``start`` fact holds it — the same for a
+    #: job this process runs and for one a restart found (#611 S2d, Codex #12).
+    #: Opaque here: a kind reads back its own launch data, such as the absolute
+    #: path of an output file, without deriving it again after a restart.
+    client_start: Mapping[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -219,6 +241,16 @@ class JobKindAdapter(Protocol):
     ) -> Recovered | None: ...
 
     def relation(self, facts: Mapping[str, Any]) -> RelationSpec: ...
+
+    def restored_note(self, facts: Mapping[str, Any]) -> str | None:
+        """One line a restart adds to a ``lost`` or ``unresolved`` notice of this kind, or ``None`` (#611 S2d).
+
+        ``facts`` is the job's ``start`` fact; its ``client`` is what the kind
+        handed ``start`` as ``client_start``. Required, so the service never
+        has to ask an adapter what it has (Codex #12): a kind with nothing to add
+        returns ``None``.
+        """
+        ...
 
 
 class JobContext(Protocol):

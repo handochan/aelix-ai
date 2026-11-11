@@ -2279,3 +2279,13 @@ api); each case named below is red on `f3e9b814` unless it is marked a mutant pi
   terminate whose wait times out keeps the tree (`::test_a_suspended_launch_whose_end_times_out_keeps_the_tree`,
   green on `f3e9b814` too: a mutant pin, for the timeout read as an ended process).
 
+### 2026-11-11: the first suspended spawn and the first preserve (#760, #611 S2d)
+
+Background `bash` (ADR-0297) is the one caller of S2b's two primitives, behind the job gate: its
+shell is created with `suspend_flags()`'s `CREATE_SUSPENDED` where `NtResumeProcess` resolves and
+attached `kill_on_close=True` with the job's stop latch, and at the command's normal exit
+`helper_cleanup` calls `preserve_descendants` and then `close` (a failed preserve keeps the tree,
+unclosed, for aelix's lifetime). The branches are pinned with a stand-in tree
+(`tests/tools/test_bash_background_611.py::test_a_normal_exit_releases_through_preserve_then_close`
+and its two siblings); the real Job is windows-latest's (ADR-0297 Limits). Every other spawn site
+keeps today's spawn and its assignment window.

@@ -138,7 +138,7 @@ def result_text(service: JobService, snap: JobSnapshot, offset: int = 0) -> str:
     assert isinstance(out, OutputSlice)
     text = out.text
     if out.more:
-        text += f"\n… more: /jobs result {short_id(snap.job_id)} {out.offset + len(out.text)}"
+        text += f"\n… more: /jobs result {short_id(snap.job_id)} {out.continue_at}"
     return text or "(empty output)"
 
 

@@ -785,6 +785,11 @@ class DelegationKindAdapter:
         # Every delegated child is ``python -m aelix_coding_agent …``.
         return RelationSpec(argv_contains=("aelix_coding_agent",))
 
+    def restored_note(self, facts: Mapping[str, Any]) -> str | None:
+        """Nothing to add (#611 S2d): a restored agent's notice already says what a restart can."""
+
+        return None
+
 
 # === The client's own state, one per process =======================================
 

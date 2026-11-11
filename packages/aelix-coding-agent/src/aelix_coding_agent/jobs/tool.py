@@ -101,7 +101,7 @@ def create_job_tool(service: JobService) -> AgentTool:
             return _text(out, error=error)
         assert isinstance(out, OutputSlice)
         tail = (
-            f'\n… more: job(action="result", id="{found.job_id}", offset={out.offset + len(out.text)})'
+            f'\n… more: job(action="result", id="{found.job_id}", offset={out.continue_at})'
             if out.more
             else ""
         )

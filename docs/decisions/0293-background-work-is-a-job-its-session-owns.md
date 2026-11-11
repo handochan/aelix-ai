@@ -556,3 +556,30 @@ S1c's fix round 2 (2026-11-10), kind-agnostic as well:
   count what runs in the foreground: "3 run across every kind, and settings
   backgroundJobs.maxTotal allows 3." (`tests/jobs/test_admission_611.py::test_the_total_limit_names_no_kind_and_calls_nothing_a_background_job`).
 
+## Note (2026-11-11, ADR-0297, #760)
+
+S2d registered the second client, background `bash` (ADR-0297), and needed three generic
+additions. Each is kind-agnostic, and the AST scan stays green
+(`tests/jobs/test_core_is_kind_agnostic_611.py`); with the gate off none is reachable (§12):
+- **`client_start`** (Codex #12): `JobService.start(…, client_start=…)` (and the extension facade's
+  `start`) writes a kind's launch data into the confirmed `start` fact as `client`, opaque, and
+  every snapshot of the job carries it as `JobSnapshot.client_start` — the live job's and a
+  restart's alike, so a kind reads back what it recorded instead of deriving it again in a new
+  process. A start without it writes no `client` key
+  (`tests/jobs/test_client_start_611.py::test_client_start_is_in_the_start_fact_and_on_every_snapshot`,
+  `::test_without_client_start_the_fact_has_none_and_the_snapshot_is_empty`). r2 §5 put it in the
+  restored snapshot's `payload`; a field of its own keeps `payload` the outcome's (this lane's call).
+- **`restored_note(facts)`**, a required adapter method: a restart's `lost` or `unresolved` notice
+  ends with the kind's one line, asked with the job's `start` fact; `None`, a raise or an answer
+  that is not text adds nothing and leaves the frame whole (§3's table: as `finalize_at_placement`)
+  (`::test_a_restored_lost_notice_carries_the_kinds_line`,
+  `::test_a_restored_unresolved_notice_carries_the_kinds_line`,
+  `::test_a_kind_with_no_line_or_a_raising_one_adds_nothing`). Delegation and the synthetic kind
+  return `None`. Required rather than probed, so the service never asks an adapter what it has; an
+  extension kind registered without it gets no line (the raise is caught).
+- **`OutputSlice.next_offset`** (Codex #13): where a kind's next page starts, opaque. The `job`
+  tool's `result` and `/jobs result` hint `next_offset` when a kind sets it and `offset +
+  len(text)` otherwise (`OutputSlice.continue_at`;
+  `::test_next_offset_is_what_the_job_tool_and_jobs_result_hint`). Delegation sets none, so its
+  hint is what it was (`::test_delegation_paging_is_unchanged`): characters counted over its byte
+  pager, which ADR-0295's `agent(action="result")` does not share.

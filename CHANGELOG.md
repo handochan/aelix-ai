@@ -86,6 +86,19 @@ unwritten. Add them with the next release.
   `tests/agents_ext/test_agent_background_611.py`,
   `tests/agents_ext/test_agent_background_ownership_611.py`,
   `tests/agents_ext/test_child_recovery_611.py`, `tests/cli/test_print_done_protocol_611.py`.
+- **Background bash, built and switched off (#760, #611 S2d, ADR-0297).** `bash` is the job
+  service's second client: `run_in_background: true` returns a job id at once, the command's
+  output goes to a file of its own, and one notice brings back the end of it and the file's path
+  (or says the output may be incomplete when a starved reader could not confirm it read
+  everything), with `job(action="result")` paging the file by bytes — all **behind `jobs/activation.py`
+  `ACTIVE = False`**, so nothing of it is visible yet. With the gate off the `bash` tool's schema
+  and description are what they were, and a call that carries `run_in_background` runs in the
+  foreground as before (`tests/tools/test_bash_background_611.py::test_the_parameter_is_absent_with_the_gate_off`).
+  The job service's `start` takes a kind's `client_start`, its adapters a required
+  `restored_note`, and its pages a `next_offset`; delegation's paging is unchanged
+  (`tests/jobs/test_client_start_611.py::test_delegation_paging_is_unchanged`). #611 S3 turns it
+  on. Tests: `tests/tools/test_bash_background_611.py`, `tests/jobs/test_client_start_611.py`,
+  `tests/cli/test_bash_background_cli_760.py`.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

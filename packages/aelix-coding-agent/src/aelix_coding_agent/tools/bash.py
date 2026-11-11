@@ -815,7 +815,7 @@ class _LocalBashOperations:
 
 
 def _spawn_shell(
-    shell: ShellConfig, command: str, cwd: str, env: dict[str, str]
+    shell: ShellConfig, command: str, cwd: str, env: dict[str, str], *, popen: Any = None
 ) -> subprocess.Popen[bytes]:
     """The one ``Popen`` of :meth:`_LocalBashOperations.exec`, and the launch ledger around it (#719).
 
@@ -833,10 +833,10 @@ def _spawn_shell(
 
     ledger = launch_ledger.writer()
     if ledger is None:
-        return _popen_shell(shell, command, cwd, env)
+        return (popen or _popen_shell)(shell, command, cwd, env)
     seq = ledger.intent()
     try:
-        proc = _popen_shell(shell, command, cwd, launch_ledger.spawn_env(env))
+        proc = (popen or _popen_shell)(shell, command, cwd, launch_ledger.spawn_env(env))
     except BaseException:
         ledger.failed(seq)
         raise
@@ -1377,7 +1377,134 @@ def create_bash_tool(
         with contextlib.suppress(Exception):
             description += _bash_shell_sentence(get_shell_env(), opts.get("shell_path"))
 
-    def _assemble_cut_output(chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
+    run = _BashRun(
+        cwd=cwd,
+        operations=operations,
+        local_drain=local_drain,
+        command_prefix=command_prefix,
+        spawn_hook=spawn_hook,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+        default_timeout=default_timeout,
+        max_timeout=max_timeout,
+        background=_background_offer(opts),
+    )
+    if run.background is not None:
+        parameters["properties"]["run_in_background"] = _background_parameter(run)
+
+    tool = AgentTool(
+        name="bash",
+        # Pi parity, verbatim: ``bashToolSystemPromptContribution.snippet``
+        # (``coding-agent/src/core/tools/bash.ts:46-49``).
+        prompt_snippet="Execute bash commands (ls, grep, find, etc.)",
+        # NOT pi's bash guideline. Pi's reads "You can inspect PI_*
+        # environment variables for current model and session details" —
+        # aelix has no ``PI_*`` and porting it would hand the model a variable
+        # namespace that does not exist, which is the class of overclaim #120
+        # exists to remove. These two are aelix's own, lifted out of the static
+        # Guidelines list where a ``--no-tools`` run still advertised bash.
+        prompt_guidelines=(
+            "After editing, verify your work (run the relevant tests or build "
+            "via bash when appropriate).",
+            "Be careful with destructive or irreversible shell commands; do "
+            "not run them unless the intent is clear.",
+        ),
+        description=description,
+        parameters=parameters,
+        execute=run.execute,
+        execution_mode="sequential",
+    )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "bash")
+
+
+@dataclass(frozen=True)
+class _BashRun:
+    """One bash tool's settings, and the call it runs (``create_bash_tool``'s ``execute``).
+
+    Moved out of :func:`create_bash_tool` unchanged (#760): Ruff counts a nested
+    function's branches in the function it sits in, so the factory carried the
+    whole call's complexity (ADR-0300).
+    """
+
+    cwd: str
+    operations: BashOperations
+    local_drain: bool
+    command_prefix: str | None
+    spawn_hook: BashSpawnHook | None
+    max_lines: int
+    max_bytes: int
+    default_timeout: float
+    max_timeout: float
+    #: #760 (ADR-0297): set only while background jobs are on and the host
+    #: offered them at build (``bash_background.offer_from``); ``None`` keeps
+    #: every call in the foreground, as before #611.
+    background: Any = None
+
+    def _spawn_context(self, command: str) -> BashSpawnContext:
+        """The command, cwd and env one call spawns, for either branch."""
+
+        # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
+        # a newline), then resolve the spawn context (base env = getShellEnv,
+        # optionally rewritten by ``spawnHook``).
+        resolved_command = (
+            f"{self.command_prefix}\n{command}" if self.command_prefix else command
+        )
+        spawn_context = _resolve_spawn_context(resolved_command, self.cwd, self.spawn_hook)
+        # #657: close the planted-bare-repo path for the model's own git. After
+        # the spawn hook, so a hook's own GIT_CONFIG_* entries are preserved.
+        _inject_git_bare_repository_guard(spawn_context.env)
+        return spawn_context
+
+    async def _background(self, args: dict[str, Any], command: str) -> ToolResult:
+        """``run_in_background``: a job of the current session, or why not (#760, ADR-0297).
+
+        Checked again on every call (Codex #14): a tool built without the host's
+        offer, a host that says no now, a trailing ``&`` and a process with no
+        job service are each refused with a sentence, and nothing runs.
+        """
+
+        from aelix_coding_agent.jobs import activation
+        from aelix_coding_agent.tools import bash_background as bg
+
+        offer = self.background
+        if offer is None or not offer.allowed():
+            return _refused(bg.REFUSED_HERE)
+        if "\0" in command:
+            # Before anything is allocated (Codex 2): no shell can be handed it.
+            return _refused(bg.NUL_REFUSED)
+        try:
+            service = activation.current_service()
+        except activation.JobsInactive:
+            return _refused(bg.REFUSED_HERE)
+        spawn_context = self._spawn_context(command)
+        # The command the shell will run, an embedder's prefix included (Codex 4).
+        if bg.ends_in_ampersand(spawn_context.command):
+            return _refused(bg.TRAILING_AMPERSAND)
+        if not Path(spawn_context.cwd).is_dir():
+            return _refused(f"bash: cwd {spawn_context.cwd!r} is not a directory")
+        try:
+            shell = _resolve_shell(spawn_context.env, offer.shell_path)
+        except ValueError as exc:
+            return _refused(f"bash: {exc}")
+        timeout, clamped = bg.resolve_limit(
+            args.get("timeout"),
+            default_timeout=self.default_timeout,
+            max_timeout=self.max_timeout,
+            unattended=offer.is_unattended(),
+        )
+        return await bg.start_background(
+            service,
+            command=spawn_context.command,
+            shown=command,
+            shell=shell,
+            cwd=spawn_context.cwd,
+            env=spawn_context.env,
+            timeout=timeout,
+            cap=self.max_timeout if clamped else None,
+        )
+
+    def _assemble_cut_output(self, chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
         """The output of a cut command, without paying for a flood on the event loop.
 
         Up to :data:`_CUT_WHOLE_READ_BYTES` this is :func:`_assemble_output`, so the body
@@ -1388,9 +1515,9 @@ def create_bash_tool(
         """
 
         total = sum(map(len, chunks))
-        window = _CUT_TAIL_WINDOW_MAX_BYTES * max_bytes
+        window = _CUT_TAIL_WINDOW_MAX_BYTES * self.max_bytes
         if total <= max(_CUT_WHOLE_READ_BYTES, window):
-            return _assemble_output(chunks)
+            return self._assemble_output(chunks)
         tail_chunks: list[bytes] = []
         size = 0
         for chunk in reversed(chunks):
@@ -1400,12 +1527,12 @@ def create_bash_tool(
                 break
         tail = b"".join(reversed(tail_chunks))[-window:]
         raw = decode_child_output(tail, ragged_tail=True)
-        body, kept = truncate_tail(raw, max_lines=max_lines, max_bytes=max_bytes)
+        body, kept = truncate_tail(raw, max_lines=self.max_lines, max_bytes=self.max_bytes)
         info = replace(kept, truncated=True, original_lines=0, original_bytes=total)
         full_output_path = _write_raw_output_in_background(chunks)
         return body + _format_uncounted_notice(info, full_output_path=full_output_path), info, full_output_path
 
-    def _assemble_output(chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
+    def _assemble_output(self, chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
         """The child's output as the model reads it, on the exit path and a short cut.
 
         Synchronous, and it has to stay so: the cut path runs in a task being
@@ -1438,7 +1565,7 @@ def create_bash_tool(
         # that used to rescue those bytes cannot fire from one end.
         raw = decode_child_output(b"".join(chunks), ragged_tail=True)
         body, info = truncate_tail(
-            raw, max_lines=max_lines, max_bytes=max_bytes
+            raw, max_lines=self.max_lines, max_bytes=self.max_bytes
         )
 
         # Pi parity ``OutputAccumulator.snapshot({ persistIfTruncated: true })`` —
@@ -1468,13 +1595,13 @@ def create_bash_tool(
             body += _format_truncation_notice(
                 info,
                 full_output_path=full_output_path,
-                max_bytes=max_bytes,
+                max_bytes=self.max_bytes,
                 last_line_bytes=last_line_bytes,
             )
         return body, info, full_output_path
 
     async def execute(
-        args: dict[str, Any], ctx: ToolExecutionContext
+        self, args: dict[str, Any], ctx: ToolExecutionContext
     ) -> ToolResult:
         command = args.get("command", "")
         if not isinstance(command, str) or not command.strip():
@@ -1482,21 +1609,16 @@ def create_bash_tool(
                 content=[TextContent(text="bash: missing 'command'")],
                 is_error=True,
             )
+        if args.get("run_in_background") is True and _jobs_active():
+            # #760 (ADR-0297): before the foreground timeout below, whose
+            # default would otherwise apply where the TUI wants none (OQ-B).
+            return await self._background(args, command)
         # Issue #11: arm the default timeout when the model omits ``timeout``
         # (or passes ≤0); honor an explicit value, clamped to the max cap.
         timeout, timeout_clamped = _resolve_call_timeout(
-            args.get("timeout"), default_timeout, max_timeout
+            args.get("timeout"), self.default_timeout, self.max_timeout
         )
-        # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
-        # a newline), then resolve the spawn context (base env = getShellEnv,
-        # optionally rewritten by ``spawnHook``).
-        resolved_command = (
-            f"{command_prefix}\n{command}" if command_prefix else command
-        )
-        spawn_context = _resolve_spawn_context(resolved_command, cwd, spawn_hook)
-        # #657: close the planted-bare-repo path for the model's own git. After
-        # the spawn hook, so a hook's own GIT_CONFIG_* entries are preserved.
-        _inject_git_bare_repository_guard(spawn_context.env)
+        spawn_context = self._spawn_context(command)
         if not Path(spawn_context.cwd).is_dir():
             return ToolResult(
                 content=[
@@ -1508,7 +1630,7 @@ def create_bash_tool(
             )
         chunks: list[bytes] = []
         try:
-            exit_result = await operations.exec(
+            exit_result = await self.operations.exec(
                 spawn_context.command,
                 spawn_context.cwd,
                 on_data=chunks.append,
@@ -1522,7 +1644,7 @@ def create_bash_tool(
             # to the model. Nothing here may replace the cancel: output that
             # cannot be assembled leaves the loop's default text.
             try:
-                body, info, full_output_path = _assemble_cut_output(chunks)
+                body, info, full_output_path = self._assemble_cut_output(chunks)
             except Exception:  # noqa: BLE001
                 _LOG.debug("assembling a cut command's output failed", exc_info=True)
                 raise cancel from None
@@ -1538,14 +1660,14 @@ def create_bash_tool(
                     is_error=True,
                 )
             ) from cancel
-        body, info, full_output_path = _assemble_output(chunks)
+        body, info, full_output_path = self._assemble_output(chunks)
 
         # #260 — AFTER ``truncate_tail`` and its notice, so the kept tail can
         # never cut it, and before the status line, which stays last. An empty
         # body becomes this line alone, in place of ``(no output)``, which would
         # be a claim the drain could not make.
         if exit_result.output_unconfirmed:
-            notice = _unconfirmed_notice(exit_result.exit_code, local=local_drain)
+            notice = _unconfirmed_notice(exit_result.exit_code, local=self.local_drain)
             body = f"{body}\n\n{notice}" if body else notice
 
         details = BashToolDetails(
@@ -1580,13 +1702,13 @@ def create_bash_tool(
                     # be non-actionable. Tell it the cap was applied + how to lift.
                     retry = (
                         f" The requested timeout exceeded the "
-                        f"{_fmt_secs(max_timeout)}s cap; raise "
+                        f"{_fmt_secs(self.max_timeout)}s cap; raise "
                         "AELIX_BASH_MAX_TIMEOUT to allow longer."
                     )
-                elif max_timeout > 0:
+                elif self.max_timeout > 0:
                     retry = (
                         " If this command needs longer, retry with a larger "
-                        f"'timeout' (up to {_fmt_secs(max_timeout)} seconds)."
+                        f"'timeout' (up to {_fmt_secs(self.max_timeout)} seconds)."
                     )
                 else:
                     retry = (
@@ -1606,30 +1728,37 @@ def create_bash_tool(
             is_error=True,
         )
 
-    tool = AgentTool(
-        name="bash",
-        # Pi parity, verbatim: ``bashToolSystemPromptContribution.snippet``
-        # (``coding-agent/src/core/tools/bash.ts:46-49``).
-        prompt_snippet="Execute bash commands (ls, grep, find, etc.)",
-        # NOT pi's bash guideline. Pi's reads "You can inspect PI_*
-        # environment variables for current model and session details" —
-        # aelix has no ``PI_*`` and porting it would hand the model a variable
-        # namespace that does not exist, which is the class of overclaim #120
-        # exists to remove. These two are aelix's own, lifted out of the static
-        # Guidelines list where a ``--no-tools`` run still advertised bash.
-        prompt_guidelines=(
-            "After editing, verify your work (run the relevant tests or build "
-            "via bash when appropriate).",
-            "Be careful with destructive or irreversible shell commands; do "
-            "not run them unless the intent is clear.",
-        ),
-        description=description,
-        parameters=parameters,
-        execute=execute,
-        execution_mode="sequential",
-    )
-    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
-    return mark_builtin(tool, "bash")
+
+def _jobs_active() -> bool:
+    """Whether background jobs are on now (``jobs/activation.py``), read at call time."""
+
+    from aelix_coding_agent.jobs import activation
+
+    return activation.is_active()
+
+
+def _background_offer(opts: dict) -> Any:
+    """The tool's background offer, or ``None`` — always ``None`` while jobs are off (#760).
+
+    Off, nothing of ``bash_background`` is imported and the tool is built as
+    before #611, byte for byte.
+    """
+
+    if not _jobs_active():
+        return None
+    from aelix_coding_agent.tools import bash_background
+
+    return bash_background.offer_from(opts)
+
+
+def _background_parameter(run: _BashRun) -> dict[str, Any]:
+    from aelix_coding_agent.tools import bash_background
+
+    return bash_background.parameter(run.background.is_unattended(), run.default_timeout)
+
+
+def _refused(text: str) -> ToolResult:
+    return ToolResult(content=[TextContent(text=text)], is_error=True)
 
 
 __all__ = [
