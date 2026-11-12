@@ -2,7 +2,8 @@
 
 Status: Accepted (2026-11-08, #722). Amended 2026-11-12 (#769, #749, #770): ended jobs past a
 per-session bound are kept only as their records read; `JobSnapshot.processes_gone`; see the note
-at the end. **Inert until #611 S3:** everything below is behind
+of that date. Amended 2026-11-12 (#778): `backgroundJobs.enabled: false` in the global settings
+turns §12's gate off for a launch; see the note at the end. **Inert until #611 S3:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` and, in the kernel, behind
 `AgentHarnessOptions.notice_inbox` (off by default; product-core turns it on only while `ACTIVE`),
 and nothing of it is reachable from the product before S3 sets it (§12).
@@ -714,3 +715,82 @@ describes the result.
   on every pass of the liveness loop, every 5 s (`LIVENESS_INTERVAL`), with no backoff; its WARNING
   is logged on the first failure and DEBUG on every later one
   (`::test_a_failed_read_warns_once_then_quietly`).
+
+## Note (2026-11-12, #778)
+
+**An off switch for §12 (#611 S3d).** The owner chose, on 2026-11-12 (OQ-S3-4), "전역 설정
+(권장)" ("a global setting (recommended)"); the recommended option's details — the key
+`backgroundJobs.enabled: false`, the global scope only, read once at start — are those of the S3
+contract's first round (§8). With the gate on, that setting now turns background jobs off for a
+launch; with the gate off nothing changes and the setting is not read
+(`tests/jobs/test_enabled_setting_611.py::test_with_the_gate_off_the_setting_is_never_read`, a
+guard of the new function only: it fails on `52bc607a`, which has no `enabled_at_start`). Base
+runs below are of these tests with the product reverted: on `52bc607a` each named test fails, by
+the behaviour (the setting ignored) unless it is said to fail for want of `enabled_at_start`;
+the three named guards pass there.
+
+- *The latch.* `jobs/activation.py` `enabled_at_start(settings_manager)` reads the setting once,
+  as soon as the CLI's settings exist and before any extension loads (`cli/entry.py`
+  `_latch_jobs_switch`, right after the settings manager is built), and `aelix status` reads it
+  the same way before its own extension load (`cli/status.py`). It records `_switched_off`, so
+  `is_active()` — now `ACTIVE and not _switched_off` — answers false from then on, and the
+  block that builds the service keeps its `is_active()` condition. Each reader of the gate (the
+  `bash` tool and its background offer, the agents extension's background actions,
+  `ExtensionAPI.jobs` and `post_notice`, the facade, the print drain) reads `is_active()` when it
+  runs. Measured, the gate on and the setting false against the gate off, field by field: a `-p`
+  launch builds no service and no inbox and offers the model the same tools — no `job`, no
+  `job_stop`, no `spawn`, no background `bash` (`::test_switched_off_a_print_run_is_the_gate_off_run`);
+  `run_tui` is handed no `jobs`, so the TUI has no footer segment and no `/jobs`
+  (`::test_switched_off_the_tui_gets_no_jobs_so_no_footer_and_no_jobs_command`); every global
+  extension's `setup()`, in the trust-vote load as in the launch's own load, sees `is_active()`,
+  `hasattr(aelix, "jobs")`, `hasattr(aelix, "post_notice")` and the `.jobs` error exactly as
+  with the gate off (`::test_switched_off_every_extension_setup_sees_the_gate_off_the_trust_vote_load_too`;
+  the extension probe of `::test_switched_off_an_extension_sees_jobs_and_post_notice_as_the_gate_off_shows_them`
+  fails on `52bc607a` for want of `enabled_at_start`); and so does `aelix status`'s load
+  (`::test_switched_off_aelix_status_loads_its_extensions_with_the_gate_off`). On `639dcdf6`, the
+  first round, the switch was read only at the service condition: the trust-vote load's
+  `setup()` saw `is_active()` true, `post_notice` and a `JobsInactive` `.jobs`, and `aelix
+  status` never read it (verify F3, Codex C1); both tests fail there. With the setting absent or
+  `true` the launch is today's and stderr says nothing about it (`::test_with_the_setting_absent_or_true_jobs_are_on_as_before`,
+  a guard). The entry points swept for a read before the latch, by mode, are in
+  `.omc/probes/777c0-778-782/fix-r1/entry-point-sweep-r1.txt`. Outside #778 and unchanged since
+  #722: with the gate on and no setting, the trust-vote load's `setup()` sees `is_active()` true,
+  `post_notice` present and `JobsInactive` on `.jobs`, because no service is built yet (the
+  round-2 verify's `p778_voteload.py`, its "on" run).
+- *The value.* `SettingsManager.get_background_jobs_settings()` also returns `enabled`, beside
+  `limits` and `maxTotal` (`::test_the_settings_keep_their_other_keys`), and
+  `get_background_jobs_enabled()` reads it, from the global scope only, as `get_features_agents`
+  does: a trusted repository's `.aelix/settings.json` neither turns jobs off nor back on
+  (`::test_a_project_value_is_ignored`, failing on `52bc607a` for want of `enabled_at_start`). A
+  value that is not a bool counts as `true`, and a `backgroundJobs` that is not an object as
+  absent, each with one warning on stderr (`::test_a_value_that_is_not_a_bool_warns_once_and_jobs_stay_on`:
+  `"no"`, `0`, `null`, `"false"`; `::test_a_background_jobs_value_that_is_not_an_object_warns_once_and_jobs_stay_on`:
+  `false`, a list, a string — silent on `639dcdf6`, verify F7; `aelix status` says it once too,
+  `::test_aelix_status_warns_once_about_a_background_jobs_that_is_not_an_object`). It is read once: a change while
+  aelix runs changes nothing until the next launch (`::test_it_is_read_once_a_change_while_running_changes_nothing`,
+  failing on `52bc607a` for want of `enabled_at_start`).
+- *`/settings`.* A "Background jobs" row after "Agent delegation" writes the global key and says
+  it takes effect after a restart, as that row does (the lead's call, R13), and the project file
+  is not written (`::test_the_settings_row_writes_the_global_key_and_applies_next_launch`). Like
+  that row's `features.agents`, it writes `backgroundJobs.enabled` alone, over the object as the
+  file holds it then: a limit another writer changed meanwhile stays
+  (`::test_the_row_writes_only_its_key_over_what_another_writer_changed`; on `639dcdf6` the whole
+  object was written from the manager's copy, verify F6). The settings writer's nested merge
+  (`SettingsManager._persist_scoped_settings`) now takes a plain-object field as it takes a
+  dataclass one; every other nested write is of a dataclass field, as before. The row is in the
+  menu only while the gate is on (`activation.gate_on()`), so that before S3e nothing offers a
+  setting nothing reads (this lane's call; `::test_with_the_gate_off_there_is_no_row`, a guard),
+  and it stays in a launch the setting switched off, so jobs can be turned back on
+  (`::test_switched_off_the_row_is_still_offered_so_jobs_can_be_turned_back_on`, failing on
+  `52bc607a` for want of `enabled_at_start`). What the flip must update: with the gate on,
+  `tests/tui/test_settings_rows.py::test_build_rows_count_and_keys` counts 25 rows and
+  `::test_every_bool_row_is_dispatchable` 14 bool rows (verify r1), not 24 and 13.
+- *A delegated child* reads the same global file at its own start: a parent launched with the
+  setting false runs a foreground agent whose `bash` offers no `run_in_background`
+  (`::test_a_delegated_child_reads_the_same_value[setting-false]`, POSIX); with the setting absent
+  the same child offers it (`[setting-absent]`, a guard). Both processes are gated by
+  `tests/jobs/gated_cli.py` (#777 PR c0). A child is granted built-in tools only, so `job` never
+  reaches its request either way.
+- *Limits.* Read at start only. Turning jobs off leaves the job records already in a session file
+  (`aelix.job` facts, notice entries) where they are; what reads them then is S3e's rollback test.
+  The setting reference goes into S3e's `background-jobs.md`.

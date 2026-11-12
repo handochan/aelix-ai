@@ -151,10 +151,13 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
 
     The read closures call the existing typed getters (consuming the API — no new
     fields on the pinned Settings dataclass). Order matches appendix O of the
-    roadmap: the live-effect rows first, then the persist-only block.
+    roadmap: the live-effect rows first, then the persist-only block. The
+    "Background jobs" row (#778) follows "Agent delegation" only while the job
+    gate is on (``jobs/activation.py`` :func:`gate_on`): with it off nothing
+    reads the setting, and a row would be the inert kind #84 removed.
     """
 
-    return [
+    rows = [
         # --- LIVE-effect rows (dual-write: persist + apply this run) ----------
         SettingsRow(
             key="theme",
@@ -491,6 +494,27 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             ),
         ),
     ]
+    from aelix_coding_agent.jobs import activation as jobs_activation
+
+    if jobs_activation.gate_on():
+        after = next(i for i, row in enumerate(rows) if row.key == "features_agents")
+        rows.insert(after + 1, _BACKGROUND_JOBS_ROW)
+    return rows
+
+
+#: #778 — the off switch, ``backgroundJobs.enabled`` in the GLOBAL settings. Read
+#: once at start (``jobs/activation.py`` ``enabled_at_start``) and by a delegated
+#: child at its own start, so like ``features_agents`` it is persist-only and
+#: says it applies at the next launch. Only in the menu while the gate is on.
+_BACKGROUND_JOBS_ROW = SettingsRow(
+    key="background_jobs",
+    label="Background jobs",
+    kind="bool",
+    read=lambda s: _on_off(s.get_background_jobs_enabled()),
+    help="Background agents and bash commands (/jobs). Persisted; applies next launch.",
+    apply_note="takes effect after you restart aelix",
+    live=False,
+)
 
 
 def _next_enum(current: str, choices: tuple[str, ...]) -> str:
@@ -650,6 +674,8 @@ _BOOL_GETTERS: dict[str, str] = {
     "check_for_updates": "get_check_for_updates",
     # #609 — the automatic model catalog check (same table contract).
     "check_model_catalog": "get_check_model_catalog",
+    # #778 — the background-jobs off switch (same table contract).
+    "background_jobs": "get_background_jobs_enabled",
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
@@ -668,6 +694,7 @@ _BOOL_SETTERS: dict[str, str] = {
     # #244 — see the getter note above; the row was undispatchable on both halves.
     "check_for_updates": "set_check_for_updates",
     "check_model_catalog": "set_check_model_catalog",
+    "background_jobs": "set_background_jobs_enabled",
 }
 # The bool rows whose live half is PUSH (see the module docstring): the shell
 # mirrors ``ApplyResult.live`` onto a renderer flag, so the session changes

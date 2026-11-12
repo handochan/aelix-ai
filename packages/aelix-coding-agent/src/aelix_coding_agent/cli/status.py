@@ -481,6 +481,9 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     from aelix_coding_agent.core.extension_selection import describe_record, extension_filter
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
+    # #778 — the extensions' ``setup()`` see background jobs as a launch here
+    # would: the GLOBAL ``backgroundJobs.enabled`` read before they load.
+    _latch_jobs_switch(cwd, agent_dir)
     loaded = await discover_and_load_extensions(
         [],
         cwd=cwd,
@@ -544,6 +547,26 @@ def _extension_lists(cwd: Path, agent_dir: str | None, project_trusted: bool) ->
         )
     except Exception:  # noqa: BLE001 — an unreadable file filters nothing here
         return SettingsLists()
+
+
+def _latch_jobs_switch(cwd: Path, agent_dir: str | None) -> None:
+    """Read the GLOBAL ``backgroundJobs.enabled`` once, as a launch does before its
+    first extension loads (#778, ``jobs/activation.py`` ``enabled_at_start``); a value
+    that is not a bool warns on stderr."""
+
+    from aelix_ai.settings import SettingsManager
+
+    from aelix_coding_agent.jobs import activation
+
+    try:
+        manager = SettingsManager.create(
+            cwd=str(cwd),
+            agent_dir=Path(agent_dir) if agent_dir is not None else None,
+            project_trusted=False,
+        )
+    except Exception:  # noqa: BLE001 — status reports; it does not fail on a settings file
+        return
+    activation.enabled_at_start(manager, warn=lambda text: print(f"Warning: {text}", file=sys.stderr))
 
 
 def _default_project_trust(cwd: Path, agent_dir: str | None) -> DefaultProjectTrust:

@@ -3072,12 +3072,12 @@ async def _async_main(argv: list[str]) -> int:
             f"Warning: settings ({setting_err.scope}): {setting_err.error}",
             file=sys.stderr,
         )
+    # #778 — background jobs' GLOBAL off switch, read once, before any extension can read the gate.
+    _latch_jobs_switch(settings_manager)
 
-    # (ADR-0196) The WP-2 settings default-model seed USED to sit here. It now
-    # runs AFTER the agent-profile overlay further down — see the relocated block
-    # — because a profile's ``model:`` has to occupy ``parsed.model`` before the
-    # seed decides whether the gap needs filling. Nothing between here and there
-    # reads ``parsed.model`` / ``parsed.provider`` / ``default_provider``.
+    # (ADR-0196) The WP-2 default-model seed USED to sit here; it runs AFTER the
+    # agent-profile overlay below, because a profile's ``model:`` must occupy
+    # ``parsed.model`` first. Nothing between reads ``parsed.model``/``provider``.
 
     # === Permission posture (WP-0, ADR-0157) — built ONCE, held by reference ===
     # The shift+tab-cycled posture + the PermissionExtension are constructed here
@@ -3331,9 +3331,9 @@ async def _async_main(argv: list[str]) -> int:
         )
 
     # #722 (ADR-0293) — the process's one job service and its bridge extension,
-    # built only while background jobs are active (``jobs/activation.py``:
-    # ``ACTIVE`` is off until #611 S3, so on main neither exists, the
-    # ``backgroundJobs`` settings are never read, and nothing below runs).
+    # built only while background jobs are active (``jobs/activation.py``: off
+    # until #611 S3, settings unread) and, #778, the GLOBAL settings do not say
+    # ``backgroundJobs.enabled: false``, as latched once above.
     jobs_service: Any = None
     jobs_ext: Any = None
     from aelix_coding_agent.jobs import activation as jobs_activation
@@ -5919,6 +5919,21 @@ def _with_bash_kind(service: Any) -> Any:
 
     register(service)
     return service
+
+
+def _latch_jobs_switch(settings_manager: Any) -> bool:
+    """#778 — read the GLOBAL ``backgroundJobs.enabled`` once, as soon as the settings exist.
+
+    Before the trust-vote extension load, so that no extension's ``setup()`` sees
+    the gate on in a launch the setting switched off (#778 fix round 1); the
+    service condition then reads ``is_active()``. A warning goes to stderr.
+    """
+
+    from aelix_coding_agent.jobs import activation
+
+    return activation.enabled_at_start(
+        settings_manager, warn=lambda text: print(f"Warning: {text}", file=sys.stderr)
+    )
 
 
 __all__ = [
