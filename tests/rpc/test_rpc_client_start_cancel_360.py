@@ -229,7 +229,7 @@ class _JobWitness:
 async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness) -> None:
     """:func:`_states`' 5 s poll per pid; on a survivor, 10 s more of it and what the job held.
 
-    #772 (windows-latest py3.13, 5 of 14 runs): the grandchild still ``alive``
+    #772 (windows-latest py3.13, 5 of 12 runs): the grandchild still ``alive``
     after that 5 s poll. The extra poll says whether it died late or never; the
     witness says whether it was in the job when the abandon killed it.
     """

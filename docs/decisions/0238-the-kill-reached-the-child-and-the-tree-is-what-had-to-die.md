@@ -314,7 +314,12 @@ resumes a process from the process handle `Popen` keeps. The primitive exists no
 suspended yet; see the 2026-11-10 note at the end.)* The belt-and-braces is ordering:
 win32 `hard_kill` runs `taskkill /T /F` **first**, while the root is still
 alive, so `/T` can walk to an escapee through its live parent link, and
-`TerminateJobObject` second.
+`TerminateJobObject` second. *(2026-11-12 note, #772: a root that has already exited leaves
+`/T` nothing to walk. #772 infers, without a Windows measurement, that the window is reached on
+windows-latest, where `sys.executable` is a venv launcher that creates the interpreter at once
+(CPython `PC/venvlauncher.c`). `RpcClient.start`
+spawns suspended since #772; the background `bash` already did (ADR-0297). The print-mode
+delegation child and the other spawn sites keep the window. See ADR-0201's open item 7 note.)*
 
 ## What the tests pin
 

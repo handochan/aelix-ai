@@ -76,9 +76,12 @@ and 1.65 ms max under load, against a shell that reaches its first ``fork`` at
 when the process is resumed with ``NtResumeProcess``, which needs only the
 process handle ``Popen`` keeps (``Popen`` closes the THREAD handle, which is
 what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
-``attach(suspended=True)`` are that primitive (#611 S2b); its one caller is the
-background ``bash`` of #611 S2d (behind the job gate, ADR-0297). Every other
-spawn keeps the window. Belt and braces:
+``attach(suspended=True)`` are that primitive (#611 S2b); its callers are the
+background ``bash`` of #611 S2d (behind the job gate, ADR-0297) and, since #772,
+``RpcClient.start``. A venv's ``python.exe`` on Windows is a launcher that starts
+the interpreter at once (CPython ``PC/venvlauncher.c``), so a ``sys.executable``
+child can have a child before its attach. Every other spawn keeps the window.
+Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.

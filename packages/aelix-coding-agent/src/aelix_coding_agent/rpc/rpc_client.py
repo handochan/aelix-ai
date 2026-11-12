@@ -484,6 +484,14 @@ class RpcClient:
         parent had exited. While it runs, a second ``start`` and every command
         are refused, and :meth:`stop` asks it to give up and waits.
 
+        The job holds what the child starts at once only because the child is
+        created suspended and resumed by the attach (#772, win32 where
+        ``NtResumeProcess`` resolves). Unsuspended, a premature exit left the
+        grandchild alive 5 s after this raised in 5 of 12 windows-latest py3.13
+        runs. Inferred, not measured there: on that runner the child is the venv
+        launcher, which starts the interpreter at once, before the attach, and
+        once the root is dead ``taskkill /T`` has no live parent link to walk.
+
         Two exits do not hold this. CPython's: an exception raised inside
         ``create_subprocess_exec`` after its fork (its own pipe setup failing)
         closes the transport there, which ends the ROOT only (``Popen.kill``),

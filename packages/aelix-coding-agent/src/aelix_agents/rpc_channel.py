@@ -388,7 +388,7 @@ class RpcChannel:
             #
             # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
             # the event ``prompt_and_wait`` itself waits on
-            # (``rpc_client.py:1257-1260``), so a line after it is by definition
+            # (``rpc_client.py:1287-1290``), so a line after it is by definition
             # not this turn's data — and folding one in is last-write-wins on
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
@@ -584,7 +584,7 @@ class RpcChannel:
             # BORROWED, never owned — ``tree_owned=False`` is what stops §A.6's
             # closing rules from touching it: :meth:`RpcClient.stop` still owes
             # this tree a soft -> grace -> hard sequence and closes it itself
-            # (``rpc_client.py:868-872``). Closing it here would disarm both
+            # (``rpc_client.py:898-902``). Closing it here would disarm both
             # legs permanently, since ``soft_kill``/``hard_kill`` early-return
             # on ``closed``.
             #
@@ -865,7 +865,7 @@ class RpcChannel:
         on win32 ``hard_kill()`` runs ``subprocess.run(taskkill, timeout=5)``
         there, where today's ``os.kill`` was instantaneous. Accepted, and it is
         the stall :meth:`RpcClient.stop` already pays on the loop at the same
-        shape (``rpc_client.py:736-738``), for the same reason: the alternative to a
+        shape (``rpc_client.py:766-768``), for the same reason: the alternative to a
         bounded stall is a leaked tree. Both obvious remedies are worse — a
         ``terminate_job``-only path for synchronous callers drops the ``/T``
         walk, and moving the kill onto a thread inside ``reap`` would insert an
