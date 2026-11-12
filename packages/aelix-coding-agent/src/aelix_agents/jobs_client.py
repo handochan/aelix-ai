@@ -81,6 +81,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import re
 import sys
 import weakref
 from collections.abc import Callable, Mapping, Sequence
@@ -526,7 +527,7 @@ class DelegationRunner:
             # ``_run`` refused, or the spawn failed: the start call's error, and
             # no notice (ADR-0293 §3).
             ctx.launch_failed(result.error or result.summary or "the agent did not start")
-        text = _result_text(result)
+        text = _utf8_safe(_result_text(result))
         self.text = text
         # ``key`` is named at the launch (``named``): a run that never launched writes none.
         self.result_file = await _write_result(launch.host.session(), entry.key, text)
@@ -534,7 +535,7 @@ class DelegationRunner:
         entry.status = status
         return ClientOutcome(
             status=status,
-            brief=_brief(result),
+            brief=_utf8_safe(_brief(result)),
             payload={
                 "text": text,
                 "agent_id": entry.agent_id,
@@ -552,9 +553,9 @@ class DelegationRunner:
         with contextlib.suppress(Exception):
             ctx.progress(
                 {
-                    "tool": progress.current_tool,
+                    "tool": None if progress.current_tool is None else _utf8_safe(progress.current_tool),
                     "tokens": progress.tokens,
-                    "last_text": progress.last_text,
+                    "last_text": None if progress.last_text is None else _utf8_safe(progress.last_text),
                     "state": progress.state,
                 }
             )
@@ -855,7 +856,7 @@ class DelegationKindAdapter:
             brief="its last answer, read from its session; aelix could not confirm it finished",
             payload={
                 **_payload_of(start),
-                "text": answer.text,
+                "text": _utf8_safe(answer.text),
                 "rel": answer.rel,
                 "recovered": True,
             },
@@ -1275,10 +1276,11 @@ async def result_text(
                 "may still be running.",
                 True,
             )
+        said = _utf8_safe(answer.text)
         text = (
-            answer.text
+            said
             if recovered
-            else "Its last answer, read from its session file after a restart:\n\n" + answer.text
+            else "Its last answer, read from its session file after a restart:\n\n" + said
         )
     if recovered:
         text = f"{RECOVERED_CAVEAT}\n\n{text}"
@@ -1338,6 +1340,28 @@ def _is_recovered(snap: JobSnapshot) -> bool:
 
 
 # === Helpers ===========================================================================
+
+
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def _utf8_safe(text: str) -> str:
+    """``text`` with each lone surrogate replaced by U+FFFD: what a child says, as the job layer holds it (#782).
+
+    A lone surrogate (``"\\ud83d"``, half an emoji) is a legal ``str`` that a
+    child's JSON stream and its session file can carry, and no UTF-8 encoder
+    writes it. A background agent's text is cut by UTF-8 bytes for the notice's
+    brief and body and paged by bytes, which raised ``UnicodeEncodeError`` on it
+    — its job ended with no outcome and no notice, and ``result`` raised — and
+    its result file refused it. It is made whole once, where the child's text enters this
+    client: the run's result and brief, its progress (the tool it runs, its last
+    line), and an answer read back from the child's file after a restart.
+    Replaced, not dropped, as ``sendable()``
+    replaces it in a chain step's ``{previous}``, so the reader sees that a
+    character was there. Every other character is left as it is.
+    """
+
+    return _LONE_SURROGATE.sub("\ufffd", text)
 
 
 def _result_text(result: SubagentResult) -> str:
