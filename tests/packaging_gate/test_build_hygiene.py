@@ -496,6 +496,27 @@ def test_sdist_carries_no_developer_state(root_sdist: list[str]) -> None:
     assert leaked == [], f"developer state leaked into the root sdist: {leaked}"
 
 
+#: #777 — the gated test launcher and the ``sitecustomize`` it puts first on a
+#: delegated child's ``PYTHONPATH``. Python imports a ``sitecustomize.py`` it
+#: finds on the path at every start-up, so one that shipped would run in every
+#: interpreter of the installing user's environment.
+GATED_LAUNCHER_FILES = ("tests/jobs/gated_cli.py", "tests/jobs/gated_site/sitecustomize.py")
+
+
+def test_the_gated_test_launcher_ships_in_no_artifact(
+    root_sdist: list[str],
+    coding_agent_wheel: list[str],
+    coding_agent_direct_wheel: list[str],
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    for path in GATED_LAUNCHER_FILES:
+        assert (REPO_ROOT / path).is_file(), f"{path} moved: name it here again"
+    basenames = {path.rsplit("/", 1)[-1] for path in GATED_LAUNCHER_FILES}
+    for artifact in (root_sdist, coding_agent_wheel, coding_agent_direct_wheel, release_sdist[1]):
+        shipped = [name for name in artifact if name.rsplit("/", 1)[-1] in basenames]
+        assert shipped == [], f"the gated test launcher shipped: {shipped}"
+
+
 def test_sdist_still_carries_sources_and_licensing(root_sdist: list[str]) -> None:
     """The sdist exclusions did not amputate the distribution itself."""
     present = set(root_sdist)
