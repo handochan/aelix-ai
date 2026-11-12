@@ -2,7 +2,7 @@
 
 Status: Accepted (2026-11-03; owner decisions 1–4 settled 2026-11-03; review
 rounds 1 and 2 2026-11-04; #762 dated note 2026-11-11, its fix round 1
-2026-11-12)
+2026-11-12; #768 dated note 2026-11-12)
 Date: 2026-11-03
 Issue: #657 (found while implementing #646 — the impl report's "Write-path
 sweep"). Owner-approved, one lane, one commit, plus one review-round commit.
@@ -619,6 +619,13 @@ ksh 93u+m/1.0.10 and mksh 59c (`.omc/probes/762/impl/`).
     ALLOW on `71f837eb`, `b0039212` and now (classified only). That and the
     shells' other unescaping inside backticks (`\\`, `\$`, `` \` ``) are
     left to a follow-up issue (*Not covered* below).
+    *Dated note 2026-11-12 (#768):* inside backticks and inside a `$(…)` in
+    an expanded here-document body these are now also read joined, beside
+    this reading, and the higher verdict holds; inside `"$(…)"` they stay
+    kept (all nine shells kept a `\⏎` in a `'…'` there). Backtick text is
+    also re-read as the shells unescape it. ``echo `find . '-de\⏎lete'` ``
+    is DENY now. ADR-0158's #768 note (under #742) has the shells, the cost
+    and the sweeps.
 - **Every other entry point was checked** (the before and after verdicts are
   rows of `tests/builtin/test_bash_arith_names_762.py`). These asked on
   `71f837eb` and still do: `$((…))` in a here-document body (tree-sitter
@@ -687,7 +694,9 @@ ksh 93u+m/1.0.10 and mksh 59c (`.omc/probes/762/impl/`).
   `` \` `` and remove `\⏎` there first, so
   ``echo `echo "${x:-'\$(: > MARK)'}"` `` (all nine shells, the round-3
   verify's `out/bt2-table.txt`) and ``echo `find . '-de\⏎lete'` `` (above)
-  are ALLOW, as on `71f837eb` (a follow-up issue);
+  are ALLOW, as on `71f837eb` (a follow-up issue); *#768 (2026-11-12) covers both*:
+  the first asks and its `rm -rf ~` twin is DENY, and the second is DENY
+  (ADR-0158's #768 note);
   Windows Git Bash and the shells' interactive modes were not measured. The
   round-1 verify ran the issue's eight forms in Linux bash 5.3.20 (docker
   `bash:5.3`): all eight created the marker there, and `7cbc282d` asks on

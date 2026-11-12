@@ -29,7 +29,7 @@ import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any
+from typing import Any, Protocol
 
 from aelix_coding_agent.builtin.shell_classifiers.dialect import Dialect
 
@@ -2562,6 +2562,7 @@ def _walk_source(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
     verdict = _judge(root, source, dialect=dialect)
     verdict = max(verdict, _joined_lines_verdict(root, source, dialect=dialect))
     verdict = max(verdict, _false_comments_verdict(root, source, dialect=dialect))
+    verdict = max(verdict, _misread_verdict(root, source, dialect=dialect))
     redirects, digits = _scan_redirects(root)
     if not redirects:
         return verdict
@@ -3053,15 +3054,81 @@ def _charge_reread(size: int) -> bool:
     return True
 
 
+# #768: the bytes the readings #768 adds (:func:`_backtick_unescaped_verdict`,
+# :func:`_substitution_joined_verdict`) may re-read in this :func:`classify` call,
+# a budget of their own as large as :data:`_REREAD_BUDGET`'s. While one of
+# them runs, every re-read it makes, nested ones included, is paid from this
+# one (:func:`_on_backtick_budget`), so they never take a byte the #742 and
+# #762 re-reads would have used: those spend what they spent before #768 and
+# find the verdicts they found then. ``None`` (a direct call) does not limit.
+_BACKTICK_BUDGET: ContextVar[list[int] | None] = ContextVar(
+    "bash_classifier_backtick_budget", default=None
+)
+
+
+class _Read(Protocol):
+    """A reading :func:`_on_backtick_budget` runs: no arguments, a verdict."""
+
+    def __call__(self) -> Verdict: ...
+
+
+def _on_backtick_budget(read: _Read) -> Verdict:
+    """``read()`` with every re-read in it paid from :data:`_BACKTICK_BUDGET`."""
+
+    return _on_budget(_BACKTICK_BUDGET, read)
+
+
+# #768 fix round 1: the bytes the readings of :func:`_misread_verdict` and of a
+# ``$'…'`` bash decodes in a ``${…}`` operand may re-read, a third budget as
+# large as the other two, so those readings take nothing from the #742, #762
+# and #768 re-reads either. Fix round 2: the #768 readings nested in one of
+# them are paid from it too (:func:`_misread_reread`).
+_MISREAD_BUDGET: ContextVar[list[int] | None] = ContextVar(
+    "bash_classifier_misread_budget", default=None
+)
+# #768 finish (the round-3 verify's F3): how many times the other two budgets'
+# size :data:`_MISREAD_BUDGET` holds. Paying the nested readings from it left
+# too little for the edited re-read of the whole source: after three lines of
+# ``echo `[[ x =~ (\`echo \\$a\` …) ]]` ``, ``echo "$ $(rm -rf ~)"`` asked
+# (DENY on 866b0e5b). Three times holds the DENY of that row and of
+# ``[ a > ~/.bashrc ]``, ``find / -de""\lete``, ``echo == ; rm -rf ~ ; ]``
+# and ``echo "${x:-$'\x24(rm -rf ~)'}"`` after 3 and after 10 such lines,
+# either side; twice does not after 10.
+_MISREAD_SHARE = 3
+
+
+def _on_budget(budget: ContextVar[list[int] | None], read: _Read) -> Verdict:
+    """``read()`` with every re-read in it paid from ``budget``."""
+
+    token = _REREAD_BUDGET.set(budget.get())
+    try:
+        return read()
+    finally:
+        _REREAD_BUDGET.reset(token)
+
+
+def _can_pay(budget: ContextVar[list[int] | None], size: int) -> bool:
+    """Whether ``budget`` holds ``size`` bytes, before a reading that large is built."""
+
+    left = budget.get()
+    return left is None or left[0] >= size
+
+
 def _reread(
-    text: bytes, *, dialect: Dialect, expanded: bool = False, joined: bool = False
+    text: bytes,
+    *,
+    dialect: Dialect,
+    expanded: bool = False,
+    joined: bool = False,
+    command: bool = False,
 ) -> Verdict:
     """Classify ``text`` the shells run, paid from the budget; ASK when it cannot be read.
 
     ``expanded`` reads it as an expanded here-document body
     (:func:`_reread_as_expanded`), ``joined`` as a whole command whose line
     continuations were joined (:func:`_reread_joined`, #762 fix round 1),
-    otherwise as command lines (:func:`_reread_lines`). A re-read the budget
+    ``command`` as :func:`classify` reads a command (:func:`_reread_command`,
+    #768), otherwise as command lines (:func:`_reread_lines`). A re-read the budget
     cannot pay, one nested
     deeper than :data:`_REREAD_DEPTH_LIMIT`, and one that runs out of stack
     are ASK here, so the walk that asked for it keeps any DENY it already
@@ -3077,6 +3144,8 @@ def _reread(
     try:
         if expanded:
             return _reread_as_expanded(text, dialect=dialect)
+        if command:
+            return _reread_command(text, dialect=dialect)
         if joined:
             return _reread_joined(text, dialect=dialect)
         return _reread_lines(text, dialect=dialect)
@@ -3322,6 +3391,10 @@ def _heredoc_end_rereads(
 def _reread_lines(text: bytes, *, dialect: Dialect) -> Verdict:
     """Classify lines the shells run as commands; ASK at least.
 
+    #768: when ``text`` does not parse, the backtick substitutions tree-sitter
+    still found in it are read as the shells unescape them
+    (:func:`_backtick_readings_verdict`, paid from :data:`_BACKTICK_BUDGET`).
+
     Fix round 1: when ``text`` does not parse, its prefix that ends before
     the first statement or line tree-sitter cannot parse (or, when that is
     the first, before its last line) is classified instead, each shorter
@@ -3333,16 +3406,21 @@ def _reread_lines(text: bytes, *, dialect: Dialect) -> Verdict:
 
     if _PARSER is None:
         return Verdict.ASK
+    worst = Verdict.ASK
+    whole = True
     while text:
         reread = _PARSER.parse(text).root_node
         if not reread.has_error:
-            return max(Verdict.ASK, _walk_source(reread, text, dialect=dialect))
+            return max(worst, _walk_source(reread, text, dialect=dialect))
+        if whole:
+            worst = max(worst, _backtick_readings_verdict(reread, text, dialect=dialect))
+            whole = False
         statement = next((c.start_byte for c in reread.children if c.has_error), 0)
         cuts = [c for c in (statement, _line_start(text, _error_byte(reread))) if 0 < c < len(text)]
         text = text[: max(cuts) if cuts else _line_start(text, len(text) - 1)]
         if not _charge_reread(len(text)):
             break
-    return Verdict.ASK
+    return worst
 
 
 def _error_byte(root: Any) -> int:
@@ -3377,6 +3455,56 @@ def _error_byte(root: Any) -> int:
 # A backslash inside backticks is removed before ``$``, ````` ``, ``\\`` and
 # a newline (with the newline).
 _BACKTICK_ESCAPE = re.compile(rb"\\([$`\\\n])")
+# #768: and before ``"`` too, by some shells, when the backticks are in a
+# double-quoted string or an expanded here-document body (measured,
+# ``.omc/probes/768/impl/``: ``printf '[%s]\n' "`printf %s \"a\"`"`` printed
+# ``[a]`` in all nine shells; in a here-document body dash and ksh93 printed
+# ``[a]`` and bash, zsh and mksh ``["a"]``; in a ``${…}`` operand inside
+# double quotes bash printed ``["a"]`` and the other four families ``[a]``).
+_BACKTICK_DQ_ESCAPE = re.compile(rb'\\([$`\\\n"])')
+
+
+def _unescaped(text: bytes, escape: re.Pattern[bytes]) -> bytes:
+    """``text`` with each backslash ``escape`` matches removed, a ``\\⏎`` with its newline.
+
+    #768: a ``$`` unescaped from ``\\$`` that a backslash and a byte other
+    than a newline then follow keeps its backslash. No shell starts an
+    expansion at ``$\\`` (measured: ``printf '[%s]\\n' $\\(x\\)`` printed
+    ``[$(x)]`` in all nine), and tree-sitter-bash 0.25.1 rejects the
+    unquoted ``$\\``, so ``echo `echo \\$\\(ls\\)``` would otherwise read as
+    an error. Inside a ``'…'`` the read text holds that one backslash more
+    than the shells' does.
+
+    Fix round 1: built in one pass. One insert per such ``$`` made it
+    quadratic (the round-1 verify: 1.9 s for 240,000 ``\\$\\a`` in 960 KB).
+    A ``$`` right before another that keeps its backslash keeps its own, as
+    when the inserts ran from the end.
+    """
+
+    out = bytearray()
+    dollars: list[int] = []
+    last = 0
+    for match in escape.finditer(text):
+        out += text[last : match.start()]
+        if match.group(1) == b"$":
+            dollars.append(len(out))
+        out += match.group(1).replace(b"\n", b"")
+        last = match.end()
+    out += text[last:]
+    read = bytes(out)
+    keeps: list[int] = []
+    for at in reversed(dollars):
+        if (keeps and keeps[-1] == at + 1) or (
+            read[at + 1 : at + 2] == b"\\" and read[at + 2 : at + 3] not in (b"\n", b"")
+        ):
+            keeps.append(at)
+    parts: list[bytes] = []
+    last = 0
+    for at in reversed(keeps):
+        parts += [read[last:at], b"\\"]
+        last = at
+    parts.append(read[last:])
+    return b"".join(parts)
 
 
 def _substituted_heredocs_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
@@ -3529,7 +3657,7 @@ def _reread_as_expanded(body: bytes, *, dialect: Dialect) -> Verdict:
     text = b': "' + body.replace(b'"', b'\\"') + b'"'
     reread = _PARSER.parse(text).root_node
     if reread.has_error:
-        return Verdict.ASK
+        return max(Verdict.ASK, _backtick_readings_verdict(reread, text, dialect=dialect))
     return _walk_source(reread, text, dialect=dialect)
 
 
@@ -3565,8 +3693,13 @@ def _reread_as_expanded(body: bytes, *, dialect: Dialect) -> Verdict:
 # ``${…}`` operand. Keeping it there hides no code from this reading: a
 # quote that still quotes keeps its content literal, and a comment the
 # shells continue only hides the next line from them. A quoted argument's
-# text can differ, though: ``echo `find . '-de\⏎lete'``` is ALLOW, and the
-# nine shells pass ``-delete`` there (#762 finish, left to a follow-up).
+# text can differ, though: the nine shells pass ``-delete`` to the ``find``
+# of ``echo `find . '-de\⏎lete'```, which was ALLOW on 363accf2 (#762
+# finish). #768 adds a reading joined inside backticks and inside a
+# here-document body's ``$(…)`` too (:func:`_substitution_joined_verdict`),
+# and the higher verdict holds; that command is DENY now. Inside ``"$(…)"``
+# it stays kept: all nine kept a ``\⏎`` in a ``'…'`` there
+# (``.omc/probes/768/impl/``).
 #
 # Fix round 2 (``.omc/probes/762/fix-r2/shells/``):
 #
@@ -3589,16 +3722,17 @@ def _reread_as_expanded(body: bytes, *, dialect: Dialect) -> Verdict:
 _CONTINUATION = re.compile(rb"\\+\n")
 
 
-def _joined_lines(root: Any, source: bytes) -> bytes:
+def _joined_lines(root: Any, source: bytes, kept: list[tuple[int, int]] | None = None) -> bytes:
     """``source`` with the ``\\⏎`` the shells remove before they read it taken out.
 
     Each odd run of backslashes that ends a line loses its last backslash and
-    the newline, unless that backslash is in :func:`_kept_text`, where the
-    shells keep it at the top level of a command (nested, some remove it;
-    see the block comment above).
+    the newline, unless that backslash is in ``kept``, by default
+    :func:`_kept_text`, where the shells keep it at the top level of a command
+    (nested, some remove it; see the block comment above).
     """
 
-    kept = _kept_text(root, source)
+    if kept is None:
+        kept = _kept_text(root, source)
     k = 0
     parts: list[bytes] = []
     last = 0
@@ -3619,7 +3753,9 @@ def _kept_text(root: Any, source: bytes) -> list[tuple[int, int]]:
 
     Nested inside backticks, ``$(…)`` in a here-document body or ``"$(…)"``,
     some or all of the shells remove it from these too (see the block
-    comment above :func:`_joined_lines`); the ranges are kept there as well.
+    comment above :func:`_joined_lines`); the ranges are kept there as well,
+    and #768's :func:`_substitution_joined_verdict` reads the first two
+    joined beside this.
     A ``'…'`` or ``$'…'`` that quotes (not one in a ``${…}`` operand inside
     a double-quoted string or an expanded here-document body, fix round 2),
     a comment the shells start (:func:`_starts_a_comment`, fix round 2), and
@@ -3657,9 +3793,75 @@ def _joined_lines_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verd
     if b"\\\n" not in source:
         return Verdict.ALLOW
     joined = _joined_lines(root, source)
+    worst = _substitution_joined_verdict(root, source, joined, dialect=dialect)
     if joined == source:
+        return worst
+    return max(worst, _reread(joined, dialect=dialect, joined=True))
+
+
+def _substitution_joined_verdict(
+    root: Any, source: bytes, joined: bytes, *, dialect: Dialect
+) -> Verdict:
+    """#768: the verdict of ``source`` also joined inside the substitutions the shells join in; ALLOW when that changes nothing.
+
+    Inside backticks all nine shells remove a ``\\⏎`` in a ``'…'``,
+    ``$'…'``, comment or quoted here-document too, and inside a ``$(…)`` in
+    an expanded here-document body seven of the nine do (dash keeps it)
+    (:func:`_joining_substitutions`). This reading joins them there;
+    ``joined``, which keeps them, still counts, and the higher verdict of the
+    two holds. Paid from :data:`_BACKTICK_BUDGET`.
+    """
+
+    if b"`" not in source and b"<<" not in source:
         return Verdict.ALLOW
-    return _reread(joined, dialect=dialect, joined=True)
+    kept = _kept_text(root, source)
+    outside = _outside(kept, _joining_substitutions(root))
+    if len(outside) == len(kept):
+        return Verdict.ALLOW
+    nested = _joined_lines(root, source, outside)
+    if nested in (source, joined):
+        return Verdict.ALLOW
+    return _on_backtick_budget(lambda: _reread(nested, dialect=dialect, joined=True))
+
+
+def _joining_substitutions(root: Any) -> list[tuple[int, int]]:
+    """#768: the byte ranges, sorted, of the outermost substitutions the shells join every ``\\⏎`` in.
+
+    A backtick substitution anywhere (all nine shells), and a ``$(…)`` in an
+    expanded here-document body (seven of nine; measured,
+    ``.omc/probes/768/impl/``: ``cat <<E`` + ``[$(printf %s 'a\\⏎b')]`` +
+    ``E`` printed ``[ab]`` in all but dash, with ``$'…'``, a comment, a
+    ``${…}`` operand and a quoted here-document there too). Not ``"$(…)"``:
+    all nine kept a ``\\⏎`` in a ``'…'`` there.
+    """
+
+    found: list[tuple[int, int]] = []
+    stack = [(root, False)]
+    while stack:
+        node, in_body = stack.pop()
+        if node.type == "command_substitution" and (
+            node.children[0].type == "`" or (in_body and node.children[0].type == "$(")
+        ):
+            found.append((node.start_byte, node.end_byte))
+            continue
+        if node.type not in _QUOTE_TRANSPARENT:
+            in_body = node.type == "heredoc_body"
+        stack.extend((child, in_body) for child in node.children)
+    return sorted(found)
+
+
+def _outside(ranges: list[tuple[int, int]], around: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The sorted ``ranges`` that lie in none of the sorted, disjoint ``around``."""
+
+    kept: list[tuple[int, int]] = []
+    i = 0
+    for lo, hi in ranges:
+        while i < len(around) and around[i][1] <= lo:
+            i += 1
+        if i < len(around) and around[i][0] <= lo and hi <= around[i][1]:
+            continue
+        kept.append((lo, hi))
+    return kept
 
 
 def _reread_joined(text: bytes, *, dialect: Dialect) -> Verdict:
@@ -3671,6 +3873,115 @@ def _reread_joined(text: bytes, *, dialect: Dialect) -> Verdict:
     if reread.has_error:
         return _reread_lines(text, dialect=dialect)
     return _walk_source(reread, text, dialect=dialect)
+
+
+def _reread_command(text: bytes, *, dialect: Dialect) -> Verdict:
+    """#768: classify ``text`` as :func:`classify` reads a command, as low as ALLOW when tree-sitter parses it.
+
+    A text it rejects is ASK at least: the higher of :func:`_reread_lines`'s
+    verdict (which reads its backticks as the shells do) and its joined
+    reading's (:func:`_joined_lines_verdict`). Backtick text the shells
+    unescaped can hold a ``\\⏎`` that was a ``\\\\⏎``: ``echo `echo
+    $\\\\⏎(: > MARK)``` created MARK in seven of the nine shells.
+    """
+
+    if _PARSER is None:
+        return Verdict.ASK
+    reread = _PARSER.parse(text).root_node
+    if not reread.has_error:
+        return _walk_source(reread, text, dialect=dialect)
+    return max(
+        _reread_lines(text, dialect=dialect),
+        _joined_lines_verdict(reread, text, dialect=dialect),
+    )
+
+
+def _rejected_command_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """ASK at least for a command tree-sitter rejects; worse when a reading of it the shells make is.
+
+    Its joined reading (:func:`_joined_lines_verdict`, #762 fix round 2) and,
+    #768, each backtick substitution tree-sitter still found in it read as
+    the shells unescape it (:func:`_backtick_readings_verdict`).
+    tree-sitter-bash 0.25.1 rejects ``echo `echo \\$(rm -rf ~)```, reading
+    ``\\$(`` as an error, so it asked before any reading on 363accf2; its
+    ``: > MARK`` twin created MARK in all nine shells.
+    """
+
+    worst = Verdict.ASK
+    if b"\\\n" in source:
+        worst = max(worst, _joined_lines_verdict(root, source, dialect=dialect))
+    if b"`" in source:
+        worst = max(worst, _backtick_readings_verdict(root, source, dialect=dialect))
+    return worst
+
+
+def _backtick_readings_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """#768: the worst :func:`_backtick_unescaped_verdict` of the backtick substitutions under ``root``.
+
+    For a tree tree-sitter rejected, where :func:`_hidden_code_verdict` does
+    not walk; each reading is paid from :data:`_BACKTICK_BUDGET`. Where the
+    shells end a substitution early, the view is of the whole source, which
+    also reads the statements before the one tree-sitter rejects
+    (``find . -delete; echo `…` `…``` with a stray ``)`` later is DENY);
+    the budget bounds how many such views are built.
+    """
+
+    worst = Verdict.ALLOW
+    whole = (0, len(source))
+    stack = [(root, False)]
+    while stack:
+        node, quoted = stack.pop()
+        if node.type == "command_substitution" and node.children[0].type == "`":
+            worst = max(
+                worst,
+                _backtick_unescaped_verdict(node, source, dialect, quoted=quoted, statement=whole),
+            )
+        if node.type not in _QUOTE_TRANSPARENT:
+            quoted = node.type in _DOUBLE_QUOTED
+        stack.extend((child, quoted) for child in node.children)
+    return worst
+
+
+# #768 fix round 1: the nodes whose children are statements of their own, each
+# a command line tree-sitter can read alone. Fix round 2: a member of an
+# ``&&`` / ``||`` list or of a pipeline too: four ``echo `ls a` `ls b```
+# joined by `` && ``, ``||`` or ``|`` asked on 866b0e5b, as the view held
+# every other member's pair still merged (ALLOW on 363accf2; the round-2
+# verify's F5).
+_STATEMENT_PARENTS = frozenset(
+    {
+        "program",
+        "list",
+        "pipeline",
+        "compound_statement",
+        "subshell",
+        "do_group",
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "while_statement",
+        "case_item",
+        "command_substitution",
+        "process_substitution",
+    }
+)
+
+
+def _with_statements(
+    node: Any, quoted: bool, statement: tuple[int, int]
+) -> list[tuple[Any, bool, tuple[int, int]]]:
+    """``node``'s children for a walk that carries the innermost statement around each node.
+
+    Each child of one of :data:`_STATEMENT_PARENTS` carries its own byte
+    range: the statements, and its keywords, operators and case patterns as
+    well, so a split view of a pair in a case pattern is that pattern read as
+    a command (fix round 2: the round-2 verify's F7). Any other child carries
+    ``node``'s.
+    """
+
+    if node.type in _STATEMENT_PARENTS:
+        return [(child, quoted, (child.start_byte, child.end_byte)) for child in node.children]
+    return [(child, quoted, statement) for child in node.children]
 
 
 # --- #762 fix round 2: a ``#`` tree-sitter reads as a comment and the shells do not ---
@@ -3744,6 +4055,284 @@ def _false_comments_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Ve
     return max(Verdict.ASK, _reread(b"".join(parts), dialect=dialect))
 
 
+# --- #768 fix round 1: words tree-sitter reads otherwise than the shells ---
+#
+# Each of these was ALLOW on 363accf2, and its ``: > MARK`` twin created MARK
+# in the shells named (macOS bash 3.2.57, zsh 5.9, dash and ksh93u+; Linux
+# bash 5.2.37, zsh 5.9, dash 0.5.12, ksh 93u+m/1.0.10 and mksh 59c;
+# ``.omc/probes/768/fix-r1/shells/``).
+#
+# #768's own (the round-1 verify): tree-sitter-bash 0.25.1 keeps the right
+# side of ``=``, ``==`` or ``=~`` in ``[[ … ]]``, and of ``=~`` in ``[ … ]``,
+# as a ``regex`` leaf, and a ``@(…)`` pattern as an ``extglob_pattern`` leaf,
+# so a substitution there was never read: ``[[ x = `:>MARK` ]]`` and
+# ``[ x =~ `:>MARK` ]`` each created MARK in all nine. Such a leaf holding a
+# substitution is read as a word (:func:`_pattern_verdict`).
+#
+# The lead's call, not the owner's: holes older than #768, of the same class,
+# that the round-1 cross-review and verify found and the lead confirmed on
+# main 52b2031b (``.omc/probes/768/lead-check/``). The source is re-read once
+# with each such word written as the shells read it (:func:`_misread_edits`):
+#
+# - ``echo "$ $(: > MARK)"``, with a tab or a newline for the blank, and the
+#   same line in an expanded here-document body (all nine): tree-sitter reads
+#   ``$``, blanks and ``$`` as the special parameter ``$$``, and the ``$`` it
+#   takes is the one of ``$(``. The shells read a lone ``$``, so that ``$``
+#   is escaped, and the command asks at least. ``"$\⏎$(…)"`` is ``$$`` to
+#   them too (none ran it) and is left alone.
+# - ``echo == ; : > MARK ; ]`` (bash, dash, both ksh93 and mksh; zsh stops
+#   at ``==``, which it expands): after ``==`` or ``=~`` in a command's
+#   arguments tree-sitter reads everything up to a ``]`` word as one
+#   ``regex`` node, ``;`` and ``&&`` included, and no walk reads it. The
+#   operator is quoted, and the command asks at least.
+# - ``find / -de""\lete``: tree-sitter ends a word at a backslash right
+#   after a quote, so the arguments read ``-de""`` and ``\lete``, while all
+#   nine pass ``-delete`` (``printf '[%s]'`` printed ``[-delete]``). The
+#   escaped byte is quoted instead (``-de""'l'ete``), which tree-sitter
+#   reads as one word.
+# - ``[ a > MARK ]`` (all nine): tree-sitter reads ``>``, ``>>`` and ``<``
+#   inside ``[ … ]`` as comparisons, and the shells redirect there, so the
+#   brackets are read as a ``test`` command. Inside ``[[ … ]]`` they
+#   compare, but dash, which has no ``[[``, redirects (``[[ a > MARK ]]``
+#   created MARK in dash alone), so under the POSIX dialect that reads as a
+#   redirect too.
+#
+# Each reading is paid from :data:`_MISREAD_BUDGET`.
+
+# Leaves tree-sitter makes of a pattern word, whatever it holds.
+_PATTERN_LEAVES = frozenset({"regex", "extglob_pattern"})
+# The special parameters a ``$`` and one more byte name, and a ``$`` and a
+# blank, where tree-sitter may read one of them.
+_SPECIAL_PARAMETERS = frozenset(b"*@#?-$!0_")
+_STRAY_DOLLAR = re.compile(rb"\$[ \t\n]")
+# The operators tree-sitter reads a ``regex`` after, and the two that start
+# one in a command's arguments.
+_REGEX_OPERATORS = frozenset({"==", "=~", "=", "!="})
+_REGEX_OPERATOR = re.compile(rb"=[=~]")
+
+
+def _misread_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
+    """ALLOW, or ASK and worse, where tree-sitter reads a word the way the comment above lists.
+
+    The source with each such word written as the shells read it
+    (:func:`_misread_edits`) is re-read as a command, and each pattern leaf
+    holding a substitution is read as a word (:func:`_pattern_verdict`).
+    """
+
+    edits, worst, patterns = _misread_edits(root, source, dialect=dialect)
+    for text in patterns:
+        worst = max(worst, _pattern_verdict(text, dialect=dialect))
+    if edits:
+        worst = max(worst, _misread_reread(_edited(source, edits), dialect=dialect))
+    return worst
+
+
+def _misread_edits(
+    root: Any, source: bytes, *, dialect: Dialect
+) -> tuple[list[tuple[int, int, bytes]], Verdict, list[bytes]]:
+    """The edits that write each misread word as the shells read it, the verdict floor, and the pattern texts to read."""
+
+    edits: list[tuple[int, int, bytes]] = []
+    floor = Verdict.ALLOW
+    patterns: list[bytes] = []
+    patterned = (b"=" in source or _EXTGLOB.search(source)) and _hides_code(source)
+    if not (
+        patterned
+        or _STRAY_DOLLAR.search(source)
+        or _REGEX_OPERATOR.search(source)
+        or b"\\" in source
+        or (b"[" in source and (b">" in source or b"<" in source))
+    ):
+        return edits, floor, patterns
+    stack: list[tuple[Any, str]] = [(root, "")]
+    while stack:
+        node, parent = stack.pop()
+        t = node.type
+        if t == "simple_expansion" and (at := _stray_dollar(node, source)) is not None:
+            edits.append((at, at, b"\\"))
+            floor = Verdict.ASK
+        elif t == "command":
+            if any(child.type == "regex" for child in node.children):
+                floor = Verdict.ASK
+            edits += _quoted_operators(node)
+            edits += _joined_words(node, source)
+        elif t == "test_command":
+            edits += _test_redirects(node, dialect)
+        elif t in _PATTERN_LEAVES and parent != "expansion":
+            if _hides_code(node.text):
+                patterns.append(node.text)
+            if (ksh := _ksh_unescaped(node.text)) is not None:
+                floor = Verdict.ASK
+                if len(ksh) <= _KSH_REREAD_LIMIT:
+                    patterns.append(ksh)
+        stack.extend((child, t) for child in node.children)
+    return edits, floor, patterns
+
+
+# #768 fix round 2: a backslash before ``$(``, ``${`` or a backtick (group 1),
+# or any other backslash escape.
+_ESCAPED_CODE = re.compile(rb"\\(?:(\$[({]|`)|.)", re.DOTALL)
+# #768 finish (the round-3 verify's F5): the longest ksh93 reading
+# (:func:`_ksh_unescaped`) that is re-read. tree-sitter's error recovery on
+# the reading of ``[[ x =~ \$(a)|…| ]]``, a trailing ``|`` included, grew
+# with the square of its size: 12.4 s for 96 KB on 1a83896b. Up to 4 KB it
+# took about 5 ms per KB (22 ms for 4 KB, 61 ms for 8 KB, 109 ms for 12 KB;
+# ``.omc/probes/768/finish/``); a longer one asks without being read. No
+# pattern leaf of the 63,035 corpus strings holds such an escape, and the
+# test file's longest is 17 bytes.
+_KSH_REREAD_LIMIT = 4096
+
+
+def _ksh_unescaped(text: bytes) -> bytes | None:
+    """A pattern leaf's text with the backslash before each ``$(``, ``${`` and backtick removed; ``None`` when it escapes none.
+
+    The round-2 verify's F4 (the lead's call, not the owner's; older than
+    #768): ksh93 runs the ``$(…)`` of an escaped ``\\$(`` on the right of
+    ``=~``. ``[[ x =~ \\$(: > MARK) ]]`` and its ``a\\$(``, ``(\\$(…))``,
+    ``^…$``, ``|`` and ``&&`` spellings, ALLOW on 363accf2 and 866b0e5b,
+    created MARK in macOS ksh93u+ and Linux ksh 93u+m alone
+    (``.omc/probes/768/fix-r2/shells/``). Such a leaf asks, and this text
+    is read as the leaf's is (:func:`_pattern_verdict`).
+    """
+
+    if not any(match.group(1) for match in _ESCAPED_CODE.finditer(text)):
+        return None
+    return _ESCAPED_CODE.sub(lambda match: match.group(1) or match.group(0), text)
+
+
+def _stray_dollar(expansion: Any, source: bytes) -> int | None:
+    """The byte of a ``$`` tree-sitter joined to a later ``$`` past blanks (``"$ $(…)"``), or ``None``."""
+
+    kids = expansion.children
+    if len(kids) != 2 or kids[1].type != "special_variable_name":
+        return None
+    at = kids[0].end_byte - 1
+    if source[at : at + 1] != b"$":
+        return None
+    name = source[at + 1 : kids[1].end_byte].replace(b"\\\n", b"")
+    if len(name) == 1 and name[0] in _SPECIAL_PARAMETERS:
+        return None
+    return at
+
+
+def _quoted_operators(command: Any) -> list[tuple[int, int, bytes]]:
+    """A command's ``==`` or ``=~`` before a ``regex``, quoted, so tree-sitter reads what follows as the shells do.
+
+    ``echo '==' ; rm -rf ~ ; ]`` reads three statements.
+    """
+
+    edits: list[tuple[int, int, bytes]] = []
+    kids = command.children
+    for left, right in zip(kids, kids[1:], strict=False):
+        if right.type == "regex" and not left.is_named and left.type in _REGEX_OPERATORS:
+            op = left.type.encode()
+            edits.append((left.end_byte - len(op), left.end_byte, b"'" + op + b"'"))
+    return edits
+
+
+def _joined_words(command: Any, source: bytes) -> list[tuple[int, int, bytes]]:
+    """Each word of a command tree-sitter split at a backslash right after a quote, joined.
+
+    Two of the command's parts with no byte between them, the second starting
+    with ``\\`` and a byte other than a newline or a backtick, are one shell
+    word. Quoting that byte instead (``-de""'l'ete``) makes tree-sitter read
+    them as one.
+    """
+
+    edits: list[tuple[int, int, bytes]] = []
+    kids = command.children
+    for left, right in zip(kids, kids[1:], strict=False):
+        if left.end_byte != right.start_byte or _REDIRECT_NODES & {left.type, right.type}:
+            continue
+        at = right.start_byte
+        if source[at : at + 1] != b"\\" or source[at + 1 : at + 2] in (b"\n", b"`", b""):
+            continue
+        end = at + 1 + _utf8_length(source[at + 1])
+        byte = source[at + 1 : end]
+        edits.append((at, end, b'"\'"' if byte == b"'" else b"'" + byte + b"'"))
+    return edits
+
+
+def _utf8_length(lead: int) -> int:
+    """How many bytes the UTF-8 character starting with byte ``lead`` takes."""
+
+    return 4 if lead >= 0xF0 else 3 if lead >= 0xE0 else 2 if lead >= 0xC0 else 1
+
+
+def _test_redirects(test: Any, dialect: Dialect) -> list[tuple[int, int, bytes]]:
+    """For a ``[ … ]`` holding ``<`` or ``>`` (``[[ … ]]`` under POSIX), its brackets made a ``test`` command.
+
+    ``[ a > ~/.bashrc ]`` then reads ``test a > ~/.bashrc``, whose redirect
+    is judged as ``echo a > ~/.bashrc``'s is.
+    """
+
+    kids = test.children
+    if not kids or not (kids[0].type == "[" or (kids[0].type == "[[" and dialect == Dialect.POSIX)):
+        return []
+    stack = [child for child in kids if child.type in _TEST_GROUPS]
+    while stack:
+        node = stack.pop()
+        if any(not c.is_named and c.type[:1] in ("<", ">") for c in node.children):
+            break
+        stack.extend(child for child in node.children if child.type in _TEST_GROUPS)
+    else:
+        return []
+    opening = kids[0]
+    edits = [(opening.end_byte - len(opening.type), opening.end_byte, b"test")]
+    closing = kids[-1]
+    if closing.type in ("]", "]]"):
+        edits.append((closing.start_byte, closing.end_byte, b" " * len(closing.type)))
+    return edits
+
+
+def _edited(source: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
+    """``source`` with each ``(start, end, text)`` edit made; one that overlaps an earlier one is left out."""
+
+    parts: list[bytes] = []
+    last = 0
+    for start, end, text in sorted(edits):
+        if start < last:
+            continue
+        parts += [source[last:start], text]
+        last = end
+    parts.append(source[last:])
+    return b"".join(parts)
+
+
+def _pattern_verdict(text: bytes, *, dialect: Dialect) -> Verdict:
+    """A pattern leaf's text as the shells read it: an ``echo`` argument, bare and in double quotes; the higher verdict.
+
+    Each reading is as low as ALLOW when it parses (``[[ $x =~ ^${re}$ ]]``)
+    and asks when it does not; inside double quotes ``(``, ``|`` and blanks
+    are text, so ``[[ x =~ (`rm -rf ~`) ]]`` reads its substitution there.
+    """
+
+    return max(
+        _misread_reread(b"echo " + text, dialect=dialect),
+        _misread_reread(b'echo "' + text.replace(b'"', b'\\"') + b'"', dialect=dialect),
+    )
+
+
+def _misread_reread(text: bytes, *, dialect: Dialect, expanded: bool = False) -> Verdict:
+    """:func:`_reread` of ``text`` as an expanded body, else as a command, paid from :data:`_MISREAD_BUDGET`.
+
+    Fix round 2: the #768 readings nested in it, which pay from
+    :data:`_BACKTICK_BUDGET`, are paid from :data:`_MISREAD_BUDGET` here too.
+    Ten lines of ``echo `[[ x =~ (\\`echo \\\\$a\\` …) ]]``` spent 9,350 of
+    the 9,372 #768 bytes in them, so a ``echo `echo "${x:-'\\$(rm -rf ~)'}"```
+    before them asked instead of being refused (the round-2 verify's F1).
+    """
+
+    def read() -> Verdict:
+        token = _BACKTICK_BUDGET.set(_MISREAD_BUDGET.get())
+        try:
+            return _reread(text, dialect=dialect, expanded=expanded, command=not expanded)
+        finally:
+            _BACKTICK_BUDGET.reset(token)
+
+    return _on_budget(_MISREAD_BUDGET, read)
+
+
 # --- #742 fix round 2: code the parser leaves as text ---
 #
 # tree-sitter-bash 0.25.1 keeps some code as text, where no walk sees it, and
@@ -3773,6 +4362,15 @@ def _false_comments_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Ve
 #
 # Each asks at least, and the text is re-read as the shells read it, as far
 # as the budget pays, so a DENY in it still counts.
+#
+# #768 (``.omc/probes/768/impl/``): any other backtick text the shells read
+# otherwise than tree-sitter is re-read as they read it, as a whole command
+# that can be ALLOW (:func:`_backtick_unescaped_verdict`): with ``\\``,
+# ``\$``, ``\``` and ``\⏎`` undone (``echo `echo "${x:-'\$(: > MARK)'}"```
+# was ALLOW on 363accf2 and created MARK in all nine shells), and split
+# where the shells end it (``echo `echo x` `touch MARK```, which
+# tree-sitter-bash 0.25.1 reads as one substitution, was ALLOW and ran
+# ``touch`` in all nine).
 
 # A backtick, ``$(``, ``$[``, ``${``, ``<(`` or ``>(`` (group 1) or a
 # backslash escape.
@@ -3809,16 +4407,24 @@ def _hidden_code_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdi
     # or a here-document body. Fix round 3 carries it down: climbing
     # ``.parent``, which py-tree-sitter answers by walking down from the root,
     # cost cubic time in nested operands (``echo ${x:-${x:-…}}`` 490 deep).
-    stack = [(root, False)]
+    stack = [(root, False, (root.start_byte, root.end_byte))]
     while stack:
-        node, quoted = stack.pop()
+        node, quoted, statement = stack.pop()
         if node.type == "expansion":
             worst = max(worst, _expansion_text_verdict(node, dialect, quoted=quoted))
+        elif node.type in _DOUBLE_QUOTED:
+            worst = max(worst, _quoted_text_verdict(node, dialect))
         elif node.type == "command_substitution" and node.children[0].type == "`":
             worst = max(worst, _backtick_text_verdict(node, source, dialect))
+            worst = max(
+                worst,
+                _backtick_unescaped_verdict(
+                    node, source, dialect, quoted=quoted, statement=statement
+                ),
+            )
         if node.type not in _QUOTE_TRANSPARENT:
             quoted = node.type in _DOUBLE_QUOTED
-        stack.extend((child, quoted) for child in node.children)
+        stack.extend(_with_statements(node, quoted, statement))
     return worst
 
 
@@ -3829,6 +4435,18 @@ def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -
     one or in a here-document body (``quoted``), else as a word (where a
     ``'…'`` or ``$'…'`` quotes). Substitutions tree-sitter parsed are
     walked already, and a ``${…}`` inside is judged on its own.
+
+    #768 fix round 1 (the lead's call, not the owner's; the round-1 verify's
+    O1): bash decodes a ``$'…'`` there when the ``${…}`` is in double quotes
+    and expands what it decoded again, so ``echo "${x:-$'\\x24(: > MARK)'}"``,
+    ALLOW on 363accf2, created MARK in macOS bash 3.2.57 and Linux bash
+    5.2.37 (no other shell measured; none of the nine ran it in a
+    here-document body). Such a ``$'…'`` asks, and its decoded text
+    (:func:`_ansi_c_decoded`) is re-read as double-quoted text.
+
+    Fix round 2 (the round-2 verify's F2): so does a ``$'…'`` in a pattern
+    operand (``#``, ``%``, ``/``), which tree-sitter keeps as text in a
+    ``regex`` leaf (:func:`_decoded_quotes_verdict`).
     """
 
     worst = Verdict.ALLOW
@@ -3840,6 +4458,8 @@ def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -
         if node.children:
             stack.extend(node.children)
             continue
+        if quoted and (node.type == "ansi_c_string" or node.type in _PATTERN_LEAVES):
+            worst = max(worst, _decoded_quotes_verdict(node.text, dialect))
         if not node.is_named or not _hides_code(node.text):
             continue
         if quoted:
@@ -3848,6 +4468,109 @@ def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -
             reread = _reread(b": " + node.text, dialect=dialect)
         worst = max(worst, Verdict.ASK, reread)
     return worst
+
+
+# #768 fix round 2: a ``$'…'`` in a node's text, to its closing quote or to
+# the end of the text. tree-sitter ends a pattern operand's ``regex`` leaf at
+# a ``}`` inside the quotes, where bash reads on to the quote:
+# ``"${PWD#$'\x24(…)}'}"``.
+_ANSI_C_QUOTE = re.compile(rb"\$'((?:[^'\\]|\\.)*)", re.DOTALL)
+
+
+def _decoded_quotes_verdict(text: bytes, dialect: Dialect) -> Verdict:
+    """ASK or worse for each ``$'…'`` in ``text``: its decoded text re-read as double-quoted text; ALLOW when it holds none.
+
+    Measured (``.omc/probes/768/fix-r2/shells/``): ``echo "${PWD#$'\\x24(: >
+    MARK)'}"`` and its ``##``, ``%``, ``%%``, ``/``, ``//``, ``/#`` and
+    ``/%`` spellings, ALLOW on 363accf2 and 866b0e5b, created MARK in macOS
+    bash 3.2.57 alone.
+    """
+
+    worst = Verdict.ALLOW
+    for match in _ANSI_C_QUOTE.finditer(text):
+        decoded = _ansi_c_decoded(b"$'" + match.group(1) + b"'")
+        worst = max(worst, Verdict.ASK, _misread_reread(decoded, dialect=dialect, expanded=True))
+    return worst
+
+
+# #768 finish (the lead's call, not the owner's; the round-3 verify's F1,
+# older than #768): tree-sitter-bash 0.25.1 ends a ``${…}`` at a ``}`` after
+# a backslash (``\}``, ``[\}]``, ``\{\}``), where bash reads on, so a
+# ``$'…'`` bash decodes in that operand falls into the string's own text,
+# where no rule above reads it: ``echo "${PWD#\}$'\x24(: > MARK)'}"`` and 51
+# more spellings, ALLOW on 363accf2 and 1a83896b, created MARK in macOS bash
+# 3.2.57, 18 of them (the ``:-``, ``-``, ``:+``, ``+``, ``:?`` and ``?``
+# operands) in Linux bash 5.2.37 too (``.omc/probes/768/verify-r3/``).
+_QUOTED_TEXT = frozenset({"string_content", "heredoc_content"})
+
+
+def _quoted_text_verdict(node: Any, dialect: Dialect) -> Verdict:
+    """ASK or worse for each ``$'…'`` in the text of a ``"…"`` or here-document body holding a ``${…}``; else ALLOW.
+
+    The text between its substitutions and expansions is read as
+    :func:`_decoded_quotes_verdict` reads a pattern operand's. A body that
+    does not expand has no ``${…}`` child and is left alone.
+    """
+
+    kids = node.children
+    if not any(child.type == "expansion" for child in kids):
+        return Verdict.ALLOW
+    text = node.text
+    worst = Verdict.ALLOW
+    last = 0
+    for child in kids:
+        if child.is_named and child.type not in _QUOTED_TEXT:
+            worst = max(
+                worst,
+                _decoded_quotes_verdict(text[last : child.start_byte - node.start_byte], dialect),
+            )
+            last = child.end_byte - node.start_byte
+    return max(worst, _decoded_quotes_verdict(text[last:], dialect))
+
+
+# What a backslash and the bytes after it mean inside ``$'…'`` (the bash
+# manual's QUOTING): ``\xHH``, ``\NNN`` in octal, ``\uHHHH``,
+# ``\UHHHHHHHH``, ``\cX`` and the one-letter escapes. Any other backslash
+# stays, as bash keeps it (``$'\$'`` is ``\$``).
+_ANSI_C_ESCAPE = re.compile(
+    rb"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c(.)|(.))",
+    re.DOTALL,
+)
+_ANSI_C_LETTERS = {
+    b"a": b"\a",
+    b"b": b"\b",
+    b"e": b"\x1b",
+    b"E": b"\x1b",
+    b"f": b"\f",
+    b"n": b"\n",
+    b"r": b"\r",
+    b"t": b"\t",
+    b"v": b"\v",
+    b"\\": b"\\",
+    b"'": b"'",
+    b'"': b'"',
+    b"?": b"?",
+}
+
+
+def _ansi_c_decoded(text: bytes) -> bytes:
+    """The bytes bash makes of a ``$'…'`` node's text."""
+
+    body = text[2:-1] if text.startswith(b"$'") and text.endswith(b"'") else text
+
+    def one(match: re.Match[bytes]) -> bytes:
+        hexa, octal, u16, u32, control, other = match.groups()
+        if hexa is not None:
+            return bytes([int(hexa, 16)])
+        if octal is not None:
+            return bytes([int(octal, 8) & 0xFF])
+        if u16 is not None or u32 is not None:
+            return chr(min(int(u16 or u32, 16), 0x10FFFF)).encode(errors="replace")
+        if control is not None:
+            return bytes([control[0] & 0x1F])
+        return _ANSI_C_LETTERS.get(other, b"\\" + other)
+
+    return _ANSI_C_ESCAPE.sub(one, body)
 
 
 def _backtick_text_verdict(sub: Any, source: bytes, dialect: Dialect) -> Verdict:
@@ -3866,6 +4589,63 @@ def _backtick_text_verdict(sub: Any, source: bytes, dialect: Dialect) -> Verdict
             return max(Verdict.ASK, _substitution_rereads(sub, [], source, dialect))
         stack.extend(node.children)
     return Verdict.ALLOW
+
+
+def _backtick_unescaped_verdict(
+    sub: Any, source: bytes, dialect: Dialect, *, quoted: bool, statement: tuple[int, int]
+) -> Verdict:
+    """#768: the verdict of backtick text as the shells read it: up to the first unescaped backtick, with ``\\\\``, ``\\$``, ``\\``` and ``\\⏎`` undone.
+
+    ALLOW when that is the text tree-sitter read. Otherwise each reading is
+    re-read as a whole command (:func:`_reread` with ``command``): its own
+    verdict when tree-sitter parses it, so ``echo `echo \\$HOME``` stays
+    ALLOW, and ASK at least when not. Backticks in a double-quoted string or
+    an expanded here-document body (``quoted``) are also read with ``\\"``
+    undone (:data:`_BACKTICK_DQ_ESCAPE`), where the shells differ, and the
+    higher verdict counts. Where the shells end the substitution before
+    tree-sitter does, the source with the substitution, up to where they end
+    it, replaced by one word is read too (:func:`_substitution_rereads`'
+    view): tree-sitter-bash 0.25.1 reads ``echo `echo x` `touch MARK``` as
+    one substitution, and all nine shells ran ``touch``. Paid from
+    :data:`_BACKTICK_BUDGET`, so the verdict is never below the one without it.
+
+    Fix round 1: that view spans ``statement`` only: in a tree tree-sitter
+    parsed, the innermost statement holding ``sub`` (:data:`_STATEMENT_PARENTS`,
+    :func:`_hidden_code_verdict`); in one it rejected, the whole source
+    (:func:`_backtick_readings_verdict`). A view of the whole source held
+    every other line's pair still merged, so five lines of
+    ``echo `ls a` `ls b``` ran the budget out and asked, and 360 KB of
+    ``:`a` `b``` took 20 s (the round-1 cross-review). A view the budget
+    cannot pay is not built, and the substitution asks.
+    """
+
+    kids = sub.children
+    start = kids[0].end_byte
+    stop = kids[-1].start_byte if len(kids) > 1 and kids[-1].type == "`" else sub.end_byte
+    inside = source[start:stop]
+    close = _first_unescaped(source, start, stop, b"`") if b"`" in inside else stop
+    if close == stop and b"\\" not in inside:
+        return Verdict.ALLOW
+    text = source[start:close]
+    readings = {_unescaped(text, _BACKTICK_ESCAPE)}
+    if quoted:
+        readings.add(_unescaped(text, _BACKTICK_DQ_ESCAPE))
+    floor = Verdict.ALLOW
+    if close < stop:
+        lo, hi = statement
+        if _can_pay(_BACKTICK_BUDGET, hi - lo):
+            readings.add(source[lo : sub.start_byte] + b"x" + source[close + 1 : hi])
+        else:
+            floor = Verdict.ASK
+    readings.discard(inside)
+    if not readings:
+        return floor
+    return max(
+        floor,
+        _on_backtick_budget(
+            lambda: max(_reread(shell, dialect=dialect, command=True) for shell in sorted(readings))
+        ),
+    )
 
 
 # Node types that wrap (or are) an executable subtree worth re-walking when they
@@ -4044,14 +4824,20 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
         source = command.encode()
         tree = _PARSER.parse(source)
         root = tree.root_node
-        if root.has_error and b"\\\n" not in source:
+        if root.has_error and b"\\\n" not in source and b"`" not in source:
             return Verdict.ASK
         token = _REREAD_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
+        own = _BACKTICK_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
+        misread = _MISREAD_BUDGET.set(
+            [_MISREAD_SHARE * (_REREAD_PASSES * len(source) + _REREAD_SLACK)]
+        )
         try:
             if root.has_error:
-                return max(Verdict.ASK, _joined_lines_verdict(root, source, dialect=dialect))
+                return _rejected_command_verdict(root, source, dialect=dialect)
             return _walk_source(root, source, dialect=dialect)
         finally:
+            _MISREAD_BUDGET.reset(misread)
+            _BACKTICK_BUDGET.reset(own)
             _REREAD_BUDGET.reset(token)
     except Exception:  # noqa: BLE001 — any traversal failure → fail safe
         return Verdict.ASK

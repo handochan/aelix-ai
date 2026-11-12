@@ -844,9 +844,11 @@ def test_a_quote_the_backticks_cut_is_refused(command: str, dialect: Dialect) ->
 @pytest.mark.parametrize(
     ("command", "verdict"),
     [
-        # Inside ``$( )`` what the backticks end leaves a quote open: asks
-        # (ALLOW on ce3cc695; the same three shells deleted ``victim``).
-        (f"echo $(echo `echo '`; {_FIND}; echo `'`)", Verdict.ASK),
+        # Inside ``$( )`` what the backticks end leaves a quote open: asked
+        # (ALLOW on ce3cc695; the same three shells deleted ``victim``). #768
+        # fix round 1 reads the split in the statement inside ``$( )``, where
+        # no quote is left open, and refuses it.
+        (f"echo $(echo `echo '`; {_FIND}; echo `'`)", Verdict.DENY),
         # An escaped backtick does not end it (no shell ran ``find``), and a
         # quote with no backtick in it is what most substitutions hold.
         (f"echo `echo '\\`; {_FIND}; echo \\`'`", Verdict.ALLOW),

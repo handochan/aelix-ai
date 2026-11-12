@@ -4039,6 +4039,67 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` reads backtick text as the shells read it (#768, ADR-0158 #768 note).** Before the
+  shells parse the text inside backticks again, they turn `\\` into `\`, `\$` into `$` and `` \` ``
+  into a backtick, remove `\⏎`, and end the substitution at its first unescaped backtick; the
+  classifier read that text as it stood. Measured with `<shell> -c` in a scratch directory holding
+  `files/z[$(: > MARK)]` (macOS bash, zsh, dash and ksh93u+, Linux bash, zsh, dash, ksh 93u+m and
+  mksh), each allowed on `363accf2`: ``echo `echo "${x:-'\$(: > MARK)'}"` `` created `MARK` in all
+  nine shells and its `$\\⏎(` spelling in four; ``echo `echo x` `touch MARK` ``, which the parser
+  reads as one substitution, ran `touch` in all nine; and in ``echo `find . '-de\⏎lete'` `` the
+  shells pass `find` `-delete` (``printf '[%s]\n' `printf %s '-de\⏎lete'` `` printed `[-delete]` in
+  all nine; the `find` form was only classified). In a pty TUI under `auto`, the first form and the
+  `touch` form with `SHELL=/bin/bash` and the `$\\⏎(` spelling with `/bin/ksh` ran with no dialog
+  and created `MARK` on `363accf2`; now "Run shell command?" opens and nothing is created after
+  Esc. The `MARK` forms ask now; the `find` form and their `rm -rf ~` twins are refused (classified
+  only). Each such backtick is re-read as the
+  shells read it, as a whole command: ``echo `echo \$HOME` ``, ``echo `date` `` and
+  ``echo `echo x` `echo y` `` stay allowed. Of 31,958 corpus, test and realistic command strings,
+  one changed: ``echo `dirname "\`pwd\`"` `` now asks, as ``dirname "`pwd`"``, which the shells
+  run, does. No verdict went down against `363accf2` in the #710 redirect sweep, the 108,960
+  here-documents, the grids, the 1,531 attack forms or the two property tests.
+
+- **`auto` reads more words as the shells read them (#768 fix round 1, ADR-0158 #768 note).** Each
+  of these was allowed on `363accf2` and created `MARK` in the shells named (macOS bash, zsh, dash
+  and ksh93u+, Linux bash, zsh, dash, ksh 93u+m and mksh), and asks now: ``[[ x = `:>MARK` ]]`` and
+  ``[ x =~ `:>MARK` ]`` (all nine; the parser kept the right side as a pattern no check read);
+  ``echo "$ $(: > MARK)"`` (all nine; the parser read `$ $` as `$$`); ``echo == ; : > MARK ; ]``
+  (bash, dash, ksh93 and mksh; the parser read everything up to `]` as one pattern);
+  `[ a > MARK ]` (all nine; the parser read `>` as a comparison); and
+  ``echo "${x:-$'\x24(: > MARK)'}"`` (bash, which decodes that `$'…'` and expands it again). Their
+  `rm -rf ~` twins are refused, and so are `find / -de""\lete` and `find . -ex""\ec rm -rf {} +`,
+  which the parser split into two words while all nine shells pass `-delete` and `-exec`
+  (classified only). `[[ a > MARK ]]` created `MARK` in dash alone and asks under the POSIX
+  dialect. In a pty TUI under `auto` with `SHELL=/bin/bash`, the first four kinds ran with no dialog
+  on `363accf2`; now "Run shell command?" opens and nothing is created after Esc. No verdict went
+  down against `363accf2` in the sweeps listed in the ADR note; of 77 realistic lines written for
+  these rules, ``echo "Total: $ $total"``, ``echo "${x:-$'\n'}"`` and, under POSIX,
+  `[[ "$a" > "$b" ]]` ask now.
+
+- **`auto` reads a `$'…'` in a `${…}` pattern and an escaped `\$(` that ksh93 runs (#768 fix round
+  2, ADR-0158 #768 note).** Each was allowed on `363accf2` and asks now:
+  ``echo "${PWD#$'\x24(: > MARK)'}"`` and its `##`, `%`, `%%`, `/`, `//`, `/#` and `/%` spellings
+  created `MARK` in macOS bash 3.2.57 alone, which decodes that `$'…'` and expands it again, and
+  `[[ x =~ \$(: > MARK) ]]` in macOS ksh93u+ and Linux ksh 93u+m alone (the other shells measured:
+  macOS zsh and dash, Linux bash, zsh, dash and mksh). Their `rm -rf ~` twins are refused
+  (classified only). In a pty TUI under `auto`, the first with `SHELL=/bin/bash` and the second
+  with `/bin/ksh` ran with no dialog before; now "Run shell command?" opens and nothing is created
+  after Esc. No verdict went down against `363accf2` in the sweeps listed in the ADR note; of the
+  31,958 strings above, no further one changed, and of 16,649 more (10,787 of them system script
+  lines), ``echo "${x#$'\r'}"`` asks now.
+
+- **`auto` reads a `$'…'` after an escaped `}` in a `${…}` operand (#768 finish, ADR-0158 #768
+  note).** The parser ends the `${…}` at a `}` after a backslash, where bash reads on:
+  ``echo "${PWD#\}$'\x24(: > MARK)'}"`` and 51 other spellings were allowed on `363accf2` and
+  created `MARK` in macOS bash 3.2.57, 18 of them in Linux bash 5.2.37 too, and ask now; their
+  `rm -rf ~` twins are refused (classified only). In a pty TUI under `auto` with `SHELL=/bin/bash`
+  the first ran with no dialog and created `MARK` on `1a83896b`, which allowed it as `363accf2`
+  does; now "Run shell command?" opens and nothing is created after Esc. Of the 31,958 and 16,649 strings above no further one changed, nor did any of 14,428 real
+  script lines; ``echo "${x}: $'a'"``, which macOS bash, zsh, dash and ksh93u+ print as text, asks.
+  A misread row such as ``echo "$ $(rm -rf ~)"`` stays refused after 3 or 10 lines of nested
+  backtick patterns (after 20 it asks), and a ksh93 pattern reading longer than 4,096 bytes asks
+  without being read (96 KB of `[[ x =~ \$(a)|…| ]]`: 7 ms, 1.6 ms on `363accf2`).
+
 - **`auto` asks before arithmetic reads a name the shell fills itself, or quoted text, outside `[`,
   `[[` and `test` too (#762, ADR-0288 #762 note).** bash fills `_` with the previous command's last
   argument, so with a repository file named `files/z[$(touch PWNED)]`,
