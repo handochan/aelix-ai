@@ -10,6 +10,7 @@ rows do not); and persistence (re-read reflects the change).
 
 from __future__ import annotations
 
+import pytest
 from aelix_ai.settings import SettingsManager
 from aelix_coding_agent.tui.settings_rows import (
     ApplyResult,
@@ -874,14 +875,19 @@ async def test_the_bool_arm_reports_the_value_that_survived() -> None:
         )
 
 
-async def test_the_bool_tables_carry_no_key_that_is_not_a_bool_row() -> None:
+async def test_the_bool_tables_carry_no_key_that_is_not_a_bool_row(monkeypatch: pytest.MonkeyPatch) -> None:
     """③ The stale direction only — ① owns the missing one.
 
     A key left behind in ``_BOOL_GETTERS``/``_BOOL_SETTERS`` after its row is
-    deleted or changes ``kind`` is dead weight that reads as coverage.
+    deleted or changes ``kind`` is dead weight that reads as coverage. Measured
+    with the job gate on (#778): the "Background jobs" row is in the menu only
+    then, while its keys are in the tables always.
     """
 
+    from aelix_coding_agent.jobs import activation
     from aelix_coding_agent.tui.settings_rows import _BOOL_GETTERS, _BOOL_SETTERS
+
+    monkeypatch.setattr(activation, "ACTIVE", True)
 
     bool_keys = {r.key for r in _bool_rows(SettingsManager.in_memory({}))}
     assert set(_BOOL_GETTERS) - bool_keys == set()

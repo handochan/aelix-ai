@@ -130,6 +130,18 @@ unwritten. Add them with the next release.
   result cannot be read is a sentence, not a code. A restored job whose processes are gone holds
   no slot, and a failed read or `recover` is tried again on the next pass
   (`tests/agents_ext/test_restored_texts_749.py`, `tests/jobs/test_residuals_749.py`).
+- **An off switch for background jobs, built and switched off with them (#778, #611 S3d;
+  ADR-0293).** With the job gate on, `"backgroundJobs": {"enabled": false}` in the global
+  settings turns background jobs off for a launch: no service, no `job` or `job_stop` tool, no
+  `spawn`, no background `bash`, no footer segment and no `/jobs` — a `-p` launch offers the model
+  what a gate-off launch offers, field by field, and every extension's `setup()` — `aelix
+  status`'s too — sees what it sees with the gate off. It is read once at start, before any
+  extension loads, from the global file only (a repository's `.aelix/settings.json` cannot change
+  it); a value that is not a bool, or a `backgroundJobs` that is not an object, counts as on with
+  one warning; and a delegated child reads the same file. `/settings` gains a "Background jobs"
+  row, after "Agent delegation", that writes `backgroundJobs.enabled` alone and takes effect at
+  the next launch; it is shown only while the gate is on. With the gate off nothing changes and
+  the setting is not read (`tests/jobs/test_enabled_setting_611.py`).
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

@@ -1289,7 +1289,7 @@ class SettingsManager:
                 if (
                     py_field in modified_nested_fields
                     and value is not None
-                    and is_dataclass(value)
+                    and (is_dataclass(value) or isinstance(value, dict))
                 ):
                     nested_modified = modified_nested_fields[py_field]
                     py_to_json = NESTED_PY_TO_JSON.get(
@@ -1305,7 +1305,7 @@ class SettingsManager:
                         nested_json_key = py_to_json.get(
                             nested_py_key, nested_py_key
                         )
-                        in_memory_val = getattr(value, nested_py_key, None)
+                        in_memory_val = value.get(nested_py_key) if isinstance(value, dict) else getattr(value, nested_py_key, None)
                         if in_memory_val is None:
                             # Defensive only — Aelix nested setters are
                             # typed to non-optional scalars (bool/int/
@@ -1666,14 +1666,14 @@ class SettingsManager:
         return bool(features.agents)
 
     def get_background_jobs_settings(self) -> dict[str, Any]:
-        """``backgroundJobs`` from the GLOBAL scope only (#722, ADR-0293): admission bounds.
+        """``backgroundJobs`` from the GLOBAL scope only (#722, ADR-0293; #778): bounds and the off switch.
 
-        A copy of the raw ``{"limits": {...}, "maxTotal": ...}`` object, or
-        ``{}``. Validation is the reader's (``jobs/admission.py``), which reads
-        this at every reservation so a change applies to the next one. Global
-        only for the reason :meth:`get_features_agents` gives: a trusted
-        repository must not raise its own limits by shipping
-        ``.aelix/settings.json``. Called only while background jobs are active.
+        A copy of the raw ``{"limits": {...}, "maxTotal": ..., "enabled": ...}``
+        object, or ``{}``. Validation is the reader's: ``jobs/admission.py`` reads
+        the bounds at every reservation, ``jobs/activation.py`` ``enabled`` once at
+        start (#778). Global only for the reason :meth:`get_features_agents` gives:
+        a trusted repository must not raise its own limits, or turn background
+        jobs off or on, by shipping ``.aelix/settings.json``. Read only while on.
         """
 
         value = self._global_settings.background_jobs
@@ -1683,8 +1683,8 @@ class SettingsManager:
         limits = value.get("limits")
         if isinstance(limits, dict):
             out["limits"] = dict(limits)
-        if "maxTotal" in value:
-            out["maxTotal"] = value["maxTotal"]
+        for key in {"maxTotal", "enabled"} & value.keys():
+            out[key] = value[key]
         return out
 
     def set_features_agents(self, enabled: bool) -> None:
@@ -1859,6 +1859,34 @@ class SettingsManager:
 
         self._global_settings.shell_path = path
         self._mark_modified("shell_path")
+        self._save()
+
+    # --- backgroundJobs.enabled (aelix-original, #778) ---
+    # The rest of ``backgroundJobs`` is :meth:`get_background_jobs_settings`.
+    def get_background_jobs_enabled(self) -> bool:
+        """``backgroundJobs.enabled`` from the GLOBAL scope only (#778). Default: ``True``.
+
+        A value that is not a bool counts as ``True``; the one warning about it
+        is ``jobs/activation.py``'s, which reads this once at start.
+        """
+
+        value = self.get_background_jobs_settings().get("enabled", True)
+        return value if isinstance(value, bool) else True
+
+    def set_background_jobs_enabled(self, enabled: bool) -> None:
+        """Persist ``backgroundJobs.enabled`` to the GLOBAL scope (#778); read at the next launch.
+
+        Global only, as :meth:`set_features_agents` is, and like it a nested write:
+        only ``enabled`` is written, over ``backgroundJobs`` as the file holds it
+        then, so a limit another writer changed meanwhile stays.
+        """
+
+        current = self._global_settings.background_jobs
+        self._global_settings.background_jobs = {
+            **(current if isinstance(current, dict) else {}),
+            "enabled": enabled,
+        }
+        self._mark_modified("background_jobs", "enabled")
         self._save()
 
     # --- quietStartup (Pi `:757-765`) ---

@@ -135,7 +135,8 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (Accepted 2026-11-08; #722, #611 S1b; inert until #611 S3; amended 2026-11-12, #769 and #749:
   past 64 ended jobs of a session the oldest that owes nothing, of a kind declaring
   `reads_persisted`, and that reads back alike is kept only as its records read, `JobSnapshot.processes_gone`, and a restored job whose processes are gone
-  holds no slot). A generic job service in
+  holds no slot; amended 2026-11-12, #778: with the gate on, the global
+  `backgroundJobs.enabled: false`, read once at start, turns background jobs off for a launch). A generic job service in
   product-core (`aelix_coding_agent/jobs/`) runs background work of kinds its clients register —
   delegation, `bash`, an extension — and nothing in it names a kind (an AST scan and a synthetic
   third kind prove it). A terminal state only after a barrier confirms the job's processes gone;

@@ -375,7 +375,8 @@ class Settings:
     # Defaults applied in the getters.
     features: FeaturesSettings | None = None
     # AELIX-ORIGINAL (#722, ADR-0293): background-job admission bounds,
-    # ``{"limits": {"<kind settings key>": int}, "maxTotal": int | null}``.
+    # ``{"limits": {"<kind settings key>": int}, "maxTotal": int | null}``,
+    # and (#778) the off switch ``"enabled": bool``, read once at start.
     # A plain dict, not a nested class: the keys under ``limits`` are the
     # settings keys kinds register, which this module cannot list. Read from the
     # GLOBAL scope only (``SettingsManager.get_background_jobs_settings``), as

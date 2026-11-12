@@ -1,8 +1,9 @@
 """Fixtures for the job service tests (#722).
 
 ``jobs_active`` is the documented test seam of
-:mod:`aelix_coding_agent.jobs.activation`: it sets ``ACTIVE`` for one test and
-puts it back. Every product check reads the attribute at call time.
+:mod:`aelix_coding_agent.jobs.activation`: it sets ``ACTIVE`` for one test, with
+the start-time off switch (#778) clear, and puts both back. Every product check
+reads them at call time.
 """
 
 from __future__ import annotations
@@ -35,6 +36,9 @@ async def _reap_sleepers() -> AsyncIterator[None]:
 @pytest.fixture
 def jobs_active(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(activation, "ACTIVE", True)
+    # #778: not switched off by a ``backgroundJobs.enabled: false`` an earlier
+    # start read, and put back after the test whatever this one's start reads.
+    monkeypatch.setattr(activation, "_switched_off", False)
     _sleeper.Sleeper.instances.clear()
     yield
     activation.install_service(None)
