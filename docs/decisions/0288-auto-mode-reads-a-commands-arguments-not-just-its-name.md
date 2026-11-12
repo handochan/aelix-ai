@@ -2,7 +2,8 @@
 
 Status: Accepted (2026-11-03; owner decisions 1–4 settled 2026-11-03; review
 rounds 1 and 2 2026-11-04; #762 dated note 2026-11-11, its fix round 1
-2026-11-12; #768 dated note 2026-11-12)
+2026-11-12; #768 dated note 2026-11-12; #788 dated note 2026-11-12, rewritten
+in its fix round 1 and amended in its fix round 2 the same day)
 Date: 2026-11-03
 Issue: #657 (found while implementing #646 — the impl report's "Write-path
 sweep"). Owner-approved, one lane, one commit, plus one review-round commit.
@@ -701,3 +702,68 @@ ksh 93u+m/1.0.10 and mksh 59c (`.omc/probes/762/impl/`).
   round-1 verify ran the issue's eight forms in Linux bash 5.3.20 (docker
   `bash:5.3`): all eight created the marker there, and `7cbc282d` asks on
   all eight (`.omc/probes/762/verify-r1/shells/bash53.jsonl`).
+
+### Dated note 2026-11-12 (#788): `$[…]` and `(( … ))` in the shells that lack them
+
+The #762 note reads `$[…]` and `(( … ))` as arithmetic, as bash and zsh do.
+dash, ksh93 and mksh have no `$[…]`, and dash has no `(( … ))`: dash reads
+`((` as two subshells around a command list. Measured with `<shell> -c` in a
+fresh scratch directory (`.omc/probes/784-788/impl/shells/`):
+`echo $[2>MARK]` created `MARK]` in macOS dash and ksh93u+ and Linux dash,
+ksh 93u+m and mksh; `(( 1>MARK ))` created `MARK`, `(( x >= MARK ))` a file
+`=` and `(( n > 0 ))` a file `0` in macOS and Linux dash; bash and zsh
+created none. dash also runs any other command there (the round-1
+cross-review, `.omc/probes/784-788/cross-r1/neighbours-1.txt`):
+`(( echo == hi ))`, `(( a || echo == hi ))` and `(( 1 & echo == hi ))`
+printed `== hi` in both dash builds, and `echo $[1|echo == hi ]` printed
+`== hi ]` in dash, both ksh93 and mksh. All were ALLOW on `52bc607a`.
+
+- **The decision.** The owner decided on 2026-11-12, "보호 경로만 거부,
+  나머진 유지 (권장)": refuse protected targets, keep `(( n > 0 ))` allowed,
+  document dash's relative writes and `(( ls | sh ))`. The lead read it,
+  after the cross-review showed dash runs any `(( … ))` as commands, as:
+  under the POSIX dialect, which the gate gives every classifiable shell,
+  those shells' reading of `(( … ))` and `$[ … ]` counts only when it is
+  DENY; otherwise the bash reading's verdict stands (ADR-0158's
+  #784–#789 note, `_dash_verdict`). `(( rm -rf /home ))`,
+  `ls && (( rm -rf /home ))`, `(( ls | sh ))`, `echo $[1|rm -rf /home ]`,
+  `(( 1>'/etc/x' ))`, `(( 1>~/.bashrc ))` and `echo $[2>~/.bashrc]` are
+  refused under POSIX (classified only; the first four ALLOW and the last
+  three ASK on `52bc607a`); `echo $((a > b))` stays ALLOW, as `$((…))` is
+  arithmetic in every shell measured.
+- **Cost.** Nothing measured changed for bash users. The round-1 verify's
+  extraction of 102 standalone `(( … ))` commands holding `<` or `>` from
+  998 real system scripts (350 macOS, 648 Debian trixie,
+  `.omc/probes/784-788/verify-r1/cost/extracted.txt`) reads as on
+  `52bc607a` under both dialects, 50 ALLOW and 52 ASK under POSIX
+  (`a9f39aa2` asked about all 102 there), and so do the other 200 lines of
+  that file and the 1,434 lines of its `all-lines.txt`.
+  `(( a > b )) && echo yes` and `(( BASH_VERSINFO[0] >= 4 )) && echo new`,
+  ALLOW in #762's tests, stay ALLOW under both dialects. The 31,958 and
+  16,649 strings and the 14,428 real script lines of ADR-0158's notes read
+  as on `52bc607a` (`.omc/probes/784-788/fix-r1/cost/`), and all of these
+  still do on fix round 2's tree (`.omc/probes/784-788/fix-r2/sweep/corpus.txt`,
+  `linescost.txt`).
+- **What the decision keeps** (*Not covered*): for a dash user, a write to a
+  relative name (`(( 1>MARK ))`, `echo $[2>MARK]` and `(( n > 0 ))` run
+  with no dialog and leave `MARK`, `MARK]` and `0`; the audit re-run's 45
+  #788 hits are all such writes), and a command the classifier does not
+  refuse on its own (`(( echo == hi ))`, `echo $[1|echo == hi ]`).
+- **Past the quoted decision** (fix round 2, the round-2 verify's F6). The
+  lead's DENY-only reading goes further than the decision's "보호 경로만
+  거부" (refuse protected paths only): it leaves every ASK-level command
+  dash runs there with no dialog, the destructive ones included.
+  `(( crontab -r ))`, `(( kill -9 -1 ))`, `(( reboot ))`, `(( poweroff ))`
+  and `(( halt ))` are ALLOW under both dialects, as on `52bc607a`, while `crontab -r`, `kill -9 -1`, `reboot`,
+  `poweroff` and `halt` alone ask (classified only, never run). dash runs
+  them as commands: `(( echo -r ))`, `(( echo -9 -1 ))` and
+  `(( echo crontab -r ))` printed `-r`, `-9 -1` and `crontab -r` in macOS
+  and Linux dash, where bash printed nothing
+  (`.omc/probes/784-788/fix-r2/ev/f6-dash.txt`). These ASK-level commands
+  are left to the per-shell-dialect follow-up: a gate that tells dash from
+  bash would read them, and the relative writes above, in full for dash
+  (drafted, not posted:
+  `.omc/probes/784-788/finish/issue-draft-shell-dialect.md`).
+- **Under UNKNOWN** the bash reading stands, as ADR-0158 keeps it for
+  `[[ a > MARK ]]`: the gate gives UNKNOWN only to a shell it cannot
+  classify, whose ALLOW it does not honour.

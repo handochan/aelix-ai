@@ -266,7 +266,24 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   offset still asks without being read. Its finish (2026-11-12): (the lead's call) a `$'` in the
   text of a `"…"` or expanded here-document body holding a `${…}` asks and is read decoded, as
   tree-sitter ends the `${…}` at an escaped `}` where bash reads on; the misread readings have three
-  times the others' budget; and a ksh93 pattern reading over 4,096 bytes asks unread.
+  times the others' budget; and a ksh93 pattern reading over 4,096 bytes asks unread. Dated note
+  2026-11-12 (#784–#789, under ADR-0158; #788 here too), with its fix rounds 1 and 2 and a finish:
+  six more words
+  tree-sitter reads otherwise than the shells are read as they read them (measured in nine shells) —
+  a `${…}` bash, dash and mksh end at the first `}` after a `{` in its pattern; a redirect, `;`, `|`
+  or `&` (an `&&` only after a word that is `]` once its quotes are removed, which ends the `[` and
+  makes it succeed) in a `[ x =~ … ]` pattern or between test
+  operands (in `[[` under POSIX, for dash, a `>` counts and the rest only when refused); zsh's
+  `=(…)` where a `${…}` operand word, or a brace expansion in it, starts, also after a `$y`, `$*`,
+  `$@`, `$y[1]` or `$''` that may be empty; a `$'…'` tree-sitter splits into `$` and `'…'` in a
+  quoted operand (bash 3.2); a `<(…)`
+  bash runs after an escaped `}` in a quoted operand, which it reads on past a quoted `}` and a
+  `${…}` in a nested quote; and,
+  under POSIX, dash's, ksh93's and mksh's reading of `$[…]` and `(( … ))` when it is refused (the
+  owner's decision: protected targets are refused, `(( n > 0 ))` stays allowed; the lead's DENY-only
+  reading leaves ASK-level commands such as `(( crontab -r ))` allowed for a follow-up). The edits
+  52bc607a made are read on their own as well, so a #784 edit over one hides it no longer
+  (`echo ${PWD#"$ $(rm -rf ~)"{}}` is refused again).
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the
