@@ -4094,6 +4094,56 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` reads six more commands as the shells read them (#784, #785, #786, #787, #788, #789;
+  ADR-0158 #784–#789 note, ADR-0288 #788 note).** Each was allowed on `52bc607a` and, run with
+  `<shell> -c` in a scratch directory (macOS bash 3.2.57, zsh, dash and ksh93u+; Linux bash 5.2.37,
+  zsh, dash, ksh 93u+m and mksh), created a file in the shells named; each asks now:
+  `echo ${x#{};: > MARK}` (bash, dash and mksh end the `${…}` at the first `}` and ran `: > MARK}`);
+  `[ x =~ >MARK ]` (every shell but zsh redirects there) and `[ x =~ a;{sh,-c,:\>MARK};b ]` (bash,
+  ksh93 and mksh run the list there); `echo ${x:-=(: > MARK)}`, `echo ${x:-{a,=(: > MARK)}}` and
+  `echo ${x:-{a,$y=(: > MARK)}}` and `echo ${x:-{a,$*=(: > MARK)}}` (zsh runs that `=(…)`, after
+  a `$y`, `$*`, `$@`, `$y[1]` or `$''` that is empty too);
+  ``echo "a${PWD%$'}b"\x24(: > MARK)'}b"`` (macOS bash 3.2 decodes the `$'…'` the parser split, as
+  in 438 of 564 such spellings measured); and
+  ``echo "${PWD#\}<(: > MARK)}"``, ``echo "${PWD#\}'}'<(: > MARK)}"`` and
+  ``echo "${PWD#\}"${y:-"}"}"<(: > MARK)}"`` (bash runs the `<(…)` after the escaped `}`, reading on
+  past a quoted `}` and a `${…}` in a nested quote). The owner decided for
+  #788 to refuse protected targets and keep `(( n > 0 ))` allowed; as the lead read that decision,
+  dash's reading of `(( … ))` and `$[ … ]` counts under the POSIX dialect when it is refused, and
+  this lane reads a `;`, `|` or `&` in `[[ … ]]`, which only dash runs, the same way:
+  `(( rm -rf /home ))`, `echo $[1|rm -rf /home ]`, `(( 1>~/.bashrc ))` and `[[ x == a|sh ]]` are
+  refused, while `(( n > 0 ))`, `(( 1>MARK ))` and `echo $[2>MARK]`, which write a relative file in
+  dash, stay allowed, and so do `(( crontab -r ))`, `(( kill -9 -1 ))` and `(( reboot ))`, which
+  dash runs as commands and which ask only on their own: the lead's reading goes past refusing
+  protected paths to DENY-level readings only, and leaves these to a follow-up that tells dash
+  from bash. An `&&` inside `[ … ]` counts only after a word that is `]`, or starts with one, once
+  its quotes are removed: that word ends the `[`, which then succeeds, and `[ -n \] && mkdir -p MARK ]`
+  created `MARK` in all nine shells and asks now, while `[ -n "$a" && -n "$b" ]` stays allowed (not
+  covered: an `$a` that holds `]` when the command runs). Refused too (classified only):
+  `echo ${x#{};rm -rf ~ }`,
+  `[ x =~ >~/.bashrc ]`, `[ x == a|sh ]`, `echo ${x:-=(rm -rf ~)}`,
+  ``echo "a${PWD%$'}b"\x24(rm -rf ~)'}b"`` and ``echo "${PWD#\}<(rm -rf ~)}"``;
+  `[ x =~ a;{rm,-rf,~};b ]` asks, as `{rm,-rf,~}` alone does. In a pty TUI under `auto` with a
+  scripted model, `[ x =~ a;{sh,-c,:\>MARK};b ]` and ``echo "${PWD#\}<(: > MARK)}"``
+  (`SHELL=/bin/bash`) and `echo ${x:-{a,=(: > MARK)}}` (`/bin/zsh`) ran with no dialog on
+  `52bc607a` and left `MARK`; now "Run shell command?" opens and nothing is created after Esc, while
+  `(( 2 > 1 )) && echo yes` runs with no dialog on both. ``echo "${PWD#\}'}'<(: > MARK)}"``
+  (`/bin/bash`) and `echo ${x:-{a,$y=(: > MARK)}}` (`/bin/zsh`) ran with no dialog and left `MARK`
+  on the second version of this change and open the dialog now, as does
+  `[ -n \] && mkdir -p MARK ]` (`/bin/bash`), which did so on the third. Re-run with its seeds, the
+  tree-sitter-vs-shell audit's generators found no hit of the shapes of #784, #785, #786 and #787 nor
+  a `<(…)` of #789 in nine shells, and 45 relative writes of #788, which the owner's decision keeps.
+  No verdict went down against `52bc607a` in the #710 redirect sweep, the 108,960 here-documents,
+  the grids, the 1,531 attack forms, the two property tests, the list and token-soup fuzzers,
+  #768's verify fuzzers, the round-2 and round-3 verifies' attack files and fuzz, or the round-1
+  reviewers'
+  generators, among them the one that found
+  `echo ${PWD#"$ $(rm -rf ~)"{}}` going from refused to asked on the first version of this change.
+  The cost: ``echo "${x%$'}'}"`` asks, as ``echo "${x%$'abc'}"`` did, and so does
+  `[ x =~ \]&&sh -c ': > MARK' ]`, which no shell ran; among 31,958 and 16,649 command strings,
+  14,428 real script lines, 13,220 lines of local scripts and 102 real `(( … ))` commands, nothing
+  else changed.
+
 - **`auto` reads backtick text as the shells read it (#768, ADR-0158 #768 note).** Before the
   shells parse the text inside backticks again, they turn `\\` into `\`, `\$` into `$` and `` \` ``
   into a backtick, remove `\⏎`, and end the substitution at its first unescaped backtick; the

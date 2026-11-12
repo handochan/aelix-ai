@@ -29,7 +29,7 @@ import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from aelix_coding_agent.builtin.shell_classifiers.dialect import Dialect
 
@@ -3912,6 +3912,8 @@ def _rejected_command_verdict(root: Any, source: bytes, *, dialect: Dialect) -> 
         worst = max(worst, _joined_lines_verdict(root, source, dialect=dialect))
     if b"`" in source:
         worst = max(worst, _backtick_readings_verdict(root, source, dialect=dialect))
+    if dialect == Dialect.POSIX:
+        worst = max(worst, _dash_verdict(root, source, [], []))
     return worst
 
 
@@ -4109,6 +4111,30 @@ _STRAY_DOLLAR = re.compile(rb"\$[ \t\n]")
 # one in a command's arguments.
 _REGEX_OPERATORS = frozenset({"==", "=~", "=", "!="})
 _REGEX_OPERATOR = re.compile(rb"=[=~]")
+# #785 fix round 1 (the round-1 cross-review's finding 1): the bytes that end
+# a word and start an operator, which a pattern leaf may hold, and the one of
+# them that starts a redirect that writes; the operators tree-sitter reads
+# between test operands where the shells end the ``[`` command and run what
+# follows; and the bytes a source holds when a ``[ … ]`` in it may hold one of
+# them. Fix round 2 (the round-2 verify's F4): not ``&&`` as such. The shells
+# run what follows an ``&&`` only when the ``[`` before it succeeds, and a
+# ``[`` whose last argument before the ``&&`` is no ``]`` fails:
+# ``[ -n a && touch MARK ]`` and ``[[ -n a && touch MARK ]]`` created no file
+# in any of the nine (dash has no ``[[``), so ``[ -n "$a" && -n "$b" ]`` stays
+# allowed. The finish (the round-3 verify's F1): an ``&&`` in a ``[ … ]``
+# after a word that is ``]``, or starts with one, once its quotes are removed
+# counts (:func:`_bracket_word`). ``[ -n \] && mkdir -p MARK ]`` and its
+# ``']'``, ``"]"``, ``$']'``, ``''']'`` and ``$'\x5d'`` spellings created MARK
+# in all nine, or all but dash, which has no ``$'…'``; dash's ``[`` checks
+# only the first byte of its last argument, so ``[ -n \]x && mkdir -p MARK ]``
+# ran there (``.omc/probes/784-788/finish/``). A ``]`` an expansion makes
+# (``a=']'`` earlier, then ``[ -n "$a" && … ]``) is not read so.
+_LEAF_OPERATORS = frozenset(b";|&<>\n")
+_WRITE_BYTES = frozenset(b">")
+_TEST_LIST_OPERATORS = frozenset({"|", "&", "||", "|&"})
+_TEST_WORD_BREAKS = frozenset(b" \t\n;|&<>()")
+_TEST_TRIGGERS = (b"<", b">", b"=", b"|", b"&")
+_Edits = list[tuple[int, int, bytes]]
 
 
 def _misread_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
@@ -4117,56 +4143,87 @@ def _misread_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdict:
     The source with each such word written as the shells read it
     (:func:`_misread_edits`) is re-read as a command, and each pattern leaf
     holding a substitution is read as a word (:func:`_pattern_verdict`).
+    #784–#789 fix round 1: the edits 52bc607a made are read on their own,
+    as there, and with #784's and #785's; under the POSIX dialect, dash's
+    reading counts when it is DENY (:func:`_dash_verdict`).
     """
 
-    edits, worst, patterns = _misread_edits(root, source, dialect=dialect)
-    for text in patterns:
+    misread = _misread_edits(root, source, dialect=dialect)
+    worst = misread.floor
+    for text in misread.patterns:
         worst = max(worst, _pattern_verdict(text, dialect=dialect))
-    if edits:
-        worst = max(worst, _misread_reread(_edited(source, edits), dialect=dialect))
+    if misread.shells:
+        worst = max(worst, _misread_reread(_edited(source, misread.shells), dialect=dialect))
+    read = misread.shells + misread.more
+    if misread.more:
+        worst = max(worst, _misread_reread(_edited(source, read), dialect=dialect))
+    if worst < Verdict.DENY and dialect == Dialect.POSIX:
+        worst = max(worst, _dash_verdict(root, source, read, misread.dash))
     return worst
 
 
-def _misread_edits(
-    root: Any, source: bytes, *, dialect: Dialect
-) -> tuple[list[tuple[int, int, bytes]], Verdict, list[bytes]]:
+class _Misreads(NamedTuple):
+    """What :func:`_misread_edits` finds.
+
+    #784–#789 fix round 1: the edits come in three sets. ``shells`` holds
+    the ones 52bc607a made and is read on its own, as there. ``more``,
+    #784's and #785's, is read with ``shells``: a #784 edit spans its
+    ``${…}`` and left out a 52bc607a edit inside it, so
+    ``echo ${PWD#"$ $(rm -rf ~)"{}}``, DENY on 52bc607a, asked on a9f39aa2
+    (the round-1 verify's F2). ``dash``, readings only dash makes, counts
+    when it is DENY (:func:`_dash_verdict`).
+    """
+
+    shells: _Edits
+    more: _Edits
+    dash: _Edits
+    floor: Verdict
+    patterns: list[bytes]
+
+
+def _misread_edits(root: Any, source: bytes, *, dialect: Dialect) -> _Misreads:
     """The edits that write each misread word as the shells read it, the verdict floor, and the pattern texts to read."""
 
-    edits: list[tuple[int, int, bytes]] = []
-    floor = Verdict.ALLOW
-    patterns: list[bytes] = []
+    misread = _Misreads([], [], [], Verdict.ALLOW, [])
     patterned = (b"=" in source or _EXTGLOB.search(source)) and _hides_code(source)
     if not (
         patterned
         or _STRAY_DOLLAR.search(source)
         or _REGEX_OPERATOR.search(source)
         or b"\\" in source
-        or (b"[" in source and (b">" in source or b"<" in source))
+        or (b"[" in source and any(byte in source for byte in _TEST_TRIGGERS))
+        or (b"${" in source and source.count(b"{") > source.count(b"${"))
     ):
-        return edits, floor, patterns
+        return misread
+    floor = Verdict.ALLOW
     stack: list[tuple[Any, str]] = [(root, "")]
     while stack:
         node, parent = stack.pop()
         t = node.type
         if t == "simple_expansion" and (at := _stray_dollar(node, source)) is not None:
-            edits.append((at, at, b"\\"))
+            misread.shells.append((at, at, b"\\"))
             floor = Verdict.ASK
         elif t == "command":
             if any(child.type == "regex" for child in node.children):
                 floor = Verdict.ASK
-            edits += _quoted_operators(node)
-            edits += _joined_words(node, source)
+            misread.shells.extend(_quoted_operators(node))
+            misread.shells.extend(_joined_words(node, source))
         elif t == "test_command":
-            edits += _test_redirects(node, dialect)
+            shells, more, dash = _test_redirects(node, dialect)
+            misread.shells.extend(shells)
+            misread.more.extend(more)
+            misread.dash.extend(dash)
+        elif t == "expansion":
+            misread.more.extend(_early_close(node, source))
         elif t in _PATTERN_LEAVES and parent != "expansion":
             if _hides_code(node.text):
-                patterns.append(node.text)
+                misread.patterns.append(node.text)
             if (ksh := _ksh_unescaped(node.text)) is not None:
                 floor = Verdict.ASK
                 if len(ksh) <= _KSH_REREAD_LIMIT:
-                    patterns.append(ksh)
+                    misread.patterns.append(ksh)
         stack.extend((child, t) for child in node.children)
-    return edits, floor, patterns
+    return misread._replace(floor=floor)
 
 
 # #768 fix round 2: a backslash before ``$(``, ``${`` or a backtick (group 1),
@@ -4259,29 +4316,337 @@ def _utf8_length(lead: int) -> int:
     return 4 if lead >= 0xF0 else 3 if lead >= 0xE0 else 2 if lead >= 0xC0 else 1
 
 
-def _test_redirects(test: Any, dialect: Dialect) -> list[tuple[int, int, bytes]]:
+def _test_redirects(test: Any, dialect: Dialect) -> tuple[_Edits, _Edits, _Edits]:
     """For a ``[ … ]`` holding ``<`` or ``>`` (``[[ … ]]`` under POSIX), its brackets made a ``test`` command.
 
     ``[ a > ~/.bashrc ]`` then reads ``test a > ~/.bashrc``, whose redirect
-    is judged as ``echo a > ~/.bashrc``'s is.
+    is judged as ``echo a > ~/.bashrc``'s is; these edits, which 52bc607a
+    made, come first. #785: so is an operator tree-sitter keeps in a pattern
+    leaf, with the operator before the leaf quoted
+    (:func:`_swallowed_operators`): ``[ x =~ >~/.bashrc ]`` reads
+    ``test x '=~' >~/.bashrc``; and, fix round 1, a ``|``, ``&``, ``||`` or
+    ``|&`` tree-sitter reads between the operands, where the shells end the
+    ``[`` command (``[ x == a|sh ]`` pipes into ``sh``; an ``&&`` only in a
+    ``[ … ]`` and after a ``]`` word, see :data:`_TEST_LIST_OPERATORS`).
+    These edits, with
+    the brackets when no bare ``<`` or ``>`` made them, come second, except
+    those of ``[[ … ]]`` that bash reads as a test, which only dash runs:
+    an operator other than ``>`` in its pattern leaf
+    (``[[ $x =~ ^-h|--help$ ]]`` is a bash regex; a ``<`` is an input
+    redirect to dash, ``[[ $x =~ !<MARK ]]`` wrote nothing there) and a
+    ``|``, ``&``, ``||`` or ``|&`` between its operands come third
+    (:class:`_Misreads`).
     """
 
     kids = test.children
-    if not kids or not (kids[0].type == "[" or (kids[0].type == "[[" and dialect == Dialect.POSIX)):
-        return []
+    single = bool(kids) and kids[0].type == "["
+    if not (single or (kids and kids[0].type == "[[" and dialect == Dialect.POSIX)):
+        return [], [], []
+    writes: _Edits = []
+    others: _Edits = []
+    bare = listed = False
+    # Where the first ``]`` word starts, after which an ``&&`` counts.
+    bracket = test.end_byte
+    if single and b"&&" in test.text:
+        bracket = test.start_byte + _bracket_word(test.text, kids[0].end_byte - test.start_byte)
     stack = [child for child in kids if child.type in _TEST_GROUPS]
     while stack:
         node = stack.pop()
-        if any(not c.is_named and c.type[:1] in ("<", ">") for c in node.children):
-            break
+        for child in node.children:
+            if not child.is_named and child.type[:1] in ("<", ">"):
+                bare = True
+            elif (not child.is_named and child.type in _TEST_LIST_OPERATORS) or (
+                child.type == "&&" and child.start_byte > bracket
+            ):
+                listed = True
+        leaf_writes, leaf_others = _swallowed_operators(node, bracket)
+        writes += leaf_writes
+        others += leaf_others
         stack.extend(child for child in node.children if child.type in _TEST_GROUPS)
-    else:
-        return []
     opening = kids[0]
-    edits = [(opening.end_byte - len(opening.type), opening.end_byte, b"test")]
+    brackets = [(opening.end_byte - len(opening.type), opening.end_byte, b"test")]
     closing = kids[-1]
     if closing.type in ("]", "]]"):
-        edits.append((closing.start_byte, closing.end_byte, b" " * len(closing.type)))
+        brackets.append((closing.start_byte, closing.end_byte, b" " * len(closing.type)))
+    if single:
+        writes, others = writes + others, []
+    shells = brackets if bare else []
+    more: _Edits = []
+    if writes or (single and listed):
+        more = writes + ([] if bare else brackets)
+    dash: _Edits = []
+    if others or (not single and listed):
+        dash = others + ([] if bare or more else brackets)
+    return shells, more, dash
+
+
+# --- #784–#789: six more places tree-sitter reads otherwise than the shells ---
+#
+# The tree-sitter-vs-shell differential audit on 52bc607a found the first five
+# as ALLOW while a ``: > MARK`` or ``>MARK`` twin created a file in the shells
+# named (macOS bash 3.2.57, zsh 5.9, dash and ksh93u+; Linux bash 5.2.37, zsh
+# 5.9, dash 0.5.12, ksh 93u+m/1.0.10 and mksh 59c; ``.omc/probes/ts-audit/``,
+# ``.omc/probes/784-788/impl/shells/`` and ``.omc/probes/784-788/fix-r1/``),
+# and the implementation lane's re-run of its generators found #789. Each is
+# now read as those shells read it, through :func:`_misread_verdict` or
+# :func:`_hidden_code_verdict`'s walks:
+#
+# - #784: a ``{`` in a pattern operand (:func:`_early_close`). bash, dash and
+#   mksh end the ``${…}`` at its first ``}``: ``echo ${x#{};: > MARK}`` and
+#   12 more spellings created ``MARK}`` in all five of them, ``${x^{}>MARK}``
+#   and ``${x,{}>MARK}`` in Linux bash 5.2.37; zsh and ksh93, which pair the
+#   braces as tree-sitter does, ran none.
+# - #785: a redirect, ``;``, ``|`` or ``&`` in the pattern leaf of
+#   ``[ x =~ … ]``, or a ``|``, ``&``, ``||`` or ``|&`` between test operands
+#   (:func:`_swallowed_operators`, :func:`_test_redirects`): ``[ x =~ >MARK ]``
+#   and seven more spellings created MARK in both bash, both dash, both ksh93
+#   and mksh, and ``[ x =~ a;{sh,-c,:\>MARK};b ]`` and four more in both
+#   bash, both ksh93 and mksh; ``[[ x =~ >MARK ]]`` and ``[[ x = >MARK ]]``
+#   in dash alone, so ``[[`` reads so under the POSIX dialect only. The
+#   finish: an ``&&`` after a ``]`` word in ``[ … ]`` (:func:`_bracket_word`):
+#   ``[ -n \] && mkdir -p MARK ]`` created MARK in all nine.
+# - #786: zsh's ``=(…)`` where a ``${…}`` operand word, or a brace expansion
+#   in it, starts (:func:`_zsh_reading`): ``echo ${x:-=(: > MARK)}`` and
+#   ``echo ${x:-{a,=(: > MARK)}}`` created MARK in both zsh builds, and so
+#   did ``{a,$y=(…)}`` and, the finish, ``{a,$*=(…)}`` in that brace word.
+# - #787: a ``$'…'`` tree-sitter splits into ``$`` and ``'…'`` in a quoted
+#   ``${…}`` operand (:func:`_split_dollar`): of 33,000 spellings generated,
+#   1,128 parse with that split, 564 of them in double quotes, and 438 of
+#   those created MARK in macOS bash 3.2.57 (none in Linux bash 5.2.37).
+# - #788: ``$[…]`` and ``(( … ))``, which dash, ksh93 and mksh read as
+#   commands, under the POSIX dialect (:func:`_dash_verdict`):
+#   ``echo $[2>MARK]`` created ``MARK]`` in dash, both ksh93 and mksh, and
+#   ``(( 1>MARK ))`` MARK and ``(( n > 0 ))`` a file ``0`` in dash; that
+#   reading counts when it is DENY.
+# - #789: a ``<(…)`` or ``>(…)`` after an escaped ``}`` in a quoted
+#   ``${…}`` operand (:func:`_cut_operand_verdict`):
+#   ``echo "${PWD#\}<(: > MARK)}"`` and 26 more spellings created MARK in
+#   Linux bash 5.2.37, 13 of them in macOS bash 3.2.57 too, and so did
+#   ``echo "${PWD#\}'}'<(: > MARK)}"`` and, the finish,
+#   ``echo "${PWD#\}"${y:-"}"}"<(: > MARK)}"`` in both bash builds.
+
+
+def _swallowed_operators(group: Any, bracket: int) -> tuple[_Edits, _Edits]:
+    """#785: the operator before each pattern leaf of a ``[`` / ``[[`` group that holds a shell operator, quoted.
+
+    tree-sitter-bash 0.25.1 keeps the right side of ``=~`` in ``[ … ]``, and
+    of ``=``, ``==`` and ``=~`` in ``[[ … ]]``, as one ``regex`` leaf, a
+    redirect, ``;``, ``|`` or ``&`` included: ``[ x =~ >MARK ]`` is ``x``,
+    ``=~`` and a leaf ``>MARK``. Quoted (``test x '=~' >MARK``), the operator
+    no longer starts a pattern, and tree-sitter reads the redirect, the list
+    or the pipeline the shells make there (:func:`_holds_an_operator`), an
+    ``&&`` after byte ``bracket`` of the source too. The edits for leaves
+    holding ``>``, then for the others.
+    """
+
+    writes: _Edits = []
+    others: _Edits = []
+    kids = group.children
+    for left, right in zip(kids, kids[1:], strict=False):
+        if right.type in _PATTERN_LEAVES and not left.is_named and left.type in _REGEX_OPERATORS:
+            held = _holds_an_operator(right.text, bracket - right.start_byte)
+            if held:
+                op = left.type.encode()
+                edit = (left.end_byte - len(op), left.end_byte, b"'" + op + b"'")
+                (writes if held & _WRITE_BYTES else others).append(edit)
+    return writes, others
+
+
+def _holds_an_operator(text: bytes, bracket: int | None = None) -> frozenset[int]:
+    """Whether a pattern leaf's ``text`` holds a ``;``, ``|``, ``&``, ``<``, ``>`` or newline the shells read as one.
+
+    Fix round 1 (the round-1 cross-review's findings 1 and 3): not only
+    ``<`` and ``>``, and none that a backslash escapes, a quote holds
+    (``[[ $x =~ '>' ]]``; dash reads that ``>`` as text), or a ``$(…)``,
+    ``${…}`` or backtick holds. Nor one in a ``(…)`` group: an unquoted
+    ``(`` there is a syntax error to bash and dash, which then ran nothing
+    on the line (``echo a; [[ x =~ a|echo b(c) ]]`` printed nothing in
+    either), and ``[[ $x =~ ^(a|b)$ ]]`` is a bash regex. Fix round 2 (the
+    round-2 verify's F4): nor an ``&&`` at or before byte ``bracket`` (all
+    of them when it is ``None``), where the ``[`` before it fails and the
+    shells run nothing after it (:data:`_TEST_LIST_OPERATORS`);
+    ``[ x =~ a&&touch MARK ]`` created no file in any of the nine. The
+    finish (the round-3 verify's F1): one after a ``]`` word, which starts
+    at ``bracket``, counts; ``[ -n =~ \\]&&mkdir -p MARK ]`` created MARK in
+    all of them but zsh.
+    """
+
+    held: set[int] = set()
+    i, end = 0, len(text)
+    while i < end:
+        byte = text[i]
+        if byte == 0x5C or (text[i : i + 2] == b"&&" and (bracket is None or i <= bracket)):
+            i += 2  # a backslash and its byte; an ``&&`` no ``]`` word comes before
+        elif byte == 0x27:  # '
+            i = _single_quote_end(text, i) + 1
+        elif byte == 0x22:  # "
+            i = _double_quote_end(text, i + 1) + 1
+        elif byte == 0x60:  # backtick
+            i = _first_unescaped(text, i + 1, end, b"`") + 1
+        elif byte == 0x28:  # (
+            i = _first_unescaped(text, i + 1, end, b")") + 1
+        elif byte == 0x24 and text[i + 1 : i + 2] == b"{":
+            i = _first_unescaped(text, i + 2, end, b"}") + 1
+        else:
+            if byte in _LEAF_OPERATORS:
+                held.add(byte)
+            i += 1
+    return frozenset(held)
+
+
+def _single_quote_end(text: bytes, begin: int) -> int:
+    """The index of the ``'`` closing the quote that opens at ``begin``; a ``$'…'`` honours backslashes. ``len(text)`` when none does."""
+
+    i = begin + 1
+    escapes = begin > 0 and text[begin - 1] == 0x24 and not _escaped(text, begin - 1)
+    while i < len(text) and text[i] != 0x27:
+        i += 2 if escapes and text[i] == 0x5C else 1
+    return min(i, len(text))
+
+
+def _bracket_word(text: bytes, start: int) -> int:
+    """Where the first word of ``text[start:]`` that is ``]``, or starts with one, once its quotes are removed starts; ``len(text)`` when none does.
+
+    The finish of #785 (the round-3 verify's F1; :data:`_TEST_LIST_OPERATORS`).
+    A word ends at a blank, a newline or an operator byte no quote or
+    backslash holds (:data:`_TEST_WORD_BREAKS`).
+    """
+
+    i, end, fresh = start, len(text), True
+    while i < end:
+        byte = text[i]
+        if byte in _TEST_WORD_BREAKS:
+            fresh = True
+            i += 1
+            continue
+        if fresh and _opens_with_bracket(text, i):
+            return i
+        fresh = False
+        if byte == 0x5C:  # backslash
+            i += 2
+        elif byte == 0x27:  # '
+            i = _single_quote_end(text, i) + 1
+        elif byte == 0x22:  # "
+            i = _double_quote_end(text, i + 1) + 1
+        else:
+            i += 1
+    return end
+
+
+def _opens_with_bracket(text: bytes, i: int) -> bool:
+    """Whether the word at ``text[i]`` starts with ``]`` once its quotes are removed.
+
+    Past each empty quote: a ``]``, a ``\\]``, a ``'…'``, ``"…"`` or ``$"…"``
+    whose first byte is ``]``, or a ``$'…'`` whose first decoded byte is
+    (:func:`_ansi_c_decoded`).
+    """
+
+    while i < len(text):
+        if text[i] == 0x5C:  # backslash
+            return text[i + 1 : i + 2] == b"]"
+        if text[i : i + 2] == b"$'":
+            close = _single_quote_end(text, i + 1)
+            decoded = _ansi_c_decoded(text[i : close + 1])
+            if decoded:
+                return decoded[:1] == b"]"
+            i = close + 1
+            continue
+        opening = 2 if text[i : i + 2] == b'$"' else 1 if text[i] in b"'\"" else 0
+        if not opening:
+            return text[i] == 0x5D
+        quote, first = text[i + opening - 1], text[i + opening : i + opening + 1]
+        if first != bytes([quote]):
+            return first == b"]"
+        i += opening + 1
+    return False
+
+
+def _early_close(expansion: Any, source: bytes) -> list[tuple[int, int, bytes]]:
+    """#784: a ``${…}`` the shells end before tree-sitter does, up to where they end it, made one word.
+
+    tree-sitter-bash 0.25.1 pairs a ``{`` in a pattern operand with a later
+    ``}`` and reads the ``${…}`` on past it, so the operand's ``regex`` leaf
+    holds a ``}``. bash, dash and mksh end the ``${…}`` at that first ``}``
+    and run what follows: ``echo ${x#{};: > MARK}`` is ``echo ${x#{}``, then
+    ``: > MARK}``. The edit replaces the ``${…}`` up to that ``}`` with
+    ``x``, so the source reads ``echo x;: > MARK}``.
+    """
+
+    for child in expansion.children:
+        if child.type != "regex":
+            continue
+        at = _first_unescaped(source, child.start_byte, child.end_byte, b"}")
+        if at < child.end_byte:
+            return [(expansion.start_byte, at + 1, b"x")]
+    return []
+
+
+def _dash_verdict(root: Any, source: bytes, read: _Edits, dash: _Edits) -> Verdict:
+    """#788: DENY when dash's reading of ``source`` is DENY; else ALLOW.
+
+    That reading writes each ``(( … ))`` and ``$[ … ]`` as dash reads it
+    (:func:`_dash_edits`), makes the ``read`` edits the reading of
+    :func:`_misread_verdict` made, and the ``dash`` ones: ``[[ … ]]`` read
+    as a ``test`` command (:func:`_test_redirects`).
+
+    dash, ksh93 and mksh have no ``$[ … ]``: ``echo $[2>MARK]`` is the word
+    ``$[2`` and a redirect ``>MARK]`` there, and ``echo $[1|echo == hi ]``
+    a pipeline that printed ``== hi ]``. dash has no ``(( … ))`` either: it
+    reads two subshells around a command list, so ``(( n > 0 ))`` runs ``n``
+    with its output in a file ``0``, and ``(( echo == hi ))``,
+    ``(( a || echo == hi ))`` and ``(( 1 & echo == hi ))`` printed
+    ``== hi`` (the round-1 cross-review's finding 2). That reading
+    (:func:`_dash_edits`) raises the verdict to DENY and no lower than that:
+    the owner decided on 2026-11-12 to refuse protected targets and keep
+    ``(( n > 0 ))`` allowed, and the lead read that decision as covering
+    every command dash runs there, since bash, the shell most users run,
+    reads arithmetic in all of them. Called for the POSIX dialect alone, on
+    a tree tree-sitter parsed and on one it rejected (``(( 1>~/.bashrc ))``).
+    """
+
+    edits = list(dash)
+    if b"((" in source or b"$[" in source:
+        edits += _dash_edits(root)
+    if not edits:
+        return Verdict.ALLOW
+    reading = _misread_reread(_edited(source, [*read, *edits]), dialect=Dialect.POSIX)
+    return Verdict.DENY if reading == Verdict.DENY else Verdict.ALLOW
+
+
+def _dash_edits(root: Any) -> list[tuple[int, int, bytes]]:
+    """#788: the edits that write each ``(( … ))`` and ``$[ … ]`` under ``root`` as dash reads it.
+
+    A ``\\`` before the ``$`` of ``$[`` and a blank before its ``]`` make
+    tree-sitter read the word ``\\$[2`` and the redirect ``>MARK ]``; the
+    blank also reads ``echo $[2>~/.bashrc]``, which writes ``~/.bashrc]``
+    in dash, as a write to ``~/.bashrc``. ``((`` and ``))`` are spaced
+    apart, and so is every ``(`` and ``)`` between them, which dash reads
+    as subshells too, so nested parentheses are read in one pass (fix round
+    1, the round-1 cross-review's finding 5: one layer per re-read took
+    0.72 s for ``(( `` + 400 ``(`` + ``1>2`` + 400 ``)`` + `` ))``).
+    ``$(( … ))`` is arithmetic in every shell and is left alone, and so is a
+    ``for (( … ))``, which dash rejects.
+    """
+
+    edits: list[tuple[int, int, bytes]] = []
+    stack: list[tuple[Any, bool]] = [(root, False)]
+    while stack:
+        node, inside = stack.pop()
+        kids = node.children
+        if node.type == "arithmetic_expansion" and kids and kids[0].type == "$[":
+            edits.append((kids[0].start_byte, kids[0].start_byte, b"\\"))
+            if kids[-1].type == "]":
+                edits.append((kids[-1].start_byte, kids[-1].start_byte, b" "))
+        elif node.type in ("compound_statement", "ERROR") and any(k.type == "((" for k in kids):
+            inside = True
+            for kid in kids:
+                if kid.type in ("((", "))"):
+                    edits.append(
+                        (kid.start_byte, kid.end_byte, b"( (" if kid.type == "((" else b") )")
+                    )
+        elif inside and not node.is_named and node.type in ("(", ")"):
+            edits.append((node.start_byte, node.end_byte, b"( " if node.type == "(" else b" )"))
+        stack.extend((kid, inside) for kid in kids)
     return edits
 
 
@@ -4408,12 +4773,13 @@ def _hidden_code_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdi
     # ``.parent``, which py-tree-sitter answers by walking down from the root,
     # cost cubic time in nested operands (``echo ${x:-${x:-…}}`` 490 deep).
     stack = [(root, False, (root.start_byte, root.end_byte))]
+    cuts: list[tuple[int, int]] = []
     while stack:
         node, quoted, statement = stack.pop()
         if node.type == "expansion":
-            worst = max(worst, _expansion_text_verdict(node, dialect, quoted=quoted))
+            worst = max(worst, _expansion_text_verdict(node, source, dialect, quoted=quoted))
         elif node.type in _DOUBLE_QUOTED:
-            worst = max(worst, _quoted_text_verdict(node, dialect))
+            worst = max(worst, _quoted_text_verdict(node, source, dialect, cuts))
         elif node.type == "command_substitution" and node.children[0].type == "`":
             worst = max(worst, _backtick_text_verdict(node, source, dialect))
             worst = max(
@@ -4425,10 +4791,14 @@ def _hidden_code_verdict(root: Any, source: bytes, *, dialect: Dialect) -> Verdi
         if node.type not in _QUOTE_TRANSPARENT:
             quoted = node.type in _DOUBLE_QUOTED
         stack.extend(_with_statements(node, quoted, statement))
+    if cuts:
+        worst = max(worst, _cut_operand_verdict(source, cuts, dialect))
     return worst
 
 
-def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -> Verdict:
+def _expansion_text_verdict(
+    expansion: Any, source: bytes, dialect: Dialect, *, quoted: bool
+) -> Verdict:
     """ASK or worse when an operand of ``expansion`` holds code as text (:func:`_hides_code`).
 
     The text is re-read as a double-quoted string when the ``${…}`` is in
@@ -4450,24 +4820,148 @@ def _expansion_text_verdict(expansion: Any, dialect: Dialect, *, quoted: bool) -
     """
 
     worst = Verdict.ALLOW
-    stack = list(expansion.children)
+    stack = _with_previous(expansion)
     while stack:
-        node = stack.pop()
+        node, before = stack.pop()
         if node.type in ("expansion", *_EXECUTABLE_WRAPPER_TYPES):
             continue
         if node.children:
-            stack.extend(node.children)
-            continue
-        if quoted and (node.type == "ansi_c_string" or node.type in _PATTERN_LEAVES):
-            worst = max(worst, _decoded_quotes_verdict(node.text, dialect))
-        if not node.is_named or not _hides_code(node.text):
-            continue
-        if quoted:
-            reread = _reread(node.text, dialect=dialect, expanded=True)
+            stack.extend(_with_previous(node, before))
+            words: tuple[bytes | None, ...] = (_zsh_reading(node, before, quoted=quoted),)
         else:
-            reread = _reread(b": " + node.text, dialect=dialect)
-        worst = max(worst, Verdict.ASK, reread)
+            text = node.text
+            if quoted and (node.type == "ansi_c_string" or node.type in _PATTERN_LEAVES):
+                worst = max(worst, _decoded_quotes_verdict(text, dialect))
+            if quoted and node.type == "raw_string" and _split_dollar(source, node):
+                worst = max(worst, _decoded_quotes_verdict(b"$" + text, dialect))
+            if not node.is_named:
+                continue
+            words = (text, _zsh_reading(node, before, quoted=quoted))
+        for word in words:
+            if word is None or not _hides_code(word):
+                continue
+            if quoted:
+                reread = _reread(word, dialect=dialect, expanded=True)
+            else:
+                reread = _reread(b": " + word, dialect=dialect)
+            worst = max(worst, Verdict.ASK, reread)
     return worst
+
+
+def _with_previous(node: Any, before: Any = None) -> list[tuple[Any, Any]]:
+    """``node``'s children, each with the node before it in the source: the child before, ``before`` for the first."""
+
+    kids = node.children
+    return list(zip(kids, [before, *kids[:-1]], strict=True))
+
+
+def _zsh_reading(leaf: Any, before: Any, *, quoted: bool) -> bytes | None:
+    """#786: ``leaf``, an operand word of a ``${…}`` outside double quotes, with each ``=(`` zsh runs read as ``<(``; ``None`` when it runs none.
+
+    zsh's ``=(…)`` runs a command as ``<(…)`` does, where a word starts with
+    it. It ran the one at the start of a ``:-``, ``-``, ``:+``, ``:=`` and
+    ``/a/`` operand, and none in a pattern operand, after ``a``, ``$y`` or
+    ``${y}`` at the start of the operand, or in double quotes. Fix round 1
+    (the round-1 verify's F1): brace expansion starts a word too, so zsh 5.9
+    (macOS and Linux) ran the one in ``echo ${x:-{a,=(: > MARK)}}``, which
+    comes after ``{a,``; an ``=(`` right after a ``{`` or a ``,`` inside a
+    ``{``, none of them escaped, counts. Fix round 2 (the round-2 verify's
+    F2): so does one after such a ``{`` or ``,`` and a ``$y`` or ``${y}``,
+    which may be empty: ``{a,$y=(…)}``, ``{a,${y}=(…)}`` and ``{a,$y$z=(…)}``
+    ran in both zsh builds. A ``concatenation`` is read with each of those
+    taken out (:func:`_without_expansions`), and, the finish (the round-3
+    verify's F3), a ``word`` and a ``concatenation`` with each ``$*``,
+    ``$@``, ``$=y``, ``$^y``, ``$~y``, ``$y[…]`` subscript and ``$''`` taken
+    out too. The scan skips each backslash
+    and the byte after it, in one pass: a step that looked behind every
+    byte for the backslashes before it took 24.7 s on 40,000 of them.
+    """
+
+    text = leaf.text
+    if quoted or leaf.type in _PATTERN_LEAVES or b"=(" not in text:
+        return None
+    starts = []
+    if not leaf.children and text.startswith(b"=(") and before is not None and not before.is_named:
+        starts.append(0)
+    if leaf.children or leaf.type == "word":
+        text = _without_expansions(leaf)
+    depth = at = 0
+    plain = True  # no backslash escapes the byte before ``at``
+    while at < len(text) - 1:
+        byte = text[at]
+        if byte == 0x5C:  # a backslash and the byte it escapes
+            at += 2
+            plain = False
+            continue
+        if byte == 0x7B:  # {
+            depth += 1
+        elif byte == 0x7D:  # }
+            depth = max(depth - 1, 0)
+        elif byte == 0x3D and depth and text[at + 1] == 0x28 and text[at - 1] in b"{," and plain:
+            starts.append(at)
+        plain = True
+        at += 1
+    if not starts:
+        return None
+    reading = bytearray(text)
+    for at in starts:
+        reading[at] = 0x3C  # <
+    return bytes(reading)
+
+
+# The finish of #786 (the round-3 verify's F3): a backslash and the byte it
+# escapes, or a zsh expansion tree-sitter keeps as word text, which may be
+# empty: ``$*``, ``$@``, or a ``$y`` with ``=``, ``^`` or ``~`` flags, each
+# with a ``[…]`` subscript or none.
+_ZSH_TEXT_EXPANSION = re.compile(
+    rb"\\.|\$(?:[*@]|[=^~]+[A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?", re.DOTALL
+)
+
+
+def _without_expansions(word: Any) -> bytes:
+    """#786 fix round 2: a ``word``'s or ``concatenation``'s text with each expansion in it that may be empty taken out; ``b""`` for another node.
+
+    Fix round 2: each ``$y`` and ``${…}`` child. The finish (the round-3
+    verify's F3): each ``$''`` child, the ``[…]`` subscript right after a
+    ``$y``, and each ``$*``, ``$@``, ``$=y``, ``$^y`` and ``$~y`` tree-sitter
+    keeps as text (:data:`_ZSH_TEXT_EXPANSION`). zsh 5.9 (macOS and Linux)
+    ran the ``=(…)`` after each in ``echo ${x:-{a,$*=(: > MARK)}}`` and its
+    siblings (``.omc/probes/784-788/finish/ev/``).
+    """
+
+    if word.type not in ("word", "concatenation"):
+        return b""
+    text = word.text
+    kept, last = [], 0
+    for kid in word.children:
+        if kid.type in ("simple_expansion", "expansion") or (
+            kid.type == "ansi_c_string" and kid.text == b"$''"
+        ):
+            kept.append(text[last : kid.start_byte - word.start_byte])
+            last = kid.end_byte - word.start_byte
+            if kid.type == "simple_expansion" and text[last : last + 1] == b"[":
+                last = max(text.find(b"]", last) + 1, last)
+    kept.append(text[last:])
+    return _ZSH_TEXT_EXPANSION.sub(_escape_or_nothing, b"".join(kept))
+
+
+def _escape_or_nothing(match: re.Match[bytes]) -> bytes:
+    """A backslash and its byte as they are; ``b""`` for an expansion."""
+
+    return match.group() if match.group().startswith(b"\\") else b""
+
+
+def _split_dollar(source: bytes, quote: Any) -> bool:
+    """#787: whether a ``'…'`` node is a ``$'…'`` whose ``$`` tree-sitter read as a node of its own.
+
+    tree-sitter-bash 0.25.1 ends a pattern operand's ``regex`` leaf at a
+    ``}`` right after ``$'``, so ``"${PWD%$'}\\x24(: > MARK)'}"`` holds a
+    leaf ``$`` and a ``raw_string``; bash joins them into one ``$'…'``.
+    The byte before the quote is a ``$`` no backslash escapes.
+    """
+
+    at = quote.start_byte - 1
+    return at >= 0 and source[at : at + 1] == b"$" and not _escaped(source, at)
 
 
 # #768 fix round 2: a ``$'…'`` in a node's text, to its closing quote or to
@@ -4504,12 +4998,16 @@ def _decoded_quotes_verdict(text: bytes, dialect: Dialect) -> Verdict:
 _QUOTED_TEXT = frozenset({"string_content", "heredoc_content"})
 
 
-def _quoted_text_verdict(node: Any, dialect: Dialect) -> Verdict:
+def _quoted_text_verdict(
+    node: Any, source: bytes, dialect: Dialect, cuts: list[tuple[int, int]]
+) -> Verdict:
     """ASK or worse for each ``$'…'`` in the text of a ``"…"`` or here-document body holding a ``${…}``; else ALLOW.
 
     The text between its substitutions and expansions is read as
     :func:`_decoded_quotes_verdict` reads a pattern operand's. A body that
-    does not expand has no ``${…}`` child and is left alone.
+    does not expand has no ``${…}`` child and is left alone. #789: where a
+    ``${…}`` operand goes on after tree-sitter ended it, and where it can
+    end at the latest, is added to ``cuts`` (:func:`_cut_operand_verdict`).
     """
 
     kids = node.children
@@ -4525,7 +5023,183 @@ def _quoted_text_verdict(node: Any, dialect: Dialect) -> Verdict:
                 _decoded_quotes_verdict(text[last : child.start_byte - node.start_byte], dialect),
             )
             last = child.end_byte - node.start_byte
+            if (
+                child.type == "expansion"
+                and text[last - 1 : last] == b"}"
+                and _escaped(text, last - 1)
+            ):
+                stop = node.end_byte if node.type == "heredoc_body" else len(source)
+                cuts.append((node.start_byte + last, stop))
     return max(worst, _decoded_quotes_verdict(text[last:], dialect))
+
+
+def _cut_operand_verdict(source: bytes, cuts: list[tuple[int, int]], dialect: Dialect) -> Verdict:
+    """#789: ASK or worse for a ``<(…)`` or ``>(…)`` in the rest of a ``${…}`` operand tree-sitter ended early; else ALLOW.
+
+    tree-sitter-bash 0.25.1 ends a ``${…}`` at a ``}`` after a backslash
+    (``\\}``, ``[\\}]``), and bash reads the operand on to its first ``}``
+    (:func:`_operand_end`). In double quotes and an expanded here-document
+    body, bash runs a ``<(…)`` or ``>(…)`` there, which the rest of the
+    string, as text, hid: ``echo "${PWD#\\}<(: > MARK)}"`` and 26 more
+    spellings, ALLOW on 52bc607a, created MARK in Linux bash 5.2.37 and 13
+    of them in macOS bash 3.2.57 too
+    (``.omc/probes/784-788/impl/audit-rerun/clusters.txt``). Each of
+    ``cuts`` is where such an operand goes on in ``source`` and the most it
+    can reach, the end of a here-document body or of the source: fix round
+    2 (the round-2 verify's F1), a ``"`` there opens a quote bash nests in
+    the operand, where tree-sitter ends the string, so
+    ``echo "${PWD#\\}"}"<(: > MARK)}"`` holds the ``<(…)`` in a string node
+    of its own. Each substitution's command is re-read as command lines.
+
+    Fix round 2 (the round-2 verify's F3): the operands that overlap are
+    read as one span, each ``<(…)`` and ``>(…)`` in a span once, with the
+    ``)`` that closes it found in one pass over ``source``
+    (:func:`_process_substitutions`), and the operand scans share where they
+    end, so the time grows with the source's length: a scan to the end of
+    the string for each cut took 12.2 s for ``echo "`` + ``${a#\\}`` × 8,000
+    + ``"`` on f5d61467. A span is cut no shorter than any of its operands,
+    and every substitution in it is read, one inside another's too.
+    """
+
+    ends: dict[int, dict[int, int]] = {}
+    spans: list[list[int]] = []
+    for start, stop in sorted(set(cuts)):
+        end = _operand_end(source, start, stop, ends.setdefault(stop, {}))
+        if spans and start < spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    subs, closes = _process_substitutions(source)
+    worst = Verdict.ALLOW
+    at = iter(subs)
+    sub = next(at, len(source))
+    for start, end in spans:  # in order, apart
+        while sub < end - 1:
+            if sub >= start:
+                close = min(closes.get(sub + 1, end), end)
+                worst = max(worst, Verdict.ASK, _reread(source[sub + 2 : close], dialect=dialect))
+            sub = next(at, len(source))
+    return worst
+
+
+def _operand_end(text: bytes, start: int, stop: int, ends: dict[int, int] | None = None) -> int:
+    """Where bash ends a ``${…}`` operand that goes on at ``start``, ``stop`` at most.
+
+    Its first ``}`` no backslash escapes, outside a ``${…}``, ``$(…)`` or
+    backtick it holds and, fix round 2 (the round-2 verify's F1), outside
+    a ``'…'``, ``$'…'`` or ``"…"``: bash read on past the quoted ``}`` of
+    ``echo "${PWD#\\}'}'<(: > MARK)}"``, ``"${PWD#\\}"}"<(…)}"`` and
+    ``"${PWD#\\}$"}"<(…)}"`` and ran the ``<(…)`` (macOS bash 3.2.57 and
+    Linux bash 5.2.37; ``.omc/probes/784-788/fix-r2/``), and, the finish (the
+    round-3 verify's F2), past a ``${…}`` inside such a ``"…"``
+    (:func:`_nested_quote_end`), so ``_operand_end(b'"${y:-"}"}"<(a)}', 0,
+    16)`` is 15, where bash ends it. ``ends`` maps each
+    place a scan passed, at the depth it started at, to where that scan
+    ended (fix round 2, the round-2 verify's F3): a later scan that reaches
+    one ends there too, and a ``${…}`` inside is a scan of its own.
+    """
+
+    ends = {} if ends is None else ends
+    paths: list[list[int]] = [[]]
+    i = start
+    while True:
+        end = stop if i >= stop else ends.get(i)
+        if end is None:
+            paths[-1].append(i)
+            if text[i] == 0x7D:  # }
+                end = i
+            elif text[i] == 0x24 and text[i + 1 : i + 2] == b"{":
+                paths.append([])
+                i += 2
+                continue
+            else:
+                i = _operand_skip(text, i, stop)
+                continue
+        for at in paths.pop():
+            ends[at] = end
+        if not paths:
+            return end
+        i = min(end + 1, stop)
+
+
+def _operand_skip(text: bytes, i: int, stop: int) -> int:
+    """Where the operand scan of :func:`_operand_end` goes on after the byte at ``i``: past a backslash's byte, a quote, a backtick or a ``$(…)``."""
+
+    byte = text[i]
+    if byte == 0x5C:  # backslash
+        return i + 2
+    if byte == 0x27:  # '
+        return _single_quote_end(text, i) + 1
+    if byte == 0x22:  # "
+        return _nested_quote_end(text, i + 1, stop) + 1
+    if byte == 0x60:  # backtick
+        return _first_unescaped(text, i + 1, stop, b"`") + 1
+    if byte == 0x24 and text[i + 1 : i + 2] == b"(":
+        return _first_unescaped(text, i + 2, stop, b")") + 1
+    return i + 1
+
+
+def _nested_quote_end(text: bytes, begin: int, stop: int) -> int:
+    """The index of the ``"`` closing a ``"…"`` an operand holds, whose text starts at ``begin``; ``stop`` when none does before it.
+
+    The finish of #789 (the round-3 verify's F2): past each ``${…}`` the
+    quote holds, read as :func:`_operand_end` reads an operand, a ``"…"``
+    in it holding a ``${…}`` of its own too. bash ended the operand of
+    ``echo "${PWD#\\}"${y:-"}"}"<(: > MARK)}"`` at its last ``}`` and ran the
+    ``<(…)`` (macOS bash 3.2.57 and Linux bash 5.2.37). One pass, with the
+    levels open on a stack.
+    """
+
+    closers = [0x22]  # the byte that ends each level open: ``"`` or ``}``
+    i = begin
+    while i < stop:
+        byte = text[i]
+        if byte == closers[-1]:
+            closers.pop()
+            if not closers:
+                return i
+            i += 1
+        elif byte == 0x5C:  # backslash
+            i += 2
+        elif byte == 0x24 and text[i + 1 : i + 2] == b"{":
+            closers.append(0x7D)
+            i += 2
+        elif closers[-1] == 0x22:  # the rest of a quote is text
+            i += 1
+        elif byte == 0x22:  # a quote a ``${…}`` operand holds
+            closers.append(0x22)
+            i += 1
+        else:
+            i = _operand_skip(text, i, stop)
+    return stop
+
+
+# #789 fix round 2: a byte a backslash escapes, a ``<(`` or ``>(``, a ``(``
+# or a ``)``, for :func:`_process_substitutions`.
+_PARENTHESES = re.compile(rb"\\.|[<>]\(|[()]", re.DOTALL)
+
+
+def _process_substitutions(source: bytes) -> tuple[list[int], dict[int, int]]:
+    """Where each ``<(`` or ``>(`` no backslash escapes starts in ``source``, in order, and the ``)`` that closes each ``(`` it closes.
+
+    A ``)`` closes the last ``(`` still open, as :func:`_first_unescaped`
+    pairs them; one pass, where looking for each ``)`` from its ``(`` again
+    grew with the square of the number of unclosed ``<(``.
+    """
+
+    subs: list[int] = []
+    closes: dict[int, int] = {}
+    opens: list[int] = []
+    for match in _PARENTHESES.finditer(source):
+        token = match.group()
+        if token == b")":
+            if opens:
+                closes[opens.pop()] = match.start()
+        elif token[0] != 0x5C:  # not a backslash
+            if len(token) == 2:
+                subs.append(match.start())
+            opens.append(match.end() - 1)
+    return subs, closes
 
 
 # What a backslash and the bytes after it mean inside ``$'…'`` (the bash
@@ -4824,7 +5498,12 @@ def classify(command: str, *, dialect: Dialect = Dialect.UNKNOWN) -> Verdict:
         source = command.encode()
         tree = _PARSER.parse(source)
         root = tree.root_node
-        if root.has_error and b"\\\n" not in source and b"`" not in source:
+        if (
+            root.has_error
+            and b"\\\n" not in source
+            and b"`" not in source
+            and not (dialect == Dialect.POSIX and (b"((" in source or b"$[" in source))
+        ):
             return Verdict.ASK
         token = _REREAD_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
         own = _BACKTICK_BUDGET.set([_REREAD_PASSES * len(source) + _REREAD_SLACK])
