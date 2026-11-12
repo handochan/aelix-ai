@@ -412,6 +412,8 @@ async def test_a_kinds_own_unresolved_with_its_processes_gone_promises_no_check_
         assert "keeps checking" not in text and "comes as a notice" not in text, name
         assert "is not watching this" in text, name
     assert texts["stop"].startswith("Not stopped.") and snap.rechecking is False
+    # Gone at the restart already, so no text says it may still run (#749, verify F6's S03).
+    assert snap.processes_gone is True and "and its processes are gone" in texts["result"]
     await service.shutdown()
 
 
@@ -433,7 +435,11 @@ async def test_result_after_a_restart_follows_the_same_rules(tmp_path: Path, job
     await later.attach(session, child=receipt.child)
     _child_says(receipt.child.path, "somebody else's answer")
     text, failed = await result_text(service, jobs, _JOB, offset=0, session=session)
-    assert failed and CANNOT_BIND_RUN in text
+    # A sentence, not the code (#749): "Its result cannot be read: cannot_bind_run." before.
+    assert failed and text == (
+        "Its result cannot be read: a later run of this agent wrote to the same session "
+        "file, so its last answer there may be that run's."
+    )
     assert "somebody else's answer" not in text
     await service.shutdown()
 

@@ -95,10 +95,41 @@ unwritten. Add them with the next release.
   and description are what they were, and a call that carries `run_in_background` runs in the
   foreground as before (`tests/tools/test_bash_background_611.py::test_the_parameter_is_absent_with_the_gate_off`).
   The job service's `start` takes a kind's `client_start`, its adapters a required
-  `restored_note`, and its pages a `next_offset`; delegation's paging is unchanged
-  (`tests/jobs/test_client_start_611.py::test_delegation_paging_is_unchanged`). #611 S3 turns it
+  `restored_note`, and its pages a `next_offset`; delegation's paging was unchanged by it and
+  pages by bytes since #770 (the next entry). #611 S3 turns it
   on. Tests: `tests/tools/test_bash_background_611.py`, `tests/jobs/test_client_start_611.py`,
   `tests/cli/test_bash_background_cli_760.py`.
+- **Background jobs' last residuals before the switch-on, built and switched off (#749, #769,
+  #770; ADR-0293, ADR-0295, ADR-0297).** All behind `jobs/activation.py` `ACTIVE = False`, so
+  nothing of it is visible yet. The job service keeps a session's ended jobs whole only up to 64;
+  past that it lets go of the oldest that owes nothing — every notice of it placed or held out of
+  every drain, in whatever order, its outcome written — keeping only what its session's records say of it with its elapsed
+  time and last progress. It does so only for a kind that declares its ended jobs read from what
+  they persisted (`KindCapabilities.reads_persisted`: background `bash` and delegation do; an
+  extension kind that does not keeps every ended job whole), and only after checking that the
+  job's snapshot (all but its payload), its rows at width 1000 and its first 16 KiB page read the
+  same from its records as from the live job; one that would read otherwise, or whose records did
+  not all land, stays whole. For those two kinds and a synthetic one, `/jobs`, `job`, `job_stop`,
+  the footer and `agent()` read a job let go as before, and its runner is freed; an extension
+  reading its own job's snapshot through the facade sees its kind's `decode` as the payload, as
+  after a restart (`tests/jobs/test_retention_769.py`; for background `bash` and a background
+  agent `tests/tools/test_bash_retention_769.py` and `tests/agents_ext/test_agent_retention_769.py`,
+  POSIX). A background agent's whole result is written to a 0600 file beside its child session
+  (`<children dir>/<run key>.result`) and read from there once the job is let go, and after a
+  restart by `agent(action="result")`, `job(action="result")` and `/jobs result`; a file that is
+  gone or changed is said, never replaced by the child's last answer; the delegation client's
+  map keeps one small entry per agent, no task and no text
+  (`tests/agents_ext/test_agent_retention_769.py`, `tests/agents_ext/test_agent_result_file_769.py`).
+  A
+  background agent's result read through `job(action="result")` or `/jobs result` pages by bytes,
+  so a multibyte result is read to its end with every byte once
+  (`tests/jobs/test_delegation_paging_770.py`). `agent(action="result"|"stop")`, `job result`,
+  `/jobs result` and the unresolved notices say only what stays true: after a restart an agent
+  whose run cannot be bound to its file promises no notice and one never checked against the OS
+  may still be running; an agent whose settle failed is said not to be checked again; why a
+  result cannot be read is a sentence, not a code. A restored job whose processes are gone holds
+  no slot, and a failed read or `recover` is tried again on the next pass
+  (`tests/agents_ext/test_restored_texts_749.py`, `tests/jobs/test_residuals_749.py`).
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

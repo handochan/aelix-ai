@@ -88,7 +88,13 @@ class KindCapabilities:
     off for a kind that reports no progress. ``noun`` is what an admission
     refusal counts its running jobs as — ``(one, many)``, such as
     ``("delegated agent", "delegated agents")`` — and ``None`` says "background
-    jobs of this kind" (#611 S1c, ADR-0295).
+    jobs of this kind" (#611 S1c, ADR-0295). ``reads_persisted`` says that an
+    ended job of the kind reads — its rows and every page of its output — only
+    from what it persisted: its records, as ``decode`` reads them, and the files
+    they name. Only such a kind's ended jobs may be kept as their records read
+    once a session holds more than the service's bound; every other kind's stay
+    whole (#769). Delegation declares it with one caveat: its rows also read its
+    client's own ``DelegationJobs.info``, which is in memory and never pruned.
     """
 
     background: bool = True
@@ -105,6 +111,7 @@ class KindCapabilities:
     on_owner_end: Literal["stop"] = "stop"
     on_reload: Literal["stop"] = "stop"
     noun: tuple[str, str] | None = None
+    reads_persisted: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,9 +207,15 @@ class JobSnapshot:
     payload: Mapping[str, Any] = field(default_factory=dict)
     #: Whether the liveness loop checks an ``unresolved`` job again: ``False``
     #: when it will not — a restored job whose kind's own ``unresolved`` has its
-    #: processes confirmed gone, for one; a kind's registration still re-reads
-    #: ``adapter_missing`` and ``adapter_too_old`` (#611 S1c).
+    #: processes confirmed gone, for one, and a job this process ran whose
+    #: runner's ``settle`` failed (``settle_error``); a kind's registration still
+    #: re-reads ``adapter_missing`` and ``adapter_too_old`` (#611 S1c, #749).
     rechecking: bool = False
+    #: Whether aelix has confirmed every process the job recorded gone: its
+    #: barrier passed, or a restart's evidence said so. ``False`` while one may
+    #: live, and when nothing was checked — a restored ``unresolved`` job whose
+    #: records or adapter failed before its evidence was read (#749).
+    processes_gone: bool = False
     #: What the kind handed :meth:`~aelix_coding_agent.jobs.service.JobService.start`
     #: as ``client_start``, as the job's ``start`` fact holds it — the same for a
     #: job this process runs and for one a restart found (#611 S2d, Codex #12).

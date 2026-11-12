@@ -82,6 +82,7 @@ import contextlib
 import dataclasses
 import logging
 import sys
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -107,11 +108,20 @@ from aelix_agents.child_session import (
     RESUME_FIRST_RUN_MISSING,
     RESUME_UNKNOWN_ID,
     RecoveredAnswer,
+    _session_file_of,
+    place_children,
     recover_run_answer,
     resume_lineage_refusal,
 )
 from aelix_agents.envelope import REASON_STOPPED, child_line
 from aelix_agents.print_channel import _parent_stopped, sweep_helpers
+from aelix_agents.result_file import (
+    RESULT_RECORD_TYPE,
+    ResultFile,
+    Unreadable,
+    read_result,
+    write_result,
+)
 from aelix_agents.runtime import (
     MAX_LIVE_CHILDREN,
     CallEnvelopes,
@@ -217,6 +227,9 @@ CAPABILITIES = KindCapabilities(
     # Every live delegation counts, foreground ones too: the refusal a
     # foreground or batch call reads names them as the model knows them (verify S3).
     noun=("delegated agent", "delegated agents"),
+    # An ended agent reads from its result file (#769); one whose run wrote none
+    # reads otherwise once read back, and the job service keeps it whole.
+    reads_persisted=True,
 )
 
 
@@ -417,18 +430,30 @@ class AgentJob:
     ``agent_id`` is what ``spawn`` returned and what the model passes back:
     the child's session id when it has a session file, else its spawn key
     (``test_agent_id_session_or_key``). ``text`` is the whole rendered result
-    once the run returned, for ``result`` and the notice.
+    once the run returned — held by the run's runner, and read only before the
+    job has an outcome, when the snapshot's payload has none (#769). An ended
+    job's result is the live payload's while the job service keeps it whole and
+    its file's once it is let go; the runner, and the text with it, is freed at
+    the next garbage collection (it sits in reference cycles).
+
+    One entry per background agent this process ran, never removed: its ids,
+    profile, session path and status — not its task, which its facts and the
+    child's file hold.
     """
 
     job_id: str
     profile: str
-    task: str
     agent_id: str | None = None
     key: str | None = None
     session_id: str | None = None
     session_path: str | None = None
-    text: str | None = None
     status: str | None = None
+    runner: weakref.ref[DelegationRunner] | None = None
+
+    @property
+    def text(self) -> str | None:
+        runner = self.runner() if self.runner is not None else None
+        return runner.text if runner is not None else None
 
 
 class DelegationRunner:
@@ -442,11 +467,16 @@ class DelegationRunner:
         self._ctx: Any = None
         self._stopped_by: str | None = None
         self.result: SubagentResult | None = None
+        #: The whole rendered result once the run returned (``AgentJob.text``).
+        self.text: str | None = None
+        #: Its file, once written (#769); ``None`` when it could not be.
+        self.result_file: ResultFile | None = None
 
     async def run(self, ctx: Any) -> ClientOutcome:
         launch = self._launch
         self._ctx = ctx
         entry = self._jobs.track(ctx.job_id, launch)
+        entry.runner = weakref.ref(self)
 
         def named(row: RunningChild) -> None:
             entry.key = row.id
@@ -497,7 +527,9 @@ class DelegationRunner:
             # no notice (ADR-0293 §3).
             ctx.launch_failed(result.error or result.summary or "the agent did not start")
         text = _result_text(result)
-        entry.text = text
+        self.text = text
+        # ``key`` is named at the launch (``named``): a run that never launched writes none.
+        self.result_file = await _write_result(launch.host.session(), entry.key, text)
         status = _STATUS_OF.get(result.status, "failed")
         entry.status = status
         return ClientOutcome(
@@ -581,7 +613,39 @@ class DelegationRunner:
 
     def records(self, outcome: ClientOutcome) -> list[tuple[str, dict[str, Any]]]:
         own = self._own
-        return list(own.closing or []) if own is not None else []
+        records = list(own.closing or []) if own is not None else []
+        written = self.result_file
+        return records + ([(RESULT_RECORD_TYPE, written.record())] if written is not None else [])
+
+
+def _children_dir(session: Any) -> str | None:
+    """The directory a parent's child session files live in; ``None`` with no session file or outside a bucket."""
+
+    path = _session_file_of(session) if session is not None else None
+    placement = place_children(path) if path is not None else None
+    return placement.directory if placement is not None else None
+
+
+async def _write_result(session: Any, key: str | None, text: str) -> ResultFile | None:
+    """The run's result file beside its child session (#769); ``None`` where there is none to write:
+    a run that never launched (no key), or one with no child session directory."""
+
+    directory = _children_dir(session) if key is not None else None
+    if directory is None or key is None:
+        return None
+    return await asyncio.to_thread(write_result, directory, key, text)
+
+
+def _read_result(session: Any, payload: Mapping[str, Any]) -> str | Unreadable | None:
+    """The result a run wrote to its file, as ``payload["result"]`` records it; ``None`` when it recorded none."""
+
+    file = ResultFile.from_record(payload.get("result"))
+    if file is None:
+        return None
+    directory = _children_dir(session)
+    if directory is None:
+        return Unreadable("this conversation's session file is not where its agents' files are")
+    return read_result(directory, file)
 
 
 async def _posix_helpers(own: _Ownership) -> HelperCleanup:
@@ -632,7 +696,7 @@ class DelegationKindAdapter:
             # file again under the same rules (Codex #6).
             payload = {**_payload_of(_start_of(records)), "recovered": True}
         else:
-            payload = _payload_of(_settle_of(records))
+            payload = _settled_payload(records)
         return ClientOutcome(
             status=status if status in ("done", "failed", "stopped") else "failed",
             brief=str(fact.get("brief", "")),
@@ -706,17 +770,15 @@ class DelegationKindAdapter:
         return rows
 
     def output(self, job: JobSnapshot, *, offset: int, limit: int) -> OutputSlice | None:
-        text = job.payload.get("text") if isinstance(job.payload.get("text"), str) else None
-        if text is None:
-            entry = self._jobs.info.get(job.job_id)
-            text = entry.text if entry is not None else None
+        text = self._held_text(job)
+        if isinstance(text, Unreadable):
+            return OutputSlice(text=f"Its result cannot be read: {text}.", offset=0)
         if text is None:
             if job.state not in TERMINAL_STATES:
                 if job.job_id not in self._jobs.info:
                     return OutputSlice(text=_restored_unfinished(job), offset=0)
-                return OutputSlice(
-                    text="It is still running; its result arrives as a notice.", offset=0
-                )
+                # The state-aware sentence ``result`` gives (#749).
+                return OutputSlice(text=_not_ended(job, self._jobs), offset=0)
             agent_id = job.payload.get("session_id") or job.payload.get("key") or job.job_id
             where = _where(job.payload)
             return OutputSlice(
@@ -731,6 +793,24 @@ class DelegationKindAdapter:
         if _is_recovered(job):
             text = f"{RECOVERED_CAVEAT}\n\n{text}"
         return page(text, offset=offset, limit=limit)
+
+    def _held_text(self, job: JobSnapshot) -> str | Unreadable | None:
+        """The whole result: the live payload's, the run's file (#769), or — before the job has
+        an outcome, the window between its run's return and its end — its runner's.
+
+        An ended job's live payload always holds its text, so an ended job read
+        without one is one read back from its records: only its file can answer
+        for it, which is what lets the job service tell a faithful read-back.
+        """
+
+        text = job.payload.get("text")
+        if isinstance(text, str):
+            return text
+        written = _read_result(self._session(), job.payload)
+        if written is not None or job.state in TERMINAL_STATES:
+            return written
+        entry = self._jobs.info.get(job.job_id)
+        return entry.text if entry is not None else None
 
     async def recover(
         self, facts: Mapping[str, Any], client_records: list[Mapping[str, Any]]
@@ -812,7 +892,7 @@ class DelegationJobs:
     def track(self, job_id: str, launch: _Launch) -> AgentJob:
         entry = self.info.get(job_id)
         if entry is None:
-            entry = AgentJob(job_id=job_id, profile=launch.resolved.name, task=launch.task)
+            entry = AgentJob(job_id=job_id, profile=launch.resolved.name)
             self.info[job_id] = entry
         return entry
 
@@ -999,6 +1079,10 @@ def _restored_unfinished(snap: JobSnapshot) -> str:
     follows (``rechecking`` false: the kind's own ``unresolved`` with its
     processes confirmed gone, verify-r2 SF2), neither a check nor a notice is
     promised.
+
+    Whether it may still run is what the service confirmed of its processes
+    (``processes_gone``), not whether it is rechecked: a job whose records or
+    adapter failed was never checked against the OS (#749).
     """
 
     reason = f" ({child_line(snap.unresolved_reason)})" if snap.unresolved_reason else ""
@@ -1006,12 +1090,51 @@ def _restored_unfinished(snap: JobSnapshot) -> str:
         f"It is {snap.state}{reason}: aelix restarted after this agent started and "
         "cannot tell how it ended. aelix stops nothing it finds at a restart"
     )
+    running = ", and its processes are gone" if snap.processes_gone else ", so it may still be running"
+    return f"{head}{running}{_restored_watch(snap)}"
+
+
+def _restored_watch(snap: JobSnapshot) -> str:
+    """Whether aelix checks a restored agent again, and what that can bring (#749)."""
+
     if not snap.rechecking:
-        return f"{head}, and it is not watching this agent: no notice is promised for it."
+        return "; it is not watching this agent: no notice is promised for it."
+    if snap.unresolved_reason == CANNOT_BIND_RUN:
+        # The kind's own reason: a later run of the same child file stays in
+        # the parent's records, so asking again reads the same.
+        checks = "" if snap.processes_gone else "; aelix checks its processes until they are gone"
+        return (
+            f"{checks}. A later run of this agent wrote to the same session file, so aelix "
+            "cannot read this run's end from it: no notice is promised for it."
+        )
+    if snap.processes_gone:
+        return (
+            "; aelix reads its records again, and what it can read of its end comes as a "
+            "notice with a later message."
+        )
     return (
-        f"{head}, so it may still be running; aelix keeps checking, and if it finds the "
-        "agent's processes gone, what it can read of its end comes as a notice with a "
-        "later message."
+        "; aelix keeps checking, and if it finds the agent's processes gone, what it can "
+        "read of its end comes as a notice with a later message."
+    )
+
+
+def _not_ended(snap: JobSnapshot, jobs: DelegationJobs) -> str:
+    """``result`` of an agent that has not ended: why there is no result, and whether one comes."""
+
+    if snap.job_id not in jobs.info:
+        return _restored_unfinished(snap) + " There is no result to read now."
+    if snap.state == "unresolved" and not snap.rechecking:
+        return _unwatched(snap)
+    return f"It is {snap.state}; its result arrives as a notice when it finishes."
+
+
+def _unwatched(snap: JobSnapshot) -> str:
+    """An agent this process ran that nothing checks again — its runner's settle failed (#749)."""
+
+    reason = f" ({child_line(snap.unresolved_reason)})" if snap.unresolved_reason else ""
+    return (
+        f"It is unresolved{reason}: aelix cannot tell how it ended and does not check it "
+        "again, so no notice of its end is coming."
     )
 
 
@@ -1044,6 +1167,14 @@ def stop_text(
         return f"Nothing to stop: it already ended ({after.state}). " + _result_tail(after)
     if after.state in TERMINAL_STATES:
         return f"It is {after.state}. " + _result_tail(after, partial=after.state == "stopped")
+    return _stopping(after)
+
+
+def _stopping(after: JobSnapshot) -> str:
+    """A stop of an agent this process runs that has not ended yet."""
+
+    if after.state == "unresolved" and not after.rechecking:
+        return "Asked to stop. " + _unwatched(after)
     return (
         f"Asked to stop; it is {after.state}, and aelix keeps stopping it. Its result "
         "comes back as a notice once it has stopped."
@@ -1064,18 +1195,42 @@ def session_agents(service: Any) -> list[str]:
 
 
 def page(text: str, *, offset: int, limit: int) -> OutputSlice:
-    """``text`` from byte ``offset``, at most ``limit`` bytes, cut at character boundaries."""
+    """``text`` from byte ``offset``, at most ``limit`` bytes, cut at character boundaries.
+
+    Paged by bytes as ``bash``'s file is (ADR-0297 §4, #770): ``next_offset``
+    is the byte after the page, so ``job(action="result")`` and ``/jobs
+    result`` — which pass ``continue_at`` back — read every byte once. A page
+    never ends inside a character, and one with bytes after its offset takes
+    at least one character, all of it, when ``limit`` is smaller than that
+    character. ``text`` is a ``str``, so its bytes are whole UTF-8: there is no
+    invalid byte and no cut character at its end.
+    """
 
     raw = text.encode("utf-8")
     start = max(0, min(int(offset), len(raw)))
     # Never start inside a character: step forward over continuation bytes.
     while start < len(raw) and (raw[start] & 0xC0) == 0x80:
         start += 1
+    end = _page_end(raw, start, limit)
+    chunk = raw[start:end].decode("utf-8", errors="ignore")
+    return OutputSlice(
+        text=chunk, offset=start, total=len(raw), more=end < len(raw), next_offset=end
+    )
+
+
+def _page_end(raw: bytes, start: int, limit: int) -> int:
+    """Where a page of ``raw`` from ``start`` ends: at most ``limit`` bytes, never inside a
+    character, and past one whole character when ``limit`` is smaller than it (#770)."""
+
     end = min(len(raw), start + max(1, int(limit)))
     while end < len(raw) and (raw[end] & 0xC0) == 0x80:
         end -= 1
-    chunk = raw[start:end].decode("utf-8", errors="ignore")
-    return OutputSlice(text=chunk, offset=start, total=len(raw), more=end < len(raw))
+    if end == start < len(raw):
+        # A limit smaller than the first character: that character, whole.
+        end += 1
+        while end < len(raw) and (raw[end] & 0xC0) == 0x80:
+            end += 1
+    return end
 
 
 async def result_text(
@@ -1094,17 +1249,12 @@ async def result_text(
     if snap is None:
         return f"No agent with id {job_id} in this session.", True
     if snap.state not in TERMINAL_STATES:
-        if job_id not in jobs.info:
-            return _restored_unfinished(snap) + " There is no result to read now.", True
-        return (
-            f"It is {snap.state}; its result arrives as a notice when it finishes.",
-            True,
-        )
+        return _not_ended(snap, jobs), True
     recovered = _is_recovered(snap)
-    entry = jobs.info.get(job_id)
-    text = entry.text if entry is not None and entry.text is not None else None
-    if text is None and isinstance(snap.payload.get("text"), str):
-        text = snap.payload["text"]
+    text = await _whole_text(snap, session)
+    if isinstance(text, Unreadable):
+        # Never the child's last answer in place of a file that cannot be read.
+        return f"Its result cannot be read: {text}.", True
     if text is None:
         key = snap.payload.get("key")
         if not isinstance(key, str) or session is None:
@@ -1117,7 +1267,7 @@ async def result_text(
             )
         answer = await recover_run_answer(session, key)
         if not isinstance(answer, RecoveredAnswer):
-            return f"Its result cannot be read: {answer}.", True
+            return f"Its result cannot be read: {_READ_REASONS.get(answer, answer)}.", True
         if recovered and _lock_refusal(answer.path) is not None:
             # The restart's own rule: a held writer lock may be a live writer.
             return (
@@ -1134,11 +1284,45 @@ async def result_text(
         text = f"{RECOVERED_CAVEAT}\n\n{text}"
     sliced = page(text, offset=offset, limit=RESULT_PAGE_BYTES)
     tail = (
-        f'\n\n… more: agent(action="result", id="{job_id}", offset={sliced.offset + len(sliced.text.encode("utf-8"))})'
+        f'\n\n… more: agent(action="result", id="{job_id}", offset={sliced.continue_at})'
         if sliced.more
         else ""
     )
     return sliced.text + tail, False
+
+
+_READ_REASONS: dict[str, str] = {
+    "no_session_file": (
+        "this conversation is not saved in aelix's sessions directory, so the agent's "
+        "session file cannot be found from it"
+    ),
+    "unreadable": "its records could not be read",
+    "no_start_record": "this conversation holds no start record for it",
+    "no_child_file": "it has no session file of its own",
+    CANNOT_BIND_RUN: (
+        "a later run of this agent wrote to the same session file, so its last answer "
+        "there may be that run's"
+    ),
+    "damaged": "its session record is damaged",
+    "no_answer": "its session file holds no answer from it",
+}
+"""Each code :func:`~aelix_agents.child_session.recover_run_answer` returns, as
+``result`` says it (#749): the model reads a sentence, never the code. A refused
+file comes back as a sentence already (``child_session._as_read``)."""
+
+
+async def _whole_text(snap: JobSnapshot, session: Any) -> str | Unreadable | None:
+    """The whole result ``result`` reads of an ended agent: the live payload's, or its run's file (#769).
+
+    Not the runner's text: ``result`` reads only an ended job, whose live
+    payload holds it, so a job let go reads its file at once, as
+    ``job(action="result")`` does, whether or not its runner was freed yet.
+    """
+
+    text = snap.payload.get("text")
+    if isinstance(text, str):
+        return text
+    return await asyncio.to_thread(_read_result, session, snap.payload)
 
 
 def _has_settle(snap: JobSnapshot) -> bool:
@@ -1212,9 +1396,11 @@ def _cut_bytes(text: str, limit: int) -> str:
     return text.encode("utf-8")[: max(0, limit)].decode("utf-8", errors="ignore")
 
 
-def _records_of(records: list[Mapping[str, Any]], phase: str) -> Mapping[str, Any] | None:
+def _records_of(
+    records: list[Mapping[str, Any]], phase: str | None, custom_type: str = CHILD_SESSION_TYPE
+) -> Mapping[str, Any] | None:
     for record in reversed(records):
-        if record.get("custom_type") == CHILD_SESSION_TYPE and record.get("phase") == phase:
+        if record.get("custom_type") == custom_type and record.get("phase") == phase:
             return record
     return None
 
@@ -1225,6 +1411,16 @@ def _settle_of(records: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
 
 def _start_of(records: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return _records_of(records, "start")
+
+
+def _settled_payload(records: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """The settle's payload, with the run's result file when it wrote one (#769)."""
+
+    payload = _payload_of(_settle_of(records))
+    written = _records_of(records, None, RESULT_RECORD_TYPE)
+    if written is not None:
+        payload["result"] = {k: written.get(k) for k in ("v", "key", "bytes", "sha256")}
+    return payload
 
 
 def _payload_of(record: Mapping[str, Any] | None) -> dict[str, Any]:

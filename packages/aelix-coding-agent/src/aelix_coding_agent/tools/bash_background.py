@@ -139,6 +139,9 @@ CAPABILITIES = KindCapabilities(
     normal_exit="release",
     activity="progress",
     noun=("background command", "background commands"),
+    # An ended command reads from its output file, its exit record and the
+    # ``start`` fact's ``client`` (#769).
+    reads_persisted=True,
 )
 
 #: The end of the output a notice carries, read as raw bytes (Qwen's
@@ -801,9 +804,10 @@ class BashJobRunner:
     def _close_sink(self) -> None:
         """Close the file and let the sink go, keeping its numbers.
 
-        A settled job is kept by the service for the rest of the process: what
-        it holds must not hold an OS handle. On win32 CPython 3.12 and older
-        every lock is a kernel semaphore, the sink's included (#760 CI).
+        The service keeps up to 64 settled jobs of a session whole, and one it
+        has not let go may live as long as the process (#769): what it holds
+        must not hold an OS handle. On win32 CPython 3.12 and older every lock
+        is a kernel semaphore, the sink's included (#760 CI).
         """
 
         sink, self._sink = self._sink, None
