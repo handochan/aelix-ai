@@ -1462,21 +1462,6 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
-- **On Windows, an `RpcClient` child starts suspended and runs only once it is in its Job (#772,
-  ADR-0201's open item 7 note).** Before, the Job was assigned a few event-loop turns after the
-  spawn. On windows-latest py3.13, a child that exited at once left its grandchild running 5 s
-  after `start()` raised `RpcServerExited`, in 5 of 12 runs. The cause is inferred, not measured
-  there. The runner's `python.exe` is a venv launcher that starts the interpreter at once, so the
-  interpreter could be created before the Job was assigned, and with the root gone `taskkill /T`
-  had nothing to walk. Now the child is created with `CREATE_SUSPENDED`, assigned, then resumed
-  (`NtResumeProcess`), where that resolves. A Job that cannot be had ends the child, and `start()`
-  raises `SuspendedLaunchError` instead of running it uncontained. The wiring is pinned on every
-  host
-  (`tests/rpc/test_rpc_client_containment.py::test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it`,
-  red on `52bc607a`). Membership itself is checked only on the windows CI leg
-  (`tests/rpc/test_rpc_client_start_cancel_360.py::test_on_win32_what_the_child_starts_at_once_is_born_in_its_job`).
-  Off Windows nothing changes.
-
 - **What a delegated agent's finished `bash` call left in the background stops with the delegation
   (#719, #750, ADR-0296).** A `cmd &`, `(cmd &)` or `nohup cmd &` helper — an `npm run dev &`, say —
   of a `bash` call that had already returned kept running after the delegation ended or was stopped,

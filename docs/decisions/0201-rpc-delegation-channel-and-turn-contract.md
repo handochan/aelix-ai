@@ -737,28 +737,6 @@ runtime.stop / stop_all in the grace      no cancel                             
    attach — is not in the job either. Closing it means creating the child suspended
    (or with `PROC_THREAD_ATTRIBUTE_JOB_LIST`) so the job is assigned before it runs,
    failing closed when no job can be had, and native tests for each; out of reach here.
-   *2026-11-12 note (#772): on windows-latest, in 5 of 12 py3.13 runs,
-   `test_a_premature_exit_ends_the_group_and_closes_the_transport` found the grandchild
-   alive after its 5 s poll; the root-dead sibling, with the same attach, did not fail in
-   those runs. The cause is inferred, not measured on Windows: the runner's
-   `sys.executable` is CPython's venv launcher (uv copies `venvlauncher.exe` into
-   `.venv\Scripts\python.exe`; `PC/venvlauncher.c` creates the interpreter at once, not
-   suspended), and once the root is dead `taskkill /T` has nothing to walk. Since #772,
-   `start` creates the child with `ProcessTree.suspend_flags()`'s `CREATE_SUSPENDED` and
-   attaches it with `suspended=True`: assigned, then resumed. That holds on win32 where
-   `NtResumeProcess` resolves; elsewhere the spawn is unchanged. It fails closed: a job,
-   an assignment or a resume that fails ends the child and `start` raises
-   `SuspendedLaunchError`. Pinned on every host by
-   `tests/rpc/test_rpc_client_containment.py::test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it`
-   (red on `52bc607a`). The windows-only cases
-   `test_on_win32_what_the_child_starts_at_once_is_born_in_its_job` (8 spawns,
-   `IsProcessInJob` for the child and grandchild) and
-   `test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran` run only on CI.
-   Six cases now spawn the child running (`_unsuspended`), the shape a host without
-   `NtResumeProcess` takes: the five that hold the spawn and need the child to run
-   during the hold, and the injected-API case, whose api does not resume.
-   `RpcClient.start` and `stop` still wait for the root only, not for the job's other
-   members.*
 8. **`stop()` itself is unchanged once `start` has returned.** A cancel inside its soft
    or hard wait skips its release (the fields stay set, `_stopping` stays true, a
    second `stop()` finishes it), and two concurrent `stop()` calls both send their

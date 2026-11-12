@@ -36,23 +36,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import gc
 import os
 import signal
 import sys
 import textwrap
+import time
 import warnings
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from aelix_ai.utils import _process_tree
-from aelix_ai.utils._process_tree import (
-    ProcessTree,
-    SuspendedLaunchError,
-    _Win32Api,
-    kill_process_tree,
-)
+from aelix_ai.utils import _process_identity, _process_tree
+from aelix_ai.utils._process_tree import ProcessTree, _Win32Api, kill_process_tree
 from aelix_coding_agent.rpc import rpc_client as rpc_client_module
 from aelix_coding_agent.rpc.rpc_client import (
     RpcClient,
@@ -217,18 +214,153 @@ def _job_members(tree: ProcessTree) -> str:
         return f"job members unreadable: {exc}"
 
 
+#: ``PROCESS_QUERY_LIMITED_INFORMATION``, and the exit code a running process reports.
+_QUERY_LIMITED = 0x1000
+_STILL_ACTIVE = 259
+
+
+def _win32_kernel32() -> Any:
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    k32.QueryFullProcessImageNameW.restype = ctypes.c_int
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    k32.GetExitCodeProcess.restype = ctypes.c_int
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.restype = ctypes.c_int
+    return k32
+
+
+def _describe(pid: int) -> str:
+    """#772 diagnostic, win32: the image (last two path parts) and exit state of whatever holds ``pid`` now."""
+
+    if sys.platform != "win32":
+        return "-"
+    k32 = _win32_kernel32()
+    handle = k32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not handle:
+        return f"no process (OpenProcess error {ctypes.get_last_error()})"  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        size = ctypes.c_uint32(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        ok = k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        image = "\\".join(buf.value.split("\\")[-2:]) if ok else "image ?"
+        code = ctypes.c_uint32()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return f"{image} exit ?"
+        state = "running" if code.value == _STILL_ACTIVE else f"exited {code.value}"
+        return f"{image} {state} started {_process_identity.process_started(pid)}"
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _in_job_now(pid: int, tree: ProcessTree) -> str:
+    job = tree.job
+    if sys.platform != "win32" or job is None:
+        return "job closed"
+    api = _process_tree._KernelApi()
+    try:
+        handle = api.open_member(pid)
+    except OSError as exc:
+        return f"unopenable ({exc})"
+    try:
+        return "in job" if api.in_job(handle, job) else "NOT in job"
+    except OSError as exc:
+        return f"IsProcessInJob failed ({exc})"
+    finally:
+        api.close_process(handle)
+
+
+def _described_members(tree: ProcessTree) -> str:
+    """The job's members at this moment, each with :func:`_describe`'s image, state and creation time."""
+
+    job = tree.job
+    if sys.platform != "win32" or job is None:
+        return _job_members(tree)
+    try:
+        members = sorted(_process_tree._KernelApi().job_member_pids(job))
+    except OSError as exc:
+        return f"job members unreadable: {exc}"
+    return "job members [" + "; ".join(f"{pid} {_describe(pid)}" for pid in members) + "]"
+
+
+def _same_or_reused(pid: int, born: float | None) -> str:
+    """Whether ``pid`` is still the process created at ``born`` (its creation time at the pid file)."""
+
+    now = _process_identity.process_started(pid)
+    if born is None or now is None:
+        return f"creation time at the pid file {born}, now {now}: cannot tell"
+    if now == born:
+        return f"creation time {born} unchanged: the same process"
+    return f"creation time {born} at the pid file, {now} now: the pid was REUSED"
+
+
 class _JobWitness:
-    """Reads :func:`_job_members` just before every ``hard_kill``, while the job is still open."""
+    """#772 diagnostic: what each win32 kill met, kept as notes and warned even when the test passes.
+
+    Before every ``hard_kill``: the job's members and ``ActiveProcesses``; the
+    ``taskkill`` it ran and how long; whether ``TerminateJobObject`` raised;
+    ``ActiveProcesses`` right after. Off win32 it records the kill only.
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.seen: list[str] = []
+        #: Each pid's creation time as read at the pid file.
+        self.born: dict[int, float | None] = {}
         real = ProcessTree.hard_kill
 
         def _witnessed(tree: ProcessTree) -> None:
-            self.seen.append(_job_members(tree))
+            before = f"{_described_members(tree)} active={tree.active_processes()}"
+            began = time.monotonic()
             real(tree)
+            self.seen.append(
+                f"hard_kill {time.monotonic() - began:.3f}s, before: {before}, "
+                f"after: active={tree.active_processes()}"
+            )
 
         monkeypatch.setattr(ProcessTree, "hard_kill", _witnessed)
+        if sys.platform != "win32":
+            return
+        real_taskkill = _process_tree._KernelApi.taskkill
+        real_terminate = _process_tree._KernelApi.terminate_job
+
+        def _taskkill(api: Any, pid: int) -> None:
+            began = time.monotonic()
+            try:
+                real_taskkill(api, pid)
+            finally:
+                self.seen.append(f"taskkill {pid} {time.monotonic() - began:.3f}s")
+
+        def _terminate(api: Any, job: int) -> None:
+            try:
+                real_terminate(api, job)
+            except OSError as exc:
+                self.seen.append(f"TerminateJobObject raised {exc}")
+                raise
+            self.seen.append("TerminateJobObject ok")
+
+        monkeypatch.setattr(_process_tree._KernelApi, "taskkill", _taskkill)
+        monkeypatch.setattr(_process_tree._KernelApi, "terminate_job", _terminate)
+
+    def snapshot(self, client: RpcClient, pids: list[int]) -> None:
+        """At the pid file: each process's image and state, and whether the job holds it."""
+
+        self.born.update((pid, _process_identity.process_started(pid)) for pid in pids)
+        if sys.platform != "win32":
+            return
+        proc, tree = client.process, client.tree
+        root = proc.pid if proc is not None else None
+        held = [f"root {root}: {_describe(root)}"] if root is not None else []
+        for pid in pids:
+            member = _in_job_now(pid, tree) if tree is not None else "no tree"
+            held.append(f"{pid}: {_describe(pid)}, {member}")
+        self.seen.append("at the pid file: " + "; ".join(held))
 
 
 async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness) -> None:
@@ -236,11 +368,19 @@ async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness
 
     #772 (windows-latest py3.13, 5 of 12 runs): the grandchild still ``alive``
     after that 5 s poll. The extra poll says whether it died late or never; the
-    witness says whether it was in the job when the abandon killed it.
+    witness says whether it was in the job when the abandon killed it. On win32
+    the witness's notes are warned on success too (the diagnostic round).
     """
 
+    at_raise = [f"{pid}: {_describe(pid)}" for pid in pids]
     states = await _states(pids)
     if all(state in _DEAD for state in states):
+        if sys.platform == "win32":
+            warnings.warn(
+                f"#772 evidence, passed: {(pids, states)} root {root}; {witness.seen}; "
+                f"at the raise: {at_raise}",
+                stacklevel=1,
+            )
         return
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -250,10 +390,13 @@ async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness
             continue
         state = await await_dead_or_zombie(pid, timeout=10.0)
         took = loop.time() - started
-        later.append(f"{pid} {state} {took:.2f}s on" if state in _DEAD else f"{pid} alive 10 s on")
+        later.append(
+            f"{pid} {state} {took:.2f}s on, now {_describe(pid)}, "
+            f"{_same_or_reused(pid, witness.born.get(pid))}"
+        )
     pytest.fail(
-        f"{(pids, states)}: root {root}; at the kill: {witness.seen or ['no hard_kill']}; "
-        f"after a further poll: {later}"
+        f"{(pids, states)}: root {root}; {witness.seen or ['no hard_kill']}; "
+        f"at the raise: {at_raise}; after a further poll: {later}"
     )
 
 
@@ -403,19 +546,6 @@ def _hold_the_spawn(
     return forked, gate
 
 
-def _unsuspended(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Spawn the child running, as on a host where ``NtResumeProcess`` does not resolve.
-
-    For the cases that need the child to run while the spawn is held: on win32
-    ``start`` creates it suspended until the attach since #772, so it would
-    write no pids. Off win32 ``suspend_flags`` is 0 already and nothing changes.
-    The suspended shape has its own win32 case,
-    ``test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran``.
-    """
-
-    monkeypatch.setattr(ProcessTree, "suspend_flags", staticmethod(lambda **_kwargs: 0))
-
-
 async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -428,7 +558,6 @@ async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     """
 
     pid_file = tmp_path / "tree.pids"
-    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -472,7 +601,6 @@ async def test_a_spawn_that_outlives_the_bound_is_ended_when_it_lands(
         SPAWN_SETTLE_SECONDS = 0.05
 
     pid_file = tmp_path / "tree.pids"
-    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _ShortSettle(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -514,7 +642,6 @@ async def test_a_late_spawn_whose_root_was_already_reaped_is_sent_no_kill(
     pid_kills: list[int] = []
     # Recorded, never sent: when red, the pid is already free.
     monkeypatch.setattr(rpc_client_module, "kill_process_tree", pid_kills.append)
-    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _ShortSettle(RpcClientOptions(argv=[sys.executable, "-c", "raise SystemExit(0)"]))
     start = asyncio.ensure_future(client.start())
@@ -566,7 +693,6 @@ async def test_a_cancel_while_cpython_connects_the_pipes_takes_the_child_and_its
         return await real_connect(*args, **kwargs)
 
     monkeypatch.setattr(loop, "connect_read_pipe", _held_connect)
-    _unsuspended(monkeypatch)
     pid_file = tmp_path / "tree.pids"
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -701,47 +827,6 @@ async def test_an_attach_that_raises_takes_the_child_with_it(
             kill_process_tree(pid)
 
 
-async def test_a_suspended_launch_that_fails_is_ended_through_the_tree_it_carries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#772: the tree a ``SuspendedLaunchError`` carries is the one the abandon kills through.
-
-    ``attach(suspended=True)`` raises it when the job, the assignment or the
-    resume fails, and hands its tree on when it could not confirm its own end
-    of the process. The error is injected here around a real tree (on win32,
-    one whose child was created suspended and is never resumed). Red without
-    the hand-over: the abandon took the pid-only kill, and the tree was neither
-    killed through nor closed.
-    """
-
-    real_attach = ProcessTree.attach
-    real_hard_kill = ProcessTree.hard_kill
-    killed: list[ProcessTree] = []
-
-    def _failed_launch(pid: int, **kwargs: Any) -> ProcessTree:
-        kwargs.pop("suspended", None)
-        raise SuspendedLaunchError("not resumed: injected", tree=real_attach(pid, **kwargs))
-
-    def _recorded(tree: ProcessTree) -> None:
-        killed.append(tree)
-        real_hard_kill(tree)
-
-    monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _failed_launch)
-    monkeypatch.setattr(ProcessTree, "hard_kill", _recorded)
-    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_CHILD]))
-    try:
-        with pytest.raises(SuspendedLaunchError, match="injected"):
-            await within(client.start(), bound=20.0, what="the start() whose launch failed")
-
-        assert len(killed) == 1, f"the abandon did not kill through the carried tree: {killed}"
-        assert killed[0].closed
-        assert await await_dead_or_zombie(killed[0].pid, timeout=5.0) in _DEAD
-        assert _released(client)
-    finally:
-        for tree in killed:
-            _really_kill(tree.pid)
-
-
 async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_ended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -755,6 +840,7 @@ async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_end
 
     witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _DeafWatcher, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -783,6 +869,7 @@ async def test_a_premature_exit_ends_the_group_and_closes_the_transport(
 
     witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _LongGrace, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -796,6 +883,71 @@ async def test_a_premature_exit_ends_the_group_and_closes_the_transport(
     finally:
         for pid in pids:
             _really_kill(pid)
+
+
+#: Premature exits per run of the #772 evidence case.
+_EVIDENCE_RUNS = 20
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="#772 diagnostic: a real Windows Job")
+async def test_on_win32_772_evidence_of_repeated_premature_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#772 diagnostic round 2: the premature-exit case, repeated, reported whether or not it fails.
+
+    Even runs hold a handle to the grandchild from the pid file on, so its pid
+    cannot be reused and every reading is of that process; odd runs hold none,
+    as the case itself does. A survivor does not fail this case: the warning is
+    the result. Only a grandchild still the process the pid file named is killed
+    at the end of a run.
+    """
+
+    witness = _JobWitness(monkeypatch)
+    api = _process_tree._KernelApi()
+    loop = asyncio.get_running_loop()
+    rows: list[str] = []
+    late = 0
+    for run in range(_EVIDENCE_RUNS):
+        witness.seen.clear()
+        run_dir = tmp_path / f"run-{run}"
+        run_dir.mkdir()
+        # Not ``_start_with_its_tree``: its "start() has not returned yet" check
+        # is the case's premise, and here a run must not end the evidence.
+        pid_file = run_dir / "tree.pids"
+        client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file, "exit")))
+        start = asyncio.ensure_future(client.start())
+        await wait_until(lambda f=pid_file: _pids(f) is not None, what="the child's tree")
+        pids = _pids(pid_file) or []
+        grandchild = pids[1]
+        stamp = _process_identity.process_started(grandchild)
+        witness.snapshot(client, pids)
+        held: int | None = None
+        if run % 2 == 0:
+            with contextlib.suppress(OSError):
+                held = api.open_member(grandchild)
+        try:
+            with pytest.raises(RpcServerExited):
+                await within(start, bound=20.0, what="the start() whose child exited at once")
+            raised = loop.time()
+            at_raise = _describe(grandchild)
+            state = await await_dead_or_zombie(grandchild, timeout=10.0)
+            took = loop.time() - raised
+            if state not in _DEAD or took > 5.0:
+                late += 1
+            rows.append(
+                f"run {run} held={held is not None} {pids}: grandchild {state} after {took:.2f}s, "
+                f"at the raise {at_raise}, now {_describe(grandchild)}, "
+                f"{_same_or_reused(grandchild, stamp)}; {witness.seen}"
+            )
+        finally:
+            if held is not None or _process_identity.same_process(grandchild, stamp) is True:
+                kill_process_tree(grandchild)
+            if held is not None:
+                api.close_process(held)
+    warnings.warn(
+        f"#772 evidence: {late} of {_EVIDENCE_RUNS} grandchildren alive past 5 s | " + " | ".join(rows),
+        stacklevel=1,
+    )
 
 
 async def test_a_cancel_swallowed_while_a_failed_start_is_abandoned_still_propagates(
@@ -1043,7 +1195,6 @@ async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_gr
     """
 
     pid_file = tmp_path / "tree.pids"
-    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -1358,9 +1509,6 @@ async def test_on_win32_the_abandon_kills_through_the_job_with_no_soft_stage(
         return real_attach(pid, **kwargs, platform="win32", api=cast(_Win32Api, api))
 
     monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _win32_tree)
-    # The injected api neither duplicates nor resumes: a real win32 spawn
-    # stays unsuspended here.
-    _unsuspended(monkeypatch)
     client = _CancelInTheGrace(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_CHILD]))
     start = asyncio.ensure_future(client.start())
     client.target = start
@@ -1420,42 +1568,3 @@ async def test_on_win32_what_the_child_starts_at_once_is_born_in_its_job(tmp_pat
             for pid in pids:
                 _really_kill(pid)
     assert outside == [], f"(spawn, pid) outside the job, of {_MEMBERSHIP_SPAWNS} spawns: {outside}"
-
-
-#: Past the 0.50-0.52 s file-creation stalls ``test_subprocess_helper.py``
-#: measured for a running child's first file on windows-latest.
-_NEVER_RAN_HOLD = 2.0
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="a real suspended spawn")
-async def test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#772: the shielded spawn's late path with the child created suspended.
-
-    The spawn is held after its fork, as in
-    ``test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree``; the
-    child's first statement creates a file. The late attach takes the child as
-    it is and never resumes it, so it is ended without having run.
-    """
-
-    marker = tmp_path / "ran"
-    child = f"open({str(marker)!r}, 'w').close()\nimport time\ntime.sleep(300)"
-    forked, gate = _hold_the_spawn(monkeypatch)
-    client = _LongGrace(RpcClientOptions(argv=[sys.executable, "-c", child]))
-    start = asyncio.ensure_future(client.start())
-    try:
-        await wait_until(lambda: forked, what="the fork")
-        await asyncio.sleep(_NEVER_RAN_HOLD)
-        start.cancel()
-        gate.set()
-        with pytest.raises(asyncio.CancelledError):
-            await within(start, bound=20.0, what="the start() cancelled inside its spawn")
-
-        assert await await_dead_or_zombie(forked[0].pid, timeout=5.0) in _DEAD
-        assert not marker.exists(), "the child ran while its spawn was held"
-        assert _released(client)
-    finally:
-        gate.set()
-        for proc in forked:
-            _really_kill(proc.pid)
