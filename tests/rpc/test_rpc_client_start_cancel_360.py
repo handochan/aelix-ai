@@ -47,7 +47,12 @@ from typing import Any, cast
 
 import pytest
 from aelix_ai.utils import _process_tree
-from aelix_ai.utils._process_tree import ProcessTree, _Win32Api, kill_process_tree
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    SuspendedLaunchError,
+    _Win32Api,
+    kill_process_tree,
+)
 from aelix_coding_agent.rpc import rpc_client as rpc_client_module
 from aelix_coding_agent.rpc.rpc_client import (
     RpcClient,
@@ -694,6 +699,47 @@ async def test_an_attach_that_raises_takes_the_child_with_it(
     finally:
         for pid in spawned:
             kill_process_tree(pid)
+
+
+async def test_a_suspended_launch_that_fails_is_ended_through_the_tree_it_carries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#772: the tree a ``SuspendedLaunchError`` carries is the one the abandon kills through.
+
+    ``attach(suspended=True)`` raises it when the job, the assignment or the
+    resume fails, and hands its tree on when it could not confirm its own end
+    of the process. The error is injected here around a real tree (on win32,
+    one whose child was created suspended and is never resumed). Red without
+    the hand-over: the abandon took the pid-only kill, and the tree was neither
+    killed through nor closed.
+    """
+
+    real_attach = ProcessTree.attach
+    real_hard_kill = ProcessTree.hard_kill
+    killed: list[ProcessTree] = []
+
+    def _failed_launch(pid: int, **kwargs: Any) -> ProcessTree:
+        kwargs.pop("suspended", None)
+        raise SuspendedLaunchError("not resumed: injected", tree=real_attach(pid, **kwargs))
+
+    def _recorded(tree: ProcessTree) -> None:
+        killed.append(tree)
+        real_hard_kill(tree)
+
+    monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _failed_launch)
+    monkeypatch.setattr(ProcessTree, "hard_kill", _recorded)
+    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_CHILD]))
+    try:
+        with pytest.raises(SuspendedLaunchError, match="injected"):
+            await within(client.start(), bound=20.0, what="the start() whose launch failed")
+
+        assert len(killed) == 1, f"the abandon did not kill through the carried tree: {killed}"
+        assert killed[0].closed
+        assert await await_dead_or_zombie(killed[0].pid, timeout=5.0) in _DEAD
+        assert _released(client)
+    finally:
+        for tree in killed:
+            _really_kill(tree.pid)
 
 
 async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_ended(
