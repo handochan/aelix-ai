@@ -247,7 +247,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   a command holding a backslash-newline is also read with it joined, as the shells read it
   (`$(\⏎(` is `$((` to them), and a length or a base-N literal (`${#PWD}`, `36#REPLY`) stays ALLOW.
   Its fix round 2 (2026-11-12): a `'…'` the shells read as literal text is joined too, and a `#`
-  tree-sitter reads as a comment where the shells start none asks and is re-read in its word.
+  tree-sitter reads as a comment where the shells start none asks and is re-read in its word. Dated note
+  2026-11-12 (#768, under ADR-0158's #742 note): backtick text is read as the shells read it —
+  with `\\`, `\$`, `` \` `` and `\⏎` undone and split where they end the substitution — as a whole
+  command whose own verdict counts when tree-sitter parses it (``echo `echo \$HOME` `` stays ALLOW),
+  and the joined reading also joins inside backticks and a here-document body's `$(…)` (measured
+  in nine shells). Its fix round 1 (2026-11-12): a `regex` or `extglob_pattern` leaf holding a
+  substitution is read as a word, a split pair is read in its statement, and (the lead's call)
+  `"$ $(…)"`, `==` before a `regex` in a command's arguments, a word split after a quote,
+  `<` / `>` inside `[ … ]` and a `$'…'` bash decodes in a `${…}` operand are read as the shells
+  read them. Its fix round 2 (2026-11-12): a misread reading pays the #768 readings in it from its
+  own budget, a `$'…'` in a `${…}` pattern operand (macOS bash 3.2 runs it) is read decoded too, a
+  list or pipeline member is a statement of its own for a split, and (the lead's call) an escaped
+  `\$(` in a pattern, whose `$(…)` ksh93 runs on the right of `=~`, asks; a `$'…'` in a `${…}`
+  offset still asks without being read. Its finish (2026-11-12): (the lead's call) a `$'` in the
+  text of a `"…"` or expanded here-document body holding a `${…}` asks and is read decoded, as
+  tree-sitter ends the `${…}` at an escaped `}` where bash reads on; the misread readings have three
+  times the others' budget; and a ksh93 pattern reading over 4,096 bytes asks unread.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the

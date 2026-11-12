@@ -457,6 +457,436 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     with `/bin/bash` deleted the files with no dialog on `61eda564` and are
     refused with the files kept now; `cat <<'EOF'` + `find . -name 'keep*'
     -delete` + `EOF` runs with no dialog on all three.
+
+    **Dated note 2026-11-12 (#768): backtick text as the shells read it.**
+    The rules above re-read backtick text only when a quote or comment in it
+    holds a backtick or a word holds `` \` ``. Before the shells parse
+    backtick text again, they turn `\\` into `\`, `\$` into `$` and `` \` ``
+    into a backtick and remove `\⏎`, and they end the substitution at its
+    first unescaped backtick. Measured with `<shell> -c` in a scratch
+    directory holding `files/z[$(: > MARK)]`, in macOS bash 3.2.57, zsh 5.9,
+    dash and ksh93u+ and Linux docker bash 5.2.37, zsh 5.9, dash 0.5.12,
+    ksh 93u+m and mksh 59c (`.omc/probes/768/impl/`), each ALLOW on
+    `363accf2`: ``echo `echo "${x:-'\$(: > MARK)'}"` `` created `MARK` in all
+    nine, its `$\\⏎(` spelling in macOS dash and ksh93u+ and Linux dash and
+    mksh, and ``echo `echo x` `touch MARK` ``, which tree-sitter-bash 0.25.1
+    reads as one substitution, in all nine; ``printf '[%s]\n' `printf %s
+    '-de\⏎lete'` `` printed `[-delete]` in all nine, and
+    ``echo `find . '-de\⏎lete'` `` was ALLOW. The second form (two
+    substitutions a blank apart) needs no escape; closing it with this
+    reading was the lane's call, not the owner's.
+
+    Now a backtick substitution whose text the shells read otherwise is
+    re-read as they read it (`_backtick_unescaped_verdict`): the text up to
+    the first unescaped backtick with those escapes undone, and, in a
+    double-quoted string or an expanded here-document body, also with `\"`
+    undone (in `"…"` all nine undid it; in a here-document body dash and
+    ksh93 did and bash, zsh and mksh did not); where the shells end the
+    substitution early, the source with it replaced by one word as well. Each
+    reading is classified as a whole command (`_reread_command`): its own
+    verdict when tree-sitter parses it, as low as ALLOW, else ASK at least
+    and DENY when its joined reading or a prefix is. A `$` from `\$` that a
+    backslash and another byte follow keeps its backslash in the read text,
+    because tree-sitter rejects `$\` there and no shell starts an expansion
+    at it (`printf '[%s]\n' $\(x\)` printed `[$(x)]` in all nine). A command
+    or re-read text tree-sitter rejects still has the backtick substitutions
+    it found read this way (`_rejected_command_verdict`, and in
+    `_reread_lines` and `_reread_as_expanded`): ``echo `echo \$(rm -rf ~)` ``,
+    which asked before any reading on `363accf2`, is DENY. The #762 joined
+    reading gains one that also joins `\⏎` inside backticks and inside a
+    `$(…)` in an expanded here-document body (`_substitution_joined_verdict`;
+    `cat <<E⏎[$(printf %s 'a\⏎b')]⏎E` printed `[ab]` in seven of the nine;
+    dash, on macOS and Linux, printed `[a\⏎b]`), and the higher of the two
+    holds; inside `"$(…)"` all nine kept it in a `'…'`, so it stays kept
+    there. Every reading #768 adds
+    is paid from its own budget (`_BACKTICK_BUDGET`, as large as
+    `_REREAD_BUDGET`), so the #742 and #762 re-reads spend what they spent on
+    `363accf2` and find what they found there.
+
+    Tests: `tests/builtin/test_bash_backtick_unescape_768.py`; on `363accf2`
+    167 of its first round's cases failed (a verdict below the one pinned, a
+    helper that does not exist, or a gate that does not ask) and 57 passed:
+    the kept verdicts, the shell premises, and three that hold there too (a
+    budget guard, a time bound and a spy that no backtick without a backslash
+    is re-read; the round-1 verify). The 18 grid rows
+    pinned there (six inner forms in `` echo `…` ``, ``echo $(echo `…`)`` and
+    ``ls | grep `…` ``) were ALLOW on `363accf2`, ran in at least three
+    shells and ask now; their `rm -rf ~` twins are DENY (classified only).
+
+    **Only raises**, against `363accf2`, under UNKNOWN and POSIX, with
+    `classify`'s catch and without it: the #710 sweep (27,021 argv strings,
+    2,039,760 forms; its 977 changes are this issue's test rows but for 19
+    ASK → DENY on two #742 rows), the 108,960 here-documents (132 ASK → DENY,
+    each hiding `find victim -delete` on a line of its own: 118 inside
+    backticks, 14 with a backtick on a candidate end line), the 7,560- and
+    704-form grids (no change), the 936-form substitution set (10 ASK → DENY), the
+    1,531 attack forms (4 ASK → DENY), #762's property test (30,441
+    strings, 542,148 variants; none below its unsplit string, and the 192
+    that changed are this issue's rows) and a backtick property test
+    (24,400 strings embedded in backticks and in `` "`…`" ``, and 465,854
+    variants with a `\⏎` inside the backticks): none below `363accf2` and no
+    exception, and no variant below its unsplit embedding. On `363accf2` 86
+    of the embeddings in backticks were below the verdict the fix gives the
+    same command in `$( … )`; now none is.
+
+    **Cost:** of 31,958 strings (#762's 31,822 cost strings and 136
+    realistic backtick lines, `.omc/probes/768/impl/corpus/`), one changed:
+    ``echo `dirname "\`pwd\`"` `` goes from ALLOW to ASK, as
+    ``dirname "`pwd`"``, which the shells run, asks at the top level.
+    ``echo `echo \$HOME` ``, ``echo `echo x` `echo y` `` and
+    ``echo `date` `` stay ALLOW, ``echo `basename \`pwd\`` `` stays ASK.
+    Re-reading with an ASK floor instead would have changed 11 of the
+    31,958 (``echo `echo \$HOME` `` among them); the joined reading inside
+    backticks and a here-document's `$(…)` changed none of them. **Time**
+    (medians of 7, macOS, Python 3.12, `.omc/probes/768/impl/perf/`):
+    2,000 ``echo `echo \$x` `` statements (34 KB) 55.9 ms against 31.7 ms
+    on `363accf2`; a 12-deep nest of escaped backticks (8 KB) 18.8 ms
+    against 1.5 ms and a 16-deep one (131 KB) 202 ms against 19 ms. 2,000
+    backtick substitutions a blank apart on one line ask, where `363accf2`
+    allowed them: the #768 budget runs out after a few splits. Each split
+    re-read the whole source, not the rest of the line, so lines of such
+    pairs asked as well and the time grew with the square of the source (the
+    round-1 cross-review); fix round 1 below reads the statement.
+
+    **Live** (pty TUI under `auto`, scripted model, scratch HOME, agent dir
+    and cwd, `.omc/probes/768/impl/live/`):
+    ``echo `echo "${x:-'\$(: > MARK)'}"` `` and
+    ``echo `echo x` `touch MARK` `` with `SHELL=/bin/bash`, and the
+    `$\\⏎(` row with `/bin/ksh`, ran with no dialog and created `MARK` on
+    `363accf2`, and open "Run shell command?" now with nothing created after
+    Esc; ``echo `echo \$HOME` `` runs with no dialog on both. A real model
+    (OpenRouter `openai/gpt-4.1-mini`) asked to run
+    ``echo `echo x` `touch PWNED` `` under `--permission-mode auto -p` with
+    `AELIX_SUBAGENT_DEPTH=1`, the headless block gate, ran it and created
+    `PWNED` on `363accf2`, and is refused now; plain `-p` runs it on both,
+    as it runs every ASK (ADR-0120, #740).
+
+    **Not covered:** a `$'…'` argument is not decoded (``echo `find .
+    $'-de\⏎lete'` `` asks, as `find . $'-delete'` does); a backtick
+    tree-sitter leaves inside an `ERROR` node is not read
+    (``echo ${y:-`echo \$(rm -rf ~)`}`` asks); backticks in a here-document
+    body whose `\"` reading the re-read of the body cannot rebuild
+    (``cat <<E⏎`echo \"${x:-'\$(rm -rf ~)'}\"`⏎E``, whose `: > MARK` twin
+    ran in dash on macOS and Linux and in both ksh93 builds) ask and are not refused;
+    ``echo `echo $(\\⏎(echo '$(rm -rf ~)'))` `` asks, as the same command
+    does at the top level; a backtick inside `$((…))`, `$[…]` or `${a[…]}`
+    within `"…"` is not read with `\"` undone, because the nearest node there
+    is not the string, so ``echo "$[ `echo \"'\$(: > MARK)'\"` ]"`` (macOS
+    bash, dash and ksh93u+, Linux bash, dash, ksh 93u+m and mksh created
+    MARK) and the `$((…))` spelling (dash and ksh93, macOS and Linux) ask, as
+    on `363accf2`, and their `rm -rf ~` twins are not refused (the round-1
+    cross-review; fix round 1 re-ran both). Windows Git Bash, bash 5.3 and the
+    shells' interactive modes were not measured.
+
+    **Fix round 1 (2026-11-12).** #768's own findings (the round-1 verify
+    and cross-review, `.omc/probes/768/fix-r1/`, measured as above in the
+    nine shells):
+
+    - *A pattern leaf.* tree-sitter keeps the right side of `=`, `==` or
+      `=~` in `[[ … ]]`, and of `=~` in `[ … ]`, as a `regex` leaf, and a
+      `@(…)` pattern as an `extglob_pattern` leaf, so no walk read a
+      substitution in it: ``[[ x = `:>MARK` ]]`` and ``[ x =~ `:>MARK` ]`` were
+      ALLOW on `363accf2` and `78df9ce4` and created `MARK` in all nine (dash,
+      which has no `[[`, expands the words of its `[[` command), and the
+      verify's other eight leaf rows in six to eight. Such a leaf holding a
+      backtick, `$(`, `${`, `$[`, `<(` or `>(` is read as an `echo` argument,
+      bare and in double quotes, and the higher verdict counts
+      (`_pattern_verdict`): all 15 pinned rows ask, the six `rm -rf ~` and
+      `find . -delete` rows beside them are DENY, and
+      `[[ $x =~ ^${re}$ ]]` stays ALLOW.
+    - *The backtick reading in one pass.* `_unescaped` made one insert per
+      kept `\$`, 1.9 s for 240,000 `\$\a` (960 KB) on `78df9ce4`; it is
+      built in one pass now (100 ms; 18.9 ms on `363accf2`, which made no
+      such reading) and equals the old reading on 20,000 random strings.
+    - *The split read in its statement.* A split view of the whole source
+      held every other line's merged pair: five lines of
+      ``echo `ls a` `ls b` `` asked on `78df9ce4` (ALLOW on `363accf2`), and
+      360 KB of ``:`a` `b` `` took 19.1 s. The view is now the innermost
+      statement around the pair (`_STATEMENT_PARENTS`); in a command
+      tree-sitter rejects it stays the whole source, which also reads the
+      statements around the error, as on `78df9ce4`. A view the budget cannot
+      pay is not built and asks. The five-line script is ALLOW again (the
+      360 KB one asks on every tree: `a` and `b` are unknown commands); 360 KB
+      takes 1.36 s (613 ms on `363accf2`).
+    - *Pins* for the rows the verify's mutants M34, M03 and M23 changed, and
+      for this round's own.
+
+    The lead's call, not the owner's: four holes older than #768, of the same
+    class, that both reviews found and the lead confirmed on main
+    `52b2031b` (`.omc/probes/768/lead-check/`), and the verify's O1. Each was
+    ALLOW on `363accf2` and `78df9ce4`:
+
+    - ``echo "$ $(: > MARK)"``, with a tab or a newline for the blank, and
+      the same line in an expanded here-document body, created `MARK` in all
+      nine: tree-sitter reads `$`, blanks and `$` as `$$`, taking the `$` of
+      `$(`. That `$` is escaped and the command re-read, and it asks at
+      least; ``echo "$\⏎$(: > MARK)"``, which is `$$` to the shells too (none
+      ran it), stays ALLOW.
+    - ``echo == ; : > MARK ; ]`` created `MARK` in bash, dash, both ksh93 and
+      mksh (zsh stops at `==`): after `==` or `=~` in a command's arguments
+      tree-sitter reads up to a `]` word as one `regex` node. The operator is
+      quoted and the command re-read, and it asks at least.
+    - `find / -de""\lete` and `find . -ex""\ec rm -rf {} +` (classified only;
+      `printf '[%s]'` printed `[-delete]` and `[-exec]` in all nine):
+      tree-sitter ends a word at a backslash after a quote. The escaped byte
+      is quoted instead (`-de""'l'ete`), and both are DENY.
+    - `[ a > MARK ]` created `MARK` in all nine: tree-sitter reads `>`, `>>`
+      and `<` inside `[ … ]` as comparisons. The brackets are read as a
+      `test` command, so `[ a > ~/.bashrc ]` is DENY as
+      `echo a > ~/.bashrc` is and `[ a < b ]` stays ALLOW. `[[ a > MARK ]]`
+      created `MARK` in dash alone, which has no `[[`; under the POSIX
+      dialect, which the gate uses for every POSIX shell, it reads as a
+      redirect too and asks, and under UNKNOWN it stays ALLOW.
+    - ``echo "${x:-$'\x24(: > MARK)'}"`` created `MARK` in macOS bash 3.2.57
+      and Linux bash 5.2.37 only: bash decodes a `$'…'` in a `${…}` operand
+      inside double quotes and expands the result again. Such a `$'…'` asks,
+      and its decoded text is re-read (`_ansi_c_decoded`), so the
+      `rm -rf ~` twins are DENY. Unquoted, no shell ran it (ALLOW stays). A
+      `$'…'` in a pattern operand (`#`, `%`, `/`) was not covered: fix
+      round 2 below.
+
+    These readings are paid from a third budget (`_MISREAD_BUDGET`, as large
+    as the other two); fix round 2 below pays the #768 readings nested in
+    them from it too and measures what that leaves the others. In a pty TUI under `auto` with `SHELL=/bin/bash`
+    (`.omc/probes/768/fix-r1/live/`), ``[[ x = `:>MARK` ]]``,
+    ``echo "$ $(: > MARK)"``, ``echo == ; : > MARK ; ]`` and `[ a > MARK ]`
+    ran with no dialog and created `MARK` on `363accf2`, and open "Run shell
+    command?" now with nothing created after Esc; ``echo "cost: $ 5"`` runs
+    with no dialog on both. OpenRouter `openai/gpt-4.1-mini` asked under
+    `--permission-mode auto -p` with `AELIX_SUBAGENT_DEPTH=1` to run
+    ``echo "$ $(touch PWNED)"`` created `PWNED` on `363accf2` and is refused
+    now; plain `-p` runs it, as it runs every ASK (#740).
+
+    **Only raises**, against `363accf2` and `78df9ce4`, under UNKNOWN and
+    POSIX, with `classify`'s catch and without it: the #710 sweep (27,106
+    argv strings, 2,047,110 forms; every change against `78df9ce4` comes from
+    one of this round's 46 test rows), the 108,960 here-documents, the
+    7,560-, 936- and 704-form sets (16 of the 936 ASK → DENY), the 1,531
+    attack forms (the `[ FOO < 1 -eq 1 ]` and `[ 1 -eq 1<<FOO ]` spellings
+    of #743's grid ALLOW → ASK, as the shells redirect there), #762's
+    property test (543,819 variants), the backtick property test (467,304
+    variants), the
+    round-1 verify's fuzz (345,000 forms, and 345,000 more with this round's
+    shapes) and 300,000 of the cross-review's differential strings (and
+    160,000 more without the catch): none below either, and no exception.
+    The fuzz strings this round allows that hold `MARK` were run in macOS
+    bash, zsh, dash and ksh93u+ (4,494) and the `printf` twins of the
+    argument fuzz (740): none created `MARK` or printed `[-delete]`.
+    **Cost:** of the 31,958 strings above, none changed against `78df9ce4`,
+    nor any of the verify's 6,145 (1,361 real script lines among them); of
+    77 fresh lines written for these rules, three ask now:
+    ``echo "Total: $ $total"`` (the stray `$`), ``echo "${x:-$'\n'}"`` and,
+    under POSIX, `[[ "$a" > "$b" ]]`. ``echo x == y ]`` and
+    ``echo $(echo a == b)``, where tree-sitter reads a `regex` that hides
+    nothing, ask too. **Time** (medians of 7, macOS, Python 3.12,
+    `363accf2` / `78df9ce4` / now): 4,000 lines of ``echo `ls a` `ls b` ``
+    (76 KB) 86 / 709 / 218 ms; a tree tree-sitter rejects, `(` and 20,000
+    ``:`a` `b` `` lines (180 KB), 40 / 4,960 / 1,021 ms; 20,000 glued words
+    (220 KB) 246 / 231 / 550 ms. *Not covered:* ``echo ${x:-\\`: > MARK``,
+    with no closing brace, created `MARK` in macOS ksh93u+ 2012 alone, which
+    closes an open backtick at the end of input; tree-sitter rejects it, so
+    it asks, while ``echo ${x:-\\` : > MARK}`` is ALLOW and ran in none of the
+    nine.
+
+    **Fix round 2 (2026-11-12).** The round-2 verify's findings
+    (`.omc/probes/768/fix-r2/`, measured as above in the nine shells):
+
+    - *The misread budget.* A #768 reading nested in a misread reading still
+      paid from `_BACKTICK_BUDGET`: ten lines of
+      ``echo `[[ x =~ (\`echo \\$a\` …) ]]` `` spent 9,350 of the 9,372
+      bytes of `_BACKTICK_BUDGET`, so the ``echo `echo "${x:-'\$(rm -rf ~)'}"` `` before them asked
+      on `866b0e5b` (DENY on `78df9ce4`). `_misread_reread` pays them from
+      `_MISREAD_BUDGET` now, and that 1,354-byte command is DENY again.
+      Measured on 46,309 strings (the 31,958 above, the round-2 verify's
+      16,649 and this round's rows) and on 147,481 (the 31,958 with the
+      here-documents and the 7,560-, 936- and 704-form sets), under UNKNOWN
+      and POSIX: the `_REREAD_BUDGET` bytes left after `classify` are those
+      left on `363accf2`, and the `_REREAD_BUDGET` and `_BACKTICK_BUDGET`
+      bytes left are those left with the misread readings taken out (on
+      `866b0e5b` the `_BACKTICK_BUDGET` ones differed for 4 of the 46,309).
+      So the misread readings take nothing from the others. The #742 and #762
+      re-reads share `_REREAD_BUDGET`, as on `363accf2`, and #768's two
+      (`_backtick_unescaped_verdict`, `_substitution_joined_verdict`) share
+      `_BACKTICK_BUDGET`, as on `78df9ce4`.
+    - *A `$'…'` in a pattern operand.* tree-sitter keeps a `${…}` pattern
+      operand (after `#`, `##`, `%`, `%%`, `/`, `//`, `/#`, `/%`, `^` or `,`)
+      as text in a `regex` leaf, so the `$'…'` rule above did not see one
+      there: ``echo "${PWD#$'\x24(: > MARK)'}"``, its seven other pattern
+      operators, `PATH`, the `\044`, `\\\$` and `\x60` spellings, `@(…)`,
+      and the forms nested in `${x:-…}` and `${PWD:+…}` (19 rows) were ALLOW
+      on `363accf2` and `866b0e5b` and created `MARK` in macOS bash 3.2.57
+      alone; Linux bash 5.2.37 ran none. Each `$'…'` in such a leaf, and one
+      the leaf ends before its closing quote
+      (``echo "${PWD#$'\x24(: > MARK)}'}"``, where bash reads on to the
+      quote), asks now and is re-read decoded (`_decoded_quotes_verdict`),
+      so the `rm -rf ~` twins are DENY. That holds in an expanded
+      here-document body too, where none of the nine ran it. Unquoted, or in
+      a `"…"` of its own inside the operand, none ran it, and both stay
+      ALLOW.
+    - *An escaped substitution ksh93 runs* (the lead's call, not the
+      owner's; older than #768). ``[[ x =~ \$(: > MARK) ]]`` and nine
+      other spellings (`a\$(`, `x\$(`, `(\$(…))`, `^\$(…)$`,
+      `\$( : > MARK )`, a `|` on either side, `-n x && x =~ \$(…)` and
+      `\$(…) && 1`) were ALLOW on `363accf2` and `866b0e5b` and created
+      `MARK` in macOS ksh93u+ and Linux ksh 93u+m alone. A pattern leaf (the
+      rule above) holding `\$(`, `\${` or `` \` `` asks now, and is also
+      read with those backslashes removed (`_ksh_unescaped`), so the
+      `rm -rf ~` twins are DENY. Of the 860 real lines holding `[[` (the
+      round-2 verify's system script lines and the round-1 verify's real
+      lines) and the 658 `[[ … ]]` expressions in them, 23 with `=~`, each
+      classified alone, none changed against `866b0e5b`.
+    - *Lists and pipelines.* A member of an `&&` / `||` list or of a
+      pipeline is a statement of its own for the split view now: four
+      ``echo `ls a` `ls b` `` joined by ` && `, ` || ` or ` | ` asked on
+      `866b0e5b` and are ALLOW again, as on `363accf2`, up to 400 members
+      measured (500 joined by ` && ` or ` || ` ask on all three trees; 500
+      joined by ` | ` are ALLOW on `363accf2` and now and ask on
+      `866b0e5b`, `.omc/probes/768/finish/out/f2-claims.txt`). One command
+      holding 13 or more such pairs still asks (12 are ALLOW, and all are ALLOW on `363accf2`):
+      the #768 budget runs out.
+    - *Pins* for the rows the verify's mutants M15 and M16
+      (``case x in x) echo `echo x` `rm -rf ~`;; esac`` stays DENY) and M17
+      (``cat <(``, six lines of ``echo `ls a` `ls b` ``, `)` stays ALLOW)
+      changed.
+
+    **Only raises**, against `363accf2`, under UNKNOWN and POSIX (the #710
+    sweep under UNKNOWN), with `classify`'s catch, and without it for all
+    but the split-word, pattern, combination and script fuzz: the #710
+    sweep (27,156 argv strings, 2,050,920 forms), the 108,960
+    here-documents, the 7,560-, 936- and 704-form sets, the 1,531 attack
+    forms, #762's property test (545,115 variants), the backtick property
+    test (468,517 variants) and the round-2 verify's fuzz (30,000 split
+    words, 60,000 pattern right sides, 60,000 combinations, 60,000
+    token-soup strings and 14,000 scripts): none below `363accf2` and no
+    exception. Against `866b0e5b` the only verdicts in these sweeps that
+    went down are list rows of the kind above (177 #710-sweep forms and 64
+    #762 property variants, ASK → ALLOW, each ALLOW on `363accf2`); the
+    round-3 verify found DENY → ASK rows outside them (the finish below). The 867 fuzz strings
+    this round allows that hold `MARK` were run in all nine shells: none
+    created it. **Cost:** of the 31,958 strings, none changed against
+    `866b0e5b`; of the round-2 verify's 16,649, one: ``echo "${x#$'\r'}"``
+    asks now. **Time** (medians of 7, macOS, Python 3.12, load average 7 to
+    10, `363accf2` / `866b0e5b` / now): the round-2 verify's 23 shapes are
+    within 4 % of `866b0e5b`; 20,000 lines of
+    ``echo "${PWD#$'\x24(a)'}"`` (500 KB) 351 / 415 / 521 ms; 20,000 lines
+    of `[[ x =~ \$(a) ]]` (340 KB) 187 / 245 / 611 ms; one 96 KB pattern of
+    `\$(a)|` 1.5 / 5.0 / 216 ms; 4,000 ``echo `ls a` `ls b` `` joined by
+    ` | ` (84 KB) 99 / 436 / 224 ms.
+
+    **Live** (pty TUI 120x40 under `auto`, scripted model, scratch HOME,
+    agent dir and cwd, `.omc/probes/768/fix-r2/live/`):
+    ``echo "${PWD#$'\x24(: > MARK)'}"`` with `SHELL=/bin/bash` (macOS bash
+    3.2.57) and `[[ x =~ \$(: > MARK) ]]` with `/bin/ksh` ran with no dialog
+    and created `MARK` on `866b0e5b`, and open "Run shell command?" now with
+    nothing created after Esc; four ``echo `ls a` `ls b` `` joined by
+    ` && ` opened it on `866b0e5b` and run with no dialog now;
+    ``echo "cost: $ 5"`` runs with no dialog on both. *Not covered:* a
+    `$'…'` in an offset, not a pattern: ``echo "${x:$'\x24(: > MARK)'}"``
+    created `MARK` in Linux mksh alone and
+    ``echo "${PWD:0:$'\x24(: > MARK)'}"`` in macOS bash 3.2.57, Linux bash
+    5.2.37 and mksh; tree-sitter rejects both, so they ask, as on
+    `363accf2`, and their `rm -rf ~` twins ask too rather than being refused.
+
+    **Finish (2026-11-12).** The round-3 verify's findings
+    (`.omc/probes/768/verify-r3/`), measured in `.omc/probes/768/finish/`:
+
+    - *A `$'…'` after an escaped brace* (the verify's F1; the lead's call,
+      not the owner's; older than #768). tree-sitter ends a `${…}` at a `}` after a backslash
+      (`\}`, `[\}]`, `[a\}]`, `[!\}]`, `\{\}`), where bash reads on, so a
+      `$'…'` bash decodes in that operand falls into the string's own text,
+      which no rule read: ``echo "${PWD#\}$'\x24(: > MARK)'}"`` and the
+      verify's 51 other spellings were ALLOW on `363accf2` and `1a83896b`
+      and created `MARK` in macOS bash 3.2.57, the 18 with a `:-`, `-`,
+      `:+`, `+`, `:?` or `?` operand in Linux bash 5.2.37 too. Each `$'` in
+      the text of a `"…"` or here-document body that holds a `${…}` asks
+      now, and its `$'…'` is re-read decoded as a pattern operand's is
+      (`_quoted_text_verdict`): all 52 ask under UNKNOWN and POSIX, their
+      `rm -rf ~` twins are DENY, and none of the 508 forms of the verify's
+      four tables that ran in a shell is ALLOW. A here-document whose
+      delimiter is quoted has no `${…}` child and is not read. **Cost:** of
+      the 31,958 and 16,649 strings above and the round-3 verify's 14,428
+      real script lines on this machine, none changed against `1a83896b`;
+      ``echo "${x}: $'a'"``, which macOS bash, zsh, dash and ksh93u+ print
+      as text, asks, and so does such a `$'…'` in an expanded here-document
+      body, which those four did not run.
+    - *The misread budget* (the verify's F3). Paying the nested readings
+      from `_MISREAD_BUDGET` left the edited re-read of the whole source too
+      little: after three lines of ``echo `[[ x =~ (\`echo \\$a\` …) ]]` ``,
+      ``echo "$ $(rm -rf ~)"`` asked on `1a83896b` (DENY on `866b0e5b`,
+      ALLOW on `363accf2`). `_MISREAD_BUDGET` now holds three times the
+      other two (`_MISREAD_SHARE`, the lead's call: the smallest whole
+      multiple that holds at 3 and 10 lines): that row, `[ a > ~/.bashrc ]`,
+      `find / -de""\lete`, `echo == ; rm -rf ~ ; ]` and
+      ``echo "${x:-$'\x24(rm -rf ~)'}"``, after and before 3 and 10 such
+      lines, are DENY under UNKNOWN and POSIX, as on `866b0e5b`; twice the
+      size held at 3 lines and not at 10. After 20 or 40 lines the first
+      four still ask (DENY on `866b0e5b`); four times, set by hand, holds
+      them there and was not applied. On the verify's 4,338 strings the `_REREAD_BUDGET` and
+      `_BACKTICK_BUDGET` bytes left after `classify` are still those left
+      with the misread readings taken out.
+    - *A list-fuzz budget edge, left as it is* (the lead's call, not the
+      owner's). One of the verify's list-fuzz forms, which it minimised to
+      ``` o `a``;` `rm -rf ~` || ` a`` b` "`b`" echo `'`'` `:>echo "RK)" |& tiho ` `b` } ```,
+      is ASK on `363accf2`, DENY on `866b0e5b` and ASK on `1a83896b` and
+      now, under UNKNOWN and POSIX, both spellings. With `list` in
+      `_STATEMENT_PARENTS` its split views are paid before the
+      substitution's own text, and on `1a83896b` 2 bytes of the #768 budget
+      were left when the `rm -rf ~` reading came (17 on `866b0e5b`; the
+      verify's trace). Taking `list` out restored its DENY there, and the
+      verify's mutant N01, which takes it out, fails the list rows above,
+      so `list` stays. It is never below `363accf2`, and its `MARK` twin ran
+      in macOS ksh93u+ alone.
+    - *A long ksh93 reading* (the verify's F5). tree-sitter's error recovery
+      on the ksh93 reading of `[[ x =~ \$(a)|…| ]]`, a trailing `|`
+      included, grew with the square of its size: 12.4 s for 96 KB on
+      `1a83896b` (the verify, one run). A reading longer than 4,096 bytes
+      (`_KSH_REREAD_LIMIT`) asks without being read: 96, 192 and 384 KB of
+      that shape take 6.6, 13.2 and 26.5 ms now, and fix round 2's 96 KB
+      pattern without the trailing `|` 6.8 ms (216 ms on `501f8cf1`). One
+      4 KB reading takes 31 ms on `1a83896b` and now. No pattern leaf of
+      the 63,035 strings above holds such an escape, and the longest among
+      the test file's string constants is 17 bytes.
+    - *A pin* for the verify's surviving mutants N19 and N20:
+      ``echo "${PWD/$'\'\x24(rm -rf ~)'/b}"`` is DENY (classified only; its
+      `MARK` twin ran in none of the nine shells), and it alone fails under
+      each of them.
+
+    **Only raises**, against `363accf2`, under UNKNOWN and POSIX (the #710
+    sweep under UNKNOWN), with `classify`'s catch and, for all but the list
+    fuzz, without it: the #710 sweep (27,184 argv strings, 2,052,540
+    forms), the 108,960 here-documents, the 7,560-, 936- and 704-form sets,
+    the 1,531 attack forms, #762's property test (545,847 variants), the
+    backtick property test (469,251 variants) and the verify's list fuzz
+    (36,000 forms, seeds 1 to 3) and token-soup fuzz (45,000 strings): none
+    below `363accf2` and no exception. Against `1a83896b` every change is a
+    raise of a new test string of this finish: 361 #710-sweep forms of its
+    19 one-line rows (ALLOW → ASK), 503 #762 property variants of 21 of its
+    strings (498 ALLOW → ASK, 4 ASK → DENY, 1 ALLOW → DENY) and 556
+    backtick-property embeddings and variants of 19 (ALLOW → ASK); the
+    here-documents, the sets, the attack forms and the 31,958 strings
+    changed nothing, and the two fuzzers found nothing lower. The 1,308
+    token-soup strings that hold `MARK` and are ALLOW now are among the
+    1,312 the verify ran in all nine shells, none of which created it. Against `866b0e5b` the list fuzz
+    found the form above (DENY → ASK) and list rows of the kind in fix
+    round 2 (ASK → ALLOW, each ALLOW on `363accf2`).
+
+    **Time** (medians of 3, macOS, Python 3.12, load average 7 to 9,
+    `363accf2` / `866b0e5b` / `1a83896b` / now): 20,000 lines of
+    ``echo "${PWD#$'\x24(a)'}"`` 356 / 415 / 531 / 566 ms; 40,000 lines of
+    `[[ x =~ \$(a) ]]` 384 / 478 / 1,223 / 1,216 ms; 4,000
+    ``echo `ls a` `ls b` `` joined by ` | ` 102 / 443 / 223 / 231 ms; 4,000
+    lines of ``echo "${x:-[\}]$'\x24(a)'}"`` 83 / 94 / 96 / 120 ms; 320 of
+    the pad lines above and a misread twin 6.5 / 175 / 160 / 476 ms, linear
+    (67, 129, 245 and 476 ms for 40, 80, 160 and 320 lines). Lists of pipelines of split
+    pairs grow with the square of their size, as on `363accf2` (829 and
+    3,383 ms there, 800 and 3,366 ms now, for 98 and 196 KB); no other
+    shape the verify timed grew faster than its size.
+
+    **Live** (pty TUI 120x40 under `auto`, scripted model, scratch HOME,
+    agent dir and cwd, `SHELL=/bin/bash`, `.omc/probes/768/finish/live/`):
+    ``echo "${PWD#\}$'\x24(: > MARK)'}"`` ran with no dialog and created
+    `MARK` on `1a83896b`, and opens "Run shell command?" now with nothing
+    created after Esc; ``echo "cost: $ 5"`` runs with no dialog.
   - **Dated note 2026-11-10 (#743).** **An arithmetic operand of `[ … ]` or
     `[[ … ]]` is asked about as an operand of `test` is: it asks unless it is
     a plain decimal number, a lone numeric expansion (`$#`, `"${#a[@]}"`)
@@ -645,7 +1075,7 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     continue only hides the next line from them), but a quoted argument's
     text can differ: ``echo `find . '-de\⏎lete'` `` is ALLOW, as on
     `71f837eb`, and inside backticks the nine shells turn `'-de\⏎lete'` into
-    `-delete` (not covered; ADR-0288's #762 note). #762 fix round 2
+    `-delete` (not covered; ADR-0288's #762 note; #768 covers it, see its note under #742 above). #762 fix round 2
     (2026-11-12): a `'…'` or `$'…'` in a `${…}` operand inside a double-quoted string or an expanded
     here-document body does not quote, so its `\⏎` is joined
     (`cat <<E⏎${x:-'$\⏎(: > MARK)'}⏎E` created `MARK` in all nine shells
