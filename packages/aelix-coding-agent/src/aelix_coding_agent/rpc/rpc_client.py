@@ -125,6 +125,7 @@ from typing import Any, TypeVar
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
+    SuspendedLaunchError,
     _retained_handle,
     containment_spawn_kwargs,
     kill_process_tree,
@@ -515,6 +516,15 @@ class RpcClient:
         # win32 it is ``CREATE_NEW_PROCESS_GROUP``, which is the group
         # :meth:`stop`'s ``CTRL_BREAK_EVENT`` is addressed to (#202).
         spawn_kwargs.update(containment_spawn_kwargs(new_session=True))
+        # #772: on win32 the child is created suspended and runs only once the
+        # attach has assigned it to its job (``ProcessTree.suspend_flags``, 0
+        # elsewhere and where ``NtResumeProcess`` does not resolve). Unsuspended,
+        # the attach came a few proactor turns after the spawn, and a venv
+        # launcher — ``sys.executable`` on the windows runner — had by then
+        # started the interpreter outside the job.
+        suspend = ProcessTree.suspend_flags()
+        if suspend:
+            spawn_kwargs["creationflags"] = spawn_kwargs.get("creationflags", 0) | suspend
 
         self._exited = asyncio.Event()
         self._settled = asyncio.Event()
@@ -524,13 +534,15 @@ class RpcClient:
         # second overwrote the first's process and tasks (Codex review 3).
         self._starting = True
         try:
-            await self._spawn_and_wait_out_the_grace(argv, env, spawn_kwargs)
+            await self._spawn_and_wait_out_the_grace(
+                argv, env, spawn_kwargs, suspended=suspend != 0
+            )
         finally:
             self._starting = False
             self._settled.set()
 
     async def _spawn_and_wait_out_the_grace(
-        self, argv: list[str], env: dict[str, str], spawn_kwargs: dict[str, Any]
+        self, argv: list[str], env: dict[str, str], spawn_kwargs: dict[str, Any], *, suspended: bool
     ) -> None:
         """:meth:`start`'s body, from the spawn to the end of pi's grace."""
 
@@ -563,7 +575,9 @@ class RpcClient:
                 try:
                     # Late by necessity, a few loop turns after the fork: on
                     # win32 what the child started before this is not in the
-                    # job, and only ``taskkill /T`` reaches it.
+                    # job, and only ``taskkill /T`` reaches it. A child spawned
+                    # suspended (#772) has started nothing: it is attached as it
+                    # is, never resumed, and ended below.
                     self._tree = ProcessTree.attach(
                         settled.pid, kill_on_close=True, handle=_retained_handle(settled)
                     )
@@ -578,9 +592,17 @@ class RpcClient:
             # after the assignment inherit membership. ``handle`` is the one the
             # transport already retains, so the assignment never has to re-derive
             # one from the pid and cannot be refused ``ACCESS_DENIED`` (#202).
-            self._tree = ProcessTree.attach(
-                proc.pid, kill_on_close=True, handle=_retained_handle(proc)
-            )
+            # ``suspended`` (#772): assigned, then resumed. A job, assignment or
+            # resume that fails ends the child and raises ``SuspendedLaunchError``
+            # instead of running it outside the job; the tree rides on the error
+            # when that end could not be confirmed, and the abandon kills through it.
+            try:
+                self._tree = ProcessTree.attach(
+                    proc.pid, kill_on_close=True, handle=_retained_handle(proc), suspended=suspended
+                )
+            except SuspendedLaunchError as launch_error:
+                self._tree = launch_error.tree
+                raise
 
             proc_stdout = proc.stdout
             proc_stderr = proc.stderr

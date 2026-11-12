@@ -245,7 +245,7 @@ async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness
             continue
         state = await await_dead_or_zombie(pid, timeout=10.0)
         took = loop.time() - started
-        later.append(f"{pid} {state} {took:.2f}s later" if state in _DEAD else f"{pid} alive 10 s on")
+        later.append(f"{pid} {state} {took:.2f}s on" if state in _DEAD else f"{pid} alive 10 s on")
     pytest.fail(
         f"{(pids, states)}: root {root}; at the kill: {witness.seen or ['no hard_kill']}; "
         f"after a further poll: {later}"
@@ -398,6 +398,19 @@ def _hold_the_spawn(
     return forked, gate
 
 
+def _unsuspended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spawn the child running, as on a host where ``NtResumeProcess`` does not resolve.
+
+    For the cases that need the child to run while the spawn is held: on win32
+    ``start`` creates it suspended until the attach since #772, so it would
+    write no pids. Off win32 ``suspend_flags`` is 0 already and nothing changes.
+    The suspended shape has its own win32 case,
+    ``test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran``.
+    """
+
+    monkeypatch.setattr(ProcessTree, "suspend_flags", staticmethod(lambda **_kwargs: 0))
+
+
 async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -410,6 +423,7 @@ async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     """
 
     pid_file = tmp_path / "tree.pids"
+    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -453,6 +467,7 @@ async def test_a_spawn_that_outlives_the_bound_is_ended_when_it_lands(
         SPAWN_SETTLE_SECONDS = 0.05
 
     pid_file = tmp_path / "tree.pids"
+    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _ShortSettle(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -494,6 +509,7 @@ async def test_a_late_spawn_whose_root_was_already_reaped_is_sent_no_kill(
     pid_kills: list[int] = []
     # Recorded, never sent: when red, the pid is already free.
     monkeypatch.setattr(rpc_client_module, "kill_process_tree", pid_kills.append)
+    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _ShortSettle(RpcClientOptions(argv=[sys.executable, "-c", "raise SystemExit(0)"]))
     start = asyncio.ensure_future(client.start())
@@ -545,6 +561,7 @@ async def test_a_cancel_while_cpython_connects_the_pipes_takes_the_child_and_its
         return await real_connect(*args, **kwargs)
 
     monkeypatch.setattr(loop, "connect_read_pipe", _held_connect)
+    _unsuspended(monkeypatch)
     pid_file = tmp_path / "tree.pids"
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -980,6 +997,7 @@ async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_gr
     """
 
     pid_file = tmp_path / "tree.pids"
+    _unsuspended(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -1294,6 +1312,9 @@ async def test_on_win32_the_abandon_kills_through_the_job_with_no_soft_stage(
         return real_attach(pid, **kwargs, platform="win32", api=cast(_Win32Api, api))
 
     monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _win32_tree)
+    # The injected api neither duplicates nor resumes: a real win32 spawn
+    # stays unsuspended here.
+    _unsuspended(monkeypatch)
     client = _CancelInTheGrace(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_CHILD]))
     start = asyncio.ensure_future(client.start())
     client.target = start
@@ -1353,3 +1374,42 @@ async def test_on_win32_what_the_child_starts_at_once_is_born_in_its_job(tmp_pat
             for pid in pids:
                 _really_kill(pid)
     assert outside == [], f"(spawn, pid) outside the job, of {_MEMBERSHIP_SPAWNS} spawns: {outside}"
+
+
+#: Past the 0.50-0.52 s file-creation stalls ``test_subprocess_helper.py``
+#: measured for a running child's first file on windows-latest.
+_NEVER_RAN_HOLD = 2.0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a real suspended spawn")
+async def test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#772: the shielded spawn's late path with the child created suspended.
+
+    The spawn is held after its fork, as in
+    ``test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree``; the
+    child's first statement creates a file. The late attach takes the child as
+    it is and never resumes it, so it is ended without having run.
+    """
+
+    marker = tmp_path / "ran"
+    child = f"open({str(marker)!r}, 'w').close()\nimport time\ntime.sleep(300)"
+    forked, gate = _hold_the_spawn(monkeypatch)
+    client = _LongGrace(RpcClientOptions(argv=[sys.executable, "-c", child]))
+    start = asyncio.ensure_future(client.start())
+    try:
+        await wait_until(lambda: forked, what="the fork")
+        await asyncio.sleep(_NEVER_RAN_HOLD)
+        start.cancel()
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await within(start, bound=20.0, what="the start() cancelled inside its spawn")
+
+        assert await await_dead_or_zombie(forked[0].pid, timeout=5.0) in _DEAD
+        assert not marker.exists(), "the child ran while its spawn was held"
+        assert _released(client)
+    finally:
+        gate.set()
+        for proc in forked:
+            _really_kill(proc.pid)
