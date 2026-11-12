@@ -1,6 +1,8 @@
 # 0297. A bash command can run in the background as a job of its session
 
-Status: Accepted (2026-11-11, #760). **Inert until #611 S3:** everything below is behind
+Status: Accepted (2026-11-11, #760). Amended 2026-11-12 (#769, #770): §8's settled jobs are no
+longer all kept for the process's life; delegation pages by bytes too. **Inert until #611 S3:**
+everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12), and with it off the
 `bash` tool is the tool it was (§1).
 Date: 2026-11-11
@@ -269,6 +271,23 @@ across five jobs on an injected kernel, on a normal exit and on a stop
 (`::test_every_win32_handle_a_job_opens_is_closed_when_it_settles`). The windows-latest test
 reports the count after each job's spawn, reader start, reap, tree close and settle.
 
+*Note 2026-11-12 (#769, ADR-0293's note of that date):* the service no longer keeps every settled
+job for the process's life. Past 64 ended jobs of a session, the oldest that owes nothing is kept
+only as its records read, and its job and runner are freed
+(`tests/tools/test_bash_retention_769.py::test_a_command_let_go_frees_its_runner`, POSIX, weak
+references dead after `gc.collect()`). A command let go reads the same on `/jobs`, `job`
+(list, status, result), `job_stop` and the footer — its path from the `start` fact's `client`,
+`bytes` and `output_unconfirmed` from its exit record, its last `progress` kept, its pages from
+its file — though its snapshot's `payload` no longer carries the notice's tail and command
+(`::test_a_command_let_go_reads_as_before_on_every_surface`, POSIX, a 3,000-line multibyte
+output). The `bash` kind declares `KindCapabilities.reads_persisted` (ADR-0293's note), so its
+ended commands may be let go. The service compares those reads before it lets a command go — the
+snapshot, rows at width 1000 and the first 16 KiB page, later pages coming from the same file —
+and keeps whole one whose
+run ended without its exit record (`client_records: missing`), so a byte count only its progress
+held is never lost (ADR-0293's note; verify-r1 F2). Up to 64 per session are still kept whole,
+so what this section measured per job still holds for those.
+
 ### 9. Linux: `pdeathsig` on the shell only (owner OQ-C)
 
 The shell gets `pdeathsig` (SIGTERM) with #721's original-parent recheck, through
@@ -285,8 +304,10 @@ aelix SIGKILLed, the shell gone within 5 s, the shell's `sleep` child still aliv
   owns end to end, an output file, a normal exit that releases, and a time limit. Nothing in
   `jobs/` names it (`tests/jobs/test_core_is_kind_agnostic_611.py`).
 - Three kind-agnostic additions, recorded in ADR-0293's note: `client_start`, `restored_note`,
-  `OutputSlice.next_offset`. Delegation's paging is unchanged
-  (`tests/jobs/test_client_start_611.py::test_delegation_paging_is_unchanged`).
+  `OutputSlice.next_offset`. Delegation's paging was unchanged by S2d; since #770 (2026-11-12) it
+  sets `next_offset` by these rules too
+  (`tests/jobs/test_client_start_611.py::test_delegation_pages_by_bytes`, which was the guard
+  `test_delegation_paging_is_unchanged`; ADR-0295's note of that date).
 - `create_bash_tool`'s call moved to `_BashRun.execute` unchanged before anything was added
   (ADR-0300: the factory's nested `execute` counted 19 toward the factory).
 

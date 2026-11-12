@@ -7,8 +7,8 @@ Fails on ``71f837eb``: ``JobService.start`` takes no ``client_start`` (a
 ``TypeError``), ``JobSnapshot`` has no ``client_start``, the service never asks
 a kind for a restored notice's line, and ``OutputSlice`` has no
 ``next_offset``, so ``job(action="result")`` always hints ``offset +
-len(text)``. The guard ``test_delegation_paging_is_unchanged`` is green on
-both.
+len(text)``. ``test_delegation_pages_by_bytes`` was a guard green on both
+until #770 made delegation's pager set ``next_offset`` too.
 """
 
 from __future__ import annotations
@@ -236,11 +236,15 @@ class _DelegationPager(_sleeper.SleeperAdapter):
         return jobs_client.page("가" * 20_000, offset=offset, limit=limit)
 
 
-async def test_delegation_paging_is_unchanged(tmp_path: Path) -> None:
-    """G: delegation's page sets no cursor of its own, so the hint stays ``offset + len(text)``.
+async def test_delegation_pages_by_bytes(tmp_path: Path) -> None:
+    """Delegation's page sets ``next_offset`` as ``bash``'s does (#770, ADR-0297 §4).
 
     Its text is 60,000 bytes of three-byte characters: the first 16 KiB page
-    holds 5,461 of them, and the hint is that count, as on ``71f837eb``.
+    holds 5,461 of them, 16,383 bytes, and the hint is that byte count. Until
+    #770 this was the guard ``test_delegation_paging_is_unchanged``, which
+    pinned the hint at 5,461 — characters counted over a byte pager, so the
+    second page began 10,922 bytes too early and read them again. Fails on
+    ``363accf2``: the hint is ``offset=5461``.
     """
 
     service = fast_service()
@@ -251,5 +255,5 @@ async def test_delegation_paging_is_unchanged(tmp_path: Path) -> None:
     text = result.content[0].text  # type: ignore[union-attr]
     body, _, hint = text.rpartition("\n")
     assert body == "가" * 5461
-    assert hint == f'… more: job(action="result", id="{job_id}", offset=5461)'
+    assert hint == f'… more: job(action="result", id="{job_id}", offset=16383)'
     await service.shutdown()

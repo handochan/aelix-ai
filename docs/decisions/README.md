@@ -69,7 +69,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
 - [0297 — A bash command can run in the background as a job of its session](0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md)
-  (Accepted 2026-11-11; #760, #611 S2d; inert until #611 S3). Background `bash` is the job service's
+  (Accepted 2026-11-11; #760, #611 S2d; inert until #611 S3; amended 2026-11-12, #769 and #770:
+  a settled command past the per-session bound is kept only as its records read, and delegation
+  pages by bytes too). Background `bash` is the job service's
   second client (ADR-0293): `bash(run_in_background=true)` returns a job id at once, writes the
   command's output to a 0600 file of its own (`<tempdir>/aelix-jobs-<user>/`, 1 GiB kept), and
   leaves one notice with the end of its output, cut to fit 16 KiB, and the file's path;
@@ -96,7 +98,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   platform-binary helpers.
 
 - [0295 — A delegated agent can run in the background as a job of its session](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)
-  (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3). Delegation is the job service's
+  (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3; amended 2026-11-12, #749, #770 and
+  #769: the restored and unresolved texts say only what stays true, `result` names no code,
+  `job(action="result")` pages it by bytes, and a background agent's result is written to a 0600
+  file beside its child session and read from there once the job is let go). Delegation is the job service's
   first client (ADR-0293): `agent(action="spawn")` runs ONE task as a job of the session and
   returns once it launched; `wait` (30 s to 30 min, default 120 s, never stops it, the third
   empty wait in a prompt refused), `status`, `stop` and `result` (the whole result again, paged)
@@ -127,7 +132,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the line already says. Not persisted (the measure-first rule stands). pi has no relaxation.
 
 - [0293 — Background work is a job its session owns: product-core runs it, the kernel delivers its notice once, clients render it](0293-background-work-is-a-job-its-session-owns.md)
-  (Accepted 2026-11-08; #722, #611 S1b; inert until #611 S3). A generic job service in
+  (Accepted 2026-11-08; #722, #611 S1b; inert until #611 S3; amended 2026-11-12, #769 and #749:
+  past 64 ended jobs of a session the oldest that owes nothing, of a kind declaring
+  `reads_persisted`, and that reads back alike is kept only as its records read, `JobSnapshot.processes_gone`, and a restored job whose processes are gone
+  holds no slot). A generic job service in
   product-core (`aelix_coding_agent/jobs/`) runs background work of kinds its clients register —
   delegation, `bash`, an extension — and nothing in it names a kind (an AST scan and a synthetic
   third kind prove it). A terminal state only after a barrier confirms the job's processes gone;

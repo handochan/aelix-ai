@@ -1,6 +1,8 @@
 # 0293. Background work is a job its session owns: product-core runs it, the kernel delivers its notice once, clients render it
 
-Status: Accepted (2026-11-08, #722). **Inert until #611 S3:** everything below is behind
+Status: Accepted (2026-11-08, #722). Amended 2026-11-12 (#769, #749, #770): ended jobs past a
+per-session bound are kept only as their records read; `JobSnapshot.processes_gone`; see the note
+at the end. **Inert until #611 S3:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` and, in the kernel, behind
 `AgentHarnessOptions.notice_inbox` (off by default; product-core turns it on only while `ACTIVE`),
 and nothing of it is reachable from the product before S3 sets it (§12).
@@ -580,6 +582,135 @@ additions. Each is kind-agnostic, and the AST scan stays green
 - **`OutputSlice.next_offset`** (Codex #13): where a kind's next page starts, opaque. The `job`
   tool's `result` and `/jobs result` hint `next_offset` when a kind sets it and `offset +
   len(text)` otherwise (`OutputSlice.continue_at`;
-  `::test_next_offset_is_what_the_job_tool_and_jobs_result_hint`). Delegation sets none, so its
-  hint is what it was (`::test_delegation_paging_is_unchanged`): characters counted over its byte
-  pager, which ADR-0295's `agent(action="result")` does not share.
+  `::test_next_offset_is_what_the_job_tool_and_jobs_result_hint`). Delegation set none then, so
+  its hint was characters counted over its byte pager, which ADR-0295's `agent(action="result")`
+  did not share. *2026-11-12 (#770):* it sets `next_offset` now, so the hint is the byte after the
+  page (`tests/jobs/test_client_start_611.py::test_delegation_pages_by_bytes`, the guard
+  `test_delegation_paging_is_unchanged` renamed and turned; ADR-0295's note of that date).
+
+## Note (2026-11-12, #769, #749)
+
+Two kind-agnostic changes before #611 S3 opens the gate. The owner chose to do them first on
+2026-11-12, selecting the option labelled "S3 전 정리 3개 먼저 (권장)" ("the three clean-ups before
+S3 first (recommended)"). With the gate off neither is reachable (§12); the AST scan stays green
+(`tests/jobs/test_core_is_kind_agnostic_611.py`). Fix round 1 of #769's lane (the same date)
+reworked the retention after Codex's and an independent verify's first reviews; this note
+describes the result.
+
+- **Retention (#769).** The service kept every job it ran in its map for the life of the process.
+  Now a session's ended jobs are kept whole up to `SETTLED_KEPT` (64); past it, the oldest that
+  owes nothing is kept only as what its session's records say of it. The bound, the policy and the
+  number 64 are the lead's call, not the owner's.
+  - *Owes nothing*: ended, its `outcome` written (no outbox), its tasks over, no notice of it
+    waiting in the current harness's inbox — its `unresolved` one as well as its final one, each
+    tracked by id from its post to its placement — and in its session's file a placement entry
+    for its final notice or, with none, for each `unresolved` one its facts recorded. A notice that
+    waited in a harness a switch replaced is not waiting anywhere; its final one, posted again
+    where its session is current, is what it owes. Its notice reads delivered once nothing of it
+    waits and its current notice was placed, in whichever order they were placed; a notice the
+    harness holds out of every drain (a placement conflict) before the job's last placement waits
+    nowhere (`::test_a_job_is_delivered_once_both_its_notices_are_placed_whatever_their_order`,
+    the final notice placed before the `unresolved` one — verify-r2 F1;
+    `::test_a_held_unresolved_notice_does_not_hold_the_job`;
+    `::test_an_earlier_notice_placed_does_not_deliver_a_final_one_not_yet_posted`). The check
+    runs only when a notice of the job is placed: a notice held *after* the job's last placement —
+    its final notice placed, then its `unresolved` one's retry held by a `PlacementConflict` —
+    leaves the job `pending` (and kept whole) until a `/reload` or `/resume` rebinds its session
+    and its final notice is posted and placed again (verify-r3 F1). A `PlacementConflict` needs an
+    entry already under the notice's `nt-` id (12 hex of a sha256) for another notice: a 48-bit
+    collision or an entry another writer placed, so this is rare; no test of this lane pins it.
+    (`tests/jobs/test_retention_769.py::test_a_job_that_runs_is_unresolved_or_owes_its_notice_is_never_let_go`,
+    with a bound of 0; `::test_a_job_is_not_let_go_while_its_unresolved_notice_is_owed`, a launch
+    that failed after a failed cleanup — Codex's finding 2;
+    `::test_a_notice_lost_with_a_replaced_harness_does_not_hold_its_job`;
+    `::test_the_records_and_the_map_must_both_say_the_notice_owes_nothing`;
+    `::test_a_job_whose_outcome_waits_in_the_outbox_is_never_let_go`;
+    `::test_a_job_whose_task_or_escalation_still_runs_is_kept_whole`.)
+  - *What is kept*: its `start` and `outcome` facts, its kind's `decode` of the outcome joined
+    with its own records (as a restart reads an ended job, §6), and the two small values no record
+    holds — its `elapsed` and its last `progress` — as they were. Its kind is held by name, version
+    and label, not by its `Registration`, so no old generation of an extension's runtime stays
+    alive through it (`::test_a_job_let_go_keeps_no_old_generation_of_its_kind_alive`, four
+    generations: one runtime alive after `gc.collect()`; Codex's finding 4); its label is the
+    current generation's, as a job kept whole reads it (`::test_a_job_let_go_reads_its_kinds_current_label`). Its runner, context,
+    task and evidence are freed (`::test_a_job_let_go_frees_its_runner_context_and_task`, weak
+    references dead after `gc.collect()`).
+  - *Only a kind that reads from what it persisted*: a kind declares
+    `KindCapabilities.reads_persisted` when an ended job of it reads — its rows and every page of
+    its output — only from what it persisted (its records, as `decode` reads them, and the files
+    they name). Only such a kind's ended jobs are let go; every other kind's stay whole, so an
+    extension kind that does not declare it keeps every ended job, and the map grows past the bound
+    by them (`::test_a_kind_that_did_not_declare_its_reads_persisted_stays_whole`, a kind whose
+    records keep less than its later pages read — verify-r2 F2; the sleeper kind in
+    `::test_a_job_that_runs_is_unresolved_or_owes_its_notice_is_never_let_go`). Background `bash`
+    (its output file) and delegation (its result file) declare it.
+  - *Read alike, or kept whole*: as a check of that declaration, before it lets a job go the
+    service builds the job's snapshot from what it would keep and compares it with the live one,
+    field by field but `payload` (a kind's live payload and its `decode` differ by design), then
+    what the kind reads of each — its rows at width 1000 and the first 16 KiB page of its output.
+    Later pages are not compared; the declaration stands for them. Any difference keeps the job
+    whole, one past a row's tenth column or a page's twentieth byte included
+    (`::test_a_difference_past_the_first_columns_or_bytes_keeps_the_job_whole`; verify-r3 F4;
+    `::test_a_job_whose_read_back_would_read_otherwise_is_kept_whole`, a kind
+    whose result lives only in memory — Codex's finding 1;
+    `::test_rows_that_would_read_otherwise_keep_the_job_whole`;
+    `::test_a_read_back_whose_facts_disagree_with_the_live_job_keeps_it_whole`;
+    `::test_a_job_let_go_keeps_its_last_progress_and_its_elapsed`, rows a kind renders from its
+    progress — Codex's finding 3). So does an outcome that says its kind's records did not all land
+    (`client_records: missing`), whatever its run returned and even when every read is alike
+    (`::test_a_job_whose_records_did_not_all_land_is_kept_whole`,
+    `::test_a_job_whose_run_ended_with_no_outcome_is_kept_whole`,
+    `::test_records_that_did_not_all_land_keep_a_job_whole_even_when_it_reads_alike`), a read that fails and a `decode`
+    that raises; those two are tried again at the next trim
+    (`::test_a_job_whose_records_cannot_be_read_back_is_kept_whole_and_tried_again`). The map can
+    therefore hold more than the bound by such jobs. Only ended jobs count toward it, and one that
+    cannot be read back does not count as let go
+    (`::test_a_running_job_does_not_count_toward_the_bound`,
+    `::test_a_job_that_cannot_be_read_back_does_not_count_as_let_go`).
+  - *What a reader sees*: `/jobs` (list, detail, result, stop), `job` (list, status, result),
+    `job_stop`, the footer, the `-p` drain's `unsettled` and `request_stop` give the same text
+    before and after, and the snapshot the same fields but `payload`
+    (`::test_every_surface_reads_a_job_it_let_go_as_before`, a synthetic kind that declares
+    `reads_persisted`, a done and a failed job). What differs is only that `payload`, which an
+    extension sees through the facade's
+    `status`: it is its own kind's `decode`, as after a restart. A job let go keeps its place in
+    `/jobs`: snapshots sort by start time, then by start order, so a tie of start times — a coarse
+    clock — does not move it (`::test_jobs_that_started_at_the_same_time_keep_their_order`; Codex's
+    finding 7, verify-r1 F3). The bound is per session (`::test_the_bound_is_per_session`), and
+    `SETTLED_KEPT` + 6 ended jobs leave the map at 64, the oldest that owed nothing gone first
+    (`::test_the_map_holds_the_bound_and_lets_go_of_the_oldest_that_owe_nothing`). The product
+    kinds' own proofs are ADR-0295's and ADR-0297's notes of this date.
+  - pi's chord design draws the same line — a value read synchronously must stay in memory, and
+    only state with an asynchronous read is evicted (`earendil-works/pi` `a22b888a5`,
+    `packages/chord/docs/decisions.md`: "Persisted singletons … stay in memory … only keyed
+    persisted documents are evicted"): `snapshot()` is synchronous, so what a reader needs of a job
+    let go stays as a small record read back once, not re-read on every call.
+- **`JobSnapshot.processes_gone` (#749)**: whether aelix has confirmed every process the job
+  recorded gone — its barrier passed, or a restart's evidence said so; false while one may live
+  and when nothing was checked, as for a restored job whose records or adapter failed before its
+  evidence was read (`tests/jobs/test_residuals_749.py::test_processes_gone_is_what_the_evidence_said`,
+  `::test_processes_gone_follows_the_barrier_of_a_job_this_process_runs`,
+  `::test_an_ended_job_a_restart_found_has_its_processes_gone`). A kind says from it, not from
+  `rechecking`, whether a restored job may still run (ADR-0295's note).
+- **The unresolved texts (#749).** A `settle_error` job this process ran — the liveness loop skips
+  it — has a notice that says aelix "does not check this job again", not "It keeps checking", and
+  `rechecking` false (`::test_a_settle_error_job_says_nothing_checks_it_again`; a `cleanup_error`
+  job is rechecked and says so, `::test_a_cleanup_error_job_is_rechecked_and_says_so`, a guard
+  that passes on `363accf2`). A restored job whose kind's own `unresolved` is rechecked only until
+  its processes are gone gets a notice that says "it checks the job's processes until they are
+  gone, and promises no later notice", which stays true once they are, when no second notice
+  comes (`::test_a_kinds_own_unresolved_notice_promises_no_later_notice`); an OS-evidence
+  `unresolved` keeps "it keeps checking" (`::test_an_os_evidence_unresolved_notice_still_says_it_keeps_checking`).
+- **Once its processes are gone, a restored job holds no slot (#749).** A restored job whose
+  processes the recheck found gone and whose session's records then failed to read stayed
+  `unresolved(unreadable)` with no recheck and held its slot until aelix exited. Now its slot is
+  released and the recheck stays on, so the next pass reads the records and records how it ended
+  (`::test_a_failed_read_during_a_recheck_gives_the_slot_back_and_reads_again`). Once its processes
+  are confirmed gone no read or adapter failure takes a slot again: a `recover` or `relation` that
+  raises keeps it `unresolved` and rechecked, with no slot, until one works
+  (`::test_once_its_processes_are_gone_a_failed_recover_never_takes_a_slot_back`; Codex's finding
+  5), and a kind's own reason stands through a failed read
+  (`::test_a_kinds_own_reason_survives_a_failed_re_read`). A read that keeps failing is tried again
+  on every pass of the liveness loop, every 5 s (`LIVENESS_INTERVAL`), with no backoff; its WARNING
+  is logged on the first failure and DEBUG on every later one
+  (`::test_a_failed_read_warns_once_then_quietly`).

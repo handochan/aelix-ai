@@ -56,12 +56,21 @@ and — when OS evidence decided it — is classified again by the liveness loop
 
 **Ownership** (Codex #5). Every reading and control path answers only for the
 current session's jobs: an id of another session's job is not found.
+
+**Retention** (#769, the lead's policy). A session's ended jobs are kept whole
+up to :data:`SETTLED_KEPT`; past it the oldest that owes nothing — ended, its
+outcome written, every notice of it placed or never owed — of a kind that
+declares ``reads_persisted`` gives up its runner, context, task and evidence,
+and keeps only what its session's records say of it, read back from them (its
+facts, and its kind's records as its kind decodes them, as a restart would),
+once its snapshot, its rows and its first page read the same from them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import shutil
 import time
@@ -121,6 +130,9 @@ LIVENESS_INTERVAL = 5.0
 EXIT_SETTLE_GRACE = 45.0
 #: How long without activity before a job is flagged quiet (a flag only).
 QUIET_AFTER = 600.0
+#: How many ended jobs of one session the service keeps whole (#769); past it
+#: the oldest that owes nothing is kept only as its records read.
+SETTLED_KEPT = 64
 
 _OUTBOX_BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
 _GENERIC_NOTICE = "The job ended with status {status}; its client could not render a result."
@@ -195,6 +207,18 @@ class _Job:
     cleanup_due: float = 0.0
     # What the kind handed ``start`` as ``client_start`` (#611 S2d), as recorded.
     client_start: Mapping[str, Any] = field(default_factory=dict)
+    # The barrier confirmed every registered process gone (#749:
+    # ``JobSnapshot.processes_gone``).
+    confirmed: bool = False
+    # Its place in start order, which breaks a tie of ``created`` (#769).
+    seq: int = 0
+    # Every notice of it waiting in the current harness's inbox, by id — its
+    # ``unresolved`` one as well as its final one (#769: none may wait when it
+    # is let go).
+    owed: set[str] = field(default_factory=set)
+    # Every notice of it placed, by id: its current one is delivered once it is
+    # among them and nothing it owes waits, in whatever order they were placed.
+    placed: set[str] = field(default_factory=set)
 
     @property
     def adapter(self) -> JobKindAdapter:
@@ -238,6 +262,40 @@ class _Restored:
     # The start fact's ``client`` (#611 S2d, Codex #12): the kind's own launch
     # data, read back as recorded rather than derived again in this process.
     client_start: Mapping[str, Any] = field(default_factory=dict)
+    # The last OS evidence said every recorded process is gone (#749:
+    # ``JobSnapshot.processes_gone``); ``False`` too while nothing was read.
+    gone: bool = False
+    # Failed reads of its records since its processes were found gone.
+    read_failures: int = 0
+
+
+@dataclass(frozen=True)
+class _Settled:
+    """An ended job this process ran, once it is no longer kept whole (#769).
+
+    Read back from its session's records — its ``start`` and ``outcome`` facts,
+    whether its notices were placed, and its kind's records as its kind decodes
+    them — with the two small values no record holds, its ``elapsed`` and last
+    ``progress``, kept as they were. No runner, context, task, evidence or
+    registration: its kind is held by name, version and label, so a ``/reload``
+    leaves no old generation alive through it.
+    """
+
+    job_id: str
+    seq: int
+    kind: str
+    version: int
+    label: str
+    title: str
+    owner: str
+    created: float
+    state: JobState
+    brief: str
+    elapsed: float | None
+    progress: Mapping[str, Any] | None
+    notice_state: Literal["none", "delivered"]
+    payload: Mapping[str, Any]
+    client_start: Mapping[str, Any]
 
 
 @dataclass
@@ -332,6 +390,7 @@ class JobService:
         quiet_after: float = QUIET_AFTER,
         cleanup_bound: float = CLEANUP_BOUND,
         stop_grace: float = ev.STOP_GRACE,
+        settled_kept: int = SETTLED_KEPT,
     ) -> None:
         self.registry = KindRegistry()
         self.admission = Admission(settings, warn=warn)
@@ -342,6 +401,7 @@ class JobService:
         self._quiet_after = quiet_after
         self._cleanup_bound = cleanup_bound
         self._stop_grace = stop_grace
+        self._settled_kept = max(0, int(settled_kept))
         self._jobs: dict[str, _Job] = {}
         self._restored: dict[str, _Restored] = {}
         self._extension_notices: dict[str, _ExtensionNotice] = {}
@@ -356,6 +416,10 @@ class JobService:
         self.send_hook: Callable[[], str] | None = None
         self._changed: asyncio.Event | None = None
         self._liveness: asyncio.Task[None] | None = None
+        self._settled: dict[str, _Settled] = {}
+        self._started = 0
+        self._trimming: asyncio.Task[None] | None = None
+        self._trim_again = False
         self._closed = False
         self.registry.add_listener(self._on_registration)
 
@@ -384,6 +448,9 @@ class JobService:
         self._session = session
         self._owner = await _owner_of(session)
         for job in self._jobs.values():
+            # What waited in the harness this one replaces is not waiting
+            # anywhere now; what is posted again below waits here (#769).
+            job.owed.clear()
             if (
                 job.owner == self._owner
                 and job.notice is not None
@@ -436,11 +503,9 @@ class JobService:
             for task in left:
                 if not task.done():
                     task.cancel()
-        if self._liveness is not None:
-            self._liveness.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._liveness
-            self._liveness = None
+        await _cancel_quietly(self._liveness)
+        await _cancel_quietly(self._trimming)
+        self._liveness = self._trimming = None
 
     # === kinds ===============================================================
 
@@ -623,6 +688,8 @@ class JobService:
                 runner=runner,
                 client_start=dict(client_start or {}),
             )
+            self._started += 1
+            job.seq = self._started
             job.last_activity = job.started_at
             loop = asyncio.get_running_loop()
             job.launch = loop.create_future()
@@ -721,6 +788,7 @@ class JobService:
             settle_failed = True
             _log.warning("job %s: settle failed", job.job_id, exc_info=True)
         confirmed, why = await self._barrier(job, policy)
+        job.confirmed = confirmed
         helpers, helpers_failed = await self._helper_cleanup(job, policy, confirmed)
         job.elapsed = self._clock() - job.started_at
         job.run_outcome, job.run_error, job.launch_failed = outcome, client_error, launch_failed
@@ -903,6 +971,8 @@ class JobService:
         if job.notice is not None:
             job.notice_state = "pending"
             self._post(job.notice, job_ref=job)
+        else:
+            self._trim_later()
         self._touch()
 
     # === stopping ==============================================================
@@ -912,8 +982,15 @@ class JobService:
 
         job = self._jobs.get(job_id)
         if job is None or job.owner != self._owner:
-            raise JobNotFound(job_id)
+            return self._ended_or_not_found(job_id, job)
         return self._request_stop(job, reason)
+
+    def _ended_or_not_found(self, job_id: str, job: _Job | None) -> bool:
+        """``False`` for an ended job no longer kept whole, as one kept whole answers (#769)."""
+
+        if job is None and self._settled_snap(job_id) is not None:
+            return False
+        raise JobNotFound(job_id)
 
     def _request_stop(self, job: _Job, reason: StopReason) -> bool:
         if job.state in TERMINAL_STATES:
@@ -1001,9 +1078,10 @@ class JobService:
 
         job = self._jobs.get(job_id)
         if job is None or job.owner != self._owner:
-            restored = self._restored.get(job_id)
-            if job is None and restored is not None and restored.owner == self._owner:
-                return self.snapshot(job_id)
+            # A restored job, or an ended one no longer kept whole (#769), is
+            # answered with its snapshot: nothing of it runs here.
+            if job is None and (kept := self.snapshot(job_id)) is not None:
+                return kept
             raise JobNotFound(job_id)
         self._request_stop(job, reason)
         if job.task is not None and not job.task.done():
@@ -1129,6 +1207,7 @@ class JobService:
         if not ok:
             job.unresolved_reason = job.unresolved_reason or why
             return
+        job.confirmed = True
         if job.unresolved_reason == "settle_error":
             return  # never failed, stopped or lost: it stays unresolved
         helpers, failed = await self._helper_cleanup(job, "stop", True)
@@ -1266,7 +1345,7 @@ class JobService:
 
         def placed(placed_notice: Notice, _entry_id: str) -> None:
             if job_ref is not None:
-                job_ref.notice_state = "delivered"
+                self._job_notice_placed(job_ref, placed_notice)
             if restored_ref is not None:
                 restored_ref.notice_state = "delivered"
             if extension_ref is not None:
@@ -1278,7 +1357,34 @@ class JobService:
                     _log.debug("placed listener raised", exc_info=True)
             self._touch()
 
-        return harness.post_notice(notice, on_placed=placed)
+        return _owing(job_ref, notice, harness.post_notice(notice, on_placed=placed))
+
+    def _job_notice_placed(self, job: _Job, placed: Notice) -> None:
+        """A notice of ``job`` was placed: it owes it no more (#769).
+
+        Delivered once nothing it posted waits — a notice the harness held out
+        of every drain (a placement conflict) before this placement waits
+        nowhere — and its current notice, if it has one, was placed, whichever
+        was placed last. Only a placement runs this: a notice held after the
+        job's last placement leaves it ``pending`` until a rebind posts its
+        final notice again (rare: a conflict needs an ``nt-`` id collision or a
+        foreign entry; ADR-0293's note).
+        """
+
+        job.owed.discard(placed.notice_id)
+        job.placed.add(placed.notice_id)
+        job.owed -= self._held()
+        if _delivered(job):
+            job.notice_state = "delivered"
+        self._trim_later()
+
+    def _held(self) -> set[str]:
+        """The notices the current harness holds out of every drain."""
+
+        # A host's own harness may have no inbox to hold notices in.
+        held = getattr(self._harness, "held_notices", None)
+        ids: Any = held() if callable(held) else ()
+        return set(ids)
 
     def post_extension_notice(
         self, source: str, notice_id: str, body: str, *, title: str = "", brief: str = ""
@@ -1363,7 +1469,7 @@ class JobService:
             _log.warning("could not read the session's job records", exc_info=True)
             return
         for folded in fold(entries).values():
-            if folded.job_id in self._jobs:
+            if folded.job_id in self._jobs or folded.job_id in self._settled:
                 continue
             if folded.owner and folded.owner != owner:
                 continue
@@ -1454,6 +1560,7 @@ class JobService:
             list(folded.process_list()), start.get("supervisor"), argv_contains=argv_contains
         )
         restored.argv_contains = argv_contains
+        restored.gone = state == "lost"
         if recovered is not None and recovered.status == "unresolved":
             # THE KIND'S OWN UNCERTAINTY STANDS (#611 S1c, ADR-0295): its reason
             # is kept and OS evidence never turns it into ``lost``. The slot is
@@ -1500,8 +1607,10 @@ class JobService:
         """
 
         restored.state, restored.reason = "unresolved", reason
-        restored.recheck = recheck
-        if restored.reservation is None:
+        # Once its processes were confirmed gone it holds no slot, and a read or
+        # an adapter that failed is asked again on the next pass (#749).
+        restored.recheck = recheck or (restored.gone and reason in _RETRIED_ONCE_GONE)
+        if restored.reservation is None and not restored.gone:
             restored.reservation = self.admission.hold(restored.kind)
         folded = restored.folded
         notify = folded is not None and folded.notify
@@ -1522,7 +1631,9 @@ class JobService:
                         title=restored.title,
                         status="unresolved",
                         elapsed=None,
-                        body=_restored_unresolved_body(reason, recheck=recheck)
+                        body=_restored_unresolved_body(
+                            reason, recheck=recheck, own=restored.kind_reason
+                        )
                         + self._restored_note(restored, registration),
                     ),
                     details={"v": 1, "job_id": restored.job_id, "status": "unresolved"},
@@ -1568,6 +1679,7 @@ class JobService:
             start.get("supervisor"),
             argv_contains=restored.argv_contains,
         )
+        restored.gone = state == "lost"
         if state == "lost":
             registration = self.registry.get(restored.kind)
             if registration is not None:
@@ -1575,11 +1687,35 @@ class JobService:
                 # restart (#611 S1c) — what it can read of the job's end is
                 # recorded ``recovered``, its own uncertainty stays ``unresolved``,
                 # and only nothing at all makes it ``lost``.
-                await self._reconcile_one(restored.session, folded, entries=None)
+                await self._ask_again(restored, folded)
                 return
             await self._record_restored(restored.session, restored, registration, "lost", why, {})
         elif why != restored.reason and not restored.kind_reason:
             restored.reason = why
+
+    async def _ask_again(self, restored: _Restored, folded: FoldedJob) -> None:
+        """Ask the kind of a restored job whose processes are gone, from its session's records now.
+
+        A read of the records that fails leaves the job ``unresolved`` and
+        checked again, so the next pass reads them again; and since no process
+        of it is left, its slot goes back now rather than when aelix exits
+        (#749: it was held for the rest of the process).
+        """
+
+        try:
+            entries = await restored.session.get_entries()
+        except Exception:  # noqa: BLE001 — read again on the next pass
+            restored.read_failures += 1
+            # Once at WARNING, then at DEBUG on every later pass (#749).
+            level = logging.WARNING if restored.read_failures == 1 else logging.DEBUG
+            _log.log(level, "could not read the records of job %s; read again later", restored.job_id)
+            if restored.reservation is not None:
+                restored.reservation.release()
+                restored.reservation = None
+            if not restored.kind_reason:
+                restored.reason = "unreadable"
+            return
+        await self._reconcile_one(restored.session, folded, entries=entries)
 
     async def _record_restored(
         self,
@@ -1689,6 +1825,147 @@ class JobService:
             if r.owner == self._owner and r.notice_state == "pending"
         )
 
+    # === retention (#769) ===========================================================
+
+    def _trim_later(self) -> None:
+        """A job ended or its notice was placed: trim the sessions past :data:`SETTLED_KEPT`, soon."""
+
+        if self._closed:
+            return
+        if self._trimming is not None and not self._trimming.done():
+            self._trim_again = True
+            return
+        with contextlib.suppress(RuntimeError):
+            self._trimming = asyncio.get_running_loop().create_task(
+                self._trim(), name="aelix-jobs-trim"
+            )
+            self._trimming.add_done_callback(_log_task_failure)
+
+    async def _trim(self) -> None:
+        self._trim_again = True
+        while self._trim_again and not self._closed:
+            self._trim_again = False
+            owners = {j.owner for j in self._jobs.values() if j.state in TERMINAL_STATES}
+            for owner in owners:
+                await self._trim_owner(owner)
+
+    async def _trim_owner(self, owner: str) -> None:
+        """Let go of ``owner``'s oldest ended jobs that owe nothing, down to the bound."""
+
+        ended = [j for j in self._jobs.values() if j.owner == owner and j.state in TERMINAL_STATES]
+        excess = len(ended) - self._settled_kept
+        for job in ended:  # the map keeps start order: oldest first
+            if excess <= 0:
+                return
+            # Only a kind whose ended jobs read from what they persisted (#769).
+            if _owes_nothing(job) and job.caps.reads_persisted and await self._let_go(job):
+                excess -= 1
+
+    async def _let_go(self, job: _Job) -> bool:
+        """Keep ``job`` only as its records read; ``False`` when they cannot be read back as it reads now."""
+
+        kept = await self._read_back(job)
+        # Nothing else takes a job out of the map, one trim runs at a time, and
+        # owing nothing does not change once true: nothing to look at again.
+        if kept is None or not self._reads_alike(job, kept):
+            return False
+        del self._jobs[job.job_id]
+        self._settled[job.job_id] = kept
+        self._touch()
+        return True
+
+    def _reads_alike(self, job: _Job, kept: _Settled) -> bool:
+        """A check, for a kind that declared ``reads_persisted``, that ``kept`` reads as ``job`` does (#769).
+
+        The snapshot field for field but its ``payload`` — a kind's live payload
+        and its ``decode`` differ by design — then what the kind makes of each:
+        its rows at width 1000 and the first 16 KiB page of its output. Later
+        pages are not compared: the kind declared that they come from what it
+        persisted. Any difference keeps the job whole.
+        """
+
+        live, rebuilt = self._snap(job), self._snap_settled(kept)
+        if dataclasses.replace(live, payload={}) != dataclasses.replace(rebuilt, payload={}):
+            return False
+        for width in _COMPARED_WIDTHS:
+            if self.render_rows(live, width) != self.render_rows(rebuilt, width):
+                return False
+        return all(
+            self._output_of(live, 0, limit) == self._output_of(rebuilt, 0, limit)
+            for limit in _COMPARED_PAGES
+        )
+
+    async def _read_back(self, job: _Job) -> _Settled | None:
+        """What ``job``'s session's records say of it, as a restart reads them; ``None`` if they cannot.
+
+        Its ``start`` and ``outcome`` facts, whether its notice's entry is in
+        the file, and its kind's ``decode`` of the outcome joined with its own
+        records (ADR-0293's restart reading). A read that fails, a fact that is
+        missing or a ``decode`` that raises keeps the job whole: it is tried
+        again at the next trim. So does an outcome whose kind's records did not
+        all land (``client_records: missing``): its kind could not read it back
+        as it reads it now.
+        """
+
+        try:
+            entries = list(await job.session.get_entries())
+            folded = fold(entries).get(job.job_id)
+            outcome = folded.outcome if folded is not None else None
+            if folded is None or folded.start is None or outcome is None:
+                return None
+            if outcome.get("client_records") != "ok":
+                return None
+            decoded = self._adapter_now(job.registration).decode(
+                {"fact": dict(outcome), "records": client_records_of(entries, job.job_id)}
+            )
+            notice_ids = _notice_ids(folded)
+            placed = await self._all_placed(job.session, notice_ids)
+        except Exception:  # noqa: BLE001 — kept whole, tried again later
+            _log.debug("job %s: its records could not be read back", job.job_id, exc_info=True)
+            return None
+        if placed is None:
+            return None
+        start = folded.start
+        adapter = self._adapter_now(job.registration)
+        return _Settled(
+            job_id=job.job_id,
+            seq=job.seq,
+            kind=job.registration.name,
+            version=job.registration.version,
+            label=adapter.label,
+            title=str(start.get("title", "")),
+            owner=folded.owner,
+            created=float(start.get("created", 0.0) or 0.0),
+            state=_terminal(outcome.get("status")),
+            brief=str(outcome.get("brief", "")),
+            elapsed=job.elapsed,
+            progress=None if job.progress is None else dict(job.progress),
+            notice_state="delivered" if notice_ids else "none",
+            payload=dict(decoded.payload),
+            client_start=_client_start_of(start),
+        )
+
+    async def _all_placed(self, session: Any, notice_ids: list[str]) -> bool | None:
+        """``True`` when every one of ``notice_ids`` is placed in ``session``'s file; ``None`` otherwise."""
+
+        for notice_id in notice_ids:
+            if not await delivered(session, notice_id):
+                return None
+        return True
+
+    def _settled_snap(self, job_id: str, *, any_owner: bool = False) -> JobSnapshot | None:
+        kept = self._settled.get(job_id)
+        if kept is None or not (any_owner or kept.owner == self._owner):
+            return None
+        return self._snap_settled(kept)
+
+    def _snap_settled(self, kept: _Settled) -> JobSnapshot:
+        """What ``_snap`` gave the job, from what was kept of it; its label the current one's."""
+
+        current = self.registry.get(kept.kind)
+        label = current.adapter.label if current is not None and current.version >= kept.version else kept.label
+        return _snap_of(kept, label)
+
     # === reading ==================================================================
 
     def snapshot(self, job_id: str, *, any_owner: bool = False) -> JobSnapshot | None:
@@ -1702,6 +1979,11 @@ class JobService:
         job = self._jobs.get(job_id)
         if job is not None:
             return self._snap(job) if any_owner or job.owner == self._owner else None
+        return self._settled_snap(job_id, any_owner=any_owner) or self._restored_snap(
+            job_id, any_owner=any_owner
+        )
+
+    def _restored_snap(self, job_id: str, *, any_owner: bool) -> JobSnapshot | None:
         restored = self._restored.get(job_id)
         if restored is None or not (any_owner or restored.owner == self._owner):
             return None
@@ -1711,9 +1993,13 @@ class JobService:
         """This owner's jobs (the current one by default), live first, oldest first."""
 
         who = self._owner if owner is None else owner
-        live = [self._snap(j) for j in self._jobs.values() if j.owner == who]
+        # An ended job no longer kept whole sorts where it did: by start time,
+        # then start order (#769).
+        live = [(j.created, j.seq, self._snap(j)) for j in self._jobs.values() if j.owner == who]
+        live += [(k.created, k.seq, self._snap_settled(k)) for k in self._settled.values() if k.owner == who]
         old = [self._snap_restored(r) for r in self._restored.values() if r.owner == who]
-        return sorted(live, key=lambda s: s.created) + sorted(old, key=lambda s: s.created)
+        ordered = [snap for _created, _seq, snap in sorted(live, key=lambda t: t[:2])]
+        return ordered + sorted(old, key=lambda s: s.created)
 
     def _snap(self, job: _Job) -> JobSnapshot:
         now = self._clock()
@@ -1736,6 +2022,7 @@ class JobService:
             unresolved_reason=job.unresolved_reason,
             payload=dict(job.outcome.payload) if job.outcome is not None else {},
             rechecking=job.state == "unresolved" and job.unresolved_reason != "settle_error",
+            processes_gone=job.confirmed,
             client_start=dict(job.client_start),
         )
 
@@ -1757,6 +2044,7 @@ class JobService:
             unresolved_reason=restored.reason,
             payload=dict(restored.payload),
             rechecking=restored.state == "unresolved" and restored.recheck,
+            processes_gone=restored.gone or restored.state in TERMINAL_STATES,
             client_start=dict(restored.client_start),
         )
 
@@ -1789,6 +2077,9 @@ class JobService:
         snap = self.snapshot(job_id)
         if snap is None:
             return f"no job {job_id}"
+        return self._output_of(snap, offset, limit)
+
+    def _output_of(self, snap: JobSnapshot, offset: int, limit: int) -> OutputSlice | str:
         registration = self.registry.get(snap.kind)
         if registration is None:
             return f"the {snap.kind} kind is not registered in this session"
@@ -1858,6 +2149,74 @@ class JobService:
             _log.warning("job fact %s not written", fact.get("fact"))
 
 
+def _delivered(job: _Job) -> bool:
+    """Nothing of ``job`` waits, and its current notice, if any, was placed."""
+
+    return not job.owed and (job.notice is None or job.notice.notice_id in job.placed)
+
+
+def _owing(job: _Job | None, notice: Notice, posted: bool) -> bool:
+    """``posted``, noting that ``job`` now owes ``notice`` until it is placed (#769)."""
+
+    if posted and job is not None:
+        job.owed.add(notice.notice_id)
+    return posted
+
+
+def _owes_nothing(job: _Job) -> bool:
+    """An ended job whose outcome is written, whose notice is placed or was never owed, and whose
+    tasks are over: it may be kept only as its records read (#769)."""
+
+    return (
+        job.state in TERMINAL_STATES
+        and job.outbox is None
+        and (job.notice is None or job.notice_state == "delivered")
+        and (job.task is None or job.task.done())
+        and (job.escalation is None or job.escalation.done())
+        and not job.owed
+    )
+
+
+def _notice_ids(folded: FoldedJob) -> list[str]:
+    """The notices a job's facts say must have been placed: its final one, which tells its end
+    and stands for an ``unresolved`` one before it; without one, its ``unresolved`` ones (#769)."""
+
+    final = (folded.outcome or {}).get("notice")
+    records = [final] if isinstance(final, Mapping) else [s.get("notice") for s in folded.supervision]
+    return list(dict.fromkeys(str(r.get("id")) for r in records if isinstance(r, Mapping)))
+
+
+#: The row width and the page size whose reads must match before a job is let
+#: go: rows as wide as any terminal shows them, and the first page
+#: ``job(action="result")`` reads (#769).
+_COMPARED_WIDTHS = (1000,)
+_COMPARED_PAGES = (16 * 1024,)
+
+
+def _snap_of(kept: _Settled, label: str) -> JobSnapshot:
+    """The snapshot of an ended job read back from its records: what ``_snap`` gave it (#769)."""
+
+    return JobSnapshot(
+        job_id=kept.job_id,
+        kind=kept.kind,
+        label=label,
+        title=kept.title,
+        state=kept.state,
+        owner=kept.owner,
+        created=kept.created,
+        elapsed=kept.elapsed,
+        last_activity_ago=None,
+        quiet=False,
+        result_waiting=False,
+        notice_state=kept.notice_state,
+        brief=kept.brief,
+        progress=kept.progress,
+        payload=dict(kept.payload),
+        processes_gone=True,
+        client_start=dict(kept.client_start),
+    )
+
+
 def _terminal(status: Any) -> JobState:
     return status if status in TERMINAL_STATES else "unresolved"  # type: ignore[return-value]
 
@@ -1879,10 +2238,29 @@ _HELPERS_UNVERIFIED = (
 )
 
 
-def _restored_unresolved_body(reason: str, *, recheck: bool) -> str:
-    """Only what is true: a job the liveness loop does not recheck is not said to be checked (#611 S1c)."""
+#: A restored job's reasons that are asked again on every pass once its
+#: processes are confirmed gone: a read or an adapter call that failed (#749).
+_RETRIED_ONCE_GONE = frozenset({"unreadable", "recover_error", "relation_error"})
 
-    then = "it keeps checking, and" if recheck else "it is not watching this job;"
+_UNTIL_GONE = "it checks the job's processes until they are gone, and promises no later notice;"
+
+
+def _restored_unresolved_body(reason: str, *, recheck: bool, own: bool = False) -> str:
+    """Only what is true: a job the liveness loop does not recheck is not said to be checked (#611 S1c).
+
+    Posted once, so it says only what stays true (#749): a kind's OWN
+    ``unresolved`` (``own``) is rechecked only until its processes are gone,
+    and its kind may still not tell how it ended then, so no later notice is
+    promised for it.
+    """
+
+    then = (
+        _UNTIL_GONE
+        if recheck and own
+        else "it keeps checking, and"
+        if recheck
+        else "it is not watching this job;"
+    )
     return (
         "aelix restarted and found this job started and not ended; it could not tell "
         f"how it ended ({reason}). aelix stops nothing it finds at a restart; {then} "
@@ -1890,14 +2268,26 @@ def _restored_unresolved_body(reason: str, *, recheck: bool) -> str:
     )
 
 
+_UNRESOLVED_BODIES = {
+    "cleanup_error": (
+        "The job's run ended, but its cleanup of what it started outside its own "
+        "process tree failed: those processes were not confirmed stopped. aelix "
+        "retries the cleanup; /jobs shows its state. Recorded pids: {pids}."
+    ),
+    # The liveness loop skips it (``tick``): nothing checks it again (#749).
+    "settle_error": (
+        "The job's client failed to settle its run (settle_error), so aelix cannot "
+        "tell how it ended, and it does not check this job again; /jobs shows its "
+        "state. Recorded pids: {pids}."
+    ),
+}
+
+
 def _unresolved_body(job: _Job, reason: str) -> str:
     pids = ", ".join(str(r.pid) for r in job.processes) or "none recorded"
-    if reason == "cleanup_error":
-        return (
-            "The job's run ended, but its cleanup of what it started outside its own "
-            "process tree failed: those processes were not confirmed stopped. aelix "
-            f"retries the cleanup; /jobs shows its state. Recorded pids: {pids}."
-        )
+    body = _UNRESOLVED_BODIES.get(reason)
+    if body is not None:
+        return body.format(pids=pids)
     return (
         f"aelix could not confirm that this job's processes stopped ({reason}). "
         f"Recorded pids: {pids}. It keeps checking; /jobs shows its state."
@@ -1914,6 +2304,14 @@ async def _owner_of(session: Any) -> str | None:
     return str(getattr(meta, "id", "") or "") or None
 
 
+async def _cancel_quietly(task: asyncio.Task[None] | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
 def _log_task_failure(task: asyncio.Task[Any]) -> None:
     if task.cancelled():
         return
@@ -1927,6 +2325,7 @@ __all__ = [
     "EXIT_SETTLE_GRACE",
     "LIVENESS_INTERVAL",
     "QUIET_AFTER",
+    "SETTLED_KEPT",
     "JobLaunchFailed",
     "JobNotFound",
     "JobService",

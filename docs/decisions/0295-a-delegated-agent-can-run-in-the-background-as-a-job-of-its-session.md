@@ -1,6 +1,9 @@
 # 0295. A delegated agent can run in the background as a job of its session
 
-Status: Accepted (2026-11-08, #723). **Inert until #611 S3:** everything below is behind
+Status: Accepted (2026-11-08, #723). Amended 2026-11-12 (#749, #770, #769): the restored and
+unresolved texts, `result`'s refusals, paging by bytes through `job(action="result")`, a
+background agent's result written to a 0600 file beside its child session and read from there once
+the job service lets the job go; see the note at the end. **Inert until #611 S3:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12), and nothing of it is
 reachable from the product before S3 sets it.
 Date: 2026-11-08
@@ -403,7 +406,7 @@ and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row get
 - **Helpers** on POSIX were `unverified` until S2; since #719 they are swept and confirmed or
   `unverified` with why (§9's note), and ADR-0296's residuals stand, the macOS ones among them.
 - **Restored and unresolved texts still overstate in four shapes** (verify-r3, all behind the
-  gate; to be closed before S3 flips it):
+  gate; to be closed before S3 flips it). *Closed 2026-11-12 (#749): the note below.*
   - a kind's own `unresolved(cannot_bind_run)` with a live process promises that what aelix can
     read of its end comes as a notice, but that read is always empty and no notice comes; and the
     restart's one notice keeps saying "it keeps checking" after the process dies (§8);
@@ -415,4 +418,134 @@ and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row get
   - a refusal code can reach the model raw ("Its result cannot be read: no_answer.").
 - **A transient read failure during a recheck** leaves the job `unresolved(unreadable)` with no
   recheck, and its slot stays held for the rest of the process (verify-r3's
-  `test_unreadable_on_recheck` probe; the same on `fa742f77`).
+  `test_unreadable_on_recheck` probe; the same on `fa742f77`). *Closed 2026-11-12 (#749): the
+  note below.*
+- **An answer with a lone surrogate** (an unpaired UTF-16 half in the agent's text) still breaks
+  its job, as on `5390b254`: the job's drive task dies with `UnicodeEncodeError` in the notice's
+  brief (`jobs/notice.cut_brief`), so no `outcome` fact is written and no notice is posted, and
+  `agent(action="result")` raises the same error in `jobs_client.page`. The result file refuses
+  such a text (the note below), which no longer hides this as `c06128c8`'s failed write did
+  (verify-r3 F3, its `test_zz_v3_surrogate.py` probe). A follow-up issue, which the lead drafts,
+  carries it; it is behind the gate like the rest.
+
+## Note (2026-11-12, #749, #770, #769)
+
+The job-service residuals closed before #611 S3 opens the gate. The owner chose to do them first
+on 2026-11-12, selecting the option labelled "S3 전 정리 3개 먼저 (권장)" ("the three clean-ups
+before S3 first (recommended)"). All of it is behind `ACTIVE = False`. Each test below fails on
+`363accf2` unless it is named a guard; fix round 1 of #769's lane (the same date) added the ones
+that also name `5390b254`, the lane's first head, which each fails.
+
+**The four shapes of the Limits, and two more of the same kind (#749).** Whether an agent may
+still run is now read from `JobSnapshot.processes_gone` (ADR-0293's note), not from `rechecking`;
+whether a notice can come, from `rechecking` and the agent's reason.
+- A kind's own `unresolved(cannot_bind_run)` with a live process: `result`, `stop` and `job
+  result` say it may still be running, that aelix checks its processes until they are gone, and
+  that a later run of this agent wrote to the same session file, so aelix cannot read this run's
+  end from it and no notice is promised; the restored notice says "it checks the job's processes
+  until they are gone, and promises no later notice". Once the process is gone the texts say its
+  processes are gone and aelix is not watching it, and no second notice comes
+  (`tests/agents_ext/test_restored_texts_749.py::test_cannot_bind_run_with_a_live_process_promises_no_notice`).
+- With `rechecking` false and nothing checked against the OS — `recover_error`,
+  `relation_error`, `adapter_too_old` — they say it may still be running
+  (`::test_a_state_never_checked_against_the_os_still_says_it_may_be_running`). `adapter_missing`
+  and `unreadable` take the same branch (`processes_gone` false); that test does not reach them.
+- An agent this process runs whose runner's settle failed (`settle_error`, which a stop-legs
+  timeout alone reaches) is not rechecked: `result` and `stop` say aelix cannot tell how it ended,
+  does not check it again and no notice of its end is coming, not "its result arrives as a
+  notice" (`::test_a_settle_error_agent_promises_no_notice`). The service's notice says the same
+  (ADR-0293's note). `job(action="result")` and `/jobs result` of an agent that has no result
+  yet now give the same state-aware sentence as `result` — they said "It is still running; its
+  result arrives as a notice." in every such state, `settle_error` included
+  (`::test_job_result_of_a_settle_error_agent_with_no_text_promises_no_notice`, fails on
+  `5390b254`; verify-r1 F1, Codex's finding 6): "It is running; its result arrives as a notice
+  when it finishes." for a running agent, and for an `unresolved` one aelix rechecks — a failed
+  cleanup, retried — "It is unresolved; its result arrives as a notice when it finishes."
+  (`::test_a_running_agent_with_no_text_is_said_to_be_running_on_every_result_surface`,
+  `::test_an_unresolved_agent_that_is_rechecked_is_said_to_come_back_as_a_notice`, the second a
+  guard for `result` and `stop`).
+- `result` says why it read no answer in a sentence, never the code: "Its result cannot be read:
+  its session file holds no answer from it." (`::test_no_answer_reads_as_a_sentence`); every code
+  `recover_run_answer` returns has one (`::test_every_code_recover_run_answer_returns_has_a_sentence`,
+  an AST scan of its `return`s that finds the seven), and `cannot_bind_run` reads "a later run of
+  this agent wrote to the same session file, so its last answer there may be that run's"
+  (`tests/agents_ext/test_child_recovery_611.py::test_result_after_a_restart_follows_the_same_rules`).
+- A failed read of the parent's records during a recheck, its process gone: its slot comes back
+  at once and the recheck stays on; meanwhile `result` says its processes are gone and aelix reads
+  its records again; the next pass records it `lost` with its notice
+  (`::test_a_failed_read_during_a_recheck_gives_the_slot_back_and_says_what_is_true`). For
+  `cannot_bind_run` in that window the texts say its processes are gone and do not say aelix
+  checks them (`::test_cannot_bind_run_whose_process_is_gone_and_read_failed_does_not_say_aelix_checks_it`,
+  a guard on `5390b254`; on `363accf2` it fails, there being no `processes_gone`).
+- verify-r3's surviving mutants: `_READ_REFUSALS`' three rows and the `os.open` failure branch of
+  `_checked_answer` are each pinned by an exact text — a file gone, forked, never started
+  (`::test_a_gone_child_file_reads_as_gone`, `::test_a_forked_child_file_reads_as_the_other_conversations`,
+  `::test_a_child_that_never_started_reads_so`, guards that pass on `363accf2`); `rechecking` of a
+  job this process runs is read by `result` and `stop` and pinned both ways
+  (`tests/jobs/test_residuals_749.py::test_a_settle_error_job_says_nothing_checks_it_again`, and
+  `::test_a_cleanup_error_job_is_rechecked_and_says_so`, a guard that passes on `363accf2`).
+
+**Paging by bytes (#770).** `jobs_client.page` sets `OutputSlice.next_offset` to the byte after
+the page, by ADR-0297 §4's rules: a page with bytes after its offset takes at least one character,
+whole, when its limit is smaller; it never ends inside a character; `more` is false at the end
+(`tests/jobs/test_delegation_paging_770.py::test_page_takes_whole_characters_and_names_the_next_byte`).
+So `job(action="result")` and `/jobs result`, which pass `continue_at` back, read a multibyte
+result to its end with every byte once, as `agent(action="result")` already did
+(`::test_the_job_tool_reads_a_multibyte_result_to_its_end_each_byte_once`,
+`::test_jobs_result_and_agent_result_read_the_same_pages`). Before, the hint was `offset +
+len(text)` — characters — and each page after the first began inside bytes already read. The
+guard `test_delegation_paging_is_unchanged` that pinned the old hint is now
+`tests/jobs/test_client_start_611.py::test_delegation_pages_by_bytes`.
+
+**An agent the job service lets go, and its result file (#769).** The owner decided on
+2026-11-12, selecting the option labelled "결과를 파일로 저장 (권장)" ("save the result to a file
+(recommended)"), that a background agent's whole result goes to a file and is read from there once
+the job is let go, as `bash`'s output file is.
+- *The file.* When a background run that launched returns, its whole result — the text a
+  foreground call would have returned — is written to `<children dir>/<run key>.result`: the
+  directory its parent's child session files live in (§8's `place_children`) and the run's own
+  spawn key, so a resume of the same child file gets a file of its own. It is created 0600
+  through a temporary file and `os.replace`, never through a link, and the run records
+  `aelix.agent_result` `{v, key, bytes, sha256}` with its job's other records
+  (`aelix_agents/result_file.py`;
+  `tests/agents_ext/test_agent_result_file_769.py::test_it_is_this_users_alone`, POSIX,
+  `::test_it_is_written_whole_and_read_back`, `::test_a_write_that_fails_leaves_nothing_and_says_none`).
+  A run with no child session file — a parent outside a sessions bucket, or with no session file —
+  writes none, and such an agent stays whole: a run's prompt directory is the job's own and is
+  removed at its end, so it cannot hold the file (this lane's call).
+- *Its lifetime.* It lives with the session, as the child session file does: nothing in aelix
+  removes it, and removing the session's children directory removes it.
+- *Reading it.* Its path is derived from the parent's session file and the recorded key, never
+  read off the record (§8's rule for the child file), and it is read through one descriptor: not
+  a link, one name, the size and sha256 the run recorded
+  (`::test_a_file_that_is_gone_or_changed_is_said_so`, `::test_a_link_in_its_place_is_never_followed`,
+  POSIX). `job(action="result")`, `/jobs result` and `agent(action="result")` read the live
+  result while the job service keeps the job whole, and the file once it is let go — all three at
+  once, before any garbage collection frees the runner that held the text
+  (`::test_result_reads_an_agent_let_go_from_its_file_before_any_collection`, collection off;
+  verify-r2 F7). The runner sits in reference cycles, so it and its text go at the next
+  collection. `DelegationJobs.info` is not bounded: it keeps one entry per background agent this
+  process ran and never removes one, but an entry is small — its ids, key, profile, session path
+  and status, no task and no text (`::test_the_clients_entry_of_an_agent_let_go_is_small`: under
+  1,000 characters for a 20,000-character task; verify-r2 F3). The delegation kind declares
+  `reads_persisted` (ADR-0293's note). All three read every page byte for byte
+  as before, and `status`, `stop`, `wait` and the generic surfaces the same text
+  (`tests/agents_ext/test_agent_retention_769.py::test_an_agent_let_go_reads_as_before_from_its_file_and_holds_no_text`,
+  POSIX, a stub child, a 45 KB multibyte result: weak reference to the runner dead after
+  `gc.collect()`). A file that is gone or changed is said — "Its result cannot be read: its result
+  file no longer exists." — on all three, never replaced by the child's last answer
+  (`::test_a_missing_result_file_is_said_and_never_replaced_by_the_childs_answer`). A run whose file
+  could not be written is kept whole: its read-back could not match (ADR-0293's comparison;
+  `::test_a_run_whose_result_file_could_not_be_written_is_kept_whole`).
+- *After a restart.* `agent(action="result")` of an agent that settled and wrote a file reads
+  its whole result from it, no longer the child's last answer under "Its last answer, read from
+  its session file after a restart" (`::test_after_a_restart_result_reads_the_runs_file`). So do
+  `job(action="result")` and `/jobs result`, which said "This agent's result is not held in memory
+  after a restart" before (the same test; verify-r2 F5). An agent whose run wrote no file reads as
+  §8 says.
+- *The file itself.* A text that cannot be encoded (a lone surrogate) writes no file
+  (`tests/agents_ext/test_agent_result_file_769.py::test_a_text_that_cannot_be_encoded_writes_nothing_and_says_none`;
+  verify-r2 F4) — though the job itself still breaks on such a text elsewhere (Limits). The file is opened without waiting, so a FIFO in its place is refused at once as
+  not a regular file (`::test_a_fifo_in_its_place_is_refused_at_once`, POSIX; verify-r2 F8). The
+  child-session reader (§8) opens with the same flags as before and still waits on a FIFO; this
+  lane did not touch it.
