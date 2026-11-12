@@ -36,17 +36,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import gc
 import os
 import signal
 import sys
 import textwrap
+import time
 import warnings
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from aelix_ai.utils import _process_tree
+from aelix_ai.utils import _process_identity, _process_tree
 from aelix_ai.utils._process_tree import ProcessTree, _Win32Api, kill_process_tree
 from aelix_coding_agent.rpc import rpc_client as rpc_client_module
 from aelix_coding_agent.rpc.rpc_client import (
@@ -212,30 +214,146 @@ def _job_members(tree: ProcessTree) -> str:
         return f"job members unreadable: {exc}"
 
 
+#: ``PROCESS_QUERY_LIMITED_INFORMATION``, and the exit code a running process reports.
+_QUERY_LIMITED = 0x1000
+_STILL_ACTIVE = 259
+
+
+def _win32_kernel32() -> Any:
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    k32.QueryFullProcessImageNameW.restype = ctypes.c_int
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    k32.GetExitCodeProcess.restype = ctypes.c_int
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.restype = ctypes.c_int
+    return k32
+
+
+def _describe(pid: int) -> str:
+    """#772 diagnostic, win32: the image (last two path parts) and exit state of whatever holds ``pid`` now."""
+
+    if sys.platform != "win32":
+        return "-"
+    k32 = _win32_kernel32()
+    handle = k32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not handle:
+        return f"no process (OpenProcess error {ctypes.get_last_error()})"  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        size = ctypes.c_uint32(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        ok = k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        image = "\\".join(buf.value.split("\\")[-2:]) if ok else "image ?"
+        code = ctypes.c_uint32()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return f"{image} exit ?"
+        state = "running" if code.value == _STILL_ACTIVE else f"exited {code.value}"
+        return f"{image} {state} started {_process_identity.process_started(pid)}"
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _in_job_now(pid: int, tree: ProcessTree) -> str:
+    job = tree.job
+    if sys.platform != "win32" or job is None:
+        return "job closed"
+    api = _process_tree._KernelApi()
+    try:
+        handle = api.open_member(pid)
+    except OSError as exc:
+        return f"unopenable ({exc})"
+    try:
+        return "in job" if api.in_job(handle, job) else "NOT in job"
+    except OSError as exc:
+        return f"IsProcessInJob failed ({exc})"
+    finally:
+        api.close_process(handle)
+
+
 class _JobWitness:
-    """Reads :func:`_job_members` just before every ``hard_kill``, while the job is still open."""
+    """#772 diagnostic: what each win32 kill met, kept as notes and warned even when the test passes.
+
+    Before every ``hard_kill``: the job's members and ``ActiveProcesses``; the
+    ``taskkill`` it ran and how long; whether ``TerminateJobObject`` raised;
+    ``ActiveProcesses`` right after. Off win32 it records the kill only.
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.seen: list[str] = []
         real = ProcessTree.hard_kill
 
         def _witnessed(tree: ProcessTree) -> None:
-            self.seen.append(_job_members(tree))
+            before = f"{_job_members(tree)} active={tree.active_processes()}"
+            began = time.monotonic()
             real(tree)
+            self.seen.append(
+                f"hard_kill {time.monotonic() - began:.3f}s, before: {before}, "
+                f"after: active={tree.active_processes()}"
+            )
 
         monkeypatch.setattr(ProcessTree, "hard_kill", _witnessed)
+        if sys.platform != "win32":
+            return
+        real_taskkill = _process_tree._KernelApi.taskkill
+        real_terminate = _process_tree._KernelApi.terminate_job
+
+        def _taskkill(api: Any, pid: int) -> None:
+            began = time.monotonic()
+            try:
+                real_taskkill(api, pid)
+            finally:
+                self.seen.append(f"taskkill {pid} {time.monotonic() - began:.3f}s")
+
+        def _terminate(api: Any, job: int) -> None:
+            try:
+                real_terminate(api, job)
+            except OSError as exc:
+                self.seen.append(f"TerminateJobObject raised {exc}")
+                raise
+            self.seen.append("TerminateJobObject ok")
+
+        monkeypatch.setattr(_process_tree._KernelApi, "taskkill", _taskkill)
+        monkeypatch.setattr(_process_tree._KernelApi, "terminate_job", _terminate)
+
+    def snapshot(self, client: RpcClient, pids: list[int]) -> None:
+        """At the pid file: each process's image and state, and whether the job holds it."""
+
+        if sys.platform != "win32":
+            return
+        proc, tree = client.process, client.tree
+        root = proc.pid if proc is not None else None
+        held = [f"root {root}: {_describe(root)}"] if root is not None else []
+        for pid in pids:
+            member = _in_job_now(pid, tree) if tree is not None else "no tree"
+            held.append(f"{pid}: {_describe(pid)}, {member}")
+        self.seen.append("at the pid file: " + "; ".join(held))
 
 
 async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness) -> None:
     """:func:`_states`' 5 s poll per pid; on a survivor, 10 s more of it and what the job held.
 
-    #772 (windows-latest py3.13, 5 of 14 runs): the grandchild still ``alive``
+    #772 (windows-latest py3.13, 5 of 12 runs): the grandchild still ``alive``
     after that 5 s poll. The extra poll says whether it died late or never; the
-    witness says whether it was in the job when the abandon killed it.
+    witness says whether it was in the job when the abandon killed it. On win32
+    the witness's notes are warned on success too (the diagnostic round).
     """
 
+    at_raise = [f"{pid}: {_describe(pid)}" for pid in pids]
     states = await _states(pids)
     if all(state in _DEAD for state in states):
+        if sys.platform == "win32":
+            warnings.warn(
+                f"#772 evidence, passed: {(pids, states)} root {root}; {witness.seen}; "
+                f"at the raise: {at_raise}",
+                stacklevel=1,
+            )
         return
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -245,10 +363,10 @@ async def _assert_the_tree_died(pids: list[int], root: int, witness: _JobWitness
             continue
         state = await await_dead_or_zombie(pid, timeout=10.0)
         took = loop.time() - started
-        later.append(f"{pid} {state} {took:.2f}s later" if state in _DEAD else f"{pid} alive 10 s on")
+        later.append(f"{pid} {state} {took:.2f}s on, now {_describe(pid)}")
     pytest.fail(
-        f"{(pids, states)}: root {root}; at the kill: {witness.seen or ['no hard_kill']}; "
-        f"after a further poll: {later}"
+        f"{(pids, states)}: root {root}; {witness.seen or ['no hard_kill']}; "
+        f"at the raise: {at_raise}; after a further poll: {later}"
     )
 
 
@@ -692,6 +810,7 @@ async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_end
 
     witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _DeafWatcher, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -720,6 +839,7 @@ async def test_a_premature_exit_ends_the_group_and_closes_the_transport(
 
     witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _LongGrace, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -733,6 +853,70 @@ async def test_a_premature_exit_ends_the_group_and_closes_the_transport(
     finally:
         for pid in pids:
             _really_kill(pid)
+
+
+#: Premature exits per run of the #772 evidence case.
+_EVIDENCE_RUNS = 20
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="#772 diagnostic: a real Windows Job")
+async def test_on_win32_772_evidence_of_repeated_premature_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#772 diagnostic round 2: the premature-exit case, repeated, reported whether or not it fails.
+
+    Even runs hold a handle to the grandchild from the pid file on, so its pid
+    cannot be reused and every reading is of that process; odd runs hold none,
+    as the case itself does. A survivor does not fail this case: the warning is
+    the result. Only a grandchild still the process the pid file named is killed
+    at the end of a run.
+    """
+
+    witness = _JobWitness(monkeypatch)
+    api = _process_tree._KernelApi()
+    loop = asyncio.get_running_loop()
+    rows: list[str] = []
+    late = 0
+    for run in range(_EVIDENCE_RUNS):
+        witness.seen.clear()
+        run_dir = tmp_path / f"run-{run}"
+        run_dir.mkdir()
+        # Not ``_start_with_its_tree``: its "start() has not returned yet" check
+        # is the case's premise, and here a run must not end the evidence.
+        pid_file = run_dir / "tree.pids"
+        client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file, "exit")))
+        start = asyncio.ensure_future(client.start())
+        await wait_until(lambda f=pid_file: _pids(f) is not None, what="the child's tree")
+        pids = _pids(pid_file) or []
+        grandchild = pids[1]
+        stamp = _process_identity.process_started(grandchild)
+        witness.snapshot(client, pids)
+        held: int | None = None
+        if run % 2 == 0:
+            with contextlib.suppress(OSError):
+                held = api.open_member(grandchild)
+        try:
+            with pytest.raises(RpcServerExited):
+                await within(start, bound=20.0, what="the start() whose child exited at once")
+            raised = loop.time()
+            at_raise = _describe(grandchild)
+            state = await await_dead_or_zombie(grandchild, timeout=10.0)
+            took = loop.time() - raised
+            if state not in _DEAD or took > 5.0:
+                late += 1
+            rows.append(
+                f"run {run} held={held is not None} {pids}: grandchild {state} after {took:.2f}s, "
+                f"at the raise {at_raise}, now {_describe(grandchild)}; {witness.seen}"
+            )
+        finally:
+            if held is not None or _process_identity.same_process(grandchild, stamp) is True:
+                kill_process_tree(grandchild)
+            if held is not None:
+                api.close_process(held)
+    warnings.warn(
+        f"#772 evidence: {late} of {_EVIDENCE_RUNS} grandchildren alive past 5 s | " + " | ".join(rows),
+        stacklevel=1,
+    )
 
 
 async def test_a_cancel_swallowed_while_a_failed_start_is_abandoned_still_propagates(
