@@ -101,7 +101,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3; amended 2026-11-12, #749, #770 and
   #769: the restored and unresolved texts say only what stays true, `result` names no code,
   `job(action="result")` pages it by bytes, and a background agent's result is written to a 0600
-  file beside its child session and read from there once the job is let go). Delegation is the job service's
+  file beside its child session and read from there once the job is let go; amended 2026-11-12,
+  #782: a lone surrogate in a background agent's text becomes U+FFFD where it enters the client,
+  so its job ends with its outcome and one notice). Delegation is the job service's
   first client (ADR-0293): `agent(action="spawn")` runs ONE task as a job of the session and
   returns once it launched; `wait` (30 s to 30 min, default 120 s, never stops it, the third
   empty wait in a prompt refused), `status`, `stop` and `result` (the whole result again, paged)

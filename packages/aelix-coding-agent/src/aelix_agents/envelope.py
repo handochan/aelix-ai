@@ -714,7 +714,7 @@ def render_tool_trail(state: _StreamState) -> str | None:
             else ("FAILED" if call.failed else "ok")
         )
         line = f"{call.name}({call.args}) {verdict}"
-        cost = len(line.encode("utf-8")) + 1
+        cost = len(line.encode("utf-8", "surrogatepass")) + 1
         if used + cost > MAX_TRAIL_BYTES:
             hidden += len(state.tool_trail) - index
             break

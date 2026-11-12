@@ -142,6 +142,18 @@ unwritten. Add them with the next release.
   row, after "Agent delegation", that writes `backgroundJobs.enabled` alone and takes effect at
   the next launch; it is shown only while the gate is on. With the gate off nothing changes and
   the setting is not read (`tests/jobs/test_enabled_setting_611.py`).
+- **A background agent whose answer holds half an emoji ends its job like any other (#782;
+  ADR-0295), built and switched off with it.** A lone surrogate (`"\ud83d"`) in a background
+  agent's answer killed its job before its outcome and notice were written, and
+  `agent(action="result")` raised on it. The delegation client now turns each lone surrogate into
+  U+FFFD where a child's text enters it — its answer, its brief and its progress — so the job ends
+  with one notice, and `agent(action="result")`, `job(action="result")` and `/jobs result` read
+  the same text, from its result file too once the job is let go
+  (`tests/agents_ext/test_agent_lone_surrogate_782.py`). A child that named a tool with such a
+  half no longer fails its background job or makes a foreground `agent` call raise. A foreground
+  agent's result keeps the half as before; on openai-completions its model reads the answer with
+  the half dropped. With the Anthropic adapter such a foreground result still ends the turn with
+  an encoding error before anything is sent, as before this change.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

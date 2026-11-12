@@ -3,7 +3,9 @@
 Status: Accepted (2026-11-08, #723). Amended 2026-11-12 (#749, #770, #769): the restored and
 unresolved texts, `result`'s refusals, paging by bytes through `job(action="result")`, a
 background agent's result written to a 0600 file beside its child session and read from there once
-the job service lets the job go; see the note at the end. **Inert until #611 S3:** everything below is behind
+the job service lets the job go; see the note of that date. Amended 2026-11-12 (#782): a lone
+surrogate in a background agent's text is replaced by U+FFFD where it enters the client; see the
+note at the end. **Inert until #611 S3:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12), and nothing of it is
 reachable from the product before S3 sets it.
 Date: 2026-11-08
@@ -426,7 +428,8 @@ and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row get
   `agent(action="result")` raises the same error in `jobs_client.page`. The result file refuses
   such a text (the note below), which no longer hides this as `c06128c8`'s failed write did
   (verify-r3 F3, its `test_zz_v3_surrogate.py` probe). A follow-up issue, which the lead drafts,
-  carries it; it is behind the gate like the rest.
+  carries it; it is behind the gate like the rest. *Closed 2026-11-12 (#782): the note of that
+  date below.*
 
 ## Note (2026-11-12, #749, #770, #769)
 
@@ -545,7 +548,77 @@ the job is let go, as `bash`'s output file is.
   §8 says.
 - *The file itself.* A text that cannot be encoded (a lone surrogate) writes no file
   (`tests/agents_ext/test_agent_result_file_769.py::test_a_text_that_cannot_be_encoded_writes_nothing_and_says_none`;
-  verify-r2 F4) — though the job itself still breaks on such a text elsewhere (Limits). The file is opened without waiting, so a FIFO in its place is refused at once as
+  verify-r2 F4) — though the job itself still breaks on such a text elsewhere (Limits; since
+  #782 the delegation client hands it none, the note below). The file is opened without waiting, so a FIFO in its place is refused at once as
   not a regular file (`::test_a_fifo_in_its_place_is_refused_at_once`, POSIX; verify-r2 F8). The
   child-session reader (§8) opens with the same flags as before and still waits on a FIFO; this
   lane did not touch it.
+
+## Note (2026-11-12, #782)
+
+**A lone surrogate in a background agent's answer (Limits).** A lone surrogate (`"\ud83d"`, half
+an emoji) is a legal `str` that a child's JSON stream and its session file carry, and no UTF-8
+encoder writes it. Measured on `52bc607a` by this issue's lane: a FOREGROUND agent keeps it in the
+`agent` tool's result and nothing raises, and a JSON round trip of that result (`ensure_ascii`, as
+the session file writes it) gives it back equal; through the gated launcher (#777) against a
+stand-in OpenAI-compatible server, the parent model's tool result read `before  after` for a
+child that answered `before \ud83d after` — the openai-completions adapter drops it
+(`providers/_sanitize_unicode.py`, pi's `sanitizeSurrogates`; the Google adapter calls it too, read
+from the code, not measured). The Anthropic adapter does not: the round-1 verify measured a
+foreground tool result holding `\ud83d` end the parent's turn with `UnicodeEncodeError` before any
+request is sent, the same on `52bc607a` and after this change (its
+`probes/p782_anthropic_fg.py`); that is a separate, pre-existing defect, for a follow-up issue
+the lead drafts, and this note does not fix it. A BACKGROUND agent's text is cut by UTF-8
+bytes for the notice's brief and body and paged by bytes, and its result file refused it, so its
+job's drive task died in `jobs/notice.cut_brief` with no `outcome` fact and no notice, and
+`agent(action="result")` raised in `jobs_client.page`; through the launcher, `-p` printed the
+traceback, exited 0 and never gave the parent model a notice turn.
+
+Now the delegation client replaces each lone surrogate with U+FFFD where a child's text enters it:
+the run's rendered result and its brief, its progress (the tool it runs and its last line), and
+an answer read from the child's file after a restart — by `recover` and by `result`
+(`jobs_client._utf8_safe`). Everything downstream — the brief and the notice, rows, paging, the
+result file — gets text it can encode, so the job layer is unchanged. Replaced, not dropped, as
+`sendable()` replaces it in a chain step's `{previous}` (ADR-0277), so the reader sees that a
+character was there; a foreground agent's model on openai-completions reads nothing in its place.
+Through the launcher the same child's background run now ends in a notice turn whose notice reads
+`before \ufffd after`. The narrowest place that makes every surface work, and this lane's call.
+
+A tool NAME holding one is a second path, found by Codex in the first round (C3): the envelope's
+tool-trail byte count (`envelope.render_tool_trail`) encoded strictly and raised, before the result
+text reached `_utf8_safe`, so such a background job ended `failed` ("client error:
+UnicodeEncodeError") and a foreground call raised the same error. The count now uses
+`surrogatepass`, as every other byte count in `envelope.py` does, so the foreground call returns
+its envelope as for any other name.
+
+On `52bc607a` (these tests with `_utf8_safe` stubbed as the identity, as the file cannot import
+it there) the first two cases wait for an outcome and a notice that never come; the restart case
+gets a notice, but the service's generic fallback, because the kind's `render_notice` raised; the
+settled-run case raises in `page`; the helper guard fails. The two tool-name cases fail on
+`639dcdf6`, this change's first round.
+
+- The job ends `done` with one `outcome` fact and exactly one notice, its brief and body carrying
+  U+FFFD (`tests/agents_ext/test_agent_lone_surrogate_782.py::test_the_job_ends_with_its_outcome_and_exactly_one_notice`, POSIX).
+- `agent(action="result")`, `job(action="result")` and `/jobs result` page the same text, each
+  byte once, over a 50 KB answer with a half on every line; the result file holds that text byte
+  for byte, and after the job service lets the job go the three read it from the file page for
+  page as before (`::test_every_result_surface_reads_the_same_text_and_its_file_byte_for_byte_after_a_let_go`, POSIX).
+- After a restart, an answer recovered from the child's file reaches its notice and `result`
+  (`::test_a_restart_that_recovers_the_answer_from_the_childs_file_gives_it_once`), and `result`
+  of a settled run that wrote no file reads the child's last answer
+  (`::test_result_after_a_restart_reads_a_settled_runs_answer_from_the_childs_file`).
+- A tool name and a progress line holding one read U+FFFD in the job's progress and its row, and
+  the job ends `done` with one notice
+  (`::test_a_tool_name_and_a_progress_line_with_a_half_are_whole_and_the_job_ends_done`, POSIX);
+  a foreground call whose child names such a tool returns its result
+  (`::test_a_foreground_call_whose_child_names_a_tool_with_a_half_returns`, POSIX). A progress
+  update with no tool or no line yet keeps `None` there
+  (`::test_progress_with_no_tool_or_no_line_yet_reads_none`, POSIX), and the trail's budget is
+  UTF-8 bytes, a half counted as its three
+  (`::test_the_trail_is_bounded_by_utf8_bytes_with_a_half_counted_as_three`); both pass on
+  `8f07404f`, the second round, and pin its lines.
+- Only lone surrogates change: NUL, controls, non-BMP characters and U+FFFD itself are kept
+  (`::test_only_lone_surrogates_are_replaced`).
+- *Not changed.* The kind-agnostic job layer still encodes what any kind hands it: an extension
+  kind whose brief or notice body holds a lone surrogate is not covered by this change (not
+  measured).
