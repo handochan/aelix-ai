@@ -951,7 +951,7 @@ def build_child_argv(
     installed extension module (a global pack's ``[plugin.entry] python``, an
     entry point's module) was imported in its place, whatever the project's trust.
     Python 3.11 is the floor, so the flag is always there. Specifically NOT
-    ``-m aelix``, which ``rpc/rpc_client.py:1430`` does and which
+    ``-m aelix``, which ``rpc/rpc_client.py:1431`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.

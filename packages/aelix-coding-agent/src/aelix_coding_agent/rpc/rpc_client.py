@@ -484,11 +484,12 @@ class RpcClient:
         parent had exited. While it runs, a second ``start`` and every command
         are refused, and :meth:`stop` asks it to give up and waits.
 
-        The job holds what the child starts at once only because the child is
-        created suspended and resumed by the attach (#772, win32 where
-        ``NtResumeProcess`` resolves). Unsuspended, a premature exit left the
-        grandchild alive 5 s after this raised in 5 of 12 windows-latest py3.13
-        runs. Inferred, not measured there: on that runner the child is the venv
+        The job can hold what the child starts at once only because the child
+        is created suspended and resumed by the attach (#772, win32 where
+        ``NtResumeProcess`` resolves; the membership case runs only on the
+        windows CI leg). Unsuspended, a premature exit left the grandchild alive
+        5 s after this raised in 5 of 12 windows-latest py3.13 runs. Inferred,
+        not measured there: on that runner the child is the venv
         launcher, which starts the interpreter at once, before the attach, and
         once the root is dead ``taskkill /T`` has no live parent link to walk.
 
@@ -527,8 +528,8 @@ class RpcClient:
         # #772: on win32 the child is created suspended and runs only once the
         # attach has assigned it to its job (``ProcessTree.suspend_flags``, 0
         # elsewhere and where ``NtResumeProcess`` does not resolve). Unsuspended,
-        # the attach came a few proactor turns after the spawn, and a venv
-        # launcher — ``sys.executable`` on the windows runner — had by then
+        # the attach came a few proactor turns after the spawn, by which time a
+        # venv launcher — ``sys.executable`` on the windows runner — could have
         # started the interpreter outside the job.
         suspend = ProcessTree.suspend_flags()
         if suspend:
