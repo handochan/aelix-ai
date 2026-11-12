@@ -918,7 +918,11 @@ def test_code_the_round_3_verify_found_as_text_is_refused(command: str, dialect:
         # Unchanged: no shell ran ``find`` in these.
         (f"echo `echo \\$\\({_FIND}\\)`", Verdict.ALLOW),
         (f"echo $(echo \\`{_FIND}\\`)", Verdict.ALLOW),
-        (f"echo ${{x:-=({_FIND})}}", Verdict.ALLOW),
+        # #786: zsh 5.9 runs this ``=(…)`` (macOS and Linux;
+        # ``.omc/probes/784-788/impl/``), with each ``-`` of its words dropped,
+        # so ``find`` ran with ``delete`` and ``victim`` stayed. It is read as
+        # ``<(…)`` now, ``-`` kept, which only raises.
+        (f"echo ${{x:-=({_FIND})}}", Verdict.DENY),
         ("diff <(sort a) <(sort b)", Verdict.ALLOW),
         (f"echo ${{x:-\\<({_FIND})}}", Verdict.ASK),  # ASK on 80ff2cc2 already
         # Parsed as a process substitution, so walked already: DENY on 80ff2cc2.
