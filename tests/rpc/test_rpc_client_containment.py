@@ -58,11 +58,9 @@ from aelix_coding_agent.rpc.rpc_client import (
 
 from tests.event_waits import record_armed_waits, wait_until, within
 from tests.process_probe import (
-    STATE_GONE,
-    STATE_ZOMBIE,
-    await_dead_or_zombie,
     is_dead_or_zombie,
 )
+from tests.rpc._identity import ENDED, Identities, await_gone, kill_if_tracked
 from tests.rpc._stop_events import grace_of, record_stop
 
 #: A budget no case here can reach: the death has to wake the caller, because
@@ -552,23 +550,27 @@ async def test_stop_ends_a_descendant_the_child_left_behind() -> None:
     client.on_event(seen.append)
     await client.start()
     grandchild = 0
+    ids = Identities()
     try:
         grandchild = await _await_reported_grandchild(client, seen)
         # The premise. A grandchild that was already dead would make the
         # assertion below pass for free.
         assert not is_dead_or_zombie(grandchild)
+        # Read by identity, not number (#772): its number, free once it is
+        # dead, must not read as it.
+        ids.record([grandchild])
 
         await client.stop()
 
-        state = await await_dead_or_zombie(grandchild, timeout=5.0)
-        assert state in (STATE_GONE, STATE_ZOMBIE), (
+        state = await await_gone(grandchild, ids, timeout=5.0)
+        assert state in ENDED, (
             f"the grandchild is {state} five seconds after stop() — the kill "
             "reached the child and stopped there, which is the #202 defect"
         )
     finally:
         # Never leave a 60 s sleeper behind when the assertion above failed.
         if grandchild > 0 and not is_dead_or_zombie(grandchild):
-            kill_process_tree(grandchild)
+            kill_if_tracked(grandchild, ids, kill_process_tree)
 
 
 async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipes(
