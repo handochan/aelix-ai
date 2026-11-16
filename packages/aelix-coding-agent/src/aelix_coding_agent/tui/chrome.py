@@ -49,6 +49,7 @@ from prompt_toolkit.filters import Condition, has_completions, is_done, renderer
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings.named_commands import get_by_name
 from prompt_toolkit.keys import KEY_ALIASES, Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -747,8 +748,22 @@ class AelixChrome:
         prompt: str = "» ",
         time_fn: Callable[[], float] = time.monotonic,
         extension_shortcuts: Callable[[], dict[str, Any]] | None = None,
+        detach_key: bool = False,
     ) -> None:
         self._console = console if console is not None else Console()
+        # #775 (ADR-0298) — Ctrl+B moves the one running foreground delegation
+        # into a background job. Bound at construction, only while background
+        # jobs are on (``run_tui`` passes ``jobs is not None``); off, Ctrl+B is
+        # prompt_toolkit's emacs ``backward-char`` as before. The host wires the
+        # two callbacks once its jobs UI exists.
+        self._detach_key = detach_key
+        self.detach_ready: Callable[[], bool] | None = None
+        self.on_detach: Callable[[], bool] | None = None
+        # Set synchronously where the host schedules an abort of the turn (Esc,
+        # Ctrl+C, SIGTERM/SIGHUP, ``/quit`` mid-turn: :meth:`note_interrupt`),
+        # cleared when the turn ends: a Ctrl+B that follows in the same loop
+        # turn is not taken, and a move already under way is refused (R14, R20).
+        self.interrupt_pending = False
         self._prompt = prompt
         self._time = time_fn  # injectable clock (spinner cadence; tests)
         # CSI 2026 bracket depth (ADR-0194) — merges overlapping brackets from
@@ -1641,11 +1656,61 @@ class AelixChrome:
             # (the footer badge is repainted by the host's cycle callback).
             self.invalidate()
 
+        # #775 — Ctrl+B, before the extension shortcuts, so an extension's
+        # ``ctrl+b`` is skipped as any other built-in collision is.
+        self._add_detach_key(kb)
+
         # Issue #20 — extension shortcuts LAST, so built-ins can never be
         # shadowed (already-bound key sequences are skipped with a warning).
         self._register_extension_shortcuts(kb)
 
         return kb
+
+    def note_interrupt(self) -> None:
+        """The host is about to abort the running turn (#775): no delegation moves from here on."""
+
+        self.interrupt_pending = True
+
+    def _detach_offered(self) -> bool:
+        ready = self.detach_ready
+        if ready is None or self.interrupt_pending:
+            return False
+        try:
+            return bool(ready())
+        except Exception:  # noqa: BLE001 — an unanswerable host offers nothing
+            return False
+
+    def _add_detach_key(self, kb: KeyBindings) -> None:
+        """Ctrl+B while exactly one foreground delegation can move (#775, ADR-0298).
+
+        The filter is read at the key press: the input has focus, no modal and
+        no completion menu is open, no interrupt is pending, and the host
+        answers that exactly one call is ready (opencode's gate, Qwen's
+        "exactly one"). Otherwise prompt_toolkit's emacs ``backward-char``
+        takes the key, as it did before. The handler asks again; when the call
+        is no longer ready it moves the cursor itself, since the key is taken.
+        """
+
+        if not self._detach_key:
+            return
+        backward_char = get_by_name("backward-char")
+
+        @kb.add(
+            "c-b",
+            filter=Condition(
+                lambda: self._input_has_focus()
+                and not self.is_modal_open()
+                and self._detach_offered()
+            )
+            & ~has_completions,
+        )
+        def _detach(event: Any) -> None:
+            moved = False
+            if self._detach_offered() and self.on_detach is not None:
+                with contextlib.suppress(Exception):
+                    moved = bool(self.on_detach())
+            if not moved:
+                backward_char.call(event)
 
     def _register_extension_shortcuts(self, kb: KeyBindings) -> None:
         """Issue #20 — bind extension-registered shortcuts into the app.
@@ -2354,6 +2419,7 @@ class AelixChrome:
         else:
             self._submitted_line = None  # #654: its turn is over, nothing can withdraw it
             self._command_refusal = None  # #701: the command can run now
+            self.interrupt_pending = False  # #775: the turn it was for is over
         self.invalidate()
 
     @property

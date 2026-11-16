@@ -980,6 +980,10 @@ async def run_tui(
             # Issue #20 — extension keyboard shortcuts join the key bindings
             # (built at chrome construction; built-ins win collisions).
             extension_shortcuts=_live_extension_shortcuts,
+            # #775 — Ctrl+B moves a running delegation into a job: bound only
+            # while background jobs are on (an extension's ``ctrl+b`` is then
+            # skipped, as any built-in collision is).
+            detach_key=jobs is not None,
         )
     footer = AelixFooterData(cwd=cwd)
 
@@ -2331,7 +2335,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4979``) always passes one, so this is
+            # production caller (``entry.py:4982``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2763,6 +2767,8 @@ async def run_tui(
             # abort, so it goes the turn's way, and so does a compaction with no row of
             # its own to read: an extension command awaiting ``navigate_tree`` or
             # ``wait_for_idle`` holds that same await with the chrome idle.
+            # #775 — no delegation moves into a job from here on.
+            out_chrome.note_interrupt()
             cancel_command = running_command["cancel"]
             if cancel_command is not None and cancel_command is not _on_interrupt:
                 cancel_command()
@@ -3540,6 +3546,9 @@ async def run_tui(
         out_chrome.on_modal_change = jobs_ui.maybe_wake
         out_chrome.jobs_segment = jobs_ui.footer
         jobs.send_hook = jobs_ui.send_now
+        # #775 — Ctrl+B's filter and its request (ADR-0298).
+        out_chrome.detach_ready = jobs_ui.detach_ready
+        out_chrome.on_detach = jobs_ui.request_detach
 
     async def _ask_session_contended(path: str) -> SessionContendedChoice:
         """#137 / ADR-0244 — ``/resume`` (or ``/import``) onto an owned file.
@@ -3609,6 +3618,9 @@ async def run_tui(
         # withdrawn input arrives after them and goes ahead of them. Not on
         # ``_safe_abort``: SIGTERM aborts through it too, and there is nobody left
         # to give anything back to.
+        # #775 (ADR-0298) — set before the abort is scheduled: a Ctrl+B in this
+        # loop turn is not taken, and a move under way is refused (Esc wins).
+        out_chrome.note_interrupt()
         if _give_back_after_abort(_take_queued_text()):
             renderer.note_input_returned()
             context._refresh_footer()  # pending count is now 0
@@ -4978,6 +4990,7 @@ async def _input_loop(
             # (``interactive-mode.ts:3455``, ``:3493``): the answer is stopped as
             # a signal stops it, and the loop returns once ``prompt`` does.
             quit_after_turn["v"] = True
+            chrome.note_interrupt()  # #775: no delegation moves from here on
             asyncio.ensure_future(_safe_abort_until_idle(runtime_host.harness))
             return ("ran", "")
         if parsed.kind == "reload":
@@ -5426,7 +5439,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4908-4924 and
+            # Two audiences, discriminated exactly as entry.py:4911-4927 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

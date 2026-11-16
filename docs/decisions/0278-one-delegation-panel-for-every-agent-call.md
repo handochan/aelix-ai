@@ -430,3 +430,12 @@ finish") and left for a follow-up, since fix rounds were capped at two:
   snapshot is the same fact, and it costs no contract change.
 - *Drawing from the publish path with a time check* — the publish path is the
   child's stdout pump; the redraw is scheduled instead (D6).
+
+
+## Note (2026-11-12, ADR-0298, #775)
+
+**A moved call's group ends without a linger.** When Ctrl+B moves a running call into a job, the
+call returns its detach text and `_execute_pending`'s `finally` ends its panel group as for any
+call that returned; the moved run's progress goes to its job from then on, never to the bridge, so
+it writes no statusline row either
+(`tests/agents_ext/test_detach_611.py::test_progress_after_the_move_goes_to_the_job_not_the_call`).

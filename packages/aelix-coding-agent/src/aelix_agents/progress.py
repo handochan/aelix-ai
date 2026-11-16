@@ -13,7 +13,7 @@ the child stream produces out to two places:
   panel (a ``set_widget`` block above the input, one per call, for one child or
   eight; ADR-0278, layouts in :mod:`aelix_agents.panel`) and NO statusline row
   (D2); for a child nobody grouped — a ``/agents run`` child — ONE height-1
-  statusline row (``tui/chrome.py:1763-1786`` renders ``set_status`` into a
+  statusline row (``tui/chrome.py:1828-1851`` renders ``set_status`` into a
   single line), exactly as before.
 
 THE PANEL IS NOT DRAWN FROM THE PUBLISH PATH (ADR-0278 D6). Every snapshot is
@@ -25,14 +25,14 @@ child is silent. The scheduler and the clock are injectable; with no running
 loop (a test, a synchronous caller) the bridge draws at once, as it always did.
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
-is minted inside ``runtime._run`` (``runtime.py:1616``) — after ``spawn_granted``
+is minted inside ``runtime._run`` (``runtime.py:1631``) — after ``spawn_granted``
 has already been entered, and for members 5-8 of an 8-task batch not until
 wave 2 — so nothing can hand this object a list of ids when the batch starts.
 Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:2125-2129``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:2167-2171``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
@@ -233,7 +233,7 @@ The statusline is one segment on a shared height-1 row and the model is
 child-authored (read off the child's own ``message_end``), so the term is
 sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
 strips newlines from this row but bounds neither its width nor its ESC content
-(``chrome.py:1763-1786``), so this field is defended at the source, the posture
+(``chrome.py:1828-1851``), so this field is defended at the source, the posture
 the panel already takes. ``current_tool`` and ``profile`` were left to that far
 end until #178 and are now defended the same way — see
 :func:`format_status_row`."""
@@ -392,7 +392,7 @@ class SubagentProgressBridge:
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
-        ``invalidate()`` unconditionally (``chrome.py:2434-2440``), so an
+        ``invalidate()`` unconditionally (``chrome.py:2500-2506``), so an
         unchanged panel re-written on every redraw would be a full repaint for
         nothing."""
 
@@ -505,7 +505,7 @@ class SubagentProgressBridge:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:2125-2129``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:2167-2171``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.

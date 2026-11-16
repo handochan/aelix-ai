@@ -794,3 +794,23 @@ the three named guards pass there.
 - *Limits.* Read at start only. Turning jobs off leaves the job records already in a session file
   (`aelix.job` facts, notice entries) where they are; what reads them then is S3e's rollback test.
   The setting reference goes into S3e's `background-jobs.md`.
+
+
+## Note (2026-11-12, ADR-0298, #775)
+
+**Adoption: a running foreground call becomes a job (#611 S3a), behind §12's gate.** The service
+gains, kind-agnostic: `detach` (`jobs/detach.py` `DetachOffers`, the running calls a host's key
+could move, and the host's `guard` every commit asks — none installed means every commit is
+refused); `prepare_adopted` (a job built and not inserted, refused with nothing changed when the
+service is closing, the kind is unknown or not `detachable`, or the session is not the one the
+service serves); `adopt`/`unadopt` (synchronous insert and its undo); `give_slot` (the caller's
+reservation `split(1)` into the job, the count unchanged); `run_adopted` (the job's task: its
+`start` fact with the client's `client` and its `process` fact as a fact task, then `_drive`); and
+`rescue_adopted` (a job task cancelled before its first step runs `_drive` again with the stop as
+the service's own, so it ends `stopped` through its barrier and frees its slot). The facade exposes
+them for a kind its extension registered (`offer_detach`, `detach_blocked`, `detach_refused`,
+`prepare_adopted`, …). `decode`'s mapping also carries the start fact's `client_start`.
+Measured on a synthetic detachable kind: `adopt` is called from a plain function, the start time
+handed over is not sampled again, the facts are `start`, `process`, `cleanup`, `outcome`, and each
+refusal leaves no job, no slot and no task (`tests/jobs/test_adopt_611.py`). The note on the kernel's
+`AgentHarness.abort_pending` comes with S3e (contract r4 §7).

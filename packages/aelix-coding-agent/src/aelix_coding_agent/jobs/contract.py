@@ -236,7 +236,8 @@ class JobKindAdapter(Protocol):
 
     def decode(self, client: Mapping[str, Any]) -> ClientOutcome:
         """A restart's reading of an ended job: ``client`` is ``{"fact": <the outcome fact>,
-        "records": <the job's own records, each with its custom_type>}`` (Codex #12)."""
+        "records": <the job's own records, each with its custom_type>, "client_start": <the
+        start fact's client>}`` (Codex #12; ``client_start`` since #775)."""
         ...
 
     def render_notice(self, outcome: ClientOutcome) -> NoticeBody: ...

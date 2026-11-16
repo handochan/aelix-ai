@@ -3,7 +3,7 @@
 The P2 gate asked once per spawn. A ``mode="parallel"`` / ``mode="chain"`` call
 starts up to eight children from ONE tool call, and decision S4 says that is one
 dialog rendering every member's task and the single cwd they share — not one
-dialog per child (two modals from one call collide on ``tui/chrome.py:956``'s
+dialog per child (two modals from one call collide on ``tui/chrome.py:971``'s
 single ``_modal`` slot) and emphatically not a remembered grant (the session memo
 this module removed covered LATER calls, whose tasks nobody had seen).
 
@@ -208,7 +208,7 @@ def _tall_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_an_eight_task_batch_opens_exactly_one_dialog() -> None:
     """S4's headline: one tool call, one decision, one modal.
 
-    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:956``'s single
+    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:971``'s single
     ``_modal`` slot unconditionally, so a second dialog from the same call
     orphans the first Future and hangs the turn (until #701, which stacks the
     slot; eight dialogs in a row are still seven too many).
@@ -993,7 +993,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:841-844`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:846-849`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards
@@ -1137,7 +1137,7 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # --- F1: the dialog may not be forgeable by any interpolated value ------------
 #
 # THE CRITICAL FINDING, AND IT IS AN INVARIANT, NOT AN EXAMPLE. ``cwd`` is
-# model-chosen; ``resolve_child_cwd`` (``print_channel.py:691``) validated only
+# model-chosen; ``resolve_child_cwd`` (``print_channel.py:705``) validated only
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title

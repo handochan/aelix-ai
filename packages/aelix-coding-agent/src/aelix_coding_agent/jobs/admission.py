@@ -70,10 +70,13 @@ class Reservation:
 
         if self._released or slots < 1 or slots > self.slots:
             raise ValueError(f"cannot take {slots} slot(s) from a reservation of {self.slots}")
+        # The destination first: a failure building it leaves these slots
+        # where they were, never spent and owned by no one (#775, Codex r1 1c).
+        moved = Reservation(self._owner, self.key, slots)
         self.slots -= slots
         if self.slots == 0:
             self._released = True
-        return Reservation(self._owner, self.key, slots)
+        return moved
 
     def release(self) -> None:
         if self._released:

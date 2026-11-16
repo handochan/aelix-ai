@@ -1012,3 +1012,12 @@ format character and no escape residue, every forgery left visible behind its
 - No timeout is added: `agent(action="wait")` ends the wait, never the agent (ADR-0295 §2).
 Inert until #611 S3.
 
+
+## Note (2026-11-12, ADR-0298, #775)
+
+**D14 is unchanged by Ctrl+B.** A call Ctrl+B may move is awaited through a delegate that hands
+every step and cancel to the run as `await` does; a cancelled call is still reported once, by
+`_execute_pending`'s own handler, with the same text, in the five scenarios measured
+(`tests/agents_ext/test_detach_driver_611.py`). A call that was moved returns its detach text in
+the step it was moved in and is never cancelled, so it writes no D14 report; its result comes back
+as the job's notice.

@@ -11,7 +11,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``), or it is a chain step
 waiting for the one before it, and has no spawn id at all, because
 ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:1616``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:1631``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -62,14 +62,14 @@ prunes (``loop.py:689`` declares ``update_events``, ``:724`` appends,
 and it is drained only when the turn settles), and ``loop.py`` is KERNEL — it
 may not be edited — so throttling here is the ONLY legal mitigation for H10.
 
-500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:1249``),
+500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:1264``),
 so every emission is guaranteed visible while 5 Hz is already past the rate a
 human reads a changing row. It bounds a 10-minute child at ~1 200 interval
 flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:1633-1634``), which for a chatty child is hundreds per
+stdout line (``runtime.py:1650-1651``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 1
@@ -102,7 +102,7 @@ and it was the character count that let a row through at twice its promised
 width.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
-row (``chrome.py:1763-1786`` joins them with two spaces), so the last two
+row (``chrome.py:1828-1851`` joins them with two spaces), so the last two
 columns are the join, not content. It is not lower than that because S10's own
 worked example —
 ``agent scout ×4 · 2 running · 1 done · 1 queued · 33s · 12.3k tok · $0.0093``
@@ -145,10 +145,10 @@ one row each (:func:`panel_height`). Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
 bound: ``chrome._render_widget_lines`` joins the list with ``\\n`` and ANSI-parses
-it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:2042``/``:1183-1185``),
+it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:2107``/``:1198-1200``),
 which is multi-row and uncapped, so an over-long list pushes the transcript and
 the input line off screen. Contrast ``chrome._render_status``, which strips
-newlines because "this is a fixed height=1 chrome row" (``chrome.py:1763-1765``) —
+newlines because "this is a fixed height=1 chrome row" (``chrome.py:1828-1830``) —
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
@@ -515,7 +515,7 @@ def _short_profile(name: str) -> str:
 
     :func:`format_aggregate_status` was ALSO the panel's header line until
     ADR-0278, and the panel is not newline-stripped downstream the way the
-    statusline is (``chrome.py:1763-1765``). A profile name of 16 characters
+    statusline is (``chrome.py:1828-1830``). A profile name of 16 characters
     containing newlines would pass the length cap and still add rows to the
     widget, so the same helper that bounds every panel row bounds this too.
     """
@@ -628,7 +628,7 @@ def format_aggregate_status(
     has published yet — the profile name is only knowable from a snapshot, and a
     row that cannot name the agent is noise on a shared row). The caller must
     treat ``""`` as "write no row", NOT as "write an empty row": an empty
-    segment still costs the two-space join at ``chrome.py:1790``.
+    segment still costs the two-space join at ``chrome.py:1855``.
 
     NUMBERS. ``elapsed`` is the MAX over live members — they start together, so
     the oldest one is the batch's age; the executor's own measured wall clock is
@@ -2290,7 +2290,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:1616``).
+        (``runtime.py:1631``).
         """
 
         if index < 0:

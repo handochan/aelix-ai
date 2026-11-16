@@ -154,6 +154,30 @@ unwritten. Add them with the next release.
   agent's result keeps the half as before; on openai-completions its model reads the answer with
   the half dropped. With the Anthropic adapter such a foreground result still ends the turn with
   an encoding error before anything is sent, as before this change.
+- **Ctrl+B moves a running delegation into the background, built and switched off (#775, #611
+  S3a, ADR-0298).** In the TUI, with background jobs on, Ctrl+B moves the one running `agent`
+  call with one task, or a `resume`, into a background job of the session without starting it
+  again: the call returns at once with "Moved to the background at the user's request: …", the
+  agent keeps running, and its result comes back once as a notice
+  (`tests/agents_ext/test_detach_611.py`). Ctrl+B is not taken — the cursor moves left, as before,
+  and nothing else happens — with no running call or several, while an interrupt or an abort is
+  pending, during a session change or reload, with the completion menu open, without input focus,
+  or after a refused attempt (one attempt per call); under a focused dialog it does nothing, the
+  input's cursor included (`tests/tui/test_detach_key_611.py`). When the key is taken and the move
+  itself is refused — under a task factory, an abort or interrupt asked for in the meantime, a run
+  that ended or whose slot is spent, or a failure while publishing the job — the run goes on in the
+  turn and one line says why (`tests/agents_ext/test_detach_commit_611.py`,
+  `tests/agents_ext/test_detach_atomic_611.py`). Keys act in the order pressed: an Esc handled
+  before or with Ctrl+B in one loop turn wins; Ctrl+B pressed first moves the call, and the Esc
+  then stops only the turn. An extension's `ctrl+b` is skipped while the key is bound, and
+  `/hotkeys` lists it, "twice in tmux". A call that is never moved ends exactly as before in the
+  five scenarios measured (`tests/agents_ext/test_detach_driver_611.py`). A resume of a running
+  background agent — spawned or moved — is now refused as running ("that agent is already
+  running"), before its dialog; with the gate on and before this change a running spawned agent's
+  resume was refused by its child session's writer lock instead ("that agent's session is in use by
+  another process"). All of it is
+  **behind `jobs/activation.py` `ACTIVE = False`**: with the gate off Ctrl+B is `backward-char` and
+  every call is awaited as before. #611 S3e turns it on and adds no second entry for it.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

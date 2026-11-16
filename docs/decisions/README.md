@@ -68,6 +68,26 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   is a rename of a function that is gone or a renumbering. The per-release trend value is radon's count with each
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
+- [0298 — Ctrl+B moves a running foreground delegation into a background job](0298-ctrl-b-moves-a-running-delegation-into-a-background-job.md)
+  (Accepted 2026-11-12; #775, #611 S3a; inert until #611 S3e). In the TUI, with background jobs on,
+  Ctrl+B moves the one running `agent` `run` (one task) or `resume` into a job of the session
+  without starting it again: the call is awaited through a PEP 380 delegate (`aelix_agents/detach.py`
+  `drive`), the run's one safe point is `_stream_and_reap`'s live wait, and a synchronous commit in
+  the turn's step validates (no task factory, every suspended frame in a five-function audited set,
+  no pending interrupt or abort — the new read-only `AgentHarness.abort_pending` — no session
+  change, the child live with its spawn-time start, the slot unspent), creates the job's gated task
+  first, publishes with undo, moves the slot last and returns the detach text; the job's task
+  resumes the same coroutine. A task cancelled before its first step is rescued through the
+  service's `_drive` (`stopped`, slot freed). One attempt per call; Esc in the same loop turn wins.
+  The key needs exactly one ready call, focus, no modal or menu; otherwise it is `backward-char`;
+  an extension's `ctrl+b` is skipped; `/hotkeys` (this lane's row) says "twice in tmux" (owner
+  OQ-S3-3 is about the guide). A call never
+  moved ends as before in five measured scenarios. The claim `live_sessions` refuses resuming a
+  running background agent. Fix round 1 (2026-11-17): the commit is exception-atomic (the answer
+  built before the gate, undo before each step, `split` allocates first, silent publication), the
+  rescue covers a start step that fails, a restart resolves an agent to its newest job, the audit
+  sees aliases and helpers, an unknown linkage stays unresolved. Limits: win32 root-only evidence,
+  the runner rule, a lost start fact.
 - [0297 — A bash command can run in the background as a job of its session](0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md)
   (Accepted 2026-11-11; #760, #611 S2d; inert until #611 S3; amended 2026-11-12, #769 and #770:
   a settled command past the per-session bound is kept only as its records read, and delegation

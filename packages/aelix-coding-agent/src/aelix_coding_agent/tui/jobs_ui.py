@@ -88,6 +88,9 @@ class JobsUi:
         self._restored_said: set[str] = set()
         self._detach_service = service.add_listener(self.on_service_change)
         self._detach_placed = service.add_placed_listener(self._placed)
+        # #775 — this TUI is the host Ctrl+B asks (ADR-0298).
+        service.detach.guard = self.detach_blocked
+        service.detach.note = self._detach_refused
         self.attach(runtime_host.harness)
 
     # --- wiring ----------------------------------------------------------------
@@ -133,6 +136,7 @@ class JobsUi:
         for detach in (self._detach_harness, self._detach_service, self._detach_placed):
             if detach is not None:
                 detach()
+        self.service.detach.unhost(self.detach_blocked)
 
     def is_wake(self, item: object) -> bool:
         return isinstance(item, NoticeWake)
@@ -195,6 +199,45 @@ class JobsUi:
             self.chrome.queue_wake(WAKE)
         noun = "result" if waiting == 1 else "results"
         return f"Sending {waiting} waiting {noun} to the model."
+
+    # --- Ctrl+B (#775, ADR-0298) ------------------------------------------------------
+
+    def detach_blocked(self) -> str | None:
+        """Why no running delegation may move now, or ``None`` — asked by every commit (M5).
+
+        An interrupt the TUI scheduled (Esc, Ctrl+C, a signal, ``/quit``) and
+        an abort the harness was asked for — an extension's ``ctx.abort()``
+        that cancels nothing included (R20, conservative) — refuse, and so does
+        a session change, a reload or a held or disposed harness.
+        """
+
+        host = self.runtime_host
+        harness = host.harness
+        if getattr(self.chrome, "interrupt_pending", False):
+            return "an interrupt is pending"
+        if getattr(harness, "abort_pending", False):
+            return "an abort is pending"
+        if getattr(host, "stopped", None) is not None or getattr(host, "in_transition", False):
+            return "a session change or a reload is in progress"
+        if getattr(harness, "turns_held", None) is not None or getattr(harness, "disposed", False):
+            return "the session's turns are held"
+        return None
+
+    def detach_ready(self) -> bool:
+        """Ctrl+B's filter: a turn runs, nothing blocks a move, and EXACTLY ONE call is ready."""
+
+        if not getattr(self.chrome, "running", False) or self.detach_blocked() is not None:
+            return False
+        return len(self.service.detach.ready()) == 1
+
+    def request_detach(self) -> bool:
+        """The key, checked again at the press; whether a call took it."""
+
+        return self.detach_ready() and self.service.detach.request()
+
+    def _detach_refused(self, why: str) -> None:
+        if self.commit is not None:
+            self.commit(f"Ctrl+B: could not move it to the background now ({why}).")
 
     # --- surfaces ----------------------------------------------------------------
 

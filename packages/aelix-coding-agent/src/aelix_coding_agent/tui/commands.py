@@ -917,7 +917,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5270-5284`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5283-5297`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1048,7 +1048,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:4017`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4029`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -2310,13 +2310,22 @@ _HOTKEYS: list[tuple[str, str]] = [
 ]
 
 
+#: #775 (ADR-0298) — listed only while background jobs are on, when it is bound.
+_DETACH_HOTKEY = (
+    "Ctrl+B",
+    "Move the running delegation to the background (cursor left otherwise; twice in tmux)",
+)
+
+
 async def _hotkeys_handler(ctx: CommandContext, args: str) -> None:
     """``/hotkeys`` — show the keyboard shortcuts as a table (ignores args)."""
+
+    from aelix_coding_agent.jobs.activation import is_active
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
-    for key, desc in _HOTKEYS:
+    for key, desc in [*_HOTKEYS, *([_DETACH_HOTKEY] if is_active() else [])]:
         table.add_row(key, desc)
     ctx.commit(Panel(table, title="Keyboard shortcuts", box=ROUNDED, border_style="cyan"))
 

@@ -101,7 +101,7 @@ from aelix_coding_agent.jobs.contract import (
     RelationSpec,
 )
 from aelix_coding_agent.jobs.notice import escape_body, format_elapsed
-from aelix_coding_agent.jobs.records import append_record
+from aelix_coding_agent.jobs.records import JOB_FACT_TYPE, append_record
 
 from aelix_agents.child_session import (
     CANNOT_BIND_RUN,
@@ -208,11 +208,14 @@ foreground ways — ``stop``, ``/new`` … — which are not how a job is stoppe
 _HELPERS_UNTRACKED = "the agent's run had no launch ledger to sweep"
 _HELPERS_NO_JOB = "the agent ran without a Windows Job to confirm its helpers against"
 _HELPERS_UNCONFIRMED = "its processes are not yet confirmed gone"
+_HELPERS_MOVED_WIN32 = (
+    "aelix closed the run's Windows Job; its members end asynchronously after the agent"
+)
 
 CAPABILITIES = KindCapabilities(
     background=True,
-    # Ctrl+B is #611 S3.
-    detachable=False,
+    # A TUI ``run`` or ``resume`` can be moved into a job with Ctrl+B (#775, ADR-0298).
+    detachable=True,
     output=True,
     # ``job_stop`` and the ``job`` tool's reads cover every kind, but stopping
     # and waiting for an agent is this tool's (#604: one ``agent`` tool).
@@ -518,47 +521,17 @@ class DelegationRunner:
                 # launch is refused and the call says why (ADR-0293 §7).
                 ctx.launch_failed(f"the agent could not be started: {type(exc).__name__}: {exc}")
             raise
-        stopped_by = _STOPPED_BY.get(self._stopped_by or "")
-        if result.reason == REASON_STOPPED and stopped_by is not None:
-            result = dataclasses.replace(result, reason=stopped_by)
-        self.result = result
         entry.session_path = own.session_path
         if not own.launched:
             # ``_run`` refused, or the spawn failed: the start call's error, and
             # no notice (ADR-0293 §3).
             ctx.launch_failed(result.error or result.summary or "the agent did not start")
-        text = _utf8_safe(_result_text(result))
-        self.text = text
-        # ``key`` is named at the launch (``named``): a run that never launched writes none.
-        self.result_file = await _write_result(launch.host.session(), entry.key, text)
-        status = _STATUS_OF.get(result.status, "failed")
-        entry.status = status
-        return ClientOutcome(
-            status=status,
-            brief=_utf8_safe(_brief(result)),
-            payload={
-                "text": text,
-                "agent_id": entry.agent_id,
-                "key": entry.key,
-                "session_id": entry.session_id,
-                "profile": launch.resolved.name,
-                "envelope_status": result.status,
-            },
+        return await _outcome_of(
+            self, entry, result, profile=launch.resolved.name, session=launch.host.session()
         )
 
     def _on_progress(self, entry: AgentJob, progress: SubagentProgress) -> None:
-        ctx = self._ctx
-        if ctx is None:
-            return
-        with contextlib.suppress(Exception):
-            ctx.progress(
-                {
-                    "tool": None if progress.current_tool is None else _utf8_safe(progress.current_tool),
-                    "tokens": progress.tokens,
-                    "last_text": None if progress.last_text is None else _utf8_safe(progress.last_text),
-                    "state": progress.state,
-                }
-            )
+        _job_progress(self._ctx, progress)
 
     def request_stop(self, reason: str) -> None:
         if self._stopped_by is None:
@@ -617,6 +590,162 @@ class DelegationRunner:
         records = list(own.closing or []) if own is not None else []
         written = self.result_file
         return records + ([(RESULT_RECORD_TYPE, written.record())] if written is not None else [])
+
+
+class AdoptedRunner:
+    """The job's side of a run Ctrl+B moved (#775, ADR-0298): the SAME coroutine, resumed in the job's task.
+
+    Unlike :class:`DelegationRunner` it launched nothing and owns nothing of
+    the channel's: the row, its tree and its cleanup task stay the print
+    channel's, as for any foreground run, and the job's evidence is the root
+    recorded at its spawn. What it adds is the job's view of that run:
+
+    * ``run`` resumes the parked coroutine (``drive(..., first=True)``); a
+      cancel the service delivers is thrown into it — ``_run``'s own cancel
+      path. Rescued (:meth:`cancel_first`), its first move is that cancel;
+    * ``request_stop`` is today's stop: the row marked, ``runtime.stop``;
+    * ``helper_cleanup`` waits for the run's own cleanup task and maps the
+      answer it kept (``CleanupDuty.answer``); a task that failed makes it
+      raise, and a task still running makes the service's ``wait_for`` bound
+      raise, so the job stays ``unresolved`` and asks again;
+    * ``records`` are the closing records ``_run`` handed over, which the
+      service writes confirmed with the job's id; none handed raises.
+
+    It reads the extension's live host getters until the run ends — an
+    exemption from ADR-0293's runner rule, bounded by the stop on ``/reload``
+    and on the owner's end.
+    """
+
+    def __init__(
+        self,
+        *,
+        box: Any,
+        row: RunningChild,
+        runtime: _SubagentRuntimeImpl,
+        link: Any,
+        entry: AgentJob,
+        profile: str,
+        session: Any,
+        on_end: Callable[[], Any],
+    ) -> None:
+        self._box = box
+        self._row = row
+        self._runtime = runtime
+        self._link = link
+        self._entry = entry
+        self._profile = profile
+        self._session = session
+        self._on_end = on_end
+        self._first_exc: BaseException | None = None
+        self._stopped_by: str | None = None
+        self._stop: asyncio.Future[None] | None = None
+        self.result: SubagentResult | None = None
+        self.text: str | None = None
+        self.result_file: ResultFile | None = None
+
+    def cancel_first(self) -> None:
+        """Rescued: the first move into the moved run is a cancel (contract r4 §2.6)."""
+
+        self._first_exc = asyncio.CancelledError()
+
+    async def run(self, ctx: Any) -> ClientOutcome:
+        from aelix_agents.detach import drive
+
+        self._entry.runner = weakref.ref(self)  # type: ignore[assignment]
+        first_exc = self._first_exc
+        # From this step the run is this runner's: the first task's rescue
+        # stands down (``detach._rescue``).
+        self._box.entered = True
+        try:
+            result = await drive(
+                self._box.inner, None, first=None if first_exc else True, first_exc=first_exc
+            )
+        finally:
+            self._on_end()
+        return await _outcome_of(self, self._entry, result, profile=self._profile, session=self._session)
+
+    def request_stop(self, reason: str) -> None:
+        if self._stopped_by is None:
+            self._stopped_by = reason
+        self._row.stopped = True
+        if self._stop is None:
+            self._stop = asyncio.ensure_future(self._runtime.stop(self._row.id))
+
+    async def settle(self) -> None:
+        if self._stop is not None:
+            await asyncio.shield(self._stop)
+
+    async def helper_cleanup(self, receipt: Mapping[str, Any]) -> HelperCleanup:
+        if not receipt.get("confirmed"):
+            return HelperCleanup("unverified", _HELPERS_UNCONFIRMED)
+        duty = self._row.cleanup
+        if duty is None or duty.task is None:
+            return HelperCleanup("unverified", _HELPERS_UNTRACKED)
+        await asyncio.shield(duty.task)
+        if duty.error is not None:
+            raise RuntimeError(f"the run's cleanup failed: {type(duty.error).__name__}")
+        answer = duty.answer
+        if sys.platform == "win32":
+            return HelperCleanup("unverified", _HELPERS_MOVED_WIN32)
+        if answer is None:
+            return HelperCleanup("unverified", _HELPERS_UNTRACKED)
+        if answer.confirmed:
+            return HelperCleanup("confirmed")
+        return HelperCleanup("unverified", answer.reason)
+
+    def records(self, outcome: ClientOutcome) -> list[tuple[str, dict[str, Any]]]:
+        records = self._link.records
+        if records is None:
+            raise RuntimeError("the moved run handed over no closing records")
+        written = self.result_file
+        return list(records) + (
+            [(RESULT_RECORD_TYPE, written.record())] if written is not None else []
+        )
+
+
+async def _outcome_of(
+    runner: Any, entry: AgentJob, result: SubagentResult, *, profile: str, session: Any
+) -> ClientOutcome:
+    """A background run's envelope as its job's outcome: the text, its file (#769), the payload."""
+
+    stopped_by = _STOPPED_BY.get(runner._stopped_by or "")
+    if result.reason == REASON_STOPPED and stopped_by is not None:
+        result = dataclasses.replace(result, reason=stopped_by)
+    runner.result = result
+    text = _utf8_safe(_result_text(result))
+    runner.text = text
+    # ``key`` is named at the launch: a run that never launched writes none.
+    runner.result_file = await _write_result(session, entry.key, text)
+    status = _STATUS_OF.get(result.status, "failed")
+    entry.status = status
+    return ClientOutcome(
+        status=status,
+        brief=_utf8_safe(_brief(result)),
+        payload={
+            "text": text,
+            "agent_id": entry.agent_id,
+            "key": entry.key,
+            "session_id": entry.session_id,
+            "profile": profile,
+            "envelope_status": result.status,
+        },
+    )
+
+
+def _job_progress(ctx: Any, progress: SubagentProgress) -> None:
+    """One progress snapshot as a job's ``ctx.progress`` (a spawned or a moved run)."""
+
+    if ctx is None:
+        return
+    with contextlib.suppress(Exception):
+        ctx.progress(
+            {
+                "tool": None if progress.current_tool is None else _utf8_safe(progress.current_tool),
+                "tokens": progress.tokens,
+                "last_text": None if progress.last_text is None else _utf8_safe(progress.last_text),
+                "state": progress.state,
+            }
+        )
 
 
 def _children_dir(session: Any) -> str | None:
@@ -684,8 +813,14 @@ class DelegationKindAdapter:
         self._session = session
 
     def decode(self, client: Mapping[str, Any]) -> ClientOutcome:
-        """A restart's reading of an ENDED job: its own settle, never a made-up text."""
+        """A restart's reading of an ENDED job: its own settle, never a made-up text.
 
+        A moved run's linkage of a version this client cannot read raises, as
+        ``recover`` answers ``adapter_decode_error`` for it: the service then
+        keeps the job's stored brief and body (ADR-0293's decode failure).
+        """
+
+        _readable_linkage(client.get("client_start"))
         fact = client.get("fact")
         fact = fact if isinstance(fact, Mapping) else {}
         records = client.get("records")
@@ -693,9 +828,13 @@ class DelegationKindAdapter:
         status = fact.get("status")
         if status == "recovered":
             # Read from the child's file at the last restart: no settle backs it,
-            # so its identity comes from the start record and ``result`` reads the
-            # file again under the same rules (Codex #6).
-            payload = {**_payload_of(_start_of(records)), "recovered": True}
+            # so its identity comes from the start record — a moved run's, from
+            # its job's linkage (#775) — and ``result`` reads the file again under
+            # the same rules (Codex #6).
+            payload = {
+                **_payload_of(_start_of(records, client.get("client_start"))),
+                "recovered": True,
+            }
         else:
             payload = _settled_payload(records)
         return ClientOutcome(
@@ -826,17 +965,17 @@ class DelegationKindAdapter:
            A run that is not the latest is ``unresolved(cannot_bind_run)``.
         3. Anything else — no start record, a held lock, no answer yet — is
            ``None``: the service classifies from OS evidence, report-only.
+
+        Before any of it, a moved run's linkage of a version this client cannot
+        read is ``unresolved(adapter_decode_error)``, settle or not (#775,
+        Codex r1 6): the records it links cannot be trusted to be this run's.
         """
 
-        settle = _settle_of(list(client_records))
-        if settle is not None:
-            status = _STATUS_OF.get(str(settle.get("status")), "failed")
-            return Recovered(
-                status=status,
-                brief=f"recorded {settle.get('status')} before aelix restarted",
-                payload=_payload_of(settle),
-            )
-        start = _start_of(list(client_records))
+        linkage = facts.get("client")
+        settled = _settled_recovery(linkage, client_records)
+        if settled is not None:
+            return settled
+        start = _start_of(list(client_records), linkage)
         if start is None:
             return None
         session = self._session()
@@ -903,6 +1042,38 @@ class DelegationJobs:
         if entry.key:
             self._by_agent[entry.key] = entry.job_id
 
+    def adopt_entry(self, entry: AgentJob) -> None:
+        """A run Ctrl+B moved into a job (#775): named at once, as a spawn is at its launch."""
+
+        self.info[entry.job_id] = entry
+        self.name(entry)
+
+    def forget(self, job_id: str) -> None:
+        """Undo :meth:`adopt_entry` (a commit that could not publish)."""
+
+        entry = self.info.pop(job_id, None)
+        for name in (entry.agent_id, entry.key) if entry is not None else ():
+            if name and self._by_agent.get(name) == job_id:
+                del self._by_agent[name]
+
+    def live_sessions(self, facade: Any) -> set[str]:
+        """The child sessions of this session's background agents not past their barrier (#775, R15).
+
+        A ``spawn`` job runs on a runtime of its own and a moved run leaves its
+        call's registry when ``_run`` ends, so neither is a row the resume check
+        sees (``runtime.resume_refusal``); this is the claim it asks instead.
+        """
+
+        live: set[str] = set()
+        for entry in list(self.info.values()):
+            if entry.session_id is None:
+                continue
+            with contextlib.suppress(Exception):
+                snap = facade.snapshot(entry.job_id)
+                if snap is not None and snap.state not in TERMINAL_STATES:
+                    live.add(entry.session_id)
+        return live
+
     def job_id_for(self, agent_id: str) -> str | None:
         if agent_id in self.info:
             return agent_id
@@ -927,20 +1098,13 @@ class DelegationJobs:
         found = self.job_id_for(agent_id)
         if found is None and session is not None:
             with contextlib.suppress(Exception):
-                for entry in await session.get_entries():
-                    data = getattr(entry, "data", None)
-                    if (
-                        getattr(entry, "custom_type", None) != CHILD_SESSION_TYPE
-                        or not isinstance(data, dict)
-                        or not isinstance(data.get("job_id"), str)
-                    ):
-                        continue
-                    child = data.get("child")
-                    names = {data.get("key")}
-                    if isinstance(child, dict):
-                        names.add(child.get("session_id"))
-                    if agent_id in names:
-                        found = data["job_id"]
+                # NEWEST FIRST (#775, Codex r1 4): a resumed agent moved again has a
+                # second job, and its id names the latest run; an older job is
+                # still found by its own job id, above.
+                for entry in reversed(list(await session.get_entries())):
+                    named = _job_named_by(entry)
+                    if named is not None and agent_id in named[1]:
+                        found = named[0]
                         break
         if found is None:
             return None
@@ -1433,8 +1597,104 @@ def _settle_of(records: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return _records_of(records, "settle")
 
 
-def _start_of(records: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    return _records_of(records, "start")
+def _start_of(
+    records: list[Mapping[str, Any]], client_start: Any = None
+) -> Mapping[str, Any] | None:
+    """The run's ``start`` record; for a run Ctrl+B moved, which has none of its job's, the
+    one its job's ``start`` fact links (``client`` v1, #775)."""
+
+    found = _records_of(records, "start")
+    return found if found is not None else _adopted_start(client_start)
+
+
+ADOPTED_LINK_VERSION = 1
+"""The version of the ``client`` a moved run's job ``start`` fact carries (#775, ADR-0298)."""
+
+
+def adopted_client_start(row: RunningChild, *, profile: str, task: str, tool_call_id: str, posture: str) -> dict[str, Any]:
+    """The linkage a moved run's job records in its ``start`` fact: its run's key and child session."""
+
+    return {
+        "v": ADOPTED_LINK_VERSION,
+        "adopted": True,
+        "key": row.id,
+        "child": {"session_id": row.session_id, "rel": row.session_rel},
+        "profile": profile,
+        "task": task,
+        "tool_call_id": tool_call_id,
+        "posture": posture,
+    }
+
+
+def _linkage_unknown(client_start: Any) -> bool:
+    """A moved run's linkage of a version this client cannot read."""
+
+    return (
+        isinstance(client_start, Mapping)
+        and bool(client_start.get("adopted"))
+        and client_start.get("v") != ADOPTED_LINK_VERSION
+    )
+
+
+def _settled_recovery(linkage: Any, client_records: list[Mapping[str, Any]]) -> Recovered | None:
+    """``recover``'s first answers: an unreadable linkage, else the parent's confirmed settle; else ``None``."""
+
+    if _linkage_unknown(linkage):
+        return Recovered(status="unresolved", reason="adapter_decode_error")
+    settle = _settle_of(list(client_records))
+    if settle is None:
+        return None
+    return Recovered(
+        status=_STATUS_OF.get(str(settle.get("status")), "failed"),
+        brief=f"recorded {settle.get('status')} before aelix restarted",
+        payload=_payload_of(settle),
+    )
+
+
+def _readable_linkage(client_start: Any) -> None:
+    """Raise for a moved run's linkage of a version this client cannot read (``decode``'s check)."""
+
+    if _linkage_unknown(client_start):
+        raise ValueError(
+            f"adapter_decode_error: a moved run's linkage of version {client_start.get('v')!r}"
+        )
+
+
+def _adopted_start(client_start: Any) -> Mapping[str, Any] | None:
+    if not isinstance(client_start, Mapping) or not client_start.get("adopted"):
+        return None
+    if _linkage_unknown(client_start):
+        return None
+    child = client_start.get("child")
+    return {
+        "custom_type": CHILD_SESSION_TYPE,
+        "phase": "start",
+        "key": client_start.get("key"),
+        "profile": client_start.get("profile"),
+        "child": dict(child) if isinstance(child, Mapping) else {},
+    }
+
+
+def _job_named_by(entry: Any) -> tuple[str, set[Any]] | None:
+    """``(job_id, names)`` when ``entry`` links a job to an agent: a record carrying a ``job_id``,
+    or a moved run's job ``start`` fact (``client`` v1, #775)."""
+
+    data = getattr(entry, "data", None)
+    if not isinstance(data, dict) or not isinstance(data.get("job_id"), str):
+        return None
+    custom_type = getattr(entry, "custom_type", None)
+    record: Any = data
+    if custom_type == JOB_FACT_TYPE and data.get("fact") == "start":
+        record = _adopted_start(data.get("client"))
+    elif custom_type != CHILD_SESSION_TYPE:
+        record = None
+    if record is None:
+        return None
+    child = record.get("child")
+    names = {record.get("key")}
+    if isinstance(child, Mapping):
+        names.add(child.get("session_id"))
+    return data["job_id"], names
 
 
 def _settled_payload(records: list[Mapping[str, Any]]) -> dict[str, Any]:
