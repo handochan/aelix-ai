@@ -23,6 +23,7 @@ from aelix_coding_agent.jobs.contract import JobKindAdapter, JobSnapshot, Runner
 
 if TYPE_CHECKING:
     from aelix_coding_agent.jobs.admission import Reservation
+    from aelix_coding_agent.jobs.detach import DetachOffer
     from aelix_coding_agent.jobs.registry import Registration
     from aelix_coding_agent.jobs.service import JobService
 
@@ -99,6 +100,70 @@ class JobsFacade:
             reservation=reservation,
             client_start=client_start,
         )
+
+    # === Ctrl+B: a running call moved into a job (#775, ADR-0298) ===============
+
+    def offer_detach(self, kind: str, offer: DetachOffer) -> Callable[[], None]:
+        """Offer a running call of ``kind`` to the host's Ctrl+B; the callable that takes it back."""
+
+        self._check()
+        if not self._mine(kind):
+            raise ValueError(f"job kind {kind!r} is not one this extension registered")
+        return self._service.detach.offer(offer)
+
+    def detach_blocked(self) -> str | None:
+        """Why no call may move now (the host's guard), or ``None``."""
+
+        return self._service.detach.blocked()
+
+    def detach_refused(self, why: str) -> None:
+        """Say, once, that a move was refused (the host's one line)."""
+
+        self._service.detach.refused(why)
+
+    def prepare_adopted(
+        self,
+        kind: str,
+        *,
+        title: str,
+        runner: Any,
+        session: Any,
+        client_start: Mapping[str, Any],
+        process: Any,
+    ) -> Any:
+        """``JobService.prepare_adopted`` for a kind this extension registered: a job not yet inserted."""
+
+        from aelix_coding_agent.jobs.service import JobStartRefused
+
+        self._check()
+        if not self._mine(kind):
+            raise JobStartRefused(f"job kind {kind!r} is not one this extension registered")
+        return self._service.prepare_adopted(
+            kind,
+            title=title,
+            runner=runner,
+            session=session,
+            client_start=client_start,
+            process=process,
+        )
+
+    def adopt(self, job: Any, task: Any) -> None:
+        self._service.adopt(job, task)
+
+    def unadopt(self, job: Any) -> None:
+        self._service.unadopt(job)
+
+    def announce_adopted(self, job: Any) -> None:
+        self._service.announce_adopted(job)
+
+    def give_slot(self, job: Any, reservation: Reservation) -> None:
+        self._service.give_slot(job, reservation)
+
+    def run_adopted(self, job: Any) -> Any:
+        return self._service.run_adopted(job)
+
+    def rescue_adopted(self, job: Any, why: str) -> None:
+        self._service.rescue_adopted(job, why)
 
     def list(self) -> list[JobSnapshot]:
         self._check()

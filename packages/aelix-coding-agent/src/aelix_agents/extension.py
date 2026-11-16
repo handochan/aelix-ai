@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.subagent_contract import SubagentMode, SubagentProgress
 
     from aelix_agents.child_session import ResumeTarget
+    from aelix_agents.detach import CallDetach, Detached
     from aelix_agents.jobs_client import DelegationJobs
     from aelix_agents.tool import AgentCall
 
@@ -391,6 +392,14 @@ class AgentsExtension:
     only while background jobs are on (``jobs/activation.py``); while they are
     off nothing here is asked."""
 
+    detach_host: Callable[[], bool] | None = None
+    """Can a running ``run``/``resume`` be moved into a job with Ctrl+B? (#775, ADR-0298.)
+
+    Wired in ``cli/entry.py`` to "the TUI": only an interactive host has the
+    key. ``None`` — the bare form the tests build — means no, so every other
+    host, and every test that does not ask, awaits its call as before. Read
+    only while the ``agent`` job kind is registered."""
+
     _api: Any | None = field(default=None, init=False)
     _ctx: Any | None = field(default=None, init=False)
     _runtime: Any | None = field(default=None, init=False)
@@ -414,6 +423,11 @@ class AgentsExtension:
     _delegation_jobs: DelegationJobs | None = field(default=None, init=False)
     """This process's background agents (``jobs_client``), made on the first
     build that registers the kind and kept across every build after it."""
+    _adopted_routes: dict[str, Callable[[SubagentProgress], None]] = field(
+        default_factory=dict, init=False
+    )
+    """Spawn id → its job's progress, for a run Ctrl+B moved (#775): the host tap
+    sends it there, never to the statusline bridge, until the run ends."""
     _built: list[Any] = field(default_factory=list, init=False)
     """Every runtime a build made that may still hold a run's cleanup task
     (#719, #750): an older build's ``stop_all`` left any it could not finish
@@ -550,7 +564,9 @@ class AgentsExtension:
                 except Exception as exc:
                     raise RuntimeError(f"Delegation refused: {exc}") from exc
 
-            runtime.host = dataclasses.replace(runtime.host, reserve=reserve)
+            runtime.host = dataclasses.replace(
+                runtime.host, reserve=reserve, claimed=lambda: jobs.live_sessions(facade)
+            )
         return True
 
     def _reserve(self, wanted: int) -> tuple[Any, str | None]:
@@ -953,9 +969,10 @@ class AgentsExtension:
         return None
 
     def _publish_progress(self, progress: SubagentProgress) -> None:
-        bridge = self._progress
-        if bridge is not None:
-            bridge(progress)
+        # A run Ctrl+B moved reports to its job, never to the bridge (#775).
+        tap = self._adopted_routes.get(progress.id, self._progress)
+        if tap is not None:
+            tap(progress)
 
     def _publish_disclosure(self, key: str, text: str | None) -> None:
         """Route one call's #196 disclosure row to the statusline bridge.
@@ -1138,7 +1155,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1605-1615``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1620-1630``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1464,7 +1481,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1503-1512``).
+        seam is released on teardown, ``extension.py:1520-1529``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1743,7 +1760,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1616``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1631``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1765,7 +1782,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2125-2129``) with no ``await`` between them, so THIS
+            # (``runtime.py:2167-2171``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a
@@ -1832,6 +1849,9 @@ class AgentsExtension:
         # and a builder while it runs — and the ``except`` below reports them
         # when the turn is cancelled.
         envelopes = CallEnvelopes()
+        # #775 — Ctrl+B's side of a TUI ``run`` or ``resume`` (ADR-0298); ``None``
+        # everywhere else, where the call is awaited as before.
+        call = self._detach_call(pending, key)
         try:
             if pending.resume is not None:
                 # A RESUME IS A SINGLE RUN in everything the parent sees (#610
@@ -1839,21 +1859,24 @@ class AgentsExtension:
                 # below. ``resume_granted`` checks again that the conversation
                 # and the target are still the ones the hook approved, then
                 # runs ONE child on the agent's own session file.
-                result = await runtime.resume_granted(
-                    pending.grant,
-                    pending.resolved,
-                    pending.resume,
-                    pending.call.task,
-                    on_event=lambda progress: _on_event(0, progress),
-                    record=SpawnRecordMeta(
-                        tool_call_id=key,
-                        mode=pending.call.mode,
-                        index=0,
-                        envelopes=envelopes,
+                return await self._run_call(
+                    runtime.resume_granted(
+                        pending.grant,
+                        pending.resolved,
+                        pending.resume,
+                        pending.call.task,
+                        on_event=_guarded(call, lambda progress: _on_event(0, progress)),
+                        record=SpawnRecordMeta(
+                            tool_call_id=key,
+                            mode=pending.call.mode,
+                            index=0,
+                            envelopes=envelopes,
+                        ),
+                        reservation=pending.reservation,
+                        detach=call,
                     ),
-                    reservation=pending.reservation,
+                    call,
                 )
-                return render_subagent_result(result)
             if pending.call.mode == "single":
                 # UNCHANGED FROM P2, deliberately: one child, ``spawn_granted``
                 # directly, ``render_subagent_result``. Routing a single task
@@ -1861,21 +1884,24 @@ class AgentsExtension:
                 # renderer under the shape that is already shipped and already
                 # tested. No ``timeout_ms`` (#604, ADR-0276): the call no longer
                 # carries one and the child runs until it finishes or is stopped.
-                result = await runtime.spawn_granted(
-                    pending.grant,
-                    pending.resolved,
-                    pending.call.task,
-                    cwd=pending.cwd,
-                    on_event=lambda progress: _on_event(0, progress),
-                    record=SpawnRecordMeta(
-                        tool_call_id=key,
-                        mode=pending.call.mode,
-                        index=0,
-                        envelopes=envelopes,
+                return await self._run_call(
+                    runtime.spawn_granted(
+                        pending.grant,
+                        pending.resolved,
+                        pending.call.task,
+                        cwd=pending.cwd,
+                        on_event=_guarded(call, lambda progress: _on_event(0, progress)),
+                        record=SpawnRecordMeta(
+                            tool_call_id=key,
+                            mode=pending.call.mode,
+                            index=0,
+                            envelopes=envelopes,
+                        ),
+                        reservation=pending.reservation,
+                        detach=call,
                     ),
-                    reservation=pending.reservation,
+                    call,
                 )
-                return render_subagent_result(result)
 
             outcome = await run_batch(
                 runtime=runtime,
@@ -1953,6 +1979,187 @@ class AgentsExtension:
             # is.
             if pending.grant.disclosure:
                 self._publish_disclosure(key, None)
+
+    # ── Ctrl+B: a running call moved into a job (#775, ADR-0298) ───
+
+    def _detach_call(self, pending: PendingSpawn, key: str) -> CallDetach | None:
+        """Ctrl+B's side of this call, or ``None`` (R1'): a TUI host, the ``agent`` kind
+        registered, one task (a ``run`` in single mode, or a ``resume``)."""
+
+        facade = self._jobs_facade
+        if facade is None or pending.call.mode != "single" or not self._detach_host_now():
+            return None
+        from aelix_agents.detach import CallDetach
+        from aelix_agents.jobs_client import KIND
+
+        return CallDetach(
+            adopt=lambda call, inner: self._adopt(call, inner, pending, key),
+            offer=lambda call: facade.offer_detach(KIND, call),
+            refused_note=facade.detach_refused,
+        )
+
+    def _detach_host_now(self) -> bool:
+        host = self.detach_host
+        if host is None:
+            return False
+        try:
+            return bool(host())
+        except Exception:  # noqa: BLE001 — an unanswerable host has no key
+            return False
+
+    async def _run_call(self, run: Any, call: CallDetach | None) -> ToolResult:
+        """The call's run, awaited — through the delegate when Ctrl+B may move it (#775).
+
+        With no ``call`` this is the bare ``await`` every host had. With one,
+        :func:`~aelix_agents.detach.drive` hands every step to the run as
+        ``await`` would, and a commit that published returns the detach text
+        in the step the key's wake ran in.
+        """
+
+        if call is None:
+            return render_subagent_result(await run)
+        from aelix_agents.detach import Detached, drive
+
+        result = await drive(run, call.commit)
+        if isinstance(result, Detached):
+            return ToolResult(content=[TextContent(text=result.text)])
+        return render_subagent_result(result)
+
+    def _adopt(
+        self, call: CallDetach, inner: Any, pending: PendingSpawn, key: str
+    ) -> Detached | None:
+        """The commit (ADR-0298 §3): synchronous, in the turn's step that woke for the key.
+
+        Validate (no task factory, every frame across the point audited, the
+        host's guard clear, the child live and recorded at its spawn, the
+        call's slot unspent); build the job and the call's answer without side
+        effects; create its task, gated; publish, each step undone if a later
+        one fails; move the slot last; open the gate.
+        """
+
+        from aelix_agents import detach as dt
+
+        facade, runtime, jobs, row = self._jobs_facade, self._runtime, self._delegation_jobs, call.row
+        reservation = pending.reservation
+        if facade is None or runtime is None or jobs is None or row is None:
+            return None
+
+        def refused(why: str) -> None:
+            call.refusal = why
+
+        return dt.run_ordered_commit(
+            inner,
+            checks=[
+                dt.task_factory_installed,
+                lambda: None
+                if dt.product_allowlist().chain_allowed(inner)
+                else "a frame across the move is not in the audited set",
+                facade.detach_blocked,
+                lambda: _row_refusal(row),
+                lambda: _slot_refusal(reservation),
+            ],
+            build=lambda box: self._adoption_plan(box, call, pending, key, row),
+            on_refused=refused,
+        )
+
+    def _adoption_plan(
+        self, box: Any, call: CallDetach, pending: PendingSpawn, key: str, row: Any
+    ) -> Any:
+        """The job, its runner and the publish steps, built with no side effect (raises to refuse)."""
+
+        import sys
+
+        from aelix_coding_agent.jobs import evidence as ev
+
+        from aelix_agents import detach as dt
+        from aelix_agents.jobs_client import (
+            KIND,
+            AdoptedRunner,
+            AgentJob,
+            _job_progress,
+            adopted_client_start,
+        )
+
+        facade, runtime, jobs = self._jobs_facade, self._runtime, self._delegation_jobs
+        assert facade is not None and runtime is not None and jobs is not None
+        profile, session, proc = pending.resolved.name, self._host_session(), row.proc
+        link = dt.AdoptedLink(job_id="")
+        entry = AgentJob(
+            job_id="",
+            profile=profile,
+            key=row.id,
+            session_id=row.session_id,
+            agent_id=row.session_id or row.id,
+        )
+        runner = AdoptedRunner(
+            box=box,
+            row=row,
+            runtime=runtime,
+            link=link,
+            entry=entry,
+            profile=profile,
+            session=session,
+            on_end=lambda: self._adopted_routes.pop(row.id, None),
+        )
+        job = facade.prepare_adopted(
+            KIND,
+            title=f"{profile}: {_one_line(pending.call.task, 60)}",
+            runner=runner,
+            session=session,
+            client_start=adopted_client_start(
+                row,
+                profile=profile,
+                task=pending.call.task[:200],
+                tool_call_id=key,
+                posture=pending.grant.mode.value,
+            ),
+            process=ev.ProcessRecord(
+                pid=proc.pid,
+                started=row.launch_started,
+                pgid=None if sys.platform == "win32" else proc.pid,
+                proc=proc,
+            ),
+        )
+        entry.job_id = link.job_id = call.job_id = job.job_id
+        agent_id = entry.agent_id or row.id
+        # The call's answer, built BEFORE the gate opens (r4 §2.4 step 2): past
+        # the move nothing may fail into a refusal (Codex r1 1a).
+        result = dt.Detached(
+            job_id=job.job_id,
+            agent_id=agent_id,
+            text=dt.detach_text(
+                profile,
+                posture=pending.grant.mode.value,
+                agent_id=agent_id,
+                job_id=job.job_id,
+                resumed=pending.resume is not None,
+            ),
+        )
+
+        def route(progress: SubagentProgress) -> None:
+            _job_progress(job.ctx, progress)
+
+        def rescue() -> None:
+            runner.cancel_first()
+            facade.rescue_adopted(job, "it was stopped before its run moved to the background")
+
+        return dt.Plan(
+            start=lambda: facade.run_adopted(job),
+            rescue=rescue,
+            publish=[
+                (lambda: facade.adopt(job, box.task), lambda: facade.unadopt(job)),
+                (lambda: setattr(row, "adopted", link), lambda: setattr(row, "adopted", None)),
+                (lambda: setattr(call, "released", True), lambda: setattr(call, "released", False)),
+                (
+                    lambda: self._adopted_routes.__setitem__(row.id, route),
+                    lambda: self._adopted_routes.pop(row.id, None),
+                ),
+                (lambda: jobs.adopt_entry(entry), lambda: jobs.forget(job.job_id)),
+            ],
+            take_slot=lambda: facade.give_slot(job, pending.reservation),
+            result=result,
+            announce=lambda: facade.announce_adopted(job),
+        )
 
     # ── the background actions (#611 S1c, ADR-0295) ───────────────
 
@@ -2118,6 +2325,31 @@ class AgentsExtension:
             facade, jobs, job_id, offset=call.offset or 0, session=session
         )
         return ToolResult(content=[TextContent(text=text)], is_error=failed)
+
+
+def _guarded(call: CallDetach | None, fn: Callable[[Any], None]) -> Callable[[Any], None]:
+    """The per-call tap: ``fn`` itself, or — on a call Ctrl+B may move — ``fn`` until it moved."""
+
+    return fn if call is None else call.guard(fn)
+
+
+def _row_refusal(row: Any) -> str | None:
+    """Why the run itself cannot move now (ADR-0298 §3, check (d)), or ``None``."""
+
+    proc = row.proc
+    if proc is None or proc.returncode is not None:
+        return "the agent has already ended"
+    if row.launch_started is None:
+        return "the agent's start time was not recorded at its spawn"
+    if row.stopped or row.eager_kill:
+        return "the agent is being stopped"
+    return None
+
+
+def _slot_refusal(reservation: Any) -> str | None:
+    if reservation is None or reservation.released or reservation.slots < 1:
+        return "the call's slot is spent"
+    return None
 
 
 def _one_line(text: str, limit: int) -> str:

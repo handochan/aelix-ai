@@ -318,3 +318,15 @@ command in #760's tests. `_spawn_shell` gained only a `popen` argument, for the 
 own spawn kwargs. The job's end calls `launch_ledger.after_call()`, a no-op when unarmed, which
 retires the group it left empty
 (`tests/tools/test_bash_background_611.py::test_the_job_end_retires_its_group_in_an_armed_agents_ledger`).
+
+
+## Note (2026-11-12, ADR-0298, #775)
+
+**The cleanup task keeps its answer.** `CleanupDuty.answer` holds the sweep's `HelperAnswer` and
+`CleanupDuty.error` what ended the task early; before, the answer was one DEBUG line. A foreground
+run reads neither; a run Ctrl+B moved into a job does: its `helper_cleanup` waits for the same task
+under the job service's bound and maps the kept answer (`confirmed`, or `unverified` with its
+reason; on win32 always `unverified`, since the run's Job's members end after it); a task that
+failed makes it raise, and a task still running makes the job service's `wait_for` bound raise, so
+the job stays `unresolved(cleanup_error)` and asks again
+(`tests/agents_ext/test_detach_611.py::test_the_cleanup_answer_the_run_kept_is_the_jobs`).

@@ -103,6 +103,7 @@ from aelix_coding_agent.jobs.contract import (
     RunnerFactory,
     StopReason,
 )
+from aelix_coding_agent.jobs.detach import DetachOffers
 from aelix_coding_agent.jobs.records import (
     NOTICE_CUSTOM_TYPE,
     FoldedJob,
@@ -421,6 +422,8 @@ class JobService:
         self._trimming: asyncio.Task[None] | None = None
         self._trim_again = False
         self._closed = False
+        #: The running foreground calls Ctrl+B could move into a job (#775).
+        self.detach = DetachOffers()
         self.registry.add_listener(self._on_registration)
 
     # === binding ===========================================================
@@ -710,6 +713,160 @@ class JobService:
                     await asyncio.shield(job.task)
             raise JobLaunchFailed(error)
         return job_id
+
+    # === adoption: a running foreground call moved into a job (#775, ADR-0298) ===
+
+    def prepare_adopted(
+        self,
+        kind: str,
+        *,
+        title: str,
+        runner: JobRunner,
+        session: Any,
+        client_start: Mapping[str, Any],
+        process: ev.ProcessRecord,
+    ) -> _Job:
+        """A job for a call Ctrl+B is moving, built and NOT yet inserted; nothing changes here.
+
+        Refused (:class:`JobStartRefused`) when the service is closing, the
+        kind is unknown or not ``detachable``, or ``session`` is not the one
+        the service serves now. The job is ``running`` from the start: its
+        process exists and was recorded at its spawn (``process``, never sampled
+        again). Its ``start`` and ``process`` facts are written by its own task
+        (:meth:`run_adopted`), and its slot is handed over last
+        (:meth:`give_slot`).
+        """
+
+        if self._closed:
+            raise JobStartRefused("the job service is shutting down")
+        registration = self.registry.get(kind)
+        if registration is None or not registration.adapter.capabilities.detachable:
+            raise JobStartRefused(f"no detachable job kind is registered under {kind!r}")
+        if session is None or session is not self._session or self._owner is None:
+            raise JobStartRefused("the call's session is not the one the job service serves")
+        job = _Job(
+            job_id=uuid.uuid4().hex[:16],
+            registration=registration,
+            title=title,
+            owner=self._owner,
+            session=session,
+            notify=registration.adapter.capabilities.notify,
+            created=self._wall(),
+            started_at=self._clock(),
+            # Spent until :meth:`give_slot` moves the call's slot in.
+            reservation=Reservation(self.admission, registration.name, 0),
+            runner=runner,
+            client_start=dict(client_start),
+            state="running",
+        )
+        job.processes.append(process)
+        job.ctx = _Context(self, job)
+        return job
+
+    def adopt(self, job: _Job, task: asyncio.Task[Any]) -> None:
+        """Publish a prepared job, its task created (gated) by the commit. Synchronous; undone by :meth:`unadopt`.
+
+        SILENT: no listener runs here. A listener is outside code, and one run
+        while the commit is half done could change what the commit checked
+        (Codex r1 3); the commit calls :meth:`announce_adopted` once it is whole.
+        """
+
+        job.task = task
+        job.last_activity = job.started_at
+        self._started += 1
+        job.seq = self._started
+        self._jobs[job.job_id] = job
+
+    def unadopt(self, job: _Job) -> None:
+        """Undo :meth:`adopt`, silently, its place in start order given back."""
+
+        if self._jobs.get(job.job_id) is job:
+            del self._jobs[job.job_id]
+            # Its place in start order goes back when no job started after it.
+            self._started = job.seq - 1 if self._started == job.seq else self._started
+
+    def announce_adopted(self, job: _Job) -> None:
+        """The commit that adopted ``job`` is whole: its listeners hear of it now."""
+
+        self._touch()
+
+    def give_slot(self, job: _Job, reservation: Reservation) -> None:
+        """The call's one slot moves into the job, the count unchanged (``Reservation.split``). The commit's last step."""
+
+        job.reservation = reservation.split(1)
+
+    async def run_adopted(self, job: _Job) -> None:
+        """The adopted job's task: its facts first, then the run and its barrier as any job's.
+
+        The ``start`` fact carries the client's linkage (``client``); written
+        quietly, as a fact task ``_finalize`` waits for, so a start that never
+        lands leaves a restart reading the run as a foreground one (a stated
+        limit, ADR-0298).
+        """
+
+        job.fact_tasks.append(asyncio.ensure_future(self._adopted_facts(job)))
+        self._ensure_liveness()
+        await self._drive(job)
+
+    async def _adopted_facts(self, job: _Job) -> None:
+        await self._write_quietly(
+            job.session,
+            make_fact(
+                "start",
+                job.job_id,
+                kind=job.registration.name,
+                kind_version=int(job.adapter.version),
+                owner=job.owner,
+                mode="background",
+                notify=job.notify,
+                title=job.title,
+                created=job.created,
+                settings_key=job.adapter.settings_key,
+                supervisor=ev.supervisor_evidence(),
+                client=dict(job.client_start),
+            ),
+        )
+        for record in list(job.processes):
+            job.process_seq += 1
+            await self._write_quietly(
+                job.session,
+                make_fact("process", job.job_id, seq=job.process_seq, evidence=record.evidence()),
+            )
+
+    def rescue_adopted(self, job: _Job, why: str) -> None:
+        """The adopted job's first task ended before its runner took the run: stop it through :meth:`_drive`.
+
+        That task was cancelled before its first step (Codex r3 M2), or a
+        start step raised before the runner drove the run (Codex r1 2). A new
+        task runs :meth:`_drive_rescued`, whose runner throws the cancel into
+        the moved run; ``_drive`` takes it as the service's own stop, so the
+        job goes through its barrier and ends ``stopped`` with its slot freed.
+        Raises when even that task cannot be created (a stated limit).
+        """
+
+        job.stop_latched = True
+        if job.stop_requested_by_service is None:
+            job.stop_requested_by_service = why
+            job.service_outcome = ClientOutcome("stopped", why)
+        job.task = asyncio.get_running_loop().create_task(
+            self._drive_rescued(job), name=f"aelix-job-{job.job_id}-rescue"
+        )
+
+    async def _drive_rescued(self, job: _Job) -> None:
+        """The rescue's task: the start steps that are missing, best effort, then :meth:`_drive` regardless.
+
+        A start step that failed once is not allowed to strand the run again:
+        its facts and the liveness loop are tried, a failure is logged, and the
+        barrier still runs.
+        """
+
+        try:
+            if not job.fact_tasks:
+                job.fact_tasks.append(asyncio.ensure_future(self._adopted_facts(job)))
+            self._ensure_liveness()
+        except Exception:  # noqa: BLE001 — the run must still be stopped and its slot freed
+            _log.warning("job %s: a start step failed again in its rescue", job.job_id, exc_info=True)
+        await self._drive(job)
 
     def _launch_result(self, job: _Job, error: str | None) -> None:
         if job.launch is None or job.launch.done():
@@ -1520,7 +1677,11 @@ class JobService:
                 # brief and body (ADR-0293's table).
                 try:
                     decoded = registration.adapter.decode(
-                        {"fact": dict(outcome), "records": list(client)}
+                        {
+                            "fact": dict(outcome),
+                            "records": list(client),
+                            "client_start": dict(restored.client_start),
+                        }
                     )
                     restored.payload = dict(decoded.payload)
                 except Exception:  # noqa: BLE001
@@ -1916,7 +2077,11 @@ class JobService:
             if outcome.get("client_records") != "ok":
                 return None
             decoded = self._adapter_now(job.registration).decode(
-                {"fact": dict(outcome), "records": client_records_of(entries, job.job_id)}
+                {
+                    "fact": dict(outcome),
+                    "records": client_records_of(entries, job.job_id),
+                    "client_start": dict(job.client_start),
+                }
             )
             notice_ids = _notice_ids(folded)
             placed = await self._all_placed(job.session, notice_ids)

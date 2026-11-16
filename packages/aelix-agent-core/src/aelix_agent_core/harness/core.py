@@ -6752,6 +6752,18 @@ class AgentHarness:
 
         return self._phase != "idle" and self._withdraw_requested
 
+    @property
+    def abort_pending(self) -> bool:
+        """Aelix-additive (#775): an abort of the running turn has been asked for.
+
+        :meth:`abort` sets ``_abort_requested`` and then cancels the turn task,
+        which sets ``_turn_cancelled``; an extension's ``ctx.abort()`` sets the
+        first with no cancel. Read-only: a host that is about to move work out
+        of the turn (the TUI's Ctrl+B, ADR-0298) refuses while either holds.
+        """
+
+        return self._abort_requested or self._turn_cancelled
+
 
 # === AgentEvent → HookEvent mapping ===
 

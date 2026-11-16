@@ -83,7 +83,7 @@ a ninth live child in a session that already holds four is a resource refusal.
 
 WHAT BOUNDS HOW LONG THE USER WAITS is the human, not a clock (#604, ADR-0276).
 While a delegation runs, Enter is still routed to ``steer()`` as a MESSAGE
-(``chrome.py:1352-1359``), so the way out is the interrupt: Esc or Ctrl+C cancel
+(``chrome.py:1367-1374``), so the way out is the interrupt: Esc or Ctrl+C cancel
 the turn, which cancels this batch and kills every live member
 (``print_channel._eager_abort``); SIGTERM / SIGHUP abort the turn the same way
 (``tui/shell.py``), and ``-p`` turns SIGINT into the same cancellation. The
@@ -169,7 +169,7 @@ class _Batch:
     posture: Callable[[], PermissionMode]
     """The parent's LIVE posture getter (``extension._host_posture``), read once
     per member — never a value captured at call time. shift+tab stays bound while
-    a turn runs (``chrome.py:1633-1636``), and wave 2 may start any time after
+    a turn runs (``chrome.py:1648-1651``), and wave 2 may start any time after
     wave 1 — there is no time limit on wave 1 (#604)."""
     clamp_at_start: PermissionMode
     """The child clamp implied by the parent posture when the batch began. It is
@@ -232,7 +232,7 @@ async def run_batch(
     (``SubagentProgress`` carries no batch id — §3.6 explains why it stays that
     way). The index is available before the child's id exists, which is the
     property that makes the whole grouping design work: ``spawn_id = _new_id()``
-    is minted INSIDE ``_run`` (``runtime.py:1616``), and for members 5-8 not until
+    is minted INSIDE ``_run`` (``runtime.py:1631``), and for members 5-8 not until
     wave 2.
     """
 
@@ -301,12 +301,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:2398-2400`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:2492-2494`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:1873-1881``,
+      it kills the child eagerly before re-raising (``print_channel.py:1969-1977``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -317,7 +317,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1959`` vs ``:1965``) and
+    OUTSIDE its own ``try`` (``print_channel.py:2055`` vs ``:2061``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -415,7 +415,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
     THE ACQUIRE IS THE ONLY ``await`` BEFORE ``spawn_granted``, AND IT IS OUTSIDE
     BOTH TOCTOU WINDOWS (S5 / dossier H12). ``_run``'s admission block —
     ``_admit_live()`` → budget check → ``+= 1`` → ``_new_id()`` → registry insert
-    (``runtime.py:1602-1616``) — contains no ``await``, so asyncio cannot interleave
+    (``runtime.py:1617-1631``) — contains no ``await``, so asyncio cannot interleave
     two members inside it. Putting the acquire anywhere inside that block would
     split it and let two members both pass ``_admit_live`` before either
     registered. It is here, one frame above, where the only thing it orders is how
@@ -431,10 +431,10 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     # WHETHER A CHILD ROW EVER EXISTED, observed rather than inferred. ``_run``
     # publishes a first snapshot IMMEDIATELY after the registry insert
-    # (``runtime.py:1664``) and every refusal that precedes the insert —
+    # (``runtime.py:1681``) and every refusal that precedes the insert —
     # ``_admit_live``, the per-prompt budget, a resume refused at its limits
     # (#610), a non-consented grant — returns BEFORE it
-    # (``runtime.py:1532-1589``). So "this tap fired at least once" is
+    # (``runtime.py:1547-1604``). So "this tap fired at least once" is
     # exactly "a delegation was admitted", which is the fact
     # ``aggregate.MemberOutcome`` needs.
     #
@@ -445,7 +445,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2128-2129``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2170-2171``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -505,13 +505,13 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:641-647``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1396``), and baked into ``grant.mode``, which
+    (``extension.py:657-663``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:1413``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
-    (``runtime.py:1664``). Meanwhile shift+tab stays live during a running
+    (``runtime.py:1681``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
-    (``chrome.py:1633-1636``), and the input window holds focus while a turn runs;
+    (``chrome.py:1648-1651``), and the input window holds focus while a turn runs;
     that is precisely how Enter reaches ``steer()``. Under P2 the resulting window
     was one child and milliseconds. Here it is as long as the batch runs — no
     clock bounds it since #604 — and S11 has deliberately removed every other
@@ -562,7 +562,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:2188-2199``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:2230-2241``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 

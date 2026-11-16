@@ -115,7 +115,7 @@ from aelix_agents.prompt_file import remove_prompt_dir
 from aelix_agents.stream import activity_of, path_for_display, written_paths
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
     from aelix_coding_agent.subagent_contract import SubagentMode
 
@@ -500,6 +500,11 @@ class SubagentHost:
     """Whether a TUI is up (#719): a delegated run's cleanup still running at
     :data:`CLEANUP_BOUND` is reported in the log there, and on stderr in
     ``-p`` / ``--mode json``, where the log is not read."""
+    claimed: Callable[[], Collection[str]] = lambda: ()
+    """The child sessions a background job of this client still runs (#775, R15):
+    a ``spawn`` job's and a moved run's, until the job's barrier. Neither is a row
+    of this runtime once it runs elsewhere, so :meth:`_SubagentRuntimeImpl.resume_refusal`
+    asks this too. Empty while background jobs are off."""
 
 
 @dataclass(frozen=True)
@@ -660,7 +665,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1120``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1134``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -990,6 +995,7 @@ class _SubagentRuntimeImpl:
         on_event: Callable[[SubagentProgress], None] | None = None,
         record: SpawnRecordMeta | None = None,
         reservation: Any = None,
+        detach: Any = None,
     ) -> SubagentResult:
         """The MODEL-DRIVEN door — implementation-private, grant REQUIRED.
 
@@ -1022,6 +1028,9 @@ class _SubagentRuntimeImpl:
         ``reservation`` (#611 S1c) is the slot the CALL reserved before its
         dialog while background jobs are on; the row holds it while it lives
         and the call releases it. ``None`` is the per-session registry count.
+
+        ``detach`` (#775) is the call's ``CallDetach`` when Ctrl+B may move the
+        run into a job; the row carries it to the channel's live wait.
         """
 
         _reject_unsupported(mode, background=background)
@@ -1061,6 +1070,7 @@ class _SubagentRuntimeImpl:
             charge_budget=True,
             record=record,
             reservation=reservation,
+            detach=detach,
         )
 
     # ── Resume (#610, ADR-0277) ───────────────────────────────────
@@ -1138,7 +1148,9 @@ class _SubagentRuntimeImpl:
             return RESUME_UNSUPPORTED_CHANNEL
         if resolved is not None and not _same_identity(resolved, target):
             return RESUME_PROFILE_CHANGED
-        if any(row.session_id == target.session_id for row in self._children.values()):
+        if any(row.session_id == target.session_id for row in self._children.values()) or (
+            target.session_id in self.host.claimed()
+        ):
             return RESUME_RUNNING
         try:
             resume_cwd(target.limits.cwd, self.host.cwd())
@@ -1161,6 +1173,7 @@ class _SubagentRuntimeImpl:
         on_event: Callable[[SubagentProgress], None] | None = None,
         record: SpawnRecordMeta | None = None,
         reservation: Any = None,
+        detach: Any = None,
     ) -> SubagentResult:
         """RESUME a child on its own session file — the model door, grant REQUIRED.
 
@@ -1239,6 +1252,7 @@ class _SubagentRuntimeImpl:
             record=record,
             resume=_Resume(target=target, instruction=instruction),
             reservation=reservation,
+            detach=detach,
         )
 
     # ── Registry ──────────────────────────────────────────────────
@@ -1439,6 +1453,7 @@ class _SubagentRuntimeImpl:
         resume: _Resume | None = None,
         reservation: Any = None,
         owner: Any = None,
+        detach: Any = None,
     ) -> SubagentResult:
         """Register the row, drive the channel, deregister. Always deregisters.
 
@@ -1624,6 +1639,8 @@ class _SubagentRuntimeImpl:
             # The registry the channel publishes this run's cleanup task to
             # (#719, #750), before the channel is called.
             cleanups=self._cleanups,
+            # #775 — Ctrl+B's side of the call, for a TUI run or resume only.
+            detach=detach,
         )
         self._children[spawn_id] = child
         # What the argv will carry, so the id shown is the id launched — read
@@ -1648,7 +1665,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:1633-1636``) and wave 2 may start half an hour after
+            # (``chrome.py:1648-1651``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).
@@ -1707,6 +1724,7 @@ class _SubagentRuntimeImpl:
             if receipt.child is not None:
                 plan = dataclasses.replace(plan, session_path=receipt.child.path)
                 child.session_id = receipt.child.session_id
+                child.session_rel = receipt.child.rel
             # ``channel`` is declared optional because ``None`` is the documented
             # request for the default (``__post_init__`` builds a
             # ``PrintChannel``), so it is never ``None`` here — unless something
@@ -1731,12 +1749,7 @@ class _SubagentRuntimeImpl:
             # append still settles with what the envelope said — not with a
             # ``cancelled`` guess about a delegation that had already finished.
             closing = self._settled_records(receipt, child, result)
-            if owner is not None:
-                # The job service writes them, confirmed, before its own
-                # ``cleanup`` and ``outcome`` (#611 S1c, ADR-0293 §7).
-                owner.hand_records(closing)
-            else:
-                await append_records(receipt.session, closing)
+            await self._close_records(child, owner, receipt, closing, shielded=False)
             settled = True
             return result
         except BaseException as exc:
@@ -1759,10 +1772,7 @@ class _SubagentRuntimeImpl:
                         self._leave_cancelled_envelope(
                             record, child=child, receipt=receipt, plan=plan
                         )
-                    if owner is not None:
-                        owner.hand_records(records)
-                    else:
-                        await _shielded_append(receipt.session, records, self._settling)
+                    await self._close_records(child, owner, receipt, records, shielded=True)
             finally:
                 if taken is not None:
                     # The slot this frame took (#611 S1c): released once the
@@ -1777,9 +1787,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:278``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:279``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1959-1965``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:2055-2061``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -1796,6 +1806,38 @@ class _SubagentRuntimeImpl:
                 if child.state not in _TERMINAL_STATES:
                     child.state = "error"
                 self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+
+    async def _close_records(
+        self,
+        child: RunningChild,
+        owner: Any,
+        receipt: SpawnReceipt,
+        records: list[tuple[str, dict[str, Any]]],
+        *,
+        shielded: bool,
+    ) -> None:
+        """Where a run's settle and final go: its job's, or the parent's session as before.
+
+        A service-owned row hands them to its owner (#611 S1c), and a run that
+        Ctrl+B moved into a job (#775, ``child.adopted``) hands them to that
+        job: the job service writes them, confirmed and carrying the job's id,
+        before its ``cleanup`` and ``outcome``. Every other run appends them as
+        it always did — the same awaits in the same order: shielded on the
+        ``finally``'s path (a second Ctrl+C cannot lose them), plain on a
+        normal close.
+        """
+
+        adopted = child.adopted
+        if owner is not None:
+            # The job service writes them, confirmed, before its own
+            # ``cleanup`` and ``outcome`` (#611 S1c, ADR-0293 §7).
+            owner.hand_records(records)
+        elif adopted is not None:
+            adopted.hand(records)
+        elif shielded:
+            await _shielded_append(receipt.session, records, self._settling)
+        else:
+            await append_records(receipt.session, records)
 
     def _parent_session(self) -> Any | None:
         """The parent's session RIGHT NOW — read once per spawn, by ``_run``.

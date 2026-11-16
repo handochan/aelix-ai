@@ -3430,6 +3430,9 @@ async def _async_main(argv: list[str]) -> int:
                 # #611 S1c — RPC (and ACP over it) refuses the background
                 # actions until #612. Read only while background jobs are on.
                 background_host=lambda: app_mode != "rpc",
+                # #775 (ADR-0298) — Ctrl+B is the TUI's: only there is a running
+                # ``run``/``resume`` awaited through the delegate that can move it.
+                detach_host=lambda: app_mode == "interactive",
             )
 
     # === Agent profile identity (ADR-0196) ===================================

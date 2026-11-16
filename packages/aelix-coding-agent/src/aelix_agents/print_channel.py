@@ -112,6 +112,7 @@ from aelix_coding_agent.tools import ALL_TOOL_NAMES, launch_ledger
 
 from aelix_agents.child_session import RESUME_CWD_GONE, ChildLimits, ResumeRefused
 from aelix_agents.consent import contains_control_chars
+from aelix_agents.detach import migrate_point
 from aelix_agents.envelope import DEFAULT_OUTPUT_CAP, build_result
 from aelix_agents.posture import resume_clamp
 from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt_file
@@ -340,6 +341,19 @@ class RunningChild:
     """The runtime's registry the task is published to, in the same synchronous
     step that creates it (r3 §3.4, Codex N8). ``None`` for a row built without a
     runtime (the channel tests); the task is then held by this module."""
+    session_rel: str | None = None
+    """The child session file's name relative to the parent's, beside
+    :attr:`session_id` (a moved run's job records it, #775)."""
+    detach: Any = field(default=None, repr=False, compare=False)
+    """The call's :class:`~aelix_agents.detach.CallDetach` when Ctrl+B may move
+    this run into a job (#775, ADR-0298): a TUI ``run`` with one task or a
+    ``resume``. ``None`` on every other row, whose live wait is today's."""
+    launch_started: float | None = None
+    """The child's start time, read once right after the spawn, for a row with
+    :attr:`detach` set: a moved run's job records it and never reads it again."""
+    adopted: Any = field(default=None, repr=False, compare=False)
+    """Set by the commit once the run moved (``detach.AdoptedLink``): ``_run``
+    hands its closing records to the job instead of appending them."""
 
 
 @dataclass(frozen=True)
@@ -1592,6 +1606,10 @@ class CleanupDuty:
     step: str = "waiting for the run to end"
     task: asyncio.Task[None] | None = None
     ended: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    answer: HelperAnswer | None = None
+    """The sweep's answer, kept (#775): a moved run's job reads it as its own."""
+    error: BaseException | None = field(default=None, repr=False, compare=False)
+    """What ended the task early, kept beside :attr:`answer` (#775)."""
 
 
 CLEANUP_CONFIRM_SECONDS = launch_ledger.CONFIRM_SECONDS
@@ -1733,6 +1751,7 @@ async def _clean_up(row: RunningChild, duty: CleanupDuty, grace: float) -> None:
         if tracking is not None:
             duty.step = "sweeping what its bash left"
             answer = await sweep_helpers(tracking, parent_stopped=_parent_stopped(row))
+            duty.answer = answer
             if not answer.confirmed:
                 logger.debug(
                     "delegated run %s: its helpers are not confirmed stopped: %s",
@@ -1741,7 +1760,8 @@ async def _clean_up(row: RunningChild, duty: CleanupDuty, grace: float) -> None:
                 )
         duty.step = "waiting for its pipes to close"
         await _release_pipes(proc)
-    except Exception:  # noqa: BLE001 — the directory and the tree still go
+    except Exception as exc:  # noqa: BLE001 — the directory and the tree still go
+        duty.error = exc
         logger.debug("delegated run %s: its cleanup failed", row.id, exc_info=True)
     finally:
         duty.step = "removing its prompt directory"
@@ -1804,6 +1824,82 @@ def _end_of_run(row: RunningChild, grace: float) -> None:
         with contextlib.suppress(OSError):
             row.prompt.path.unlink()
     ensure_cleanup(row, grace=grace)
+
+
+def _ended_envelope(
+    row: RunningChild,
+    envelope: Callable[..., SubagentResult],
+    *,
+    exit_code: int | None,
+    lingered: bool,
+) -> SubagentResult:
+    """The envelope of a run whose wait ended without a cancel or an error, and the row's state."""
+
+    if row.stopped:
+        row.state = "stopped"
+        return envelope(outcome="aborted", exit_code=exit_code)
+    if lingered:
+        # The exit code is the REAPER's, so it is not evidence about the
+        # answer: ``build_result`` reads the stream to decide whether the
+        # child had finished (ADR-0276 D4), and the row follows its verdict.
+        result = envelope(outcome="ok", exit_code=exit_code, lingered=True)
+        row.state = "done" if result.ok else "error"
+        return result
+    # ``outcome="ok"`` is a PROPOSAL, not a verdict: ``build_result``
+    # tightens it when the exit code or the stream disagrees (§(j)). Never
+    # trust the return code alone — until #410 a JSON-mode child whose model
+    # errored exited 0 with empty stderr while the stream carried
+    # ``stop_reason: "error"`` (it exits 1 since, ADR-0268; the stream is
+    # still what ``build_result`` reads).
+    row.state = "done" if exit_code == 0 else "error"
+    return envelope(outcome="ok", exit_code=exit_code)
+
+
+def _offer_detach(row: RunningChild) -> asyncio.Future[bool] | None:
+    """The detach future of a row Ctrl+B may move, its offer made (#775); ``None`` for every other row."""
+
+    detach = row.detach
+    return detach.park(row) if detach is not None else None
+
+
+def _woke_for_detach(
+    row: RunningChild,
+    asked: asyncio.Future[bool] | None,
+    pumps: asyncio.Future[Any],
+    exited: asyncio.Future[Any],
+) -> bool:
+    """The live wait woke for Ctrl+B with the child still live: the call's one attempt is claimed.
+
+    A run that ended in the same loop turn as the key keeps its result: the
+    request is ignored and the run returns as it would have.
+    """
+
+    if asked is None or not asked.done() or pumps.done() or exited.done():
+        return False
+    row.detach.claim()
+    return True
+
+
+def _stamp_launch(row: RunningChild, proc: Any) -> None:
+    """The child's start time, read right after the spawn where something keeps it.
+
+    The sweep reads it against its marker hits (#719), and a row Ctrl+B may
+    move keeps it for its job, which never reads it again (#775, N4).
+    """
+
+    if row.tracking is not None:
+        row.tracking.agent_stamp = _process_identity.process_started(proc.pid)
+    if row.detach is not None:
+        row.launch_started = _process_identity.process_started(proc.pid)
+
+
+def _leave_live_wait(row: RunningChild) -> None:
+    """The live wait is over: a detachable row offers nothing from here on (#775). Total."""
+
+    detach = row.detach
+    if detach is not None:
+        with contextlib.suppress(Exception):
+            detach.leave()
 
 
 class PrintChannel:
@@ -2015,7 +2111,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2548-2565``) nor child
+                    # neither parent (``tui/shell.py:2552-2569``) nor child
                     # (``modes/print_mode.py:253-312``) installs a SIGINT
                     # handler to convert that into a result.
                     #
@@ -2050,8 +2146,7 @@ class PrintChannel:
             # This run owes the process one cleanup task now (#750), and the
             # sweep reads the agent's start time against its marker hits.
             row.channel_cleans = True
-            if row.tracking is not None:
-                row.tracking.agent_stamp = _process_identity.process_started(proc.pid)
+            _stamp_launch(row, proc)
             try:
                 # ITS OWN ``try``, deliberately OUTSIDE the spawn's. Inside it,
                 # an attach failure would take the ``except`` above and return an
@@ -2205,7 +2300,23 @@ class PrintChannel:
             # NO ``timeout=`` (#604, ADR-0276) — see the docstring. A run still
             # going is a child still working, and the 10-minute default that
             # used to end this wait cut off children that were.
-            await asyncio.wait({pumps, exited}, return_when=asyncio.FIRST_COMPLETED)
+            #
+            #
+            # THE ONE PLACE A RUN MAY MOVE (#775, ADR-0298). A row the TUI may
+            # detach also waits on its detach future, which only Ctrl+B
+            # resolves. A run that woke for it with the child still live claims
+            # its one attempt and awaits ``migrate_point``: the delegate's commit
+            # either moves this coroutine to a job's task (``True``) or refuses
+            # (``False``), and the live wait goes on either way, now without the
+            # future. Every other row waits once, on the same two, as before.
+            asked = _offer_detach(row)
+            await asyncio.wait(
+                {pumps, exited} if asked is None else {pumps, exited, asked},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if _woke_for_detach(row, asked, pumps, exited):
+                await migrate_point()
+                await asyncio.wait({pumps, exited}, return_when=asyncio.FIRST_COMPLETED)
 
             if pumps.done():
                 # Both pipes reached EOF — every writer closed them, so the
@@ -2253,29 +2364,12 @@ class PrintChannel:
             return envelope(outcome="error", exit_code=exit_code, error=str(exc))
         finally:
             exited.cancel()
+            _leave_live_wait(row)
 
         # No post-kill drain here any more (#604). It ran only when the deadline
         # fired with the pumps still open; the one kill left on this path — the
         # post-EOF reap — happens after both pumps have finished.
-
-        if row.stopped:
-            row.state = "stopped"
-            return envelope(outcome="aborted", exit_code=exit_code)
-        if lingered:
-            # The exit code is the REAPER's, so it is not evidence about the
-            # answer: ``build_result`` reads the stream to decide whether the
-            # child had finished (ADR-0276 D4), and the row follows its verdict.
-            result = envelope(outcome="ok", exit_code=exit_code, lingered=True)
-            row.state = "done" if result.ok else "error"
-            return result
-        # ``outcome="ok"`` is a PROPOSAL, not a verdict: ``build_result``
-        # tightens it when the exit code or the stream disagrees (§(j)). Never
-        # trust the return code alone — until #410 a JSON-mode child whose model
-        # errored exited 0 with empty stderr while the stream carried
-        # ``stop_reason: "error"`` (it exits 1 since, ADR-0268; the stream is
-        # still what ``build_result`` reads).
-        row.state = "done" if exit_code == 0 else "error"
-        return envelope(outcome="ok", exit_code=exit_code)
+        return _ended_envelope(row, envelope, exit_code=exit_code, lingered=lingered)
 
     @staticmethod
     async def _drain_after_exit(

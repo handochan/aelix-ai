@@ -622,3 +622,27 @@ settled-run case raises in `page`; the helper guard fails. The two tool-name cas
 - *Not changed.* The kind-agnostic job layer still encodes what any kind hands it: an extension
   kind whose brief or notice body holds a lone surrogate is not covered by this change (not
   measured).
+
+
+## Note (2026-11-12, ADR-0298, #775)
+
+**A foreground call moved by Ctrl+B is a job of this kind too (#611 S3a), behind the gate.**
+`CAPABILITIES.detachable` is `True`. A moved run's job is driven by `jobs_client.AdoptedRunner`,
+which resumes the moved coroutine instead of launching a child, stops it through the runtime's
+`stop`, waits for the run's own cleanup task and maps the answer it kept (ADR-0296's note), and
+returns the closing records `_run` handed it. **Linkage v1:** the job's `start` fact carries
+`client = {"v": 1, "adopted": true, "key", "child": {"session_id", "rel"}, "profile", "task",
+"tool_call_id", "posture"}`; `_start_of`, `decode`, `DelegationJobs.resolve` and `recover` read a
+moved run's identity from it, since its opening records are the call's and carry no `job_id`. An
+unknown `v` is `unresolved(adapter_decode_error)` from `recover`, settle or not, and `decode` raises
+on it (fix round 1, Codex #6). `resolve` reads the records newest first: a resumed agent moved again
+has a second job, and after a restart an agent's or a session's id names the latest one, while a
+job id still names its own (fix round 1, Codex #4)
+(`tests/agents_ext/test_detach_611.py`, the linkage tests). **The claim (R15):**
+`DelegationJobs.live_sessions()` — the child sessions of this session's background agents not
+past their barrier — is the runtime host's `claimed`, and `resume_refusal` answers
+`RESUME_RUNNING` for them at the hook and at execute, for a `spawn` job as for a moved run; until
+now a resume of a running spawned agent was stopped only by the child's writer lock, whose refusal
+says the session "is in use by another process" (on `c91cdc7b`, measured with a real child by
+verify round 2). What changes with the gate on is the refusal's reason and wording; that
+`RESUME_RUNNING` stays is 리드 판단 (`::test_a_running_spawned_agent_is_claimed_against_resume`).

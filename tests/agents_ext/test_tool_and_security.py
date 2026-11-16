@@ -737,7 +737,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:1615``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:1630``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1091,7 +1091,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:1101-1104``) rendered by the kernel
+# the model as a blocked call (``extension.py:1118-1121``) rendered by the kernel
 # as an immediate error result (``loop.py:604-617``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
@@ -1842,7 +1842,7 @@ def test_execution_mode_survives_dataclasses_replace() -> None:
     The kernel downgrades the WHOLE BATCH to sequential when any tool in it
     declares ``execution_mode="sequential"`` (``types.py:47-56``,
     ``loop.py:848-858``), which is what stops two ``agent`` calls in one
-    assistant message racing two modals onto ``tui/chrome.py:956``'s single
+    assistant message racing two modals onto ``tui/chrome.py:971``'s single
     ``_modal`` slot. Because the description is re-stamped with
     :func:`dataclasses.replace` on every ``before_agent_start``, losing the
     field there would silently reopen the hazard.
