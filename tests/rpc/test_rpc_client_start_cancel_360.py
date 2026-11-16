@@ -36,16 +36,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import gc
 import os
 import signal
+import subprocess
 import sys
 import textwrap
+import threading
+import time
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from aelix_ai.utils import _process_identity, _process_tree
 from aelix_ai.utils._process_tree import ProcessTree, _Win32Api, kill_process_tree
 from aelix_coding_agent.rpc import rpc_client as rpc_client_module
 from aelix_coding_agent.rpc.rpc_client import (
@@ -56,7 +62,20 @@ from aelix_coding_agent.rpc.rpc_client import (
 )
 
 from tests.event_waits import wait_until, within
-from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
+from tests.process_probe import (
+    STATE_ALIVE,
+    STATE_GONE,
+    STATE_ZOMBIE,
+    await_dead_or_zombie,
+)
+from tests.rpc._identity import (
+    ENDED,
+    STATE_REUSED,
+    Identities,
+    await_gone,
+    kill_if_tracked,
+    same_or_reused,
+)
 
 _DEAD = (STATE_GONE, STATE_ZOMBIE)
 
@@ -157,10 +176,6 @@ def _really_kill(pid: int) -> None:
         os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
-async def _states(pids: list[int]) -> list[str]:
-    return [await await_dead_or_zombie(pid, timeout=5.0) for pid in pids]
-
-
 def _tree_argv(pid_file: Path, *extra: str, child: str = _TREE_CHILD) -> list[str]:
     return [sys.executable, "-c", child, str(pid_file), *extra]
 
@@ -191,10 +206,224 @@ async def _start_with_its_tree(
     return client, start, pids
 
 
-async def test_a_cancel_inside_the_grace_takes_the_child_and_its_tree(tmp_path: Path) -> None:
+#: ``PROCESS_QUERY_LIMITED_INFORMATION``, and the exit code a running process reports.
+_QUERY_LIMITED = 0x1000
+_STILL_ACTIVE = 259
+
+
+def _win32_kernel32() -> Any:
+    k32 = ctypes.WinDLL(  # pyright: ignore[reportAttributeAccessIssue]
+        "kernel32", use_last_error=True
+    )
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    k32.QueryFullProcessImageNameW.restype = ctypes.c_int
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    k32.GetExitCodeProcess.restype = ctypes.c_int
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.restype = ctypes.c_int
+    return k32
+
+
+def _describe(pid: int) -> str:
+    """#772, win32: the image (last two path parts) and state of whatever holds ``pid`` now."""
+
+    if sys.platform != "win32":
+        return "-"
+    k32 = _win32_kernel32()
+    handle = k32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()  # pyright: ignore[reportAttributeAccessIssue]
+        return f"no process (OpenProcess error {error})"
+    try:
+        size = ctypes.c_uint32(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        ok = k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        image = "\\".join(buf.value.split("\\")[-2:]) if ok else "image ?"
+        code = ctypes.c_uint32()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return f"{image} exit ?"
+        state = "running" if code.value == _STILL_ACTIVE else f"exited {code.value}"
+        return f"{image} {state} started {_process_identity.process_started(pid)}"
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _in_job_now(pid: int, tree: ProcessTree) -> str:
+    job = tree.job
+    if sys.platform != "win32" or job is None:
+        return "job closed"
+    api = _process_tree._KernelApi()
+    try:
+        handle = api.open_member(pid)
+    except OSError as exc:
+        return f"unopenable ({exc})"
+    try:
+        return "in job" if api.in_job(handle, job) else "NOT in job"
+    except OSError as exc:
+        return f"IsProcessInJob failed ({exc})"
+    finally:
+        api.close_process(handle)
+
+
+def _described_members(tree: ProcessTree) -> str:
+    """#772: the job's LIVE members now, each with image, state and creation time.
+
+    ``JobObjectBasicProcessIdList`` lists only members that have not exited, so
+    a tracked pid missing from it may simply have exited by then: in run
+    43209921126, 40 of 88 records had a pid the snapshot read ``in job`` and
+    this list no longer held at the kill (verify r1). The snapshot's ``in job``
+    / ``NOT in job`` is the membership read; it reads an exited process too
+    while a handle keeps it (18 of that run's 128 ``in job`` reads, verify r2),
+    and was of a running process for the grandchild in 88 of 88 records.
+    """
+
+    if sys.platform != "win32":
+        return "no job off win32"
+    job = tree.job
+    if job is None:
+        return f"no job (contained={tree.contained})"
+    try:
+        members = sorted(_process_tree._KernelApi().job_member_pids(job))
+    except OSError as exc:
+        return f"live job members unreadable: {exc}"
+    return "live job members [" + "; ".join(f"{pid} {_describe(pid)}" for pid in members) + "]"
+
+
+class _JobWitness:
+    """#772: each tracked pid's identity (``tests.rpc._identity``) and what each kill met.
+
+    At the pid file, on every platform, :meth:`snapshot` records each pid's
+    state and creation time; on win32 also each process's image and whether
+    the job holds it. Before every ``hard_kill`` (win32): the job's live
+    members with image, state and creation time, and ``ActiveProcesses``;
+    then the ``taskkill`` it ran and how long, whether ``TerminateJobObject``
+    raised, and ``ActiveProcesses`` after. Nothing is reported unless the
+    case fails. The reads before the real ``hard_kill`` are not guarded: on
+    win32 each catches ``OSError`` and off win32 none reads the kernel. A raise
+    there skips the kill. On POSIX and on ``stop()``'s path that fails the case;
+    on win32 ``start``'s abandon records it as a cleanup error and the release's
+    ``CloseHandle`` (``kill_on_close``) still ends the tree, so the case may pass.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.seen: list[str] = []
+        self.ids = Identities()
+        real = ProcessTree.hard_kill
+
+        def _witnessed(tree: ProcessTree) -> None:
+            before = f"{_described_members(tree)} active={tree.active_processes()}"
+            began = time.monotonic()
+            real(tree)
+            self.seen.append(
+                f"hard_kill {time.monotonic() - began:.3f}s, before: {before}, "
+                f"after: active={tree.active_processes()}"
+            )
+
+        monkeypatch.setattr(ProcessTree, "hard_kill", _witnessed)
+        if sys.platform != "win32":
+            return
+        real_taskkill = _process_tree._KernelApi.taskkill
+        real_terminate = _process_tree._KernelApi.terminate_job
+
+        def _taskkill(api: Any, pid: int) -> None:
+            began = time.monotonic()
+            try:
+                real_taskkill(api, pid)
+            finally:
+                self.seen.append(f"taskkill {pid} {time.monotonic() - began:.3f}s")
+
+        def _terminate(api: Any, job: int) -> None:
+            try:
+                real_terminate(api, job)
+            except OSError as exc:
+                self.seen.append(f"TerminateJobObject raised {exc}")
+                raise
+            self.seen.append("TerminateJobObject ok")
+
+        monkeypatch.setattr(_process_tree._KernelApi, "taskkill", _taskkill)
+        monkeypatch.setattr(_process_tree._KernelApi, "terminate_job", _terminate)
+
+    def snapshot(self, client: RpcClient, pids: list[int]) -> None:
+        """At the pid file: each pid's state and creation time; on win32, image and membership."""
+
+        self.ids.record(pids)
+        if sys.platform != "win32":
+            return
+        proc, tree = client.process, client.tree
+        root = proc.pid if proc is not None else None
+        held = [f"root {root}: {_describe(root)}"] if root is not None else []
+        for pid in pids:
+            member = _in_job_now(pid, tree) if tree is not None else "no tree"
+            held.append(f"{pid}: {_describe(pid)}, {member}")
+        self.seen.append("at the pid file: " + "; ".join(held))
+
+    def kill_if_tracked(self, pid: int) -> None:
+        """:func:`_really_kill`, unless ``pid`` is known to be another process now."""
+
+        kill_if_tracked(pid, self.ids, _really_kill)
+
+
+#: How long each tracked pid has to die (the 5 s the number-only read gave it
+#: before #772), then the further poll a failure takes before it reports.
+#: Module names, so the cases that pin the failing branch can shorten them.
+_DEATH_BOUND = 5.0
+_FURTHER_POLL = 10.0
+
+
+async def _assert_the_tree_died(
+    pids: list[int],
+    root: int | None,
+    witness: _JobWitness,
+    what: str = "the tree outlived its kill",
+) -> None:
+    """Each tracked pid dead within :data:`_DEATH_BOUND`, read by identity (#772).
+
+    #772 (windows-latest py3.13, 5 of 12 runs on 2026-11-12): the grandchild
+    read ``alive`` after a 5 s poll that asked only whether its NUMBER was
+    held. A number another process is known to hold now
+    (:meth:`tests.rpc._identity.Identities.reused`) no longer reads as the
+    tracked process. On a survivor the case polls :data:`_FURTHER_POLL` more
+    and fails with the witness's notes and, for each survivor, whether its
+    creation time is still the one read at the pid file.
+    """
+
+    at_raise = [f"{pid}: {_describe(pid)}" for pid in pids]
+    states = [await await_gone(pid, witness.ids, timeout=_DEATH_BOUND) for pid in pids]
+    if all(state in ENDED for state in states):
+        return
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    later: list[str] = []
+    for pid, state in zip(pids, states, strict=True):
+        if state in ENDED:
+            continue
+        state = await await_gone(pid, witness.ids, timeout=_FURTHER_POLL)
+        took = loop.time() - started
+        later.append(
+            f"{pid} {state} {took:.2f}s on, now {_describe(pid)}, "
+            f"{same_or_reused(pid, witness.ids)}"
+        )
+    pytest.fail(
+        f"{what}: {(pids, states)}: root {root}; {witness.seen or ['no hard_kill']}; "
+        f"at the raise: {at_raise}; after a further poll: {later}"
+    )
+
+
+async def test_a_cancel_inside_the_grace_takes_the_child_and_its_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Red on the base: both pids alive after the ``CancelledError``."""
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path)
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -202,10 +431,8 @@ async def test_a_cancel_inside_the_grace_takes_the_child_and_its_tree(tmp_path: 
         with pytest.raises(asyncio.CancelledError):
             await within(start, bound=20.0, what="the cancelled start()")
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the child and its grandchild {pids} outlived a cancel inside start()'s "
-            f"grace: {states}"
+        await _assert_the_tree_died(
+            pids, proc.pid, witness, "the child and its grandchild outlived a cancel in the grace"
         )
         # Released, so the caller is not handed a dead child to stop later and
         # the client can be started again — the transport included, or asyncio
@@ -214,7 +441,7 @@ async def test_a_cancel_inside_the_grace_takes_the_child_and_its_tree(tmp_path: 
         assert _transport_closed(proc)
     finally:
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_cancel_inside_the_products_own_grace_takes_the_child() -> None:
@@ -247,7 +474,9 @@ async def test_a_second_cancel_while_the_start_is_abandoned_still_kills_and_rele
     one ``await`` between the kill and the release.
     """
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path)
+    witness.snapshot(client, pids)
     original = client.wait_for_exit
     seen: list[str] = []
 
@@ -265,15 +494,16 @@ async def test_a_second_cancel_while_the_start_is_abandoned_still_kills_and_rele
             await within(start, bound=20.0, what="the twice-cancelled start()")
 
         assert seen == ["second cancel"], "the abandon's wait was never reached"
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (pids, states)
+        await _assert_the_tree_died(pids, None, witness)
         assert _released(client), "the second cancel skipped the release"
     finally:
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
-async def test_a_cancel_on_every_turn_of_the_abandon_cannot_skip_the_kill(tmp_path: Path) -> None:
+async def test_a_cancel_on_every_turn_of_the_abandon_cannot_skip_the_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The kill is sent before the abandon first suspends (verify S2).
 
     A cancel is sent on each of the next loop turns after the first, so
@@ -283,7 +513,9 @@ async def test_a_cancel_on_every_turn_of_the_abandon_cannot_skip_the_kill(tmp_pa
     red with both pids alive; nothing else here does.
     """
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path)
+    witness.snapshot(client, pids)
 
     async def _cancel_every_turn() -> int:
         sent = 0
@@ -302,12 +534,11 @@ async def test_a_cancel_on_every_turn_of_the_abandon_cannot_skip_the_kill(tmp_pa
             await within(start, bound=20.0, what="the start() cancelled on every turn")
         assert await storm >= 1
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (pids, states)
+        await _assert_the_tree_died(pids, None, witness)
         assert _released(client)
     finally:
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 def _hold_the_spawn(
@@ -349,6 +580,7 @@ async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     """
 
     pid_file = tmp_path / "tree.pids"
+    witness = _JobWitness(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -356,6 +588,7 @@ async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
     try:
         await wait_until(lambda: forked and _pids(pid_file) is not None, what="the fork and its tree")
         pids = _pids(pid_file) or []
+        witness.snapshot(client, pids)
         start.cancel()
         await asyncio.sleep(0)
         start.cancel()
@@ -365,16 +598,15 @@ async def test_a_cancel_inside_the_spawn_takes_the_child_and_its_tree(
         with pytest.raises(asyncio.CancelledError):
             await within(start, bound=20.0, what="the start() cancelled inside its spawn")
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the child and its grandchild {pids} outlived a cancel inside the spawn: {states}"
+        await _assert_the_tree_died(
+            pids, forked[0].pid, witness, "the tree outlived a cancel in the spawn"
         )
         assert _released(client)
         assert _transport_closed(forked[0])
     finally:
         gate.set()
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_spawn_that_outlives_the_bound_is_ended_when_it_lands(
@@ -392,6 +624,7 @@ async def test_a_spawn_that_outlives_the_bound_is_ended_when_it_lands(
         SPAWN_SETTLE_SECONDS = 0.05
 
     pid_file = tmp_path / "tree.pids"
+    witness = _JobWitness(monkeypatch)
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _ShortSettle(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -399,22 +632,22 @@ async def test_a_spawn_that_outlives_the_bound_is_ended_when_it_lands(
     try:
         await wait_until(lambda: forked and _pids(pid_file) is not None, what="the fork and its tree")
         pids = _pids(pid_file) or []
+        witness.snapshot(client, pids)
         start.cancel()
         with pytest.raises(asyncio.CancelledError):
             await within(start, bound=20.0, what="the start() whose spawn outlived the bound")
         assert not gate.is_set()
 
         gate.set()
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the late spawn's child and grandchild {pids} were never ended: {states}"
+        await _assert_the_tree_died(
+            pids, forked[0].pid, witness, "the late spawn's child and grandchild were never ended"
         )
         await wait_until(lambda: _transport_closed(forked[0]), what="the late spawn's transport")
         assert _released(client)
     finally:
         gate.set()
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_late_spawn_whose_root_was_already_reaped_is_sent_no_kill(
@@ -484,6 +717,7 @@ async def test_a_cancel_while_cpython_connects_the_pipes_takes_the_child_and_its
         return await real_connect(*args, **kwargs)
 
     monkeypatch.setattr(loop, "connect_read_pipe", _held_connect)
+    witness = _JobWitness(monkeypatch)
     pid_file = tmp_path / "tree.pids"
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
     start = asyncio.ensure_future(client.start())
@@ -494,6 +728,7 @@ async def test_a_cancel_while_cpython_connects_the_pipes_takes_the_child_and_its
             what="the pipe connection and the tree",
         )
         pids = _pids(pid_file) or []
+        witness.snapshot(client, pids)
         start.cancel()
         await asyncio.sleep(0)
         assert not start.done(), "start() ended before the spawn it was cancelled in"
@@ -501,16 +736,14 @@ async def test_a_cancel_while_cpython_connects_the_pipes_takes_the_child_and_its
         with pytest.raises(asyncio.CancelledError):
             await within(start, bound=20.0, what="the start() cancelled while its pipes connected")
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the child and its grandchild {pids} outlived a cancel in the pipe connection: "
-            f"{states}"
+        await _assert_the_tree_died(
+            pids, None, witness, "the child and its grandchild outlived a cancel in the pipes"
         )
         assert _released(client)
     finally:
         gate.set()
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_cancel_inside_a_spawn_that_then_fails_stays_a_cancel(tmp_path: Path) -> None:
@@ -619,7 +852,7 @@ async def test_an_attach_that_raises_takes_the_child_with_it(
 
 
 async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_ended(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Codex review 1: the root exited in the grace, its grandchild did not.
 
@@ -627,9 +860,15 @@ async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_end
     cancel is sent once ``returncode`` is set. Red on the base: the abandon
     read the root's status, skipped the kill, and the grandchild ran on in the
     root's group with PPID 1.
+
+    2026-11-12, #772: each pid is read by identity, as in the premature-exit
+    case below, whose 5 of 12 windows-latest py3.13 failures that day are not
+    explained. A failure here names what the kill met (:class:`_JobWitness`).
     """
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _DeafWatcher, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -638,26 +877,36 @@ async def test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_end
         with pytest.raises(asyncio.CancelledError):
             await within(start, bound=20.0, what="the cancelled start()")
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the grandchild of a root that exited first outlived the cancel: {pids} {states}"
-        )
+        await _assert_the_tree_died(pids, proc.pid, witness)
         assert _released(client)
         assert _transport_closed(proc)
     finally:
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
-async def test_a_premature_exit_ends_the_group_and_closes_the_transport(tmp_path: Path) -> None:
+async def test_a_premature_exit_ends_the_group_and_closes_the_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Codex review 1 and 7, verify nit 2: the ``RpcServerExited`` path, no cancel.
 
     Red on the base twice over: the grandchild ran on, and the transport stayed
     open (``ResourceWarning: unclosed transport`` and "Event loop is closed" at
     teardown, macOS and Linux).
+
+    2026-11-12, #772: this case read the grandchild ``alive`` 5 s after
+    ``start`` raised in 5 of 12 windows-latest py3.13 runs. The cause is not
+    measured. Diagnostic run 43200282429 found the child and grandchild in the
+    job in all 32 spawns of the four windows legs; run 43209921126 repeated
+    this case 80 times there and no grandchild was alive past 5 s; this case
+    passed on all four legs of both. Each pid is now read by identity, so a
+    number another process took no longer reads as the grandchild, and a
+    failure names what the kill met (:class:`_JobWitness`).
     """
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, _LongGrace, "exit")
+    witness.snapshot(client, pids)
     proc = client.process
     assert proc is not None
     try:
@@ -665,13 +914,206 @@ async def test_a_premature_exit_ends_the_group_and_closes_the_transport(tmp_path
             await within(start, bound=20.0, what="the start() whose child exited at once")
         assert excinfo.value.returncode == 7
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (pids, states)
+        await _assert_the_tree_died(pids, proc.pid, witness)
         assert _released(client)
         assert _transport_closed(proc)
     finally:
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
+
+
+def _sleeper_for(seconds: float) -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+
+
+def _sleeper() -> subprocess.Popen[bytes]:
+    return _sleeper_for(60)
+
+
+def _no_client() -> RpcClient:
+    """What :meth:`_JobWitness.snapshot` reads off a client, with nothing spawned."""
+
+    return cast(RpcClient, SimpleNamespace(process=None, tree=None))
+
+
+def _shorten_the_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_DEATH_BOUND", 0.2)
+    monkeypatch.setattr(sys.modules[__name__], "_FURTHER_POLL", 0.2)
+
+
+async def test_the_identity_read_takes_a_number_another_process_holds_as_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#772: a live pid created at another time than the snapshot read is not the tracked process.
+
+    A real live process is snapshotted through :meth:`_JobWitness.snapshot`;
+    its creation time is then made to read differently, as a process that
+    took the number would. The read answers at once, the case passes, and the
+    cleanup leaves that process alone.
+    """
+
+    other = _sleeper()
+    try:
+        witness = _JobWitness(monkeypatch)
+        witness.snapshot(_no_client(), [other.pid])
+        born = witness.ids.born(other.pid)
+        assert born is not None, "no creation time on this host: the case would measure nothing"
+        monkeypatch.setattr(_process_identity, "process_started", lambda _pid: born + 1.0)
+
+        assert await await_gone(other.pid, witness.ids, timeout=5.0) == STATE_REUSED
+        await within(_assert_the_tree_died([other.pid], None, witness), bound=2.0, what="the read")
+        witness.kill_if_tracked(other.pid)
+        # Given a second to die, as a kill would have needed.
+        assert await await_dead_or_zombie(other.pid, timeout=1.0) == STATE_ALIVE, (
+            "the cleanup killed a process the case does not track"
+        )
+    finally:
+        other.kill()
+        other.wait()
+
+
+async def test_the_identity_read_takes_a_number_dead_at_the_pid_file_and_held_now_as_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid that read dead at the snapshot and alive now is held by another process."""
+
+    other = _sleeper()
+    try:
+        witness = _JobWitness(monkeypatch)
+        witness.ids.at[other.pid] = (STATE_GONE, None)
+        assert await await_gone(other.pid, witness.ids, timeout=5.0) == STATE_REUSED
+    finally:
+        other.kill()
+        other.wait()
+
+
+@pytest.mark.parametrize("readable", ["same", "unread-then", "unread-now"])
+async def test_the_identity_read_never_takes_what_it_cannot_tell_as_gone(
+    monkeypatch: pytest.MonkeyPatch, readable: str
+) -> None:
+    """The same creation time, or one unread then or now, stays the tracked process: alive."""
+
+    other = _sleeper()
+    try:
+        witness = _JobWitness(monkeypatch)
+        unread: list[float | None] = [None]
+        if readable == "unread-then":
+            # Unread at the snapshot, read (as anything) after it.
+            monkeypatch.setattr(_process_identity, "process_started", lambda _pid: unread[0])
+        witness.snapshot(_no_client(), [other.pid])
+        unread[0] = 1.0
+        if readable == "unread-now":
+            monkeypatch.setattr(_process_identity, "process_started", lambda _pid: None)
+        assert await await_gone(other.pid, witness.ids, timeout=0.2) == STATE_ALIVE
+        witness.kill_if_tracked(other.pid)
+        assert await await_dead_or_zombie(other.pid, timeout=5.0) in _DEAD
+    finally:
+        other.kill()
+        other.wait()
+
+
+async def test_the_identity_read_answers_a_pid_that_died_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tracked process that died reads dead on the first poll, not at the bound."""
+
+    tracked = _sleeper()
+    witness = _JobWitness(monkeypatch)
+    witness.snapshot(_no_client(), [tracked.pid])
+    tracked.kill()
+    tracked.wait()
+    state = await within(
+        await_gone(tracked.pid, witness.ids, timeout=5.0), bound=2.0, what="the read of a dead pid"
+    )
+    assert state in ENDED
+
+
+async def test_the_pid_file_snapshot_records_a_dead_pid_as_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state the identity read starts from: a pid already dead at the snapshot reads dead."""
+
+    gone = _sleeper()
+    gone.kill()
+    gone.wait()
+    witness = _JobWitness(monkeypatch)
+    witness.snapshot(_no_client(), [gone.pid])
+    assert witness.ids.at[gone.pid][0] in _DEAD
+
+
+async def test_a_tracked_process_still_alive_fails_the_read_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#772's shape, ``['gone', 'alive']``, the alive one still the snapshotted process: it fails.
+
+    Every tracked pid has to be gone, not one of them, and the message names
+    the survivor as "the same process".
+    """
+
+    gone = _sleeper()
+    gone.kill()
+    gone.wait()
+    alive = _sleeper()
+    try:
+        witness = _JobWitness(monkeypatch)
+        witness.snapshot(_no_client(), [gone.pid, alive.pid])
+        _shorten_the_read(monkeypatch)
+        with pytest.raises(pytest.fail.Exception) as failed:
+            await _assert_the_tree_died([gone.pid, alive.pid], None, witness)
+        message = str(failed.value)
+        assert f"[{gone.pid}, {alive.pid}]" in message
+        assert "'alive']" in message
+        assert f"{alive.pid} alive" in message and "the same process" in message
+    finally:
+        alive.kill()
+        alive.wait()
+
+
+async def test_a_survivor_that_dies_during_the_further_poll_is_reported_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failing branch reads a survivor again over time and says when it died (#772's first ask).
+
+    A tracked process still running at the bound and gone during the further
+    poll fails the case reported as ``gone`` with the time it took, not as the
+    ``alive`` it was at the bound (verify r2's probe, mutant R11).
+    """
+
+    late = _sleeper_for(1.0)
+    try:
+        witness = _JobWitness(monkeypatch)
+        witness.snapshot(_no_client(), [late.pid])
+        monkeypatch.setattr(sys.modules[__name__], "_DEATH_BOUND", 0.1)
+        monkeypatch.setattr(sys.modules[__name__], "_FURTHER_POLL", 5.0)
+        # Reaped as it exits, as asyncio's child watcher reaps a real child.
+        threading.Thread(target=late.wait, daemon=True).start()
+        with pytest.raises(pytest.fail.Exception) as failed:
+            await _assert_the_tree_died([late.pid], None, witness)
+        assert f"{late.pid} gone" in str(failed.value)
+    finally:
+        late.kill()
+        late.wait()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="on win32 the release's CloseHandle ends the job anyway"
+)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "test_a_root_already_dead_when_the_cancel_lands_still_has_its_group_ended",
+        "test_a_premature_exit_ends_the_group_and_closes_the_transport",
+    ],
+)
+async def test_the_dead_root_cases_fail_when_nothing_kills_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Each dead-root case still bites: with ``hard_kill`` sending nothing, it fails."""
+
+    monkeypatch.setattr(ProcessTree, "hard_kill", lambda _tree: None)
+    _shorten_the_read(monkeypatch)
+    with pytest.raises(pytest.fail.Exception, match="the same process"):
+        await globals()[case](tmp_path, monkeypatch)
 
 
 async def test_a_cancel_swallowed_while_a_failed_start_is_abandoned_still_propagates(
@@ -869,7 +1311,9 @@ async def test_a_stop_during_start_ends_it_and_returns_once_it_has(
     its own teardown of the child.
     """
 
+    witness = _JobWitness(monkeypatch)
     client, start, pids = await _start_with_its_tree(tmp_path, child=_TERM_DEAF_TREE_CHILD)
+    witness.snapshot(client, pids)
     original = client.wait_for_exit
     abandoning = asyncio.Event()
     gate = asyncio.Event()
@@ -882,8 +1326,10 @@ async def test_a_stop_during_start_ends_it_and_returns_once_it_has(
     monkeypatch.setattr(client, "wait_for_exit", _held)
     try:
         stopper = asyncio.ensure_future(client.stop())
-        root_state = await await_dead_or_zombie(pids[0], timeout=5.0)
-        assert root_state in _DEAD, f"a child deaf to SIGTERM outlived the stop() request: {root_state}"
+        root_state = await await_gone(pids[0], witness.ids, timeout=5.0)
+        assert root_state in ENDED, (
+            f"a child deaf to SIGTERM outlived the stop() request: {root_state}"
+        )
         await within(abandoning.wait(), bound=20.0, what="start() abandoning on the stop's request")
         for _ in range(5):
             await asyncio.sleep(0)
@@ -899,13 +1345,12 @@ async def test_a_stop_during_start_ends_it_and_returns_once_it_has(
         assert stopper.done(), "stop() outlived the start() it was waiting for"
         await stopper
 
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (pids, states)
+        await _assert_the_tree_died(pids, None, witness)
         assert _released(client)
     finally:
         gate.set()
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_grace(
@@ -921,11 +1366,13 @@ async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_gr
     pid_file = tmp_path / "tree.pids"
     forked, gate = _hold_the_spawn(monkeypatch)
     client = _LongGrace(RpcClientOptions(argv=_tree_argv(pid_file)))
+    witness = _JobWitness(monkeypatch)
     start = asyncio.ensure_future(client.start())
     pids: list[int] = []
     try:
         await wait_until(lambda: forked and _pids(pid_file) is not None, what="the fork and its tree")
         pids = _pids(pid_file) or []
+        witness.snapshot(client, pids)
         assert client.tree is None
         stopper = asyncio.ensure_future(client.stop())
         for _ in range(5):
@@ -933,10 +1380,8 @@ async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_gr
         assert not stopper.done(), "stop() returned before the start() it asked to give up had ended"
 
         gate.set()
-        states = await _states(pids)
-        assert all(state in _DEAD for state in states), (
-            f"the child and its grandchild {pids} outlived a stop() issued during the spawn: "
-            f"{states}"
+        await _assert_the_tree_died(
+            pids, None, witness, "the child and its grandchild outlived a stop() during the spawn"
         )
         with pytest.raises(RpcClientError, match=r"stopped before start\(\) returned"):
             await within(start, bound=20.0, what="the start() a stop() asked to give up")
@@ -946,7 +1391,7 @@ async def test_a_stop_during_the_spawn_ends_the_child_without_waiting_out_the_gr
     finally:
         gate.set()
         for pid in pids:
-            _really_kill(pid)
+            witness.kill_if_tracked(pid)
 
 
 async def test_a_stop_racing_a_twice_cancelled_start_leaves_a_restart_alone(
@@ -1247,3 +1692,49 @@ async def test_on_win32_the_abandon_kills_through_the_job_with_no_soft_stage(
     finally:
         if client.pid is not None:
             _really_kill(client.pid)
+
+
+#: Spawns per run of the membership case.
+_MEMBERSHIP_SPAWNS = 8
+
+
+def _in_job(pid: int, job: int) -> bool:
+    api = _process_tree._KernelApi()
+    handle = api.open_member(pid)
+    try:
+        return api.in_job(handle, job)
+    finally:
+        api.close_process(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a real Windows Job")
+async def test_on_win32_what_the_child_starts_at_once_is_born_in_its_job(tmp_path: Path) -> None:
+    """#772: the child's own child and grandchild are members of the job ``start`` attached.
+
+    On the windows runner ``sys.executable`` is the venv launcher: the root
+    starts the interpreter (the pid file's first pid) as soon as it runs, and
+    membership of a job is inherited only by a process created after its
+    parent was assigned. ``IsProcessInJob`` is asked while both live, the
+    root's handle held by the transport, on each of :data:`_MEMBERSHIP_SPAWNS`
+    spawns. 2026-11-12: green on all four windows legs of run 43200282429,
+    so the window was not hit in 32 of 32 spawns — in a run where #772 did not
+    reproduce either. It stays as the guard on ``start``'s attach order.
+    """
+
+    outside: list[tuple[int, int]] = []
+    for spawn in range(_MEMBERSHIP_SPAWNS):
+        pid_file = tmp_path / f"tree-{spawn}.pids"
+        client = RpcClient(RpcClientOptions(argv=_tree_argv(pid_file)))
+        await within(client.start(), bound=20.0, what="start()")
+        pids: list[int] = []
+        try:
+            await wait_until(lambda f=pid_file: _pids(f) is not None, what="the child's tree")
+            pids = _pids(pid_file) or []
+            tree = client.tree
+            assert tree is not None and tree.job is not None, "no job was attached"
+            outside.extend((spawn, pid) for pid in pids if not _in_job(pid, tree.job))
+        finally:
+            await within(client.stop(), bound=20.0, what="stop()")
+            for pid in pids:
+                _really_kill(pid)
+    assert outside == [], f"(spawn, pid) outside the job, of {_MEMBERSHIP_SPAWNS} spawns: {outside}"
