@@ -958,7 +958,11 @@ async def test_the_identity_read_takes_a_number_another_process_holds_as_gone(
         witness.snapshot(_no_client(), [other.pid])
         born = witness.ids.born(other.pid)
         assert born is not None, "no creation time on this host: the case would measure nothing"
-        monkeypatch.setattr(_process_identity, "process_started", lambda _pid: born + 1.0)
+        # Not ``born + 1.0``: on win32 a creation time is a FILETIME count near 1.3e17,
+        # where adding 1.0 to a float leaves it equal (#794 CI, all four windows legs).
+        later = born * 2 + 1.0
+        assert later != born
+        monkeypatch.setattr(_process_identity, "process_started", lambda _pid: later)
 
         assert await await_gone(other.pid, witness.ids, timeout=5.0) == STATE_REUSED
         await within(_assert_the_tree_died([other.pid], None, witness), bound=2.0, what="the read")
