@@ -76,9 +76,13 @@ and 1.65 ms max under load, against a shell that reaches its first ``fork`` at
 when the process is resumed with ``NtResumeProcess``, which needs only the
 process handle ``Popen`` keeps (``Popen`` closes the THREAD handle, which is
 what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
-``attach(suspended=True)`` are that primitive (#611 S2b); its one caller is the
-background ``bash`` of #611 S2d (behind the job gate, ADR-0297). Every other
-spawn keeps the window. Belt and braces:
+``attach(suspended=True)`` are that primitive (#611 S2b); its callers are the
+background ``bash`` of #611 S2d (behind the job gate, ADR-0297) and, since #777,
+the print-mode delegation child, whose attach also passes ``uncontained_ok`` so
+a job that cannot be had still degrades. On the windows runner
+``sys.executable`` is a venv launcher that starts the interpreter at once
+(CPython ``PC/launcher2.c``), so an unsuspended child can have a child before
+its attach. Every other spawn keeps the window. Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.
@@ -1021,6 +1025,28 @@ class ProcessTree:
         except (OSError, AttributeError):
             return 0
 
+    @staticmethod
+    def resume_suspended(
+        pid: int,
+        handle: int | None,
+        *,
+        platform: str | None = None,
+        api: _Win32Api | None = None,
+    ) -> None:
+        """Resume a process created with :meth:`suspend_flags`'s ``CREATE_SUSPENDED`` outside any attach (#777).
+
+        For a caller whose :meth:`attach` raised something the primitive does not
+        handle, so the process was neither resumed nor ended there: the print
+        channel's degrade. ``NtResumeProcess`` through ``handle``, or one opened
+        for ``pid``; raises ``OSError`` when it cannot. A no-op off win32, where
+        nothing is created suspended.
+        """
+
+        if _resolve_platform(platform) != "win32":
+            return
+        resolved = api if api is not None else _KernelApi()
+        cast("_Win32JobControlApi", resolved).resume(pid, handle)
+
     @classmethod
     def attach(
         cls,
@@ -1032,6 +1058,7 @@ class ProcessTree:
         api: _Win32Api | None = None,
         suspended: bool = False,
         stop_latched: Callable[[], bool] | None = None,
+        uncontained_ok: bool = False,
     ) -> ProcessTree:
         """Take ownership of the tree rooted at ``pid``.
 
@@ -1049,6 +1076,13 @@ class ProcessTree:
         instead: terminated and waited on, and :class:`SuspendedLaunchError`
         raised — never resumed outside the job.
 
+        ``uncontained_ok`` (#777, with ``suspended``): a job that cannot be
+        created or assigned resumes the process outside one instead, as an
+        unsuspended attach degrades (``contained=False``, the ``taskkill``-only
+        path). The print channel asks for it: its attach has always degraded
+        and never refused a spawn. A latch already set, or a resume that fails,
+        still ends the process.
+
         ``platform`` and ``api`` are injection seams for the tests. Attaching
         with ``platform="win32"`` and no ``api`` off Windows raises.
         """
@@ -1057,7 +1091,12 @@ class ProcessTree:
         if _resolve_platform(platform) == "win32":
             if suspended:
                 return cls._attach_suspended(
-                    pid, kill_on_close=kill_on_close, handle=handle, api=api, stop_latched=stop_latched
+                    pid,
+                    kill_on_close=kill_on_close,
+                    handle=handle,
+                    api=api,
+                    stop_latched=stop_latched,
+                    uncontained_ok=uncontained_ok,
                 )
             return cls._attach_win32(pid, kill_on_close=kill_on_close, handle=handle, api=api)
         if suspended:
@@ -1073,6 +1112,7 @@ class ProcessTree:
         handle: int | None,
         api: _Win32Api | None,
         stop_latched: Callable[[], bool] | None,
+        uncontained_ok: bool = False,
     ) -> ProcessTree:
         resolved: _Win32Api = api if api is not None else _KernelApi()
         # The tree's own copy of the handle it was given (#759 fix round 1,
@@ -1089,7 +1129,8 @@ class ProcessTree:
         except OSError as exc:
             if job is not None:
                 _release_job(resolved, job)
-            raise cls(pid, contained=False, api=resolved)._abort_launch(f"not contained: {exc}", own) from exc
+            outside = cls(pid, contained=False, api=resolved)
+            return outside._without_a_job(exc, own, handle, stop_latched, run=uncontained_ok)
         tree = cls(pid, contained=True, job=job, api=resolved)
         if own is not None:
             tree._held[pid] = own
@@ -1100,6 +1141,38 @@ class ProcessTree:
         except (OSError, AttributeError) as exc:
             raise tree._abort_launch(f"not resumed: {exc}") from exc
         return tree
+
+    def _without_a_job(
+        self,
+        exc: OSError,
+        own: int | None,
+        handle: int | None,
+        stop_latched: Callable[[], bool] | None,
+        *,
+        run: bool,
+    ) -> ProcessTree:
+        """A suspended process its job could not take: ended, or with ``run`` resumed outside a job (#777).
+
+        Ended is :meth:`_attach_suspended`'s default. Resumed is what an
+        unsuspended attach does when its job fails: the ``contained=False``
+        tree. Never past a latched stop, and a resume that fails ends the
+        process. The tree keeps the launch's copy of the handle and closes it
+        with itself.
+        """
+
+        if not run:
+            raise self._abort_launch(f"not contained: {exc}", own) from exc
+        if stop_latched is not None and stop_latched():
+            raise self._abort_launch(f"not contained, and stopped before it ran: {exc}", own) from exc
+        try:
+            cast("_Win32JobControlApi", self._api).resume(self.pid, handle)
+        except (OSError, AttributeError) as resume_error:
+            raise self._abort_launch(
+                f"not contained ({exc}), and not resumed: {resume_error}", own
+            ) from resume_error
+        if own is not None:
+            self._held[self.pid] = own
+        return self
 
     def _abort_launch(self, why: str, own: int | None = None) -> SuspendedLaunchError:
         """End a suspended process that will not be resumed: terminate, then a bounded wait.

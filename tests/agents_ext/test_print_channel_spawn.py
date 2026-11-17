@@ -54,7 +54,7 @@ import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from aelix_agents import print_channel as pc
@@ -77,7 +77,9 @@ from aelix_ai.streaming import Model
 from aelix_ai.utils import _process_identity
 from aelix_ai.utils._process_tree import (
     CREATE_NEW_PROCESS_GROUP,
+    CREATE_SUSPENDED,
     ProcessTree,
+    SuspendedLaunchError,
     _retained_handle,
 )
 from aelix_coding_agent.agents.profile import AgentProfile
@@ -90,6 +92,7 @@ from tests.env_sandbox import child_env
 from tests.event_waits import check_anti_hang, record_armed_waits, wait_until, within
 from tests.posix_modes import POSIX_MODES
 from tests.print_mode_child import CHILD_SOURCE
+from tests.unsuspended import unsuspended
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
@@ -2429,7 +2432,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1411-1415``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1413-1417``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2481,11 +2484,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:2055``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:2169``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:279``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:281``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -3747,11 +3750,15 @@ def _spy_on_attach(
     return record
 
 
-@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize(
+    ("platform", "suspend"),
+    [("win32", CREATE_SUSPENDED), ("win32", 0), ("linux", 0)],
+    ids=["win32", "win32-no-resume", "linux"],
+)
 async def test_the_spawn_asks_for_containment_kwargs_per_platform(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str, suspend: int
 ) -> None:
-    """``containment_spawn_kwargs``, at the call site, both arms — TWO fakes.
+    """``containment_spawn_kwargs``, at the call site, both arms — THREE fakes.
 
     Injected rather than skipped, and the injection is why nothing real may
     appear in this case: ``print_channel.sys is sys``, so the patch is
@@ -3765,6 +3772,16 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
     The literals are asserted, not ``== containment_spawn_kwargs(...)``: that
     comparison is a tautology against the very function under exercise and would
     stay green if the call site stopped passing it at all.
+
+    #777: ``ProcessTree.suspend_flags`` is the third fake (its real one opens
+    kernel32). Given ``CREATE_SUSPENDED``, the win32 spawn carries it and the
+    attach is told ``suspended`` and ``uncontained_ok``, with the row's stop as
+    its latch: the child runs only once the attach has put it in its Job
+    (``test_job_state_machine_611.py`` pins that order in the primitive). Given
+    0 — no ``NtResumeProcess`` — it spawns running as before. Red on
+    ``b69890da``: the spawn's ``creationflags`` is ``CREATE_NEW_PROCESS_GROUP``
+    alone and the attach gets neither keyword. The real Job is windows-latest's
+    (``tests/cli/test_parent_death_611.py`` L2a and L2b).
     """
 
     seen: dict[str, Any] = {}
@@ -3779,11 +3796,15 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
     monkeypatch.setattr(
         pc.ProcessTree, "attach", _fake_attach(attaches, _StubTree())
     )
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: suspend))
 
     await _stub_channel(_HAPPY).run(_plan(tmp_path))
 
+    (attach,) = attaches
+    assert (attach["suspended"], attach["uncontained_ok"]) == (suspend != 0, True)
+    assert attach["stop_latched"]() is False, "the latch reads the row's stop"
     if platform == "win32":
-        assert seen["creationflags"] == CREATE_NEW_PROCESS_GROUP
+        assert seen["creationflags"] == CREATE_NEW_PROCESS_GROUP | suspend
         # NOT merely "also passes creationflags": Windows ACCEPTS
         # ``start_new_session`` and silently ignores it (CPython names the
         # parameter ``unused_start_new_session``), so a site that passed both
@@ -3800,6 +3821,44 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
         "the stdlib's retained handle must be forwarded: deriving one with "
         "OpenProcess can be refused for a process we are entitled to contain"
     )
+
+
+async def test_a_stop_that_lands_in_the_suspended_spawn_ends_the_child_unrun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#777: the suspended attach's latch is the row's stop, and its ending is the run's.
+
+    A stop lands while the spawn is in flight; the attach reads it through its
+    latch and ends the child unrun (``SuspendedLaunchError``, faked here with a
+    tree it could not confirm the end through). That tree is the row's, owned,
+    so the run's end closes it, and the run ends ``aborted``. The same three
+    fakes as the per-platform case.
+    """
+
+    row = RunningChild(id="sub-stopped-in-spawn", profile="scout")
+    tree = _StubTree()
+    latches: list[bool] = []
+
+    async def _fake_exec(*_argv: Any, **_kwargs: Any) -> Any:
+        row.stopped = True  # a stop that lands while the spawn is awaited
+        return _RecordingProc()
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        latches.append(kwargs["stop_latched"]())
+        if latches[-1]:
+            raise SuspendedLaunchError("stopped before it ran", tree=cast("ProcessTree", tree))
+        return tree
+
+    monkeypatch.setattr(pc.sys, "platform", "win32")
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: CREATE_SUSPENDED))
+
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path), child=row)
+
+    assert latches == [True], "the latch read the row's stop"
+    assert tree.closed or "close" in tree.calls, "the tree the error carried was the row's, and closed"
+    assert result.status == "aborted"
 
 
 async def test_the_spawn_attaches_the_tree_before_the_first_await(
@@ -4981,6 +5040,83 @@ async def test_an_attach_failure_degrades_instead_of_abandoning_the_child(
     )
 
 
+def _emulated_suspended_spawn(monkeypatch: pytest.MonkeyPatch, seen: dict[str, Any]) -> None:
+    """win32's ``CREATE_SUSPENDED`` spawn on POSIX: the real child is SIGSTOPped as ``CreateProcess`` leaves
+    it, and ``ProcessTree.resume_suspended`` SIGCONTs it, as ``NtResumeProcess`` would (verify round 2's
+    ``probe_print_suspended_real.py``)."""
+
+    if sys.platform == "win32":  # pragma: no cover - SIGSTOP is POSIX
+        raise AssertionError("the emulation is POSIX only")
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _exec(*argv: Any, **kwargs: Any) -> Any:
+        flags = kwargs.pop("creationflags", 0) or 0
+        proc = await real_exec(*argv, **kwargs)
+        if flags & CREATE_SUSPENDED:
+            os.kill(proc.pid, signal.SIGSTOP)
+        seen["pid"] = proc.pid
+        return proc
+
+    def _resume(pid: int, handle: int | None, **_kwargs: Any) -> None:
+        seen.setdefault("resumed", []).append((pid, handle))
+        if seen.get("resume_fails"):
+            raise OSError("NtResumeProcess failed (emulated)")
+        os.kill(pid, signal.SIGCONT)
+
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: CREATE_SUSPENDED))
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _exec)
+    # The spawn's own handle, as win32's ``Popen`` keeps one: a resume must go through it.
+    monkeypatch.setattr(pc, "_retained_handle", lambda _proc: 0xBEEF)
+    # ``raising=False``: on a tree without it (``5cfc9596``) the case still runs and shows the hang.
+    monkeypatch.setattr(pc.ProcessTree, "resume_suspended", staticmethod(_resume), raising=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP emulates the suspended spawn")
+@pytest.mark.parametrize("resume_fails", [False, True], ids=["resumed", "resume-fails"])
+async def test_an_attach_that_raises_otherwise_resumes_a_suspended_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resume_fails: bool
+) -> None:
+    """#777 fix round 2 (verify F2): the generic arm resumes a child spawned suspended (리드 판단).
+
+    The attach raises a non-``OSError``, which the primitive does not handle, so
+    it neither resumed nor ended the child. DEGRADE, never abandon: the run
+    resumes it outside a Job and the delegation delivers; a resume that fails
+    ends the child, and the run returns instead of waiting for ever. On
+    ``5cfc9596`` the child stayed stopped (``Ts``) and the run never returned.
+    """
+
+    if sys.platform == "win32":  # pragma: no cover - the skipif above; this narrows for pyright
+        pytest.skip("SIGSTOP is POSIX")
+    seen: dict[str, Any] = {"resume_fails": resume_fails}
+    _emulated_suspended_spawn(monkeypatch, seen)
+
+    def _raises(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("not an OSError")
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _raises)
+    row = RunningChild(id="sub-attach-raises", profile="scout")
+    task = asyncio.ensure_future(_stub_channel(_HAPPY, grace=1.0).run(_plan(tmp_path), child=row))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=8)
+        assert done, "the run never returned: its child was left suspended"
+        result = task.result()
+        assert [pid for pid, _handle in seen["resumed"]] == [seen["pid"]]
+        assert seen["resumed"][0][1] == 0xBEEF, "resumed through the spawn's own handle"
+        if resume_fails:
+            assert result.ok is False, "ended, not run"
+        else:
+            assert result.ok is True and result.exit_code == 0, result
+    finally:
+        if not task.done():
+            row.stopped = True
+            await pc.abort_child(row, grace=1.0)
+            await asyncio.wait({task}, timeout=10)
+        pid = seen.get("pid")
+        if pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
 async def test_the_tree_is_closed_when_a_run_returns_with_no_reaper(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -5049,6 +5185,8 @@ async def test_a_successful_delegation_closes_its_tree_and_signals_nothing_here(
         trees.append(tree)
         return tree
 
+    # The stub resumes nothing: on win32 a suspended REAL child would never run (#777 fix round 2).
+    unsuspended(monkeypatch)
     monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
 
     result = await _stub_channel(_HAPPY).run(_plan(tmp_path))

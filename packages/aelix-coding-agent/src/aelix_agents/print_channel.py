@@ -89,6 +89,7 @@ from aelix_ai.utils import _process_identity
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
+    SuspendedLaunchError,
     _retained_handle,
     containment_spawn_kwargs,
     wait_released,
@@ -142,8 +143,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 """Only one thing is logged from this module: a ``ProcessTree.attach`` that
-failed. Everything else a delegation can get wrong is already a field on the
-envelope, and an envelope is what a caller reads; a degraded containment is the
+failed, or (#777) ended a suspended child unrun. Everything else a delegation
+can get wrong is already a field on the envelope, and an envelope is what a
+caller reads; a degraded containment is the
 one failure with no envelope of its own, because the delegation itself succeeds
 (§B.2)."""
 
@@ -1770,6 +1772,118 @@ async def _clean_up(row: RunningChild, duty: CleanupDuty, grace: float) -> None:
         _close_tree(row)
 
 
+def _spawn_kwargs(suspend: int) -> dict[str, Any]:
+    """``containment_spawn_kwargs(new_session=True)``, its ``creationflags`` with ``suspend`` added (#777).
+
+    ``suspend`` is :meth:`ProcessTree.suspend_flags`: ``CREATE_SUSPENDED`` on
+    win32 where ``NtResumeProcess`` resolves, else 0 and the kwargs unchanged.
+    """
+
+    kwargs = containment_spawn_kwargs(new_session=True)
+    if suspend:
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | suspend
+    return kwargs
+
+
+def _take_tree(row: RunningChild, proc: Any, *, suspended: bool) -> None:
+    """The child's process tree, taken before any ``await`` after the spawn (#220), into ``row``.
+
+    ITS OWN ``try``, deliberately OUTSIDE the spawn's. Inside it, an attach
+    failure would take the spawn's ``except`` and return an error envelope for
+    a child that is RUNNING: ``_stream_and_reap`` is never entered, no reaper
+    task is ever created, and ``runtime.py`` then pops the row — the
+    live-child-with-no-reaper shape this file's last-line-of-defence handler
+    exists to prevent. DEGRADE, never abandon: ``tree=None`` is a supported
+    reaper input by construction (``reaper._usable``).
+
+    Synchronous on both arms (``_attach_posix`` is one ``os.getpgid``; the
+    win32 arms are a few ctypes calls), so it adds no ``await`` between
+    publishing ``row.proc`` and re-reading ``row.stopped`` after it — the race
+    that ordering exists for is unchanged. And it must come BEFORE that re-read:
+    ``abort_child`` reads ``child.tree``, so a stop that landed during the spawn
+    would otherwise abort with ``tree=None`` and lose win32 containment on
+    exactly the child that was told to stop.
+
+    ``kill_on_close=True`` because the print child meets both of ADR-0238's
+    stated criteria: ONE child per task, so releasing the tree is the same event
+    as being done with it; and on Windows it is the analogue of the
+    ``pdeathsig`` the spawn installs on Linux — a parent's death closes its last
+    job handle and ``KILL_ON_JOB_CLOSE`` ends the tree. The visible consequence,
+    stated rather than denied: on win32 a SUCCESSFUL delegation also ends a
+    helper the child deliberately left running. On POSIX ``close()`` still
+    signals nothing.
+
+    ``suspended`` (#777): on win32 the child was created ``CREATE_SUSPENDED``.
+    It is assigned to its Job, ``row.stopped`` is read, and only then is it
+    resumed, so what it starts at once is born in the Job. Unsuspended, the Job
+    came after the spawn's pipe round trips. On the windows runner the child is
+    the venv launcher (``sys.executable``), which starts the interpreter at once
+    and puts it in a job of its own with ``SILENT_BREAKAWAY_OK`` (CPython
+    ``PC/launcher2.c``); an interpreter started before the assignment is in no
+    job of aelix's, and its shell breaks away from the launcher's. In
+    windows-latest run 43998348364 such a child's shell and sleeper outlived a
+    terminated TUI aelix on all four legs (#777 L2a); this window is the cause
+    read from the code, not measured. Assigned first, the interpreter is born in
+    aelix's Job and the launcher's job nests under it, and a child that breaks
+    away from the launcher's job stops at the first job up the chain that does
+    not permit breakaway (Microsoft Learn, "Nested Jobs"): aelix's never does. A
+    Job that cannot be had still degrades, resumed outside one
+    (``uncontained_ok``), as the unsuspended attach did. A stop that landed in
+    the spawn, or a resume that fails, ends the child unrun
+    (:class:`SuspendedLaunchError`): the run goes on and reaps the ended child.
+    Any other raise out of the attach takes the generic arm, which degrades as
+    it always has and resumes a suspended child outside a Job
+    (:func:`_resume_unattached`; 리드 판단, the lead's call, #777 fix round 2),
+    ending it only when even that resume fails. ``RpcClient`` ends its child on
+    the same path instead (its abandon): the two sites differ by design.
+    """
+
+    try:
+        row.tree = ProcessTree.attach(
+            proc.pid,
+            kill_on_close=True,
+            handle=_retained_handle(proc),
+            suspended=suspended,
+            stop_latched=lambda: row.stopped,
+            uncontained_ok=True,
+        )
+        row.tree_owned = True
+    except SuspendedLaunchError as exc:
+        # Not resumed: ended, or still held by the tree the error carries.
+        row.tree = exc.tree
+        row.tree_owned = exc.tree is not None
+        logger.warning("delegation %s was not started: %s", row.id, exc)
+    except Exception as exc:  # noqa: BLE001
+        row.tree = None
+        row.tree_owned = False
+        # Logged, not swallowed: on Windows a real attach failure degrades
+        # containment to the root-only shape Pi #9129 proved insufficient, and a
+        # delegation that still returns a perfectly good envelope is the one
+        # failure with nowhere else to surface.
+        logger.warning("process-tree attach failed for %s: %s", row.id, exc)
+        _resume_unattached(row, proc, suspended=suspended)
+
+
+def _resume_unattached(row: RunningChild, proc: Any, *, suspended: bool) -> None:
+    """A child spawned suspended whose attach raised outside the primitive: resumed, or ended (#777).
+
+    DEGRADE, never abandon (:func:`_take_tree`): the child runs outside a Job,
+    as an unsuspended child whose attach failed always did (리드 판단, the
+    lead's call, #777 fix round 2). Left suspended it would never run and the
+    run would wait for it for ever: nothing bounds a delegation (#604). Only a
+    resume that fails ends it, so the run reaps an ended child instead.
+    """
+
+    if not suspended:
+        return
+    try:
+        ProcessTree.resume_suspended(proc.pid, _retained_handle(proc))
+    except Exception as exc:  # noqa: BLE001 — a child that cannot run is ended, never left suspended
+        logger.warning("delegation %s could not be resumed, so it is ended: %s", row.id, exc)
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
+
+
 def _close_tree(row: RunningChild) -> None:
     """THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the close is not unconditional.
 
@@ -2095,6 +2209,9 @@ class PrintChannel:
             # starts the OS child inside that await, while ``row.proc`` is
             # still None (Codex 3 on #719).
             open_cleanup(row, grace=self._grace)
+            # #777: CREATE_SUSPENDED on win32, so the child runs only once its
+            # attach has put it in its Job (``_take_tree``); 0 elsewhere.
+            suspend = ProcessTree.suspend_flags()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -2128,7 +2245,7 @@ class PrintChannel:
                     # DISABLES console Ctrl+C for the child and everything under
                     # it. The second half is documentation-derived, not measured:
                     # the windows leg does not drive a console Ctrl+C.
-                    **containment_spawn_kwargs(new_session=True),
+                    **_spawn_kwargs(suspend),
                     # ``None`` on Windows, where subprocess REJECTS the
                     # argument outright — unlike the containment kwargs above,
                     # which every platform accepts in the form it understands.
@@ -2147,45 +2264,7 @@ class PrintChannel:
             # sweep reads the agent's start time against its marker hits.
             row.channel_cleans = True
             _stamp_launch(row, proc)
-            try:
-                # ITS OWN ``try``, deliberately OUTSIDE the spawn's. Inside it,
-                # an attach failure would take the ``except`` above and return an
-                # error envelope for a child that is RUNNING: ``_stream_and_reap``
-                # is never entered, no reaper task is ever created, and
-                # ``runtime.py`` then pops the row — the live-child-with-no-reaper
-                # shape this file's last-line-of-defence handler exists to
-                # prevent. DEGRADE, never abandon: ``tree=None`` is a supported
-                # reaper input by construction (``reaper._usable``).
-                #
-                # Synchronous on both arms (``_attach_posix`` is one
-                # ``os.getpgid``; ``_attach_win32`` is three ctypes calls), so it
-                # adds no ``await`` between publishing ``row.proc`` and re-reading
-                # ``row.stopped`` below — the race that ordering exists for is
-                # unchanged. And it must sit BEFORE that re-read: ``abort_child``
-                # reads ``child.tree``, so a stop that landed during the spawn
-                # would otherwise abort with ``tree=None`` and lose win32
-                # containment on exactly the child that was told to stop.
-                row.tree = ProcessTree.attach(
-                    proc.pid, kill_on_close=True, handle=_retained_handle(proc)
-                )
-                # ``kill_on_close=True`` because the print child meets both of
-                # ADR-0238's stated criteria: ONE child per task, so releasing
-                # the tree is the same event as being done with it; and on
-                # Windows it is the analogue of the ``pdeathsig`` the line above
-                # installs on Linux — a parent's death closes its last job
-                # handle and ``KILL_ON_JOB_CLOSE`` ends the tree. The visible
-                # consequence, stated rather than denied: on win32 a SUCCESSFUL
-                # delegation now also ends a helper the child deliberately left
-                # running. On POSIX ``close()`` still signals nothing.
-                row.tree_owned = True
-            except Exception as exc:  # noqa: BLE001
-                row.tree = None
-                row.tree_owned = False
-                # Logged, not swallowed: on Windows a real attach failure
-                # degrades containment to the root-only shape Pi #9129 proved
-                # insufficient, and a delegation that still returns a perfectly
-                # good envelope is the one failure with nowhere else to surface.
-                logger.warning("process-tree attach failed for %s: %s", row.id, exc)
+            _take_tree(row, proc, suspended=suspend != 0)
             if row.owner is not None:
                 # The process and its tree are the job's now (#611 S1c): the
                 # service's barrier waits on them and closes the tree. Before the

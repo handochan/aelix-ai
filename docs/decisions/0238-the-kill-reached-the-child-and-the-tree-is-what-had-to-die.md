@@ -316,6 +316,34 @@ win32 `hard_kill` runs `taskkill /T /F` **first**, while the root is still
 alive, so `/T` can walk to an escapee through its live parent link, and
 `TerminateJobObject` second.
 
+*2026-11-17 note (#777 fixes rounds 1 and 2): the print channel spawns suspended.* The print-mode
+delegation child (`print_channel.py`, `_take_tree`) now adds `ProcessTree.suspend_flags()` to its
+spawn and attaches with `suspended=True`, where `NtResumeProcess` resolves: the child is assigned to
+its Job, then resumed. It also passes `uncontained_ok`: a Job that cannot be created or assigned
+resumes the child outside one, which is what its unsuspended attach did, so it never refuses a spawn
+for want of a Job. A stop already asked (the row's) or a resume that fails ends the child unrun
+(`SuspendedLaunchError`). Any other raise out of the attach takes the print channel's generic arm,
+which resumes the child outside a Job (`ProcessTree.resume_suspended`) and ends it only when that
+resume fails (리드 판단, the lead's call: degrade, never abandon). Why it mattered: on the windows
+runner the child is the venv launcher, which starts the interpreter at once and puts it in a job of
+its own with `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK` (CPython `PC/launcher2.c`). Microsoft Learn
+("Nested Jobs", fetched 2026-11-17): "a child process is associated with every job in the job chain
+of its parent process. If the immediate job object allows breakaway, the child process breaks away
+from the immediate job object and from each job in the parent job chain, moving up the hierarchy
+until it reaches a job that does not permit breakaway." aelix's Job sets only `KILL_ON_JOB_CLOSE`, so
+it does not permit breakaway. Assigned first, the interpreter is born in aelix's Job and what it
+starts stops there; an interpreter started before the assignment was in no job of aelix's, and its
+children broke away from the launcher's. In windows-latest run 43998348364 (`b69890da`), a TUI
+delegation's shell and sleeper outlived its terminated aelix on all four legs (#777 L2a). That this
+window is the cause is read from the code, not measured. Pinned on every host
+(`tests/agents_ext/test_print_channel_spawn.py::test_the_spawn_asks_for_containment_kwargs_per_platform`,
+`::test_an_attach_that_raises_otherwise_resumes_a_suspended_child`) and in the primitive
+(`tests/process_tree/test_job_state_machine_611.py::test_with_uncontained_ok_a_job_it_cannot_have_resumes_it_outside_one`).
+Whether the windows-latest cases turn green is pending the lead's CI round. Background `bash` keeps
+ending a child it cannot contain (ADR-0297). The other sites keep the window: foreground `bash`,
+`run_cancellable`, `run_contained`, subprocess hooks and `!command`, all `kill_on_close=False`,
+which do not rely on the parent's death.
+
 ## What the tests pin
 
 The dispatch is covered without processes: an injected `platform=` and a fake
