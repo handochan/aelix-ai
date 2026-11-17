@@ -5045,6 +5045,8 @@ def _emulated_suspended_spawn(monkeypatch: pytest.MonkeyPatch, seen: dict[str, A
     it, and ``ProcessTree.resume_suspended`` SIGCONTs it, as ``NtResumeProcess`` would (verify round 2's
     ``probe_print_suspended_real.py``)."""
 
+    if sys.platform == "win32":  # pragma: no cover - SIGSTOP is POSIX
+        raise AssertionError("the emulation is POSIX only")
     real_exec = asyncio.create_subprocess_exec
 
     async def _exec(*argv: Any, **kwargs: Any) -> Any:
@@ -5083,6 +5085,8 @@ async def test_an_attach_that_raises_otherwise_resumes_a_suspended_child(
     ``5cfc9596`` the child stayed stopped (``Ts``) and the run never returned.
     """
 
+    if sys.platform == "win32":  # pragma: no cover - the skipif above; this narrows for pyright
+        pytest.skip("SIGSTOP is POSIX")
     seen: dict[str, Any] = {"resume_fails": resume_fails}
     _emulated_suspended_spawn(monkeypatch, seen)
 
