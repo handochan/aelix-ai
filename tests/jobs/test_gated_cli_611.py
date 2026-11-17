@@ -12,10 +12,9 @@ its child no such offer, the negative control. The server is the shape
 of ``tests/agents_ext/test_agent_resume_real_child_610.py``'s.
 
 Green on ``52bc607a`` once the launcher exists: it is the prerequisite itself.
-POSIX only, as every test that runs a service-owned real child is
-(``tests/agents_ext/test_agent_background_611.py``'s ``REAL_CHILD``): on win32
-such a child runs the job's real Job-object evidence legs, which #777 PR c1
-measures first.
+Since #777 PR c1 both cases run on windows-latest too, with
+``tests/agents_ext/test_agent_background_611.py``'s service-owned real children
+(L4): on win32 such a child runs the job's real Job-object evidence legs.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ import pytest
 
 from tests.env_sandbox import child_env
 
+#: No case here takes it since #777 PR c1; kept for the modules that import it.
 REAL_CHILD = pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -244,7 +244,6 @@ def spawn_then_wait(body: dict[str, Any], index: int) -> dict[str, Any]:
     return say(f"parent turn {index}")
 
 
-@REAL_CHILD
 def test_a_gated_print_run_spawns_one_background_agent_and_exits_0(tmp_path: Path) -> None:
     scratch = Scratch(tmp_path)
     with ModelServer(spawn_then_wait) as server:
@@ -271,7 +270,6 @@ def run_then_answer(body: dict[str, Any], index: int) -> dict[str, Any]:
     return say(f"parent turn {index}")
 
 
-@REAL_CHILD
 def test_without_the_launcher_neither_process_is_gated(tmp_path: Path) -> None:
     """The negative control for the wire readings above: the product's own entry point."""
 
