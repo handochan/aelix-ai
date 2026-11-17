@@ -42,7 +42,11 @@ default parent clamps a delegated child to ``plan`` (``aelix_agents/consent.py``
 whose ``bash`` is refused. The model is scripted, in a scratch HOME and cwd.
 
 Every case kills, at its end, every announced process still alive with its
-announced start time (``tests/rpc/_identity.py``), and nothing else.
+announced start time, and nothing else; during the case a pid is read by
+identity (``tests/rpc/_identity.py``), so a reused number never reads as alive.
+
+Guards of today's behaviour: the product code is ``b6100968``'s; what a case
+needs that base lacks is test-only (the launchers' announcement).
 """
 
 from __future__ import annotations
@@ -62,6 +66,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from aelix_ai.utils._process_identity import process_started
 
 from tests.env_sandbox import child_env
 from tests.jobs.gated_cli import ANNOUNCE
@@ -255,11 +260,11 @@ class Run:
         return state
 
     def watch(
-        self, procs: dict[str, Announced], seconds: float
+        self, procs: dict[str, Announced], seconds: float, *, since: float
     ) -> dict[str, tuple[str, float | None]]:
-        """Each process's state after ``seconds``, and when (s after now) it was first read ended."""
+        """Each process's state ``seconds`` after ``since`` (``time.monotonic()``), and how long
+        after ``since`` it was first read ended."""
 
-        since = time.monotonic()
         ended: dict[str, float] = {}
         while True:
             for role, p in procs.items():
@@ -271,12 +276,12 @@ class Run:
         return {role: (self.state(p.pid), ended.get(role)) for role, p in procs.items()}
 
     def clean_up(self) -> None:
-        """Kill every announced process still alive as itself; reap the launcher; close the files."""
+        """Kill every announced process still alive with its announced start time; reap the
+        launcher; close the files. A number another process holds now is never signalled."""
 
         for p in self.announced().values():
-            if p.pid not in self.ids.at:
-                self.ids.record([p.pid])
-            if self.state(p.pid) == STATE_ALIVE:
+            alive = probe_state(p.pid) == STATE_ALIVE
+            if alive and p.started is not None and process_started(p.pid) == p.started:
                 _kill(p.pid)
         if self.proc is not None:
             if self.proc.poll() is None:
@@ -357,12 +362,16 @@ def describe(
     return "; ".join(rows)
 
 
-def sigkill(run: Run, parent: Announced) -> None:
+def sigkill(run: Run, parent: Announced) -> float:
+    """SIGKILL the parent and reap it; when it was sent (``time.monotonic()``)."""
+
     if sys.platform == "win32":  # pragma: no cover - the POSIX legs only
         raise AssertionError("SIGKILL is POSIX")
+    killed = time.monotonic()
     os.kill(parent.pid, signal.SIGKILL)
     assert run.proc is not None
     run.proc.wait(timeout=20)
+    return killed
 
 
 def sigkill_on_linux(
@@ -370,9 +379,9 @@ def sigkill_on_linux(
 ) -> None:
     """SIGKILL the parent: ``asserted`` are gone within 5 s (``pdeathsig``); the others are recorded."""
 
-    sigkill(run, procs["parent"])
+    killed = sigkill(run, procs["parent"])
     children = {role: p for role, p in procs.items() if role != "parent"}
-    states = run.watch(children, 5.0)
+    states = run.watch(children, 5.0, since=killed)
     warnings.warn(
         f"{label}, 5 s after the SIGKILL; {', '.join(asserted)} asserted, the rest recorded only "
         f"(OQ-C, ADR-0297, ADR-0291 limit 3): " + describe(children, states, run),
@@ -385,9 +394,9 @@ def sigkill_on_linux(
 def sigkill_on_macos(run: Run, procs: dict[str, Announced], *, label: str) -> None:
     """SIGKILL the parent and record what is left after 5 s: no ``pdeathsig`` on macOS."""
 
-    sigkill(run, procs["parent"])
+    killed = sigkill(run, procs["parent"])
     children = {role: p for role, p in procs.items() if role != "parent"}
-    states = run.watch(children, 5.0)
+    states = run.watch(children, 5.0, since=killed)
     warnings.warn(
         f"{label}, 5 s after the SIGKILL, recorded only (ADR-0291 limit 3): "
         + describe(children, states, run),
