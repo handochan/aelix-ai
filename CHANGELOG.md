@@ -1538,6 +1538,12 @@ unwritten. Add them with the next release.
   `NtResumeProcess` resolves; a Job that cannot be had still runs it outside one, as before. Pinned
   on every host (`tests/agents_ext/test_print_channel_spawn.py::test_the_spawn_asks_for_containment_kwargs_per_platform`);
   the windows-latest result is pending. Off Windows nothing changes.
+- **On Windows, an `RpcClient` child now runs only once it is in its Job (#772).** The same window at
+  its spawn: on windows-latest py3.14 a grandchild was outside the Job and alive 10 s after the
+  kill. The child is created suspended, assigned, then resumed; a Job that cannot be had still runs
+  it outside one, and a resume that fails ends it and `start()` raises `SuspendedLaunchError`.
+  Pinned on every host (`tests/rpc/test_rpc_client_containment.py::test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it`);
+  the windows-latest result is pending. Off Windows nothing changes.
 - **What a delegated agent's finished `bash` call left in the background stops with the delegation
   (#719, #750, ADR-0296).** A `cmd &`, `(cmd &)` or `nohup cmd &` helper — an `npm run dev &`, say —
   of a `bash` call that had already returned kept running after the delegation ended or was stopped,

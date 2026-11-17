@@ -344,6 +344,14 @@ ending a child it cannot contain (ADR-0297). The other sites keep the window: fo
 `run_cancellable`, `run_contained`, subprocess hooks and `!command`, all `kill_on_close=False`,
 which do not rely on the parent's death.
 
+*2026-11-17 note (#772): `RpcClient.start` spawns suspended too.* The same primitive, the same way:
+`CREATE_SUSPENDED` where `NtResumeProcess` resolves, then `attach(suspended=True,
+uncontained_ok=True)`. Unlike the print channel, any other raise out of its attach ends the child
+(its abandon), by design. On py3.14 in run 43998348364 an `RpcClient` grandchild was "NOT in job" and
+alive 10.05 s after the kill; that the window is the cause is read from the code. Pinned on every
+host by `tests/rpc/test_rpc_client_containment.py::test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it`;
+see ADR-0201's open item 7 note.
+
 ## What the tests pin
 
 The dispatch is covered without processes: an injected `platform=` and a fake
