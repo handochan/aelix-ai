@@ -54,7 +54,7 @@ import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from aelix_agents import print_channel as pc
@@ -3845,7 +3845,7 @@ async def test_a_stop_that_lands_in_the_suspended_spawn_ends_the_child_unrun(
     def _attach(pid: int, **kwargs: Any) -> Any:
         latches.append(kwargs["stop_latched"]())
         if latches[-1]:
-            raise SuspendedLaunchError("stopped before it ran", tree=tree)
+            raise SuspendedLaunchError("stopped before it ran", tree=cast("ProcessTree", tree))
         return tree
 
     monkeypatch.setattr(pc.sys, "platform", "win32")
