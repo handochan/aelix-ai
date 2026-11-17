@@ -5,9 +5,10 @@ and on a frame it cannot draw, so SIGTERM ends aelix with it open; Ctrl+C closes
 Enter; the arm ends at 3 s and redraws; a stop's note keeps the waiting text; `jobs/cells.py` reads
 U+FE0F, keycaps and joined sequences; fix round 2 2026-11-17: `jobs/cells.py` counts each side of
 a zero width joiner and every control character, so it is never under `rich` 13.7.1–14.3.4 on the
-measured corpus, and a cut stops reading once past the width). **Inert until #611 S3e:** everything below is behind
-`aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12). With it off there is no
-`/jobs` at all (`tests/cli/test_jobs_command_gate_776.py`, a guard that passes on `7e2feb50` too).
+measured corpus, and a cut stops reading once past the width). **Active since #611 S3e (#779,
+2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True` (ADR-0293 §12). With it off
+there is no `/jobs` at all (`tests/cli/test_jobs_command_gate_776.py`, a guard that passes on
+`7e2feb50` too).
 Date: 2026-11-17
 Issue: #776 (#611 slice S3b). Parent: #611. Contract: `.omc/specs/611-s3-contract-r4-2026-11-12.md`
 §4 ("as r3", "as r2": r2 §4 is the text), with its 정오표 E3. Sub-issue body:

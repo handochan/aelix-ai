@@ -4,10 +4,11 @@ Status: Accepted (2026-11-08, #722). Amended 2026-11-12 (#769, #749, #770): ende
 per-session bound are kept only as their records read; `JobSnapshot.processes_gone`; see the note
 of that date. Amended 2026-11-12 (#778): `backgroundJobs.enabled: false` in the global settings
 turns §12's gate off for a launch; see the note at the end. Noted 2026-11-17 (#776, ADR-0299):
-`/jobs` opens a panel in the TUI and `/jobs list` is §10's table. **Inert until #611 S3:** everything below is behind
-`aelix_coding_agent/jobs/activation.py` `ACTIVE = False` and, in the kernel, behind
-`AgentHarnessOptions.notice_inbox` (off by default; product-core turns it on only while `ACTIVE`),
-and nothing of it is reachable from the product before S3 sets it (§12).
+`/jobs` opens a panel in the TUI and `/jobs list` is §10's table. **Active since #611 S3 (#779,
+2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True`; in the kernel
+`AgentHarnessOptions.notice_inbox` stays off by default and product-core turns it on while
+`ACTIVE` (§12). Until then it was inert behind `ACTIVE = False`; see the note of 2026-11-17 (#779)
+at the end.
 Date: 2026-11-08
 Issue: #722 (#611 slice S1b). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract), with rounds 3–5 and Codex's reviews of rounds 1, 3 and 5 beside it.
@@ -375,7 +376,7 @@ forces the wake (`tests/tui/test_restore_611.py`).
 
 ### 12. Activation
 
-`jobs/activation.py`: `ACTIVE = False`. While off, the CLI builds no service and no bridge
+`jobs/activation.py`: `ACTIVE`, `True` since #779 (the note of 2026-11-17, #779). While off, the CLI builds no service and no bridge
 extension, so there is no `job` or `job_stop` tool, no `/jobs`, no footer segment, no liveness
 loop, no reconciliation, no drain, no waker, and the `backgroundJobs` settings are never read
 (`tests/jobs/test_synthetic_kind_611.py::test_the_gate_off_refuses_the_facade`).
@@ -846,7 +847,7 @@ them for a kind its extension registered (`offer_detach`, `detach_blocked`, `det
 Measured on a synthetic detachable kind: `adopt` is called from a plain function, the start time
 handed over is not sampled again, the facts are `start`, `process`, `cleanup`, `outcome`, and each
 refusal leaves no job, no slot and no task (`tests/jobs/test_adopt_611.py`). The note on the kernel's
-`AgentHarness.abort_pending` comes with S3e (contract r4 §7).
+`AgentHarness.abort_pending` is the note of 2026-11-17 (#779) at the end.
 
 ## Note (2026-11-17, ADR-0299, #776)
 
@@ -857,3 +858,60 @@ and `Esc`/`q` (owner OQ-S3-2, 2026-11-12). With no hook — RPC's `commands/run`
 `/jobs list` the command prints the table, and `job(action="list")` is the table whatever is hooked;
 `-p` and json do not run `/jobs` as a command. The table itself changed: its ACTIVITY is a kind's row 1, no longer its row 0 (the title again); before TITLE gets
 fewer than 20 cells AGE goes, then ACTIVITY narrows; cells are cut by terminal cells. The panel holds the waker's G2 while open (§11). Details, tests and limits: ADR-0299.
+
+## Note (2026-11-17, #779)
+
+**Active (#611 S3e).** `jobs/activation.py` `ACTIVE` is `True`; §12's gate-off description now
+describes a rollback, and a user's off switch is the 2026-11-12 (#778) note's
+`backgroundJobs.enabled: false`. The product rollback is the one line `ACTIVE = False`. The gate-off
+paths keep explicit tests through the `jobs_inactive` fixture (`tests/conftest.py`), and in real
+processes through a launcher that sets `ACTIVE = False` in the CLI and its delegated child
+(`tests/jobs/test_gated_cli_611.py::test_with_the_gate_rolled_back_neither_process_is_gated`). With the
+line applied, those all pass, and exactly the ten tests that pin the shipped value fail, by design:
+`test_synthetic_kind_611.py::test_the_shipped_gate_is_on` and the nine shipped-gate twins of the
+flip's gate-off pins (eight named `…shipped…`, and `test_interactive_mode_hands_run_tui_the_job_service`), in `test_agent_background_611.py`, `test_entry_router.py`,
+`test_print_done_protocol_611.py`, `test_project_trust.py`, `test_gated_cli_611.py`,
+`test_bash_background_611.py` (two) and `test_settings_rows.py` (two)
+(`.omc/probes/779/fix-r1/rollback-applied-changed-tests.txt`: 10 failed, 749 passed over every
+changed test file). A session written with jobs on — a moved job (its `client` v1 linkage, its
+closing record carrying `job_id`), a placed notice and a waiting one — opened by the real CLI
+(`_async_main`, `--session`, `-p` and json) with the gate rolled back or switched off: the build has
+no service and no kernel inbox, exactly the user's request is sent, the placed notice is replayed
+once and the waiting one is not delivered; opened on again, the waiting one goes once with the user's
+message, and each notice id is on exactly one entry, the placed one never placed or sent again
+(`tests/jobs/test_rollback_779.py::test_jobs_on_then_off_then_on`; contract r2 §5.5).
+
+**`job` and `job_stop` (§10) count as built-in tools for the tool flags** (R9, the lead's call):
+the run's `ToolPolicy.builtin` is `tools.BUILTIN_TOOL_NAMES`, pi's seven names and these two, so
+`--no-builtin-tools` and a profile's `builtin_tools: false` lock them off, `--tools` keeps them only
+when it names them, `--no-tools` turns them off, and a rebuild keeps that. `defaultTools` treats them
+as extension tools, as it treats `agent` and `aelix_status`: `ALL_TOOL_NAMES` stays pi's list for
+it and for everything else. `JobsExtension` registers both for the TUI, `-p` and json hosts only,
+named so that a new app mode gets neither, so not on RPC and not under ACP until #612, while the
+service and `/jobs` are still built there (`tests/cli/test_job_tools_builtin_779.py`, the matrix:
+the TUI, `-p` with no flag, `--no-builtin-tools`, `--tools` with and without `job` and `--no-tools`,
+json, a reload, RPC's `new_session`, and ACP's `resources/list` and `resources/reload`; a profile's
+`builtin_tools: false` and `defaultTools` measured by the #779 verify, round 1).
+
+**Test isolation.** With the gate on, a test that runs `_async_main` installs a service that only
+the end of a whole run removes; on the flipped `bf507d59`, 79 tests of `tests/cli` left one
+installed, and a later test registered its job kind in it
+(`test_agent_flag_builds_profile_harness_options` then
+`test_a_resume_refuses_every_key_that_would_make_it_another_run` failed one case that passes
+alone). `tests/conftest.py` restores the installed service and the off switch after every test.
+In the product such a service is left only by a launch that ends early — a spy in a test, or one of
+`_async_main`'s error returns before its cleanup, such as an unknown `--agent` profile (Codex,
+#779 review): the #779 verify found all 79 to be one or the other, with no job and no liveness loop,
+and the process exits right after such a return. Covering them is not a helper's work: the
+service is installed in `cli/entry.py`'s `_async_main` (its `install_service` call) and its cleanup is
+that function's closing `finally`, with nine direct `return 1` between them, so it stays as it is (the lead's call).
+
+**The kernel's `AgentHarness.abort_pending` (#775, ADR-0298; contract r4 §7).** A read-only
+property, `_abort_requested or _turn_cancelled`: `abort()` sets the latch and then cancels the turn
+task — the only `cancel()` call on the turn task — and an extension's `ctx.abort()` sets the latch
+with no cancel (`tests/harness/test_abort_pending.py`). A cancel of the prompt task that awaits the
+turn task reaches the turn task too, without `abort()`, and does not set `abort_pending` (contract
+r4 errata E1; the #779 verify's probe: the turn task cancelled, `abort()` not called, both flags
+false). The kernel itself reads nothing from it;
+the TUI's Ctrl+B reads it to refuse a move while an abort is pending (ADR-0298, "Two checks stay as
+conservative refusals").

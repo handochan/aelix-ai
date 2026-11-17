@@ -32,6 +32,9 @@ prints one. That is why every cross-directory link here is an absolute URL —
   entry fields, `"enabled": false`, the server states `/mcp`, `/extension` and
   `aelix status` show, and how an extension's servers relate.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
+- [background-jobs.md](background-jobs.md) — work the model did not wait for: a
+  background agent or `bash` command, the footer and `/jobs`, how a result comes
+  back, the `backgroundJobs` settings, and what is left when aelix is killed.
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
   (tools, slash commands, hooks, flags), and turn one off in `/extension`.
 - [extension-providers.md](extension-providers.md) — a model provider from an

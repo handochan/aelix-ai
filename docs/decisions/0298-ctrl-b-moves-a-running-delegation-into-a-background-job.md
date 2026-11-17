@@ -3,9 +3,11 @@
 Status: Accepted (2026-11-12, #775; fix round 1 2026-11-17: the commit is exception-atomic, the
 rescue covers a start step that fails, publication is silent until the commit is whole, a restart
 resolves an agent to its newest job, the audit sees aliases and helpers, an unknown linkage stays
-unresolved). **Inert until #611 S3e:** everything below is behind
-`aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12). With it off, Ctrl+B is
-prompt_toolkit's emacs `backward-char`, as it was, and every delegation is awaited as before.
+unresolved). **Active since #611 S3e (#779, 2026-11-17):** `aelix_coding_agent/jobs/activation.py`
+`ACTIVE = True` (ADR-0293 §12). With it off — a rollback, or `backgroundJobs.enabled: false` —
+Ctrl+B is prompt_toolkit's emacs `backward-char`, as it was, and every delegation is awaited as
+before (`tests/tui/test_detach_key_611.py::test_without_jobs_ctrl_b_is_backward_char_as_before`).
+ADR-0293's note on the kernel's `abort_pending` is its note of 2026-11-17 (#779).
 Amended 2026-11-17 by ADR-0304 (#795, #796): Ctrl+B is not gated by the agents policy; a moved run keeps running (dated note at the end).
 Date: 2026-11-12
 Issue: #775 (#611 slice S3a). Parent: #611. Contract: `.omc/specs/611-s3-contract-r4-2026-11-12.md`

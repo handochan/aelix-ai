@@ -3142,11 +3142,20 @@ async def test_parallel_and_chain_modes_are_rejected(tmp_path: Path, mode: str) 
         await runtime.spawn(_resolved(), "go", mode=mode)  # pyright: ignore[reportArgumentType]
 
 
-async def test_background_true_is_rejected_in_p2(tmp_path: Path) -> None:
+async def test_background_true_is_rejected_at_the_seam_on_a_host_where_the_kind_is_not_registered(
+    tmp_path: Path,
+) -> None:
     """The Protocol carries ``background`` for P3 shape stability only.
 
     A background child has no owner to reap it and no channel to report
     through, which is the same "task that outlives the session" ADR-0197 bans.
+
+    #779 (R10, the lead's call): RENAMED from ``…_in_p2``. Here no job service is
+    built, so the ``agent`` job kind is not registered; with the gate on it still
+    passes (ADR-0295's list "to rewrite at the flip"). Where the kind is
+    registered a background agent is ``action="spawn"``, a job of the service,
+    and the seam's flag is still refused:
+    ``tests/agents_ext/test_agent_background_611.py::test_where_the_kind_is_registered_the_seam_still_refuses_background``.
     """
 
     runtime = _runtime(tmp_path, _HAPPY)

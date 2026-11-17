@@ -65,6 +65,19 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
 )
 """Pi parity ``allToolNames`` (``core/tools/index.ts``)."""
 
+BUILTIN_TOOL_NAMES: frozenset[str] = ALL_TOOL_NAMES | frozenset({"job", "job_stop"})
+"""The names ``--no-builtin-tools`` (and a profile's ``builtin_tools: false``) turns off.
+
+:data:`ALL_TOOL_NAMES` plus the background-job tools (#779, R9 — the lead's call):
+``job`` and ``job_stop`` (``jobs/tool.py`` ``JOB_TOOL_NAME``,
+``JOB_STOP_TOOL_NAME``) come from aelix itself, not from an extension the user
+loaded, so they count as built-in for the run's tool policy
+(``cli/entry.py`` ``_tool_policy``), which every write of the active set goes
+through: the lists ``--no-builtin-tools`` computes from :data:`ALL_TOOL_NAMES`
+still name them, and the policy keeps them off. :data:`ALL_TOOL_NAMES` stays
+pi's list, which profiles, ``defaultTools`` and a delegated child's grant use.
+"""
+
 
 def create_coding_tools(
     cwd: str, options: dict | None = None
@@ -116,6 +129,7 @@ def create_all_tools(
 
 __all__ = [
     "ALL_TOOL_NAMES",
+    "BUILTIN_TOOL_NAMES",
     "BashOperations",
     "BashSpawnContext",
     "BashSpawnHook",

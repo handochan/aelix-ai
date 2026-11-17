@@ -189,8 +189,12 @@ def _py(code: str) -> str:
 # ── the gate and the host ──────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("jobs_inactive")
 async def test_the_parameter_is_absent_with_the_gate_off(tmp_path: Path) -> None:
-    """G: off, the tool is the tool it was before #611, and the parameter is ignored."""
+    """G: off, the tool is the tool it was before #611, and the parameter is ignored.
+
+    #779: pinned off through ``jobs_inactive``, since the shipped gate is on.
+    """
 
     tool = create_bash_tool(str(tmp_path), {"background_host": lambda: True, "unattended": lambda: True})
     assert tool.parameters == _build_bash_parameters(600.0, 3600.0)
@@ -198,6 +202,20 @@ async def test_the_parameter_is_absent_with_the_gate_off(tmp_path: Path) -> None
     assert tool.description == create_bash_tool(str(tmp_path)).description
     result = await _call(tool, {"command": "echo foreground", "run_in_background": True})
     assert not result.is_error and _text(result).strip() == "foreground"
+
+
+async def test_with_the_shipped_gate_a_host_that_offers_it_gets_the_parameter(tmp_path: Path) -> None:
+    """#779: the shipped gate, no fixture, is on: a local host that says yes gets ``run_in_background``.
+
+    A tool built without a ``background_host`` is the tool it was. Fails on
+    ``bf507d59``: ``ACTIVE`` shipped ``False``, so the parameter was absent.
+    """
+
+    tool = create_bash_tool(str(tmp_path), {"background_host": lambda: True, "unattended": lambda: True})
+    plain = create_bash_tool(str(tmp_path))
+    assert "run_in_background" in tool.parameters["properties"]
+    assert tool.parameters != _build_bash_parameters(600.0, 3600.0)
+    assert plain.parameters == _build_bash_parameters(600.0, 3600.0)
 
 
 @POSIX
@@ -1637,17 +1655,30 @@ def test_after_a_failed_write_the_file_stays_a_prefix_with_no_gap(tmp_path: Path
     assert path.read_bytes() == b"one " and sink.total == 13 and sink.write_error is not None
 
 
-def test_with_the_gate_off_building_bash_imports_nothing_of_the_background_module(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("gate", "imported"),
+    [
+        # #779: the child interpreter pins the gate off, as a rollback ships it,
+        pytest.param("from aelix_coding_agent.jobs import activation\nactivation.ACTIVE = False\n", "False", id="off"),
+        # and with the shipped gate, on, the offer imports it (fails on
+        # ``bf507d59``, where ``ACTIVE`` shipped ``False``).
+        pytest.param("", "True", id="shipped"),
+    ],
+)
+def test_building_bash_imports_the_background_module_only_with_the_gate_on(
+    tmp_path: Path, gate: str, imported: str
+) -> None:
     code = (
         "import sys\n"
-        "from aelix_coding_agent.tools.bash import create_bash_tool\n"
+        + gate
+        + "from aelix_coding_agent.tools.bash import create_bash_tool\n"
         f"create_bash_tool({str(tmp_path)!r}, {{'background_host': lambda: True}})\n"
         "print('aelix_coding_agent.tools.bash_background' in sys.modules)\n"
     )
     out = subprocess.run(  # noqa: S603
         [sys.executable, "-c", code], capture_output=True, check=True, timeout=60
     ).stdout.decode("utf-8", errors="replace")
-    assert out.strip() == "False"
+    assert out.strip() == imported
 
 
 @POSIX

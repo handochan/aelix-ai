@@ -104,8 +104,11 @@ def service(monkeypatch: pytest.MonkeyPatch) -> Any:
     activation.install_service(None)
 
 
-def test_the_shipped_gate_is_off() -> None:
-    """Off on main until #611 S3 (ADR-0293 §12): this line is what S3 changes."""
+def test_the_shipped_gate_is_on() -> None:
+    """On since #611 S3e (#779, ADR-0293 §12): this line is what a rollback changes.
+
+    Fails on ``bf507d59``, where the line read ``ACTIVE = False``.
+    """
 
     import ast
     import inspect
@@ -118,7 +121,7 @@ def test_the_shipped_gate_is_off() -> None:
         and [getattr(t, "id", None) for t in node.targets] == ["ACTIVE"]
         and isinstance(node.value, ast.Constant)
     ]
-    assert shipped == [False]
+    assert shipped == [True]
 
 
 async def test_the_gate_off_refuses_the_facade(monkeypatch: pytest.MonkeyPatch) -> None:

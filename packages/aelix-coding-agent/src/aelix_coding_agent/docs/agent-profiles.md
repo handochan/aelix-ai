@@ -666,6 +666,75 @@ Each resume is a run of its own in `/cost` and `/stats`, added to your
 session's totals with the rest of that agent's spend. The rules in full are in
 [ADR-0277](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md).
 
+## Background delegation
+
+In the TUI, `-p` and `--mode json`, with delegation on, the model can also run an agent
+in the background and go on with something else (#611,
+[ADR-0295](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)).
+The agent is a background job of your session; what all jobs share — the footer,
+`/jobs`, the settings, what is left when aelix is killed — is in
+[background-jobs.md](background-jobs.md).
+
+`agent` then takes five more actions:
+
+| Action | What it does |
+| --- | --- |
+| `spawn` | Starts one task in the background, with the same approval a single run has, and returns once the child has started, with its agent id and job id. |
+| `wait` | Waits up to `timeout` seconds (30 to 1800, default 120). It never stops an agent and never returns a result: the notice brings it. A third wait in a row that sees nothing end, in one prompt, is refused. |
+| `status` | One agent, by `id`, or every agent of this session. |
+| `stop` | Stops one agent, by `id`; it ends `stopped` once its process is confirmed gone, and its notice carries what it had said. |
+| `result` | Reads a finished agent's whole result again, 16 KiB a page, from `offset`. |
+
+When a background agent ends, the model gets one notice with its answer, cut to
+16 KiB; a longer one says to read the rest with `agent(action="result", id=…)`
+(`tests/agents_ext/test_agent_background_611.py`). `background: true` is not a key of
+`agent()`: the call is refused and told to use `spawn`
+(`::test_where_the_kind_is_registered_background_true_points_to_spawn`).
+
+### Moving a running agent with Ctrl+B
+
+In the TUI, while one `agent` call with one task — or a resume — runs in the
+foreground, **Ctrl+B** moves it into a background job without starting it again
+([ADR-0298](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0298-ctrl-b-moves-a-running-delegation-into-a-background-job.md)).
+The call returns at once with "Moved to the background at the user's request: …",
+the agent keeps running, and its result comes back once as a notice
+(`tests/agents_ext/test_detach_611.py`). With nothing to move — no running call or
+several, an interrupt or abort pending, a session change or reload running, the
+completion menu open — Ctrl+B is the cursor-left key it always was; under a dialog it
+does nothing (`tests/tui/test_detach_key_611.py`).
+
+**In tmux, press it twice:** Ctrl+B is tmux's own prefix key, and tmux passes it on
+only the second time (owner OQ-S3-3, 2026-11-12: "Ctrl+B만 + 가이드에 '두 번' (권장)").
+An extension's own `ctrl+b` shortcut is skipped while background jobs are on, as any
+shortcut that collides with a built-in key is; `/hotkeys` lists Ctrl+B.
+
+### How many run at once
+
+| Host | Bound on live delegated agents | Can you change it |
+| --- | --- | --- |
+| TUI, `-p`, `--mode json` | `backgroundJobs.limits.agents` (default 4), foreground and background together, and `backgroundJobs.maxTotal` if you set it | yes, in your global settings (1 to 16; `maxTotal` 1 to 32) |
+| `--mode rpc`, and ACP over it | `MAX_LIVE_CHILDREN = 4`, as before #611 | no |
+
+Over RPC and ACP the background actions are refused until #612, and the bound is
+the fixed one, because the delegation job kind is not registered there (contract r2
+§5.1, Codex r1 #12; `tests/agents_ext/test_agent_background_611.py::test_an_rpc_host_refuses_the_background_actions_until_612`).
+Where the bound is reached, a call is refused before its dialog, and the refusal
+names the setting.
+
+### If aelix is killed while an agent runs
+
+Measured for #777 (ADR-0293's 2026-11-17 note, `tests/cli/test_parent_death_611.py`):
+
+| Platform | A `-p` background agent | An agent Ctrl+B moved | A TUI agent not moved |
+| --- | --- | --- | --- |
+| Linux | gone within 5 s (20 of 20 runs) | gone within 5 s (20 of 20) | gone within 5 s (10 of 10) |
+| Windows | every watched process gone within 10 s (CI run 44023793108) | the same | the same |
+| macOS | recorded only: alive 5 s after the kill (20 of 20) | recorded only: alive 5 s after the kill (20 of 20) | recorded only: alive 5 s after the kill (10 of 10) |
+
+On macOS quit aelix instead of killing it, or stop what is left yourself. The
+background `bash` rows and the details are in
+[background-jobs.md](background-jobs.md#if-aelix-itself-dies).
+
 ## A second example
 
 Exercising `system_prompt: replace`, an empty tool set, and an absolute skill

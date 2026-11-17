@@ -1,6 +1,6 @@
 """Background jobs: a generic product-core facility its clients register kinds with (#722, ADR-0293).
 
-Inert until #611 S3: see :mod:`aelix_coding_agent.jobs.activation`. The kinds
+On since #611 S3e (#779): see :mod:`aelix_coding_agent.jobs.activation`. The kinds
 are clients — delegation, background ``bash``, an extension's work — and
 nothing in this package names one.
 """

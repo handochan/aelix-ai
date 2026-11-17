@@ -990,13 +990,21 @@ async def test_a_human_typed_run_is_not_rate_limited_per_prompt(tmp_path: Path) 
 # === scope refusals ===========================================================
 
 
-async def test_background_true_is_rejected_always(tmp_path: Path) -> None:
+async def test_background_true_is_rejected_on_a_host_where_the_kind_is_not_registered(
+    tmp_path: Path,
+) -> None:
     """A background child has no owner to reap it and no channel to report on.
 
     RENAMED from ``…_in_p2`` (P3): the ``_in_p2`` suffix read as "until P3", and
     P3 has now landed with background still refused. The reason was never the
     phase — it is ADR-0197's ban on a task that outlives the session — so the
     name may not imply an expiry date the design does not have.
+
+    RENAMED again from ``…_always`` (#779, R10, the lead's call): this bench
+    builds no job service, so the ``agent`` job kind is not registered and the
+    refusal is ADR-0197's sentence, gate on or off. Where the kind is registered
+    the key is refused too, pointing at ``action="spawn"``:
+    ``tests/agents_ext/test_agent_background_611.py::test_where_the_kind_is_registered_background_true_points_to_spawn``.
 
     Rejected LOUDLY rather than ignored: silently dropping ``background: true``
     would let a model believe it had started something it had not, and then
@@ -1818,8 +1826,14 @@ def test_the_contract_text_stays_inside_its_own_budget() -> None:
         assert f'action="{action}"' in _DESCRIPTION_HEAD
 
 
-def test_the_whole_description_stays_inside_head_plus_roster() -> None:
-    """The two budgets compose — the worst case is a full roster of maximal entries."""
+def test_the_whole_description_stays_inside_head_plus_roster_where_the_kind_is_not_registered() -> None:
+    """The two budgets compose — the worst case is a full roster of maximal entries.
+
+    #779 (R10, the lead's call): RENAMED from ``…_head_plus_roster``. That is the
+    description of a host where the ``agent`` job kind is not registered; where it
+    is, the background paragraph is a third part with its own budget:
+    ``tests/agents_ext/test_agent_background_611.py::test_where_the_kind_is_registered_the_description_adds_only_the_background_paragraph``.
+    """
 
     profiles = [
         _profile(name=f"agent{i:02d}", description="y" * 400) for i in range(MAX_ROSTER)

@@ -298,6 +298,50 @@ def _restore_api_registry():
 
 
 @pytest.fixture
+def jobs_inactive(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Background jobs' gate off for one test: the path a rollback (``ACTIVE = False``) restores.
+
+    #779 turned ``jobs/activation.py`` ``ACTIVE`` on. A test that pins what aelix
+    does with it off names this fixture, so it keeps measuring the off path
+    whatever the shipped default is (``jobs_active`` in ``tests/jobs/conftest.py``
+    is its twin). The start-time off switch (#778) is cleared, and no service is
+    left installed afterwards.
+    """
+
+    from aelix_coding_agent.jobs import activation
+
+    monkeypatch.setattr(activation, "ACTIVE", False)
+    monkeypatch.setattr(activation, "_switched_off", False)
+    yield
+    activation.install_service(None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_jobs_activation() -> Iterator[None]:
+    """Undo a test's writes to the job gate's process state: the installed service and the off switch.
+
+    #779: with the gate on, every ``_async_main`` a test runs builds a service and
+    installs it, and only the end of a whole run removes it. 79 tests in
+    ``tests/cli`` that stop a run early left one installed (a scratch probe after
+    each teardown, on the flipped tree), and a later test then registered its job
+    kind in that dead service: ``test_agent_flag_builds_profile_harness_options``
+    followed by ``test_a_resume_refuses_every_key_that_would_make_it_another_run``
+    failed one case (``'background' is not a key of agent()``) that passes alone.
+    ``enabled_at_start`` writes the off switch the same way. Snapshot and restore,
+    as ``_restore_api_registry`` does.
+    """
+
+    from aelix_coding_agent.jobs import activation
+
+    service, switched_off = activation._service, activation._switched_off  # noqa: SLF001 — the state guarded
+    try:
+        yield
+    finally:
+        activation._service = service  # noqa: SLF001
+        activation._switched_off = switched_off  # noqa: SLF001
+
+
+@pytest.fixture
 def mkdir_or_skip() -> Callable[..., Path]:
     """Stage a directory whose NAME is the attack payload, or skip that payload.
 
