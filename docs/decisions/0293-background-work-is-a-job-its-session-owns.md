@@ -514,7 +514,9 @@ in the turn (L1b–L3b). Every process a case watches writes its own pid and sta
 sleeper). All are alive, with a known start time, before the kill, and each is read by identity
 after it. A process counts as gone only when it is first read gone within the bound, counted from
 the kill (`tests/cli/test_parent_death_611.py`; its checks are pinned against fakes in
-`tests/cli/test_parent_death_checks_777.py`). On POSIX these are guards of `b6100968`'s behaviour.
+`tests/cli/test_parent_death_checks_777.py`). The cleanup rescans the markers, so it also kills a process
+that announces itself while the cleanup runs; one that announces only after the cleanup has returned is
+past any rescan. On POSIX these are guards of `b6100968`'s behaviour.
 
 | Platform | The kill | `-p` (PR c1) | A job Ctrl+B moved (PR c2) | A TUI delegation not moved |
 |---|---|---|---|---|
@@ -525,9 +527,11 @@ the kill (`tests/cli/test_parent_death_611.py`; its checks are pinned against fa
 The 23 real-child cases of `tests/agents_ext/test_agent_background_611.py` (L4), and the launcher's two
 smoke cases with them, now run on windows-latest as well: the first run of the evidence legs against a real
 Job. At `b69890da` 22 of the 23 and both smoke cases passed on all four legs; the 23rd,
-`test_result_rereads_the_whole_result_and_a_long_one_points_there`, failed there with WinError 206, its
-own 41,684-character `-c` script longer than a 32,767-character command line, and now runs its stub from
-a file (the longest of the others measured 1,748). At this head they are pending the lead's CI round,
+`test_result_rereads_the_whole_result_and_a_long_one_points_there`, failed there with WinError 206: its
+own `-c` script is 41,530 characters (`len` of the script, on macOS), and its whole command line was
+41,684 on macOS with this lane's interpreter path (`subprocess.list2cmdline`, recorded at the spawn),
+past the 32,767 a win32 command line holds. It now runs its stub from a file; the longest command line
+of the other cases was 1,748, measured the same way. At this head they are pending the lead's CI round,
 so the **Windows** bullet above stands until it is in.
 
 ## Note (2026-11-08, ADR-0295, #723)

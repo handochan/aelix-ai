@@ -67,7 +67,8 @@ whose ``bash`` is refused. The model is scripted, in a scratch HOME and cwd.
 
 Every case kills, at its end, every announced process still alive with its
 announced start time, and nothing else, the parent first; it rescans the
-markers until none has appeared for a second and waits for what it killed;
+markers until none has appeared for a second and waits for what it killed (an
+announcement made after it returns is past any rescan);
 during the case a pid is read by identity (``tests/rpc/_identity.py``), so a
 reused number never reads as alive. ``tests/cli/test_parent_death_checks_777.py``
 pins these checks against fakes.

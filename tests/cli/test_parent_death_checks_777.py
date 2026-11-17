@@ -9,9 +9,11 @@ host unless it needs a real SIGKILL, and each fails on ``b69890da``:
   came after the 5 s bound (Codex's ``posix_deadline``). On ``b69890da`` the
   case accepted it ("gone, ended 5.712 s after the kill"); the Windows watcher
   accepted ``ended_after: 11.0`` against 10 s the same way.
-* **M2, the cleanup.** A process that announces itself while the cleanup runs
-  (Codex's ``cleanup_unannounced``): on ``b69890da`` the cleanup took one
-  snapshot of the markers and left it running.
+* **M2, the cleanup.** A process that announces itself while the cleanup runs:
+  on ``b69890da`` the cleanup took one snapshot of the markers and left it
+  running. This is narrower than Codex's ``cleanup_unannounced``, whose child
+  announces only after ``clean_up`` has returned: no rescan can catch that one,
+  and nothing here claims to (verify round 2, F5).
 * **M3, the kill.** ``TerminateProcess`` that fails, and handles already
   signalled before it (Codex's ``windows_checks``): on ``b69890da`` both passed.
 * **L4, unknown identity.** A start time read as ``None`` on both sides, by the
@@ -52,6 +54,13 @@ class Clock:
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+
+
+class LateClock(Clock):
+    """A watcher descheduled once just before the bound: its next read comes at 11 s (verify r2 F7)."""
+
+    def sleep(self, seconds: float) -> None:
+        self.now = 11.0 if 9.9 <= self.now < 10.0 else self.now + seconds
 
 
 def _on(monkeypatch: pytest.MonkeyPatch, clock: Clock) -> None:
@@ -178,6 +187,7 @@ def _procs(started: float | None = 100.0) -> dict[str, pd.Announced]:
     ("shape", "match"),
     [
         ("late", r"\['parent', 'child'\] not read ended within 10.0 s"),
+        ("read-late", r"\['parent', 'child'\] not read ended within 10.0 s"),
         ("failed-kill", "TerminateProcess failed"),
         ("ended-before", "ended before the kill"),
         ("control", None),
@@ -186,13 +196,18 @@ def _procs(started: float | None = 100.0) -> dict[str, pd.Announced]:
 def test_the_windows_check_needs_a_kill_that_worked_on_live_processes_inside_the_bound(
     monkeypatch: pytest.MonkeyPatch, shape: str, match: str | None
 ) -> None:
-    """Codex's ``windows_checks`` (M3, and M1's Windows half): each shape but the control fails."""
+    """Codex's ``windows_checks`` (M3, and M1's Windows half): each shape but the control fails.
 
-    clock = Clock()
+    ``late`` ends after the bound and is never read ended; ``read-late`` is read
+    ended at 11 s, after its watcher was descheduled past the bound, which only
+    the ``> bound`` clause rejects (verify round 2, F7's mutant T4).
+    """
+
+    clock = LateClock() if shape == "read-late" else Clock()
     _on(monkeypatch, clock)
     kernel = FakeKernel(
         clock,
-        ends={1: 10.5, 2: 10.5} if shape == "late" else None,
+        ends={1: 10.5, 2: 10.5} if shape in ("late", "read-late") else None,
         ended_before=shape == "ended-before",
         kill_ok=shape != "failed-kill",
     )
@@ -261,7 +276,12 @@ time.sleep(60)
 
 
 def test_the_cleanup_kills_a_process_that_announces_itself_while_it_runs(tmp_path: Path) -> None:
-    """Codex's ``cleanup_unannounced``: the child is alive before the cleanup and announces 0.4 s into it."""
+    """M2, narrowed: the child is alive before the cleanup and announces itself 0.4 s into it.
+
+    Pinned: an announcement made DURING the cleanup is rescanned and killed. Not
+    pinned, and not catchable: a child that announces only after ``clean_up``
+    returns, Codex's ``cleanup_unannounced`` shape (verify round 2, F5).
+    """
 
     run = pd.Run(tmp_path)
     script = tmp_path / "late_child.py"
