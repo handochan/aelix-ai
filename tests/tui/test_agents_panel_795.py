@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -173,7 +174,9 @@ def test_three_groups_in_layout_a_order_with_their_rows(
         i for i, r in enumerate(frame) if r.strip().startswith(("PROJECT", "GLOBAL", "BUNDLED"))
     ]
     assert [frame[i].split()[0] for i in heads] == ["PROJECT", "GLOBAL", "BUNDLED"]
-    assert "PROJECT  .aelix/agents/" in text
+    # display_path is os.path.relpath, as the skills panel's is: `.aelix\agents/` on win32
+    # (tests/cli/test_agents_skills_509.py builds its labels the same way).
+    assert f"PROJECT  {os.path.join('.aelix', 'agents')}/" in text
     keys = [s.item.key for s in scene.model().visible()]
     assert keys[0] == "local"
     assert keys.index("orchestrator") < keys.index(
