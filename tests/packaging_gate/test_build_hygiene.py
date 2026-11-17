@@ -500,11 +500,13 @@ def test_sdist_carries_no_developer_state(root_sdist: list[str]) -> None:
 #: delegated child's ``PYTHONPATH``. Python imports a ``sitecustomize.py`` it
 #: finds on the path at every start-up, so one that shipped would run in every
 #: interpreter of the installing user's environment. PR c1 adds the ``-e``
-#: extension whose job swallows every stop (L6), test-only as the launcher is.
+#: extension whose job swallows every stop (L6), and PR c2 the TUI launcher,
+#: test-only as the launcher is.
 GATED_LAUNCHER_FILES = (
     "tests/jobs/gated_cli.py",
     "tests/jobs/gated_site/sitecustomize.py",
     "tests/jobs/fixtures/hold_kind_ext.py",
+    "tests/jobs/gated_tui_child.py",
 )
 
 

@@ -1,4 +1,4 @@
-"""#777 (#611 S3c) PR c1: what a killed aelix leaves of its background jobs, read by pid and start time.
+"""#777 (#611 S3c): what a killed aelix leaves of its background jobs, read by pid and start time.
 
 A real CLI, started through the gate-on launcher (``tests/jobs/gated_cli.py``)
 against a local chat-completions SSE server, runs ``-p`` with two jobs: a
@@ -36,6 +36,16 @@ start time, before the kill. Then the parent is killed:
   what ``TerminateProcess`` returned.
 * **L3, macOS.** SIGKILL, then the survivors are recorded and killed. Nothing
   is asserted about the children: macOS has no ``pdeathsig`` (ADR-0291 limit 3).
+
+**PR c2, L1a–L3a: a job Ctrl+B moved.** The same, with the TUI instead of
+``-p``: ``tests/jobs/gated_tui_child.py`` runs the launcher's gated CLI on its
+TUI path, its keys read from stdin. The parent runs one agent in the
+foreground; once the child's sleeper announced itself, the case writes Ctrl+B
+(``\x02``), and once the parent's next request carries the moved call's answer
+it kills that aelix, and reads the moved job's processes as L1–L3 do: on Linux
+the delegated child is gone within 5 s, on Windows every announced handle is
+signalled within 10 s (a moved job's evidence is its root only, ADR-0298; this
+reads the processes themselves), and macOS is recorded.
 
 The child runs ``bash`` only because the parent runs ``--permission-mode yolo``: a
 default parent clamps a delegated child to ``plan`` (``aelix_agents/consent.py``),
@@ -117,6 +127,14 @@ time.sleep(seconds)
 
 #: What a -p run watches: the two aelix interpreters, both shells and both sleepers.
 PRINT_ROLES = ("parent", "child", "child-shell", "child-sleeper", "bg-shell", "bg-sleeper")
+
+#: What a TUI run watches once Ctrl+B moved its foreground delegation (#777 PR c2).
+TUI_ROLES = ("parent", "child", "child-shell", "child-sleeper")
+
+TUI_CHILD = Path(__file__).resolve().parents[1] / "jobs" / "gated_tui_child.py"
+
+MOVED = "Moved to the background at the user's request"
+"""The moved call's answer (``aelix_agents/tool.py``): the parent's next request carries it."""
 
 
 @dataclass(frozen=True)
@@ -437,6 +455,75 @@ def test_l3_a_sigkilled_parents_jobs_on_macos_are_recorded_and_cleaned_up(tmp_pa
 
     with running(tmp_path, print_turns) as (run, _server):
         sigkill_on_macos(run, started_print_run(run), label="L3 (macOS)")
+
+
+# ── PR c2: a job Ctrl+B moved, then the parent's death (L1a–L3a) ──────────
+
+
+def tui_turns(run: Run) -> tuple[Turn, Turn]:
+    """The parent runs one agent in the foreground, then answers; the child runs its sleeper."""
+
+    def parent(_body: dict[str, Any], index: int) -> dict[str, Any]:
+        if index == 0:
+            return call("agent", {"profile": PROFILE, "task": "run the sleeper"})
+        return say(f"parent turn {index}")
+
+    return parent, child_turn(run)
+
+
+def moved_tui_run(run: Run, server: Server) -> dict[str, Announced]:
+    """The TUI child: ``go`` submitted; once its delegated child's sleeper announces, Ctrl+B; the move
+    confirmed by the parent's next request, which carries the moved call's answer."""
+
+    proc = run.start(TUI_CHILD, stdin=subprocess.PIPE)
+    assert proc.stdin is not None
+    run.wait_for(("parent",))
+    proc.stdin.write(b"go\r")
+    proc.stdin.flush()
+    procs = run.wait_for(TUI_ROLES)
+    run.positive_control(procs)
+    proc.stdin.write(b"\x02")
+    proc.stdin.flush()
+    deadline = time.monotonic() + ANNOUNCE_BOUND
+    while not any(MOVED in text_of(m) for b in server.parent[1:] for m in b.get("messages", [])):
+        if proc.poll() is not None or time.monotonic() > deadline:
+            pytest.fail(
+                f"no move: {len(server.parent)} parent requests, aelix "
+                f"{'exited ' + str(proc.returncode) if proc.poll() is not None else 'running'}; "
+                f"stderr: {run.stderr_tail()}"
+            )
+        time.sleep(0.05)
+    assert run.state(procs["child"].pid) == STATE_ALIVE, (
+        "the moved run's child runs on after the move"
+    )
+    return procs
+
+
+@LINUX
+def test_l1a_a_sigkilled_tui_parents_moved_delegated_child_is_gone_within_5_s(
+    tmp_path: Path,
+) -> None:
+    with running(tmp_path, tui_turns) as (run, server):
+        procs = moved_tui_run(run, server)
+        sigkill_on_linux(run, procs, label="L1a (Linux, moved)", asserted=("child",))
+
+
+@WIN32
+def test_l2a_a_terminated_tui_parents_moved_job_processes_all_end_within_10_s(
+    tmp_path: Path,
+) -> None:
+    """Kill-on-close of the print channel's Job, which a moved run keeps (ADR-0298: root-only evidence)."""
+
+    with running(tmp_path, tui_turns) as (run, server):
+        terminate_on_windows(moved_tui_run(run, server))
+
+
+@DARWIN
+def test_l3a_a_sigkilled_tui_parents_moved_job_on_macos_is_recorded_and_cleaned_up(
+    tmp_path: Path,
+) -> None:
+    with running(tmp_path, tui_turns) as (run, server):
+        sigkill_on_macos(run, moved_tui_run(run, server), label="L3a (macOS, moved)")
 
 
 class WinHandles:
