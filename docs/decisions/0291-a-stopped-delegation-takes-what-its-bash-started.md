@@ -385,7 +385,7 @@ counted from the kill (`tests/cli/test_parent_death_611.py`):
 | Platform | The kill | The delegated child | What its `bash` runs |
 |---|---|---|---|
 | Linux | SIGKILL | asserted gone within 5 s (`test_l1_…`); Linux docker, 20 of 20 runs over two rounds: gone 0.004–0.39 s after the kill | recorded only: its shell and sleeper gone within 0.01 s in 20 of 20, by the child's own cleanup of the SIGTERM `pdeathsig` sent |
-| Windows | `TerminateProcess` | asserted, with the shell and sleeper, as each announced handle signalled within 10 s (`test_l2_…`); the Windows Job is ADR-0238's, and the child also ends when the venv launcher's own job ends it | at `b69890da` passed on all four windows-latest legs (the lead's CI round, run 43998348364); at this head pending |
+| Windows | `TerminateProcess` | asserted, with the shell and sleeper, as each announced handle signalled within 10 s (`test_l2_…`); the Windows Job is ADR-0238's, and the child also ends when the venv launcher's own job ends it | at `b69890da` passed on all four windows-latest legs (the lead's CI round, run 43998348364), and again at `6e3f5612` (CI run 44023793108) |
 | macOS | SIGKILL | recorded only (`test_l3_…`); local, 20 of 20 runs over two rounds: alive 5 s after the kill | recorded only: alive 5 s after the kill in 20 of 20 |
 
 The same for a TUI delegation (the TUI through `tests/jobs/gated_tui_child.py`), moved into a job by
@@ -394,7 +394,7 @@ runs, 0.009–0.39 s; `test_l1b_…`, 10 of 10, 0.004–0.30 s), its shell and s
 0.07 s; on macOS all recorded alive at 5 s (`test_l3a_…`, 20 of 20 runs; `test_l3b_…`, 10 of 10). On Windows `test_l2a_…`
 failed on all four legs at `b69890da`, the child's shell and sleeper alive 10 s after the kill, which
 #777's suspended print-channel spawn addresses (ADR-0238's 2026-11-17 note); `test_l2a_…` and
-`test_l2b_…` are pending the lead's CI round.
+`test_l2b_…` passed on all four legs at `6e3f5612` (CI run 44023793108).
 
 ## Verification
 
