@@ -77,12 +77,13 @@ when the process is resumed with ``NtResumeProcess``, which needs only the
 process handle ``Popen`` keeps (``Popen`` closes the THREAD handle, which is
 what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
 ``attach(suspended=True)`` are that primitive (#611 S2b); its callers are the
-background ``bash`` of #611 S2d (behind the job gate, ADR-0297) and, since #777
-and #772, the print-mode delegation child and ``RpcClient.start``, whose attach
-also passes ``uncontained_ok`` so a job that cannot be had still degrades. On the
-windows runner ``sys.executable`` is a venv launcher that starts the interpreter
-at once (CPython ``PC/launcher2.c``), so an unsuspended child can have a child
-before its attach. Every other spawn keeps the window. Belt and braces:
+background ``bash`` of #611 S2d (behind the job gate, ADR-0297) and, since #777,
+the print-mode delegation child, whose attach also passes ``uncontained_ok`` so
+a job that cannot be had still degrades. Since #772 ``RpcClient.start`` is one
+too, the same way. On the windows runner ``sys.executable`` is a venv launcher
+that starts the interpreter at once (CPython ``PC/launcher2.c``), so an
+unsuspended child can have a child before its attach. Every other spawn keeps
+the window. Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.
@@ -1025,6 +1026,28 @@ class ProcessTree:
         except (OSError, AttributeError):
             return 0
 
+    @staticmethod
+    def resume_suspended(
+        pid: int,
+        handle: int | None,
+        *,
+        platform: str | None = None,
+        api: _Win32Api | None = None,
+    ) -> None:
+        """Resume a process created with :meth:`suspend_flags`'s ``CREATE_SUSPENDED`` outside any attach (#777).
+
+        For a caller whose :meth:`attach` raised something the primitive does not
+        handle, so the process was neither resumed nor ended there: the print
+        channel's degrade. ``NtResumeProcess`` through ``handle``, or one opened
+        for ``pid``; raises ``OSError`` when it cannot. A no-op off win32, where
+        nothing is created suspended.
+        """
+
+        if _resolve_platform(platform) != "win32":
+            return
+        resolved = api if api is not None else _KernelApi()
+        cast("_Win32JobControlApi", resolved).resume(pid, handle)
+
     @classmethod
     def attach(
         cls,
@@ -1057,9 +1080,10 @@ class ProcessTree:
         ``uncontained_ok`` (#777, with ``suspended``): a job that cannot be
         created or assigned resumes the process outside one instead, as an
         unsuspended attach degrades (``contained=False``, the ``taskkill``-only
-        path). The print channel and ``RpcClient`` ask for it: their attach has
-        always degraded and never refused a spawn. A latch already set, or a
-        resume that fails, still ends the process.
+        path). The print channel asks for it: its attach has always degraded
+        and never refused a spawn. A latch already set, or a resume that fails,
+        still ends the process.
+        ``RpcClient`` asks for it too (#772).
 
         ``platform`` and ``api`` are injection seams for the tests. Attaching
         with ``platform="win32"`` and no ``api`` off Windows raises.

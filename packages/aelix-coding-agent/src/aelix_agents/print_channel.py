@@ -1830,7 +1830,12 @@ def _take_tree(row: RunningChild, proc: Any, *, suspended: bool) -> None:
     Job that cannot be had still degrades, resumed outside one
     (``uncontained_ok``), as the unsuspended attach did. A stop that landed in
     the spawn, or a resume that fails, ends the child unrun
-    (:class:`SuspendedLaunchError`): the run goes on and reaps what is left.
+    (:class:`SuspendedLaunchError`): the run goes on and reaps the ended child.
+    Any other raise out of the attach takes the generic arm, which degrades as
+    it always has and resumes a suspended child outside a Job
+    (:func:`_resume_unattached`; 리드 판단, the lead's call, #777 fix round 2),
+    ending it only when even that resume fails. ``RpcClient`` ends its child on
+    the same path instead (its abandon): the two sites differ by design.
     """
 
     try:
@@ -1856,6 +1861,27 @@ def _take_tree(row: RunningChild, proc: Any, *, suspended: bool) -> None:
         # delegation that still returns a perfectly good envelope is the one
         # failure with nowhere else to surface.
         logger.warning("process-tree attach failed for %s: %s", row.id, exc)
+        _resume_unattached(row, proc, suspended=suspended)
+
+
+def _resume_unattached(row: RunningChild, proc: Any, *, suspended: bool) -> None:
+    """A child spawned suspended whose attach raised outside the primitive: resumed, or ended (#777).
+
+    DEGRADE, never abandon (:func:`_take_tree`): the child runs outside a Job,
+    as an unsuspended child whose attach failed always did (리드 판단, the
+    lead's call, #777 fix round 2). Left suspended it would never run and the
+    run would wait for it for ever: nothing bounds a delegation (#604). Only a
+    resume that fails ends it, so the run reaps an ended child instead.
+    """
+
+    if not suspended:
+        return
+    try:
+        ProcessTree.resume_suspended(proc.pid, _retained_handle(proc))
+    except Exception as exc:  # noqa: BLE001 — a child that cannot run is ended, never left suspended
+        logger.warning("delegation %s could not be resumed, so it is ended: %s", row.id, exc)
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
 
 
 def _close_tree(row: RunningChild) -> None:

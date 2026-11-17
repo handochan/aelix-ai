@@ -52,6 +52,7 @@ class FakeKernel:
         self.fail: set[str] = set()
         self.resumable = True
         self.dies_on_terminate = True
+        self.resumed_with: list[int | None] = []
 
     def _maybe_fail(self, name: str) -> None:
         if name in self.fail:
@@ -140,6 +141,7 @@ class FakeKernel:
 
     def resume(self, pid: int, handle: int | None) -> None:
         self.calls.append(("resume", pid))
+        self.resumed_with.append(handle)
         self._maybe_fail("resume")
 
     def duplicate(self, handle: int) -> int:
@@ -456,6 +458,7 @@ def test_with_uncontained_ok_a_job_it_cannot_have_resumes_it_outside_one(step: s
     api.fail.add(step)
     tree = _uncontained_ok(api)
     assert api.names()[-1] == "resume" and "terminate_process" not in api.names()
+    assert api.resumed_with == [501], "resumed through the spawn's own handle (verify r2 mutant P9)"
     assert not tree.contained and tree.job is None
     copy = api.next_handle
     assert tree._held == {10: copy}
@@ -478,6 +481,19 @@ def test_with_uncontained_ok_a_latched_stop_or_a_failed_resume_still_ends_it(fai
     assert ("terminate_process", 10) in api.calls and ("wait", 10) in api.calls
     assert ("resume" in api.names()) is (fail == "resume")
     assert caught.value.tree is None
+
+
+def test_resume_suspended_resumes_through_the_handle_and_is_a_no_op_off_win32() -> None:
+    """#777 fix round 2: the print channel's generic arm resumes with it; it raises what the resume raised."""
+
+    api = FakeKernel()
+    ProcessTree.resume_suspended(10, 501, platform="win32", api=api)
+    assert api.calls == [("resume", 10)] and api.resumed_with == [501]
+    api.fail.add("resume")
+    with pytest.raises(OSError, match="resume failed"):
+        ProcessTree.resume_suspended(10, 501, platform="win32", api=api)
+    ProcessTree.resume_suspended(10, 501, platform="linux", api=api)
+    assert len(api.resumed_with) == 2, "nothing is created suspended off win32: no call"
 
 
 def test_missing_ntresumeprocess_spawns_unsuspended() -> None:

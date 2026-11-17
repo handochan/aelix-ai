@@ -92,6 +92,7 @@ from tests.env_sandbox import child_env
 from tests.event_waits import check_anti_hang, record_armed_waits, wait_until, within
 from tests.posix_modes import POSIX_MODES
 from tests.print_mode_child import CHILD_SOURCE
+from tests.unsuspended import unsuspended
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
@@ -5039,6 +5040,77 @@ async def test_an_attach_failure_degrades_instead_of_abandoning_the_child(
     )
 
 
+def _emulated_suspended_spawn(monkeypatch: pytest.MonkeyPatch, seen: dict[str, Any]) -> None:
+    """win32's ``CREATE_SUSPENDED`` spawn on POSIX: the real child is SIGSTOPped as ``CreateProcess`` leaves
+    it, and ``ProcessTree.resume_suspended`` SIGCONTs it, as ``NtResumeProcess`` would (verify round 2's
+    ``probe_print_suspended_real.py``)."""
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _exec(*argv: Any, **kwargs: Any) -> Any:
+        flags = kwargs.pop("creationflags", 0) or 0
+        proc = await real_exec(*argv, **kwargs)
+        if flags & CREATE_SUSPENDED:
+            os.kill(proc.pid, signal.SIGSTOP)
+        seen["pid"] = proc.pid
+        return proc
+
+    def _resume(pid: int, handle: int | None, **_kwargs: Any) -> None:
+        seen.setdefault("resumed", []).append((pid, handle))
+        if seen.get("resume_fails"):
+            raise OSError("NtResumeProcess failed (emulated)")
+        os.kill(pid, signal.SIGCONT)
+
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: CREATE_SUSPENDED))
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _exec)
+    # ``raising=False``: on a tree without it (``5cfc9596``) the case still runs and shows the hang.
+    monkeypatch.setattr(pc.ProcessTree, "resume_suspended", staticmethod(_resume), raising=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP emulates the suspended spawn")
+@pytest.mark.parametrize("resume_fails", [False, True], ids=["resumed", "resume-fails"])
+async def test_an_attach_that_raises_otherwise_resumes_a_suspended_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resume_fails: bool
+) -> None:
+    """#777 fix round 2 (verify F2): the generic arm resumes a child spawned suspended (리드 판단).
+
+    The attach raises a non-``OSError``, which the primitive does not handle, so
+    it neither resumed nor ended the child. DEGRADE, never abandon: the run
+    resumes it outside a Job and the delegation delivers; a resume that fails
+    ends the child, and the run returns instead of waiting for ever. On
+    ``5cfc9596`` the child stayed stopped (``Ts``) and the run never returned.
+    """
+
+    seen: dict[str, Any] = {"resume_fails": resume_fails}
+    _emulated_suspended_spawn(monkeypatch, seen)
+
+    def _raises(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("not an OSError")
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _raises)
+    row = RunningChild(id="sub-attach-raises", profile="scout")
+    task = asyncio.ensure_future(_stub_channel(_HAPPY, grace=1.0).run(_plan(tmp_path), child=row))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=8)
+        assert done, "the run never returned: its child was left suspended"
+        result = task.result()
+        assert [pid for pid, _handle in seen["resumed"]] == [seen["pid"]]
+        assert seen["resumed"][0][1] == _retained_handle(row.proc), "resumed through the spawn's handle"
+        if resume_fails:
+            assert result.ok is False, "ended, not run"
+        else:
+            assert result.ok is True and result.exit_code == 0, result
+    finally:
+        if not task.done():
+            row.stopped = True
+            await pc.abort_child(row, grace=1.0)
+            await asyncio.wait({task}, timeout=10)
+        pid = seen.get("pid")
+        if pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
 async def test_the_tree_is_closed_when_a_run_returns_with_no_reaper(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -5107,6 +5179,8 @@ async def test_a_successful_delegation_closes_its_tree_and_signals_nothing_here(
         trees.append(tree)
         return tree
 
+    # The stub resumes nothing: on win32 a suspended REAL child would never run (#777 fix round 2).
+    unsuspended(monkeypatch)
     monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
 
     result = await _stub_channel(_HAPPY).run(_plan(tmp_path))
