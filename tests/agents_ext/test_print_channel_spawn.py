@@ -79,6 +79,7 @@ from aelix_ai.utils._process_tree import (
     CREATE_NEW_PROCESS_GROUP,
     CREATE_SUSPENDED,
     ProcessTree,
+    SuspendedLaunchError,
     _retained_handle,
 )
 from aelix_coding_agent.agents.profile import AgentProfile
@@ -3819,6 +3820,44 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
         "the stdlib's retained handle must be forwarded: deriving one with "
         "OpenProcess can be refused for a process we are entitled to contain"
     )
+
+
+async def test_a_stop_that_lands_in_the_suspended_spawn_ends_the_child_unrun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#777: the suspended attach's latch is the row's stop, and its ending is the run's.
+
+    A stop lands while the spawn is in flight; the attach reads it through its
+    latch and ends the child unrun (``SuspendedLaunchError``, faked here with a
+    tree it could not confirm the end through). That tree is the row's, owned,
+    so the run's end closes it, and the run ends ``aborted``. The same three
+    fakes as the per-platform case.
+    """
+
+    row = RunningChild(id="sub-stopped-in-spawn", profile="scout")
+    tree = _StubTree()
+    latches: list[bool] = []
+
+    async def _fake_exec(*_argv: Any, **_kwargs: Any) -> Any:
+        row.stopped = True  # a stop that lands while the spawn is awaited
+        return _RecordingProc()
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        latches.append(kwargs["stop_latched"]())
+        if latches[-1]:
+            raise SuspendedLaunchError("stopped before it ran", tree=tree)
+        return tree
+
+    monkeypatch.setattr(pc.sys, "platform", "win32")
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: CREATE_SUSPENDED))
+
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path), child=row)
+
+    assert latches == [True], "the latch read the row's stop"
+    assert tree.closed or "close" in tree.calls, "the tree the error carried was the row's, and closed"
+    assert result.status == "aborted"
 
 
 async def test_the_spawn_attaches_the_tree_before_the_first_await(
