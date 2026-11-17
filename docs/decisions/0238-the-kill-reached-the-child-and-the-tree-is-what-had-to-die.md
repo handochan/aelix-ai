@@ -339,7 +339,9 @@ window is the cause is read from the code, not measured. Pinned on every host
 (`tests/agents_ext/test_print_channel_spawn.py::test_the_spawn_asks_for_containment_kwargs_per_platform`,
 `::test_an_attach_that_raises_otherwise_resumes_a_suspended_child`) and in the primitive
 (`tests/process_tree/test_job_state_machine_611.py::test_with_uncontained_ok_a_job_it_cannot_have_resumes_it_outside_one`).
-Whether the windows-latest cases turn green is pending the lead's CI round. Background `bash` keeps
+On windows-latest, `tests/cli/test_parent_death_611.py`'s `test_l2a_…` and `test_l2b_…` and
+`test_an_attach_failure_degrades_instead_of_abandoning_the_child` passed on all four legs at
+`6e3f5612` (CI run 44023793108). Background `bash` keeps
 ending a child it cannot contain (ADR-0297). The other sites keep the window: foreground `bash`,
 `run_cancellable`, `run_contained`, subprocess hooks and `!command`, all `kill_on_close=False`,
 which do not rely on the parent's death.
