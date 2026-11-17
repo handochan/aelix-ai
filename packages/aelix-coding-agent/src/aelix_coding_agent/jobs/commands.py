@@ -2,7 +2,8 @@
 
 ::
 
-    /jobs                 the current session's jobs
+    /jobs                 the current session's jobs: the panel in the TUI (#776), else the table
+    /jobs list            the table
     /jobs <id>            one job: kind, title, state, owner, times, its rows, its result
     /jobs result <id>     the job's output, paged into the transcript (not to the model)
     /jobs stop <id>       stop it (a user's action: no consent)
@@ -10,6 +11,11 @@
 
 The list's rows are what the ``job`` tool's ``list`` returns, so the user and
 the model see one table. An id may be given by any unique prefix.
+
+The table's ACTIVITY is a kind's second row — what the job does now — never its
+first, which is its title again (#776). The full table needs 93 columns; below,
+AGE goes, then ACTIVITY narrows, before TITLE gets fewer than 20 cells. Every cell is measured
+in terminal cells (``jobs/cells.py``).
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.jobs.cells import cut, pad
 from aelix_coding_agent.jobs.contract import TERMINAL_STATES, JobSnapshot, OutputSlice
 from aelix_coding_agent.jobs.notice import format_elapsed
 
@@ -56,8 +63,35 @@ def _activity(service: JobService, snap: JobSnapshot, width: int) -> str:
     )
     if snap.quiet:
         lead = f"quiet {lead}"
-    row = rows[0] if rows else ""
+    row = rows[1] if len(rows) > 1 else ""
     return " · ".join(p for p in (lead, row) if p)
+
+
+TITLE_MIN = 20
+"""The cells TITLE keeps before the table gives up AGE, then ACTIVITY's width (#776)."""
+
+_ACTIVITY = 26
+
+
+def _table_layout(width: int) -> tuple[bool, int]:
+    """``(show AGE, ACTIVITY's cells)`` at ``width``: the full table while TITLE keeps
+    :data:`TITLE_MIN` cells (from 93 columns); below, AGE goes and then ACTIVITY narrows,
+    to no fewer than 12 cells, before TITLE falls under :data:`TITLE_MIN` cells."""
+
+    full = 2 + 10 + 2 + 10 + 1 + 12 + 1 + 8 + _ACTIVITY + 1
+    if width >= 100 or width - full >= TITLE_MIN:
+        return True, _ACTIVITY
+    short = width - (full - 8)
+    return False, max(12, _ACTIVITY - max(0, TITLE_MIN - short))
+
+
+def _table_row(service: JobService, snap: JobSnapshot, show_age: bool, activity: int) -> str:
+    age = format_elapsed(snap.elapsed) if snap.state not in TERMINAL_STATES else "—"
+    aged = f"{age:<7} " if show_age else ""
+    return (
+        f"  {short_id(snap.job_id):<10}  {pad(snap.label, 10)} {_state_cell(snap):<12} "
+        f"{aged}{pad(_activity(service, snap, activity), activity)} {snap.title}"
+    )
 
 
 def list_rows(service: JobService, width: int | None = None) -> list[str]:
@@ -67,16 +101,11 @@ def list_rows(service: JobService, width: int | None = None) -> list[str]:
     if not snaps:
         return []
     width = width or _width()
-    header = f"  {'ID':<10}  {'KIND':<10} {'STATE':<12} {'AGE':<7} {'ACTIVITY':<26} TITLE"
+    show_age, activity = _table_layout(width)
+    aged = f"{'AGE':<7} " if show_age else ""
+    header = f"  {'ID':<10}  {'KIND':<10} {'STATE':<12} {aged}{'ACTIVITY':<{activity}} TITLE"
     rows = [header]
-    for snap in snaps:
-        age = format_elapsed(snap.elapsed) if snap.state not in TERMINAL_STATES else "—"
-        activity = _activity(service, snap, 26)
-        line = (
-            f"  {short_id(snap.job_id):<10}  {snap.label[:10]:<10} {_state_cell(snap):<12} "
-            f"{age:<7} {activity[:26]:<26} {snap.title}"
-        )
-        rows.append(line[:width])
+    rows.extend(cut(_table_row(service, snap, show_age, activity), width) for snap in snaps)
     return rows
 
 
@@ -154,32 +183,45 @@ class JobsCommand:
     async def __call__(self, args: str, _ctx: Any = None) -> str:
         words = args.split()
         service = self._service
-        if not words:
-            rows = list_rows(service)
-            if not rows:
-                return "No background jobs in this session."
-            return "\n".join([*rows, f"  {FOOTER}"])
+        if not words or words[0] == "list":
+            return await self._list(panel=not words)
         head, rest = words[0], words[1:]
         if head == "send":
             return await self._send()
         if head in ("result", "stop"):
-            if not rest:
-                return f"usage: /jobs {head} <id>"
-            found = find(service, rest[0])
-            if isinstance(found, str):
-                return found
-            if head == "result":
-                offset = int(rest[1]) if len(rest) > 1 and rest[1].isdigit() else 0
-                return result_text(service, found, offset)
-            if found.state in TERMINAL_STATES:
-                return f"{short_id(found.job_id)} already ended: {found.state}"
-            snap = await service.stop(found.job_id, reason="user")
-            state = snap.state if snap is not None else "unknown"
-            return f"Stopped {short_id(found.job_id)}: {state}"
+            return await self._act(head, rest)
         found = find(service, head)
         if isinstance(found, str):
             return found
         return "\n".join(detail(service, found))
+
+    async def _list(self, *, panel: bool) -> str:
+        """Bare ``/jobs`` opens the host's panel when it has one (the TUI, #776); else, and for
+        ``/jobs list``, the table. With no job there is nothing to open: one line says so."""
+
+        rows = list_rows(self._service)
+        if not rows:
+            return "No background jobs in this session."
+        hook = self._service.panel_hook if panel else None
+        if hook is not None:
+            return await hook() or ""
+        return "\n".join([*rows, f"  {FOOTER}"])
+
+    async def _act(self, head: str, rest: list[str]) -> str:
+        service = self._service
+        if not rest:
+            return f"usage: /jobs {head} <id>"
+        found = find(service, rest[0])
+        if isinstance(found, str):
+            return found
+        if head == "result":
+            offset = int(rest[1]) if len(rest) > 1 and rest[1].isdigit() else 0
+            return result_text(service, found, offset)
+        if found.state in TERMINAL_STATES:
+            return f"{short_id(found.job_id)} already ended: {found.state}"
+        snap = await service.stop(found.job_id, reason="user")
+        state = snap.state if snap is not None else "unknown"
+        return f"Stopped {short_id(found.job_id)}: {state}"
 
     async def _send(self) -> str:
         waiting = sum(1 for s in self._service.snapshots() if s.result_waiting)

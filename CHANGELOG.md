@@ -178,6 +178,24 @@ unwritten. Add them with the next release.
   another process"). All of it is
   **behind `jobs/activation.py` `ACTIVE = False`**: with the gate off Ctrl+B is `backward-char` and
   every call is awaited as before. #611 S3e turns it on and adds no second entry for it.
+- **`/jobs` opens a background-jobs panel, built and switched off (#776, #611 S3b, ADR-0299).** In
+  the TUI a bare `/jobs` opens a panel in place of the input line that lists the session's
+  background jobs —
+  delegations and bash commands alike — and redraws every second at a fixed height: `↑↓` select,
+  `Enter` writes the job's detail above it, `r` closes it and pages the result into the transcript,
+  `s` `s` stops the selected job, and `Esc`, `q` or `Ctrl+C` close it without interrupting a
+  running turn (`tests/tui/test_jobs_panel_611.py`); a SIGTERM with it open ends aelix. The second `s` stops only the job the first one armed, and
+  only while it is still listed, not ended, in the same session and less than 3 s later; moving
+  the selection, a dialog over the panel, closing it or a reload disarms it, and the job's notice
+  says "stopped by the user (/jobs)" — and so does one `/jobs stop` stopped, which said
+  "stopped by the user (/jobs stop)" before. While the panel is open a
+  finished job's result waits for it to close, and the key row says so. `/jobs list` prints the
+  table, as RPC's `commands/run` does for a bare `/jobs` and `job(action="list")` always does
+  (`-p` and json do not run `/jobs` as a command; the text goes to the model, as before); its ACTIVITY
+  column now says what a job does instead of repeating its title, AGE goes before TITLE gets
+  under 20 cells, so TITLE keeps 20 cells at 80 columns (it had 5), and long, CJK or emoji titles
+  (`❤️`, `1️⃣`, joined sequences) are cut by terminal cells with `…` instead of wrapping, measured
+  for `rich` 13.7.1 to 14.3.4, the `[tui]` extra's range (`tests/jobs/test_jobs_table_776.py`). With the gate off there is no `/jobs`, as before.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

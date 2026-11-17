@@ -415,6 +415,9 @@ class JobService:
         #: What ``/jobs send`` calls when a host starts notice turns itself (the
         #: TUI's waker); ``None`` runs the turn here (:meth:`send_waiting`).
         self.send_hook: Callable[[], str] | None = None
+        #: What a bare ``/jobs`` opens when a host has a panel (the TUI's, #776);
+        #: ``None`` prints the table.
+        self.panel_hook: Callable[[], Awaitable[str | None]] | None = None
         self._changed: asyncio.Event | None = None
         self._liveness: asyncio.Task[None] | None = None
         self._settled: dict[str, _Settled] = {}
@@ -2261,14 +2264,14 @@ class JobService:
     def render_rows(self, snap: JobSnapshot, width: int) -> list[str]:
         registration = self.registry.get(snap.kind)
         if registration is None:
-            return [f"{snap.kind} · {snap.title}"]
+            return [snap.title]  # the surfaces show the kind and label themselves (#776)
         try:
             rows = registration.adapter.render_rows(snap, width)
             if isinstance(rows, list) and all(isinstance(r, str) for r in rows):
                 return rows
         except Exception:  # noqa: BLE001 — one generic row
             _log.debug("render_rows raised", exc_info=True)
-        return [f"{snap.label} · {snap.title}"]
+        return [snap.title]
 
     # === change notification ========================================================
 

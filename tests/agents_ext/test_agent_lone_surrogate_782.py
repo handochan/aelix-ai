@@ -190,7 +190,7 @@ async def test_a_tool_name_and_a_progress_line_with_a_half_are_whole_and_the_job
         assert running is not None and running.progress is not None
         assert running.progress["tool"] == "read\ufffd"
         assert running.progress.get("last_text") == "thinking \ufffd", running.progress
-        assert "  running read\ufffd" in rig.service.render_rows(running, 120)
+        assert any(row.startswith("running read\ufffd") for row in rig.service.render_rows(running, 120))
         gate.write_text("go", encoding="utf-8")
         snap = await _settled(rig)
         assert snap.state == "done" and snap.brief == "before \ufffd after"

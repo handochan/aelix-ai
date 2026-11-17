@@ -133,7 +133,7 @@ async def test_failure_transitions(op: str, tmp_path: Path) -> None:
             tmp_path, adapter_fail=frozenset({"render_rows"})
         )
         snap = service.snapshot(job_id)
-        assert service.render_rows(snap, 80) == ["sleeper · nap"]
+        assert service.render_rows(snap, 80) == ["nap"], "#776: the title; every surface shows the label itself"
     elif op == "output":
         service, harness, job_id, session = await _run_job(
             tmp_path, adapter_fail=frozenset({"output"})

@@ -3541,9 +3541,9 @@ async def run_tui(
             jobs,
             chrome=out_chrome,
             runtime_host=runtime_host,
-            commit=lambda line: _commit(Text(line, style="cyan")),
+            commit=lambda line: _commit(Text(line, style="cyan")), emit=lambda text: _commit(Text(text)),
         )
-        out_chrome.on_modal_change = jobs_ui.maybe_wake
+        out_chrome.on_modal_change = jobs_ui.on_modal_change
         out_chrome.jobs_segment = jobs_ui.footer
         jobs.send_hook = jobs_ui.send_now
         # #775 — Ctrl+B's filter and its request (ADR-0298).

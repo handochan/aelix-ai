@@ -2059,7 +2059,53 @@ def test_the_rows_name_the_output_file() -> None:
         created=0.0, elapsed=1.0, last_activity_ago=0.0, quiet=False, result_waiting=False,
         notice_state="none", progress={"bytes": 12}, client_start={"output": "/t/x.log"},
     )
-    assert _bg().BashKindAdapter().render_rows(snap, 80) == ["command · sleep 9", "  12 bytes → /t/x.log"]  # M51
+    assert _bg().BashKindAdapter().render_rows(snap, 80) == ["sleep 9", "12 bytes → /t/x.log"]  # M51
+
+
+def test_the_rows_mark_an_unconfirmed_output_and_are_cut_by_cells() -> None:
+    """#776 (ADR-0299): row 0 the command, row 1 bytes and path with the caveat; cut by cells."""
+
+    from aelix_coding_agent.jobs.contract import JobSnapshot
+    from rich.cells import cell_len
+
+    snap = JobSnapshot(
+        job_id="j", kind="bash", label="command", title="echo " + "가" * 30, state="done", owner="s",
+        created=0.0, elapsed=1.0, last_activity_ago=0.0, quiet=False, result_waiting=False,
+        notice_state="none", payload={"bytes": 7, "output_unconfirmed": True}, client_start={"output": "/t/x.log"},
+    )
+    rows = _bg().BashKindAdapter().render_rows(snap, 20)
+    assert rows[1] == "7 bytes → /t/x.log …"
+    assert rows[0].startswith("echo 가") and rows[0].endswith("…")
+    assert [cell_len(row) for row in rows] == [20, 20]
+    full = _bg().BashKindAdapter().render_rows(snap, 200)
+    assert full[1] == "7 bytes → /t/x.log · output may be incomplete"
+
+
+def test_a_running_command_before_its_first_byte_count_and_a_vs16_command() -> None:
+    """#776 fix round 1: ``output → <path>`` until a byte count arrives (verify F7 B03); a command of
+    U+FE0F emoji is cut within the width as ``rich`` reads it (Codex M3: 79 cells at 40)."""
+
+    import dataclasses
+
+    from aelix_coding_agent.jobs.contract import JobSnapshot
+    from rich.cells import cell_len
+
+    snap = JobSnapshot(
+        job_id="j", kind="bash", label="command", title="sleep 9", state="running", owner="s",
+        created=0.0, elapsed=1.0, last_activity_ago=0.0, quiet=False, result_waiting=False,
+        notice_state="none", client_start={"output": "/t/x.log"},
+    )
+    assert _bg().BashKindAdapter().render_rows(snap, 80) == ["sleep 9", "output → /t/x.log"]
+    wide = dataclasses.replace(snap, title="☺️" * 100)
+    assert all(cell_len(row) <= 40 for row in _bg().BashKindAdapter().render_rows(wide, 40))
+    unlaunched = dataclasses.replace(snap, client_start={})
+    assert _bg().BashKindAdapter().render_rows(unlaunched, 80) == ["sleep 9"], "no output file yet: no row 1 (B01)"
+
+
+def test_a_stop_from_the_panel_or_jobs_stop_names_jobs() -> None:
+    """#776 fix round 1 (verify N2): the reason the user's stop gives fits both ways to it."""
+
+    assert _bg()._brief({"stop_reason": "user"}) == "stopped by the user (/jobs)"
 
 
 @POSIX
