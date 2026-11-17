@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.jobs.indicator import indicator_text
 from aelix_coding_agent.tui.chrome import NoticeWake
+from aelix_coding_agent.tui.jobs_panel import JobsPanel
 
 if TYPE_CHECKING:
     from aelix_coding_agent.jobs.service import JobService
@@ -68,11 +69,15 @@ class JobsUi:
         chrome: Any,
         runtime_host: Any,
         commit: Callable[[str], None] | None = None,
+        emit: Callable[[str], None] | None = None,
     ) -> None:
         self.service = service
         self.chrome = chrome
         self.runtime_host = runtime_host
         self.commit = commit
+        self.emit = emit
+        #: The ``/jobs`` panel while it is open (#776, ADR-0299).
+        self.panel: JobsPanel | None = None
         self.parked = False
         self.busy = False
         self.queued = False
@@ -91,6 +96,8 @@ class JobsUi:
         # #775 — this TUI is the host Ctrl+B asks (ADR-0298).
         service.detach.guard = self.detach_blocked
         service.detach.note = self._detach_refused
+        # #776 — bare ``/jobs`` opens this TUI's panel (ADR-0299).
+        service.panel_hook = self.open_panel
         self.attach(runtime_host.harness)
 
     # --- wiring ----------------------------------------------------------------
@@ -137,6 +144,11 @@ class JobsUi:
             if detach is not None:
                 detach()
         self.service.detach.unhost(self.detach_blocked)
+        self._unhook_panel()
+
+    def _unhook_panel(self) -> None:
+        if self.service.panel_hook == self.open_panel:
+            self.service.panel_hook = None
 
     def is_wake(self, item: object) -> bool:
         return isinstance(item, NoticeWake)
@@ -167,6 +179,14 @@ class JobsUi:
         if not self.force and not self.service.has_live_pending():
             return "G7: only restored results (they wait for /jobs send)"
         return None
+
+    def on_modal_change(self) -> None:
+        """A dialog opened or closed: the open panel hears it first (one over it drops
+        the ``s s`` arm, #776), then the waker (G2)."""
+
+        if self.panel is not None:
+            self.panel.on_modal_change()
+        self.maybe_wake()
 
     def maybe_wake(self) -> bool:
         """Queue the wake when every gate holds and none is queued; whether it did."""
@@ -199,6 +219,17 @@ class JobsUi:
             self.chrome.queue_wake(WAKE)
         noun = "result" if waiting == 1 else "results"
         return f"Sending {waiting} waiting {noun} to the model."
+
+    async def open_panel(self) -> str | None:
+        """Bare ``/jobs`` (#776, ADR-0299): the panel until it closes; what ``r`` paged, else ``None``."""
+
+        if self.panel is not None:
+            return None
+        self.panel = JobsPanel(self.service, self.chrome, emit=self.emit)
+        try:
+            return await self.panel.run()
+        finally:
+            self.panel = None
 
     # --- Ctrl+B (#775, ADR-0298) ------------------------------------------------------
 

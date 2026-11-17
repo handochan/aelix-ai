@@ -95,6 +95,7 @@ from aelix_ai.utils._process_walk import group_only_zombies
 from aelix_ai.utils._shell import ShellConfig, utf8_output_preamble
 
 from aelix_coding_agent.jobs import evidence as ev
+from aelix_coding_agent.jobs.cells import cut
 from aelix_coding_agent.jobs.contract import (
     TERMINAL_STATES,
     ClientOutcome,
@@ -173,7 +174,7 @@ _DISCARD_LINE = (
 
 _STOPPED_BY: dict[str, str] = {
     "model": "stopped by you (job_stop)",
-    "user": "stopped by the user (/jobs stop)",
+    "user": "stopped by the user (/jobs)",  # /jobs stop and the /jobs panel (#776)
     "owner_end": "stopped when its session ended (/new, /resume, /fork or quit)",
     "reload": "stopped by /reload",
     "shutdown": "stopped when aelix exited",
@@ -1030,6 +1031,18 @@ class BashJobRunner:
 # === The kind's adapter ===================================================================
 
 
+def _output_row(snapshot: JobSnapshot) -> str | None:
+    """``<bytes> → <path>`` once the job has an output file, ``· output may be incomplete`` when so."""
+
+    path = snapshot.client_start.get("output")
+    if not isinstance(path, str):
+        return None
+    total = snapshot.payload.get("bytes", (snapshot.progress or {}).get("bytes"))
+    size = f"{total} bytes" if isinstance(total, int) else "output"
+    unsure = " · output may be incomplete" if snapshot.payload.get("output_unconfirmed") else ""
+    return f"{size} → {path}{unsure}"
+
+
 class BashKindAdapter:
     """How the job service reads, renders, pages and recovers a background command."""
 
@@ -1075,14 +1088,11 @@ class BashKindAdapter:
         return None
 
     def render_rows(self, snapshot: JobSnapshot, width: int) -> list[str]:
-        rows = [f"{snapshot.label} · {snapshot.title}"[: max(1, width)]]
-        progress = snapshot.progress or {}
-        total = snapshot.payload.get("bytes", progress.get("bytes"))
-        path = snapshot.client_start.get("output")
-        if isinstance(path, str):
-            size = f"{total} bytes" if isinstance(total, int) else "output"
-            rows.append(f"  {size} → {path}"[: max(1, width)])
-        return rows
+        """The command; ``<bytes> → <path>``, marked when the output may be incomplete —
+        each cut to ``width`` cells (#776, ADR-0299). The label is the surface's to show."""
+
+        rows = [snapshot.title, _output_row(snapshot)]
+        return [cut(row, max(1, width)) for row in rows if row]
 
     def output(self, job: JobSnapshot, *, offset: int, limit: int) -> OutputSlice | None:
         path = job.client_start.get("output")

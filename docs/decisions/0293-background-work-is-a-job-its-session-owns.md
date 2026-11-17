@@ -3,7 +3,8 @@
 Status: Accepted (2026-11-08, #722). Amended 2026-11-12 (#769, #749, #770): ended jobs past a
 per-session bound are kept only as their records read; `JobSnapshot.processes_gone`; see the note
 of that date. Amended 2026-11-12 (#778): `backgroundJobs.enabled: false` in the global settings
-turns §12's gate off for a launch; see the note at the end. **Inert until #611 S3:** everything below is behind
+turns §12's gate off for a launch; see the note at the end. Noted 2026-11-17 (#776, ADR-0299):
+`/jobs` opens a panel in the TUI and `/jobs list` is §10's table. **Inert until #611 S3:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` and, in the kernel, behind
 `AgentHarnessOptions.notice_inbox` (off by default; product-core turns it on only while `ACTIVE`),
 and nothing of it is reachable from the product before S3 sets it (§12).
@@ -814,3 +815,13 @@ Measured on a synthetic detachable kind: `adopt` is called from a plain function
 handed over is not sampled again, the facts are `start`, `process`, `cleanup`, `outcome`, and each
 refusal leaves no job, no slot and no task (`tests/jobs/test_adopt_611.py`). The note on the kernel's
 `AgentHarness.abort_pending` comes with S3e (contract r4 §7).
+
+## Note (2026-11-17, ADR-0299, #776)
+
+**§10's surfaces: `/jobs` is the panel in the TUI, `/jobs list` the table (#611 S3b), behind §12's
+gate.** A bare `/jobs` awaits `JobService.panel_hook`, which the TUI's `JobsUi` sets: an in-flow
+modal (ADR-0159) listing the session's jobs, redrawn every second, with `↑↓`, `Enter`, `r`, `s s`
+and `Esc`/`q` (owner OQ-S3-2, 2026-11-12). With no hook — RPC's `commands/run` — and for
+`/jobs list` the command prints the table, and `job(action="list")` is the table whatever is hooked;
+`-p` and json do not run `/jobs` as a command. The table itself changed: its ACTIVITY is a kind's row 1, no longer its row 0 (the title again); before TITLE gets
+fewer than 20 cells AGE goes, then ACTIVITY narrows; cells are cut by terminal cells. The panel holds the waker's G2 while open (§11). Details, tests and limits: ADR-0299.

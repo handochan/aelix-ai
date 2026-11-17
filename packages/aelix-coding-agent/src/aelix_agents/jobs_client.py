@@ -89,6 +89,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_coding_agent.jobs import evidence as ev
+from aelix_coding_agent.jobs.cells import cut
 from aelix_coding_agent.jobs.contract import (
     TERMINAL_STATES,
     ClientOutcome,
@@ -193,7 +194,7 @@ failed."""
 
 _STOPPED_BY: dict[str, str] = {
     "model": 'stopped by you (agent(action="stop"))',
-    "user": "stopped by the user (/jobs stop)",
+    "user": "stopped by the user (/jobs)",  # /jobs stop and the /jobs panel (#776)
     "owner_end": "stopped when its session ended (/new, /resume, /fork or quit)",
     "reload": "stopped by /reload",
     "shutdown": "stopped when aelix exited",
@@ -748,6 +749,33 @@ def _job_progress(ctx: Any, progress: SubagentProgress) -> None:
         )
 
 
+def _doing_row(snapshot: JobSnapshot, progress: Mapping[str, Any]) -> str | None:
+    """``running <tool>`` or ``thinking``, with ``· <n> tok``, while the job is live."""
+
+    if snapshot.state in TERMINAL_STATES:
+        return None
+    tool = progress.get("tool")
+    doing = f"running {tool}" if isinstance(tool, str) and tool else "thinking"
+    tokens = progress.get("tokens")
+    return f"{doing} · {_tokens(tokens)} tok" if isinstance(tokens, int) and tokens > 0 else doing
+
+
+def _tokens(count: int) -> str:
+    return f"{count / 1000:.1f}k" if count >= 1000 else str(count)
+
+
+def _said_row(progress: Mapping[str, Any]) -> str | None:
+    """The agent's last text, folded onto one line (its own controls shown, never sent)."""
+
+    said = progress.get("last_text")
+    return (child_line(said).strip() or None) if isinstance(said, str) else None
+
+
+def _id_row(entry: AgentJob | None, snapshot: JobSnapshot) -> str | None:
+    agent_id = entry.agent_id if entry is not None else snapshot.payload.get("agent_id")
+    return f"id {agent_id}" if isinstance(agent_id, str) and agent_id else None
+
+
 def _children_dir(session: Any) -> str | None:
     """The directory a parent's child session files live in; ``None`` with no session file or outside a bucket."""
 
@@ -898,16 +926,19 @@ class DelegationKindAdapter:
         )
 
     def render_rows(self, snapshot: JobSnapshot, width: int) -> list[str]:
+        """``<profile>: <task>``; while it runs ``running <tool>`` or ``thinking``, with
+        ``· <n> tok``; its last text, on one line; ``id <agent id>`` — each cut to
+        ``width`` cells (#776, ADR-0299). The label is the surface's to show."""
+
         entry = self._jobs.info.get(snapshot.job_id)
         progress = snapshot.progress or {}
-        tool = progress.get("tool")
-        head = f"{snapshot.label} {entry.profile}" if entry is not None else snapshot.label
-        rows = [f"{head} · {snapshot.title}"[: max(1, width)]]
-        if isinstance(tool, str) and tool and snapshot.state not in TERMINAL_STATES:
-            rows.append(f"  running {tool}"[: max(1, width)])
-        if entry is not None and entry.agent_id:
-            rows.append(f"  id {entry.agent_id}"[: max(1, width)])
-        return rows
+        rows = [
+            snapshot.title,  # ``<profile>: <task>`` as the spawn or the move titled it
+            _doing_row(snapshot, progress),
+            _said_row(progress),
+            _id_row(entry, snapshot),
+        ]
+        return [cut(row, max(1, width)) for row in rows if row]
 
     def output(self, job: JobSnapshot, *, offset: int, limit: int) -> OutputSlice | None:
         text = self._held_text(job)

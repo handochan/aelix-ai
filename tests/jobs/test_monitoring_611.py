@@ -127,7 +127,8 @@ async def test_jobs_layout(tmp_path: Path) -> None:
     text = await command("")
     lines = text.splitlines()
     assert lines[0].split() == ["ID", "KIND", "STATE", "AGE", "ACTIVITY", "TITLE"]
-    assert live[:6] + "…" in lines[1] and "running" in lines[1] and "zz worker: nap" in lines[1]
+    assert live[:6] + "…" in lines[1] and "running" in lines[1] and "worker: nap" in lines[1]
+    assert "zz worker: nap" not in lines[1], "#776: ACTIVITY is row 1, never row 0 (the title) again"
     assert done[:6] + "…" in lines[2] and "done ◆" in lines[2] and "result waiting" in lines[2]
     assert lines[-1].strip() == FOOTER
     detail = await command(live[:8])

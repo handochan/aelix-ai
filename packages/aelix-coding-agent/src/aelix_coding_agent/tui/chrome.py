@@ -2729,6 +2729,12 @@ class AelixChrome:
 
         return self._modal is not None
 
+    def modal_on_top(self, content: AnyContainer) -> bool:
+        """Whether ``content`` — the container mounted, or the window it focuses — is the
+        modal on screen now, not one another modal covers (#776)."""
+
+        return self._modal is not None and content in (self._modal, self._modal_focus)
+
     def add_float(self, float_: Float) -> None:
         self._floats.append(float_)
         self.invalidate()

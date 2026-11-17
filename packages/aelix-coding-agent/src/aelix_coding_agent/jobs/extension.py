@@ -37,7 +37,7 @@ class JobsExtension:
         aelix.register_command(
             "jobs",
             handler=self.command,
-            description="Background jobs: list, <id>, result <id>, stop <id>, send",
+            description="Background jobs: the panel, list, <id>, result <id>, stop <id>, send",
         )
         aelix.on("session_shutdown", self._on_shutdown)
 

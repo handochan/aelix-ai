@@ -68,6 +68,25 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   is a rename of a function that is gone or a renumbering. The per-release trend value is radon's count with each
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
+- [0299 — `/jobs` opens a background-jobs panel; `/jobs list` keeps the table](0299-jobs-opens-a-background-jobs-panel.md)
+  (Accepted 2026-11-17; #776, #611 S3b; inert until #611 S3e). In the TUI a bare `/jobs` opens an
+  in-flow modal over a generic list panel (`tui/list_panel.py`, which names no job, for #795): the
+  session's jobs — a state mark, the short id, the label, row 0, the state, the age and the
+  activity (row 1, else `Ns ago`/`quiet Nm`) — redrawn every second at a fixed height (3 job rows,
+  3 detail rows and the key row from 40 terminal rows; 3 job rows and the key row below), `k/N`
+  with scrolling past 3. Keys (owner OQ-S3-2): `↑↓`, `Enter` writes the detail above, `r` closes
+  and pages the result, `s s` stops the selected job only while the first press's
+  `(owner, job id)` arm holds (same session and harness, listed and live, 3 s, on top; a move, a
+  cover, a close, a reload or the job leaving drops it; it ends at exactly 3 s), `Esc`/`q`/Ctrl+C
+  close without ending a turn. It closes with the application (SIGTERM) and on a frame it cannot
+  draw. The waker holds a notice turn while it is open and the key row says so. `/jobs list`, RPC's
+  bare `/jobs` and `job(action="list")` keep the table (`-p` and json send `/jobs` to the model, as
+  before), whose ACTIVITY is now row 1, whose AGE goes before TITLE gets under 20 cells, and whose
+  cells are cut by terminal cells, reading U+FE0F and joined sequences as `rich` 13.7.1–14.3.4 do or
+  wider (measured on a corpus, random strings and every code point);
+  a delegation's rows are its title, `running <tool>`/`thinking` with tokens, its last text and
+  its id, a bash job's its command and `<bytes> → <path>`. Limits: no notice turn while open, no
+  dedicated open key, Ctrl+B inert inside it, rendering measured in a macOS pty only.
 - [0298 — Ctrl+B moves a running foreground delegation into a background job](0298-ctrl-b-moves-a-running-delegation-into-a-background-job.md)
   (Accepted 2026-11-12; #775, #611 S3a; inert until #611 S3e). In the TUI, with background jobs on,
   Ctrl+B moves the one running `agent` `run` (one task) or `resume` into a job of the session
