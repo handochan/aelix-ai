@@ -120,28 +120,32 @@ async def test_reload_leaves_it_unresolved_and_its_release_ends_it_stopped(
     (runner,) = module.HoldRunner.instances
     held = service._jobs[job_id]
 
-    loop = asyncio.get_running_loop()
-    begun = loop.time()
-    await _emit_session_shutdown_event(harness.extension_runner, "reload")
-    took = loop.time() - begun
-    assert BOUND - 0.05 <= took < BOUND + 2.0, (
-        f"/reload returned after {took:.2f} s, not at the bound"
-    )
-    snap = service.snapshot(job_id)
-    assert snap is not None and (snap.state, snap.unresolved_reason) == (
-        "unresolved",
-        "reload_timeout",
-    )
-    assert indicator_text(service.snapshots()) == "⚙ 1 unresolved"
-    assert service.admission.count("test:hold") == 1, "its slot is held"
-    assert held.task is not None and not held.task.done(), "its run is still the service's"
-    assert runner.stops == ["reload"] and runner.cancels >= 1, (runner.stops, runner.cancels)
-
-    since = loop.time()
-    if released_by == "event":
+    def let_go() -> None:
         event.set()
-    else:
-        marker.write_text("go", encoding="utf-8")
+        if not marker.exists():
+            marker.write_text("go", encoding="utf-8")
+
+    loop = asyncio.get_running_loop()
+    try:
+        begun = loop.time()
+        await _emit_session_shutdown_event(harness.extension_runner, "reload")
+        took = loop.time() - begun
+        assert BOUND - 0.05 <= took < BOUND + 2.0, (
+            f"/reload returned after {took:.2f} s, not at the bound"
+        )
+        snap = service.snapshot(job_id)
+        assert snap is not None and (snap.state, snap.unresolved_reason) == (
+            "unresolved",
+            "reload_timeout",
+        )
+        assert indicator_text(service.snapshots()) == "⚙ 1 unresolved"
+        assert service.admission.count("test:hold") == 1, "its slot is held"
+        assert held.task is not None and not held.task.done(), "its run is still the service's"
+        assert runner.stops == ["reload"] and runner.cancels >= 1, (runner.stops, runner.cancels)
+    finally:
+        # Released whatever happened above: a held run would hold the loop's teardown too.
+        since = loop.time()
+        let_go()
     await wait_settled(service, (job_id,), since=since, state="stopped", slots=("test:hold", 0))
     assert runner.released
     folded = fold(await held.session.get_entries())[job_id]

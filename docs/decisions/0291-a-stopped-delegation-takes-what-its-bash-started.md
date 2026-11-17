@@ -376,6 +376,17 @@ nothing). What stays is a child that nothing walks: its parent SIGKILLed on macO
    `test_win32_reap_takes_no_walk_on_its_tree_arm` and the win32 row of
    `test_reap_escalates_on_its_event_inside_the_grace` run there.
 
+*2026-11-17 note (#777, #611 S3c PR c1): limit 3 measured with a real CLI.* A gated `-p` run (the test
+launcher `tests/jobs/gated_cli.py`, background jobs on) whose background delegation's child blocks in
+a foreground `bash` sleeper is killed, and each process is read by the pid and start time it
+announced (`tests/cli/test_parent_death_611.py`):
+
+| Platform | The kill | The delegated child | What its `bash` runs |
+|---|---|---|---|
+| Linux | SIGKILL | asserted gone within 5 s (`test_l1_…`); Linux docker, 10 of 10 runs: gone 0.004–0.39 s after the kill | recorded only: its shell and sleeper gone within 0.01 s in 10 of 10, by the child's own cleanup of the SIGTERM `pdeathsig` sent |
+| Windows | `TerminateProcess` | asserted, with the shell and sleeper, as each announced handle signalled within 10 s (`test_l2_…`) | pending the lead's windows-latest CI round |
+| macOS | SIGKILL | recorded only (`test_l3_…`); local, 10 of 10 runs: alive 5 s after the kill | recorded only: alive 5 s after the kill in 10 of 10 |
+
 ## Verification
 
 After the change, on the same branch, the macOS table above has no survivor on any of its nine

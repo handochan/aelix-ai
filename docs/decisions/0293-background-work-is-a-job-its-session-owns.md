@@ -503,6 +503,24 @@ user may configure, under core's hard maxima; product-core declares `HARD_MAX_PE
 - Delegation (`agent(action=spawn|…)`), the versioned `print_done`, background `bash`, the
   launch ledger, Ctrl+B, the rich panel and the flip are S1c, S2 and S3.
 
+*2026-11-17 note (#777, #611 S3c PR c1; behind `ACTIVE = False`, run through the test launcher
+`tests/jobs/gated_cli.py`): the parent's death, measured.* A real `-p` run against a scripted local
+model starts a background delegation, whose child blocks in a foreground `bash` sleeper, and a
+background `bash` sleeper. Every process a case watches writes its own pid and start time to a
+marker (the two aelix interpreters through the launcher and its `sitecustomize`, each shell through
+its sleeper), all are alive before the kill, and each is read by identity after it
+(`tests/cli/test_parent_death_611.py`). The product code is `b6100968`'s; these are guards.
+
+| Platform | The kill | Asserted (case) | Measured |
+|---|---|---|---|
+| Linux | SIGKILL | the delegated child and the background shell gone within 5 s, `pdeathsig` on each (`test_l1_…`) | Linux docker (`python:3.12-slim`, `--init`), 10 of 10 runs: the child gone 0.004–0.39 s after the kill, the background shell 0.004–0.01 s. Recorded only: the child's own shell and sleeper gone within 0.01 s (its own cleanup, ADR-0291 limit 3), and the background shell's sleeper alive at 5 s in 10 of 10 (owner OQ-C/D, 2026-11-10, "둘 다 권고대로 (권장)": `pdeathsig` on the shell only, ADR-0297). ubuntu-latest: pending the lead's CI round. |
+| Windows | `TerminateProcess` | every announced process's handle, opened before the kill with no Job handle held, signalled within 10 s: both Jobs' kill-on-close (`test_l2_…`). It proves the announced processes only, not that a Job is empty. | Not measured here: pending the lead's windows-latest CI round. |
+| macOS | SIGKILL | nothing about the children (`test_l3_…`) | Local macOS, Python 3.12, 10 of 10 runs: the delegated child, both shells and both sleepers all alive 5 s after the kill, then killed by the case. The documented limit: no `pdeathsig` (ADR-0291 limit 3). |
+
+The 23 real-child cases of `tests/agents_ext/test_agent_background_611.py` (L4), and the launcher's two
+smoke cases with them, now run on windows-latest as well: the first run of the evidence legs against a real
+Job; their result is the lead's CI round's, so the **Windows** bullet above stands until it is in.
+
 ## Note (2026-11-08, ADR-0295, #723)
 
 S1c registered the first client, delegation (ADR-0295), and needed two generic additions, both
