@@ -458,7 +458,8 @@ def late_or_alive(
     since the clock starts at the kill.
     """
 
-    return [role for role in roles if states[role][1] is None or states[role][1] > bound]
+    late = [role for role in roles if (at := states[role][1]) is None or at > bound]
+    return late
 
 
 def sigkill_on_linux(
