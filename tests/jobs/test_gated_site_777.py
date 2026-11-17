@@ -80,14 +80,7 @@ def _actives(done: subprocess.CompletedProcess[str]) -> list[str]:
         (["-m", "json.tool", "-m", "aelix_coding_agent"], False),
         (["-c", "aelix_coding_agent"], False),
     ],
-    ids=[
-        "-m",
-        "-Pm-joined",
-        "-c-then-m",
-        "script-then-m",
-        "other-module-then-m",
-        "-c-named-like-it",
-    ],
+    ids=["-m", "-Pm-joined", "-c-then-m", "script-then-m", "other-module-then-m", "-c-named-like-it"],
 )
 def test_only_an_interpreter_running_aelix_as_its_module_is_gated(
     tmp_path: Path, args: list[str], gated: bool
@@ -105,16 +98,10 @@ def test_a_second_copy_of_the_hook_is_skipped_and_the_foreign_one_imported(tmp_p
     shutil.copytree(GATED_SITE, copy, ignore=shutil.ignore_patterns("__pycache__"))
     later = tmp_path / "later_site"
     later.mkdir()
-    (later / "sitecustomize.py").write_text(
-        "import sys\nprint('LATER', file=sys.stderr)\n", encoding="utf-8"
-    )
-    done = _run(
-        tmp_path, ["-P", "-m", "aelix_coding_agent", "--version"], GATED_SITE, copy, after=(later,)
-    )
+    (later / "sitecustomize.py").write_text("import sys\nprint('LATER', file=sys.stderr)\n", encoding="utf-8")
+    done = _run(tmp_path, ["-P", "-m", "aelix_coding_agent", "--version"], GATED_SITE, copy, after=(later,))
     assert _actives(done) == ["ACTIVE True"], done.stderr
-    assert "LATER" not in done.stderr, (
-        "only the first foreign sitecustomize is imported, as Python would"
-    )
+    assert "LATER" not in done.stderr, "only the first foreign sitecustomize is imported, as Python would"
     assert "Error in sitecustomize" not in done.stderr and done.returncode == 0
 
 

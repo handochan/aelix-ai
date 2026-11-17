@@ -416,6 +416,70 @@ def test_a_failed_terminate_keeps_ownership(step: str) -> None:
     tree.close()
 
 
+def _uncontained_ok(api: FakeKernel, *, latched: bool = False) -> ProcessTree:
+    """The suspended attach with ``uncontained_ok``, handed the spawn's handle (501)."""
+
+    api.owner[501] = 10
+    api.open.add(501)
+    return ProcessTree.attach(
+        10,
+        kill_on_close=True,
+        platform="win32",
+        api=api,
+        handle=501,
+        suspended=True,
+        stop_latched=lambda: latched,
+        uncontained_ok=True,
+    )
+
+
+def test_with_uncontained_ok_a_job_that_holds_it_is_still_assigned_then_resumed() -> None:
+    """#777: the print channel and the rpc client's suspended attach, its job had: as without it."""
+
+    api = FakeKernel()
+    tree = _uncontained_ok(api)
+    assert api.names() == ["duplicate", "create_job", "assign", "resume"]
+    assert tree.contained and tree.state == "open"
+    tree.close()
+
+
+@pytest.mark.parametrize("step", ["create_job", "assign"])
+def test_with_uncontained_ok_a_job_it_cannot_have_resumes_it_outside_one(step: str) -> None:
+    """#777: the unsuspended attach's degrade, kept — resumed, ``contained=False``, never ended.
+
+    Without ``uncontained_ok`` the same failure ends the process
+    (``test_assign_failure_terminates_never_resumes_uncontained``). The launch's
+    handle copy is the tree's, closed with it.
+    """
+
+    api = FakeKernel()
+    api.fail.add(step)
+    tree = _uncontained_ok(api)
+    assert api.names()[-1] == "resume" and "terminate_process" not in api.names()
+    assert not tree.contained and tree.job is None
+    copy = api.next_handle
+    assert tree._held == {10: copy}
+    if step == "assign":
+        assert ("close_job", 7) in api.calls, "the job that held nothing is released"
+    tree.close()
+    assert copy not in api.open
+
+
+@pytest.mark.parametrize("fail", ["latch", "resume"])
+def test_with_uncontained_ok_a_latched_stop_or_a_failed_resume_still_ends_it(fail: str) -> None:
+    """Outside a job too, a stop already asked, or a resume that fails, ends the process unrun."""
+
+    api = FakeKernel()
+    api.fail.add("assign")
+    if fail == "resume":
+        api.fail.add("resume")
+    with pytest.raises(_process_tree.SuspendedLaunchError) as caught:
+        _uncontained_ok(api, latched=fail == "latch")
+    assert ("terminate_process", 10) in api.calls and ("wait", 10) in api.calls
+    assert ("resume" in api.names()) is (fail == "resume")
+    assert caught.value.tree is None
+
+
 def test_missing_ntresumeprocess_spawns_unsuspended() -> None:
     """Checked before anything is created: no ``CREATE_SUSPENDED`` and a plain attach."""
 

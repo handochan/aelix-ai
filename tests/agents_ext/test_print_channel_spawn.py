@@ -77,6 +77,7 @@ from aelix_ai.streaming import Model
 from aelix_ai.utils import _process_identity
 from aelix_ai.utils._process_tree import (
     CREATE_NEW_PROCESS_GROUP,
+    CREATE_SUSPENDED,
     ProcessTree,
     _retained_handle,
 )
@@ -3747,11 +3748,15 @@ def _spy_on_attach(
     return record
 
 
-@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize(
+    ("platform", "suspend"),
+    [("win32", CREATE_SUSPENDED), ("win32", 0), ("linux", 0)],
+    ids=["win32", "win32-no-resume", "linux"],
+)
 async def test_the_spawn_asks_for_containment_kwargs_per_platform(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str, suspend: int
 ) -> None:
-    """``containment_spawn_kwargs``, at the call site, both arms — TWO fakes.
+    """``containment_spawn_kwargs``, at the call site, both arms — THREE fakes.
 
     Injected rather than skipped, and the injection is why nothing real may
     appear in this case: ``print_channel.sys is sys``, so the patch is
@@ -3765,6 +3770,16 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
     The literals are asserted, not ``== containment_spawn_kwargs(...)``: that
     comparison is a tautology against the very function under exercise and would
     stay green if the call site stopped passing it at all.
+
+    #777: ``ProcessTree.suspend_flags`` is the third fake (its real one opens
+    kernel32). Given ``CREATE_SUSPENDED``, the win32 spawn carries it and the
+    attach is told ``suspended`` and ``uncontained_ok``, with the row's stop as
+    its latch: the child runs only once the attach has put it in its Job
+    (``test_job_state_machine_611.py`` pins that order in the primitive). Given
+    0 — no ``NtResumeProcess`` — it spawns running as before. Red on
+    ``b69890da``: the spawn's ``creationflags`` is ``CREATE_NEW_PROCESS_GROUP``
+    alone and the attach gets neither keyword. The real Job is windows-latest's
+    (``tests/cli/test_parent_death_611.py`` L2a and L2b).
     """
 
     seen: dict[str, Any] = {}
@@ -3779,11 +3794,15 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
     monkeypatch.setattr(
         pc.ProcessTree, "attach", _fake_attach(attaches, _StubTree())
     )
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: suspend))
 
     await _stub_channel(_HAPPY).run(_plan(tmp_path))
 
+    (attach,) = attaches
+    assert (attach["suspended"], attach["uncontained_ok"]) == (suspend != 0, True)
+    assert attach["stop_latched"]() is False, "the latch reads the row's stop"
     if platform == "win32":
-        assert seen["creationflags"] == CREATE_NEW_PROCESS_GROUP
+        assert seen["creationflags"] == CREATE_NEW_PROCESS_GROUP | suspend
         # NOT merely "also passes creationflags": Windows ACCEPTS
         # ``start_new_session`` and silently ignores it (CPython names the
         # parameter ``unused_start_new_session``), so a site that passed both
