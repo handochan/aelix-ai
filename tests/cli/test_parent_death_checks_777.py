@@ -30,7 +30,6 @@ import time
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from aelix_ai.utils import _process_identity
@@ -87,8 +86,13 @@ def test_a_child_first_read_ended_after_the_bound_fails_the_5_s_case(
     run.proc = SlowReap()  # type: ignore[assignment]
     child = pd.Announced("child", 999_999, 1.0)
     run.ids.at[child.pid] = (STATE_ALIVE, 1.0)
-    monkeypatch.setattr(pd.Run, "state", lambda _self, _pid: "gone" if clock.now >= ends_at else "alive")
-    procs = {"parent": pd.Announced("parent", parent.pid, process_started(parent.pid)), "child": child}
+    monkeypatch.setattr(
+        pd.Run, "state", lambda _self, _pid: "gone" if clock.now >= ends_at else "alive"
+    )
+    procs = {
+        "parent": pd.Announced("parent", parent.pid, process_started(parent.pid)),
+        "child": child,
+    }
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -205,7 +209,9 @@ def test_the_windows_check_needs_a_kill_that_worked_on_live_processes_inside_the
 # ── L4 and L5: identity that cannot be read, and a partial construction ──
 
 
-def test_a_positive_control_with_no_start_time_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_positive_control_with_no_start_time_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``probe_unknown_identity.py``'s first shape: a real live child whose start time reads ``None``."""
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])  # noqa: S603
@@ -281,11 +287,12 @@ def test_the_cleanup_kills_a_process_that_announces_itself_while_it_runs(tmp_pat
         assert not list(run.marks.glob("late-child-*.json")), "the premise: not announced yet"
         left = run.clean_up(quiet=1.0)
         assert list(run.marks.glob("late-child-*.json")), "it announced itself during the cleanup"
-        assert left == [] and probe_state(child) != STATE_ALIVE, f"left {left}, child {probe_state(child)}"
+        assert left == [] and probe_state(child) != STATE_ALIVE, (
+            f"left {left}, child {probe_state(child)}"
+        )
     finally:
         if child and born is not None and process_started(child) == born:
             pd._kill(child)
         if parent.poll() is None:
             parent.kill()
         parent.wait()
-

@@ -510,7 +510,12 @@ async def test_result_rereads_the_whole_result_and_a_long_one_points_there(tmp_p
     """The 16 KiB framed cap (owner, 2026-11-07) points to ``agent(action="result")`` and the session file."""
 
     answer = "".join(f"line {i:05d} of a long answer\n" for i in range(1400))  # ~37 KiB
-    rig = await _rig(tmp_path, script=_script(answer))
+    # From a file, not ``-c``: the script is ~41,700 characters and a win32 command line
+    # holds 32,767, so ``CreateProcess`` refused it (WinError 206) on windows-latest (#777).
+    stub = tmp_path / "long_answer_child.py"
+    stub.write_text(_script(answer), encoding="utf-8")
+    channel = PrintChannel(grace=2.0, argv_builder=lambda *_a, **_k: [sys.executable, str(stub)])
+    rig = await _rig(tmp_path, channel=channel)
     agent_id = _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
     await _settled(rig)
     (notice,) = rig.harness.undelivered_notices()

@@ -1,5 +1,8 @@
 """#777 (#611 S3c): what a killed aelix leaves of its background jobs, read by pid and start time.
 
+PRs c1 and c2 of the issue land as one PR with two commits (리드 판단, the lead's
+call), so this file holds both.
+
 A real CLI, started through the gate-on launcher (``tests/jobs/gated_cli.py``)
 against a local chat-completions SSE server, runs ``-p`` with two jobs: a
 background delegation (``agent(action="spawn")``) whose child runs a foreground
@@ -16,7 +19,9 @@ sleeper. Every process a case watches announces its pid and its start time
   ``$PID`` — the shell's own pid, not its parent's.
 
 The positive control is that every one of them is alive, with the announced
-start time, before the kill. Then the parent is killed:
+start time, before the kill; an unknown start time fails it. Then the parent is
+killed, and a process counts as ended only when it is first read ended within
+the bound, counted from the kill:
 
 * **L1, Linux.** SIGKILL. The delegated child and the background shell are gone
   within 5 s: ``pdeathsig`` on each (``print_channel.py``, and
@@ -29,34 +34,32 @@ start time, before the kill. Then the parent is killed:
 * **L2, Windows.** Each announced process is opened before the kill with
   ``SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION`` (and ``PROCESS_TERMINATE``,
   so the case can end it): no Job handle is held — the Jobs have no name and
-  aelix holds their last handle (``_process_tree.py``). ``TerminateProcess`` the
-  parent; every handle must be signalled within 10 s, the Jobs' kill-on-close.
-  This proves the ANNOUNCED processes only, not that a Job is empty. A failure
-  says, per process, whether it was in a job, when it ended, its exit code, and
-  what ``TerminateProcess`` returned.
+  aelix holds their last handle (``_process_tree.py``). Every handle must be
+  unsignalled right before ``TerminateProcess`` of the parent, which must
+  succeed, and signalled within 10 s after it (ADR-0238's kill-on-close). This
+  proves the ANNOUNCED processes only, not that a Job is empty; and the
+  delegated child also ends when the venv launcher's own job kills the
+  interpreter it started, so its row does not tell which job did. A failure
+  says, per process, its image and parent pid, whether it was in any job
+  (``IsProcessInJob(h, NULL)``), its creation time, when it ended and its exit
+  code, and what ``TerminateProcess`` returned.
 * **L3, macOS.** SIGKILL, then the survivors are recorded and killed. Nothing
   is asserted about the children: macOS has no ``pdeathsig`` (ADR-0291 limit 3).
-
-**PR c2, L1a–L3a: a job Ctrl+B moved.** The same, with the TUI instead of
-``-p``: ``tests/jobs/gated_tui_child.py`` runs the launcher's gated CLI on its
-TUI path, its keys read from stdin. The parent runs one agent in the
-foreground; once the child's sleeper announced itself, the case writes Ctrl+B
-(``\x02``), and once the parent's next request carries the moved call's answer
-it kills that aelix, and reads the moved job's processes as L1–L3 do: on Linux
-the delegated child is gone within 5 s, on Windows every announced handle is
-signalled within 10 s (a moved job's evidence is its root only, ADR-0298; this
-reads the processes themselves), and macOS is recorded.
 
 The child runs ``bash`` only because the parent runs ``--permission-mode yolo``: a
 default parent clamps a delegated child to ``plan`` (``aelix_agents/consent.py``),
 whose ``bash`` is refused. The model is scripted, in a scratch HOME and cwd.
 
 Every case kills, at its end, every announced process still alive with its
-announced start time, and nothing else; during the case a pid is read by
-identity (``tests/rpc/_identity.py``), so a reused number never reads as alive.
+announced start time, and nothing else, the parent first; it rescans the
+markers until none has appeared for a second and waits for what it killed;
+during the case a pid is read by identity (``tests/rpc/_identity.py``), so a
+reused number never reads as alive. ``tests/cli/test_parent_death_checks_777.py``
+pins these checks against fakes.
 
-Guards of today's behaviour: the product code is ``b6100968``'s; what a case
-needs that base lacks is test-only (the launchers' announcement).
+On POSIX these are guards of ``b6100968``'s behaviour, and what a case needs
+that base lacks is test-only (the launchers' announcement). On Windows the
+delegated child's spawn is #777's suspended one (its fix, before these cases).
 """
 
 from __future__ import annotations
@@ -104,6 +107,12 @@ SLEEP_SECONDS = 120
 ANNOUNCE_BOUND = 90.0
 """How long a case waits for every process to announce itself (the windows runner is slow to start one)."""
 
+CLEANUP_QUIET = 1.0
+"""How long the cleanup's rescan must find no new announcement before it stops."""
+
+CLEANUP_BOUND = 20.0
+"""How long the cleanup waits for what it killed to end."""
+
 #: A sleeper that announces the shell that runs it (its pid is an argument:
 #: ``$$`` or ``$PID``) and then itself, each file whole at its ``os.replace``.
 _SLEEPER = """\
@@ -127,14 +136,6 @@ time.sleep(seconds)
 
 #: What a -p run watches: the two aelix interpreters, both shells and both sleepers.
 PRINT_ROLES = ("parent", "child", "child-shell", "child-sleeper", "bg-shell", "bg-sleeper")
-
-#: What a TUI run watches once Ctrl+B moved its foreground delegation (#777 PR c2).
-TUI_ROLES = ("parent", "child", "child-shell", "child-sleeper")
-
-TUI_CHILD = Path(__file__).resolve().parents[1] / "jobs" / "gated_tui_child.py"
-
-MOVED = "Moved to the background at the user's request"
-"""The moved call's answer (``aelix_agents/tool.py``): the parent's next request carries it."""
 
 
 @dataclass(frozen=True)
@@ -257,13 +258,14 @@ class Run:
             time.sleep(0.05)
 
     def positive_control(self, procs: dict[str, Announced]) -> None:
-        """Each announced process is alive and is the one that announced (its start time reads the same)."""
+        """Each announced process is alive and is the one that announced: its start time, read now
+        and announced, is known and the same. An unknown one fails (Codex round 1, L4)."""
 
         self.ids.record([p.pid for p in procs.values()])
         wrong = {
             role: (p.pid, self.ids.at[p.pid], p.started)
             for role, p in procs.items()
-            if self.ids.at[p.pid] != (STATE_ALIVE, p.started)
+            if p.started is None or self.ids.at[p.pid] != (STATE_ALIVE, p.started)
         }
         assert not wrong, (
             f"before the kill, (pid, (state, start time now), start time announced): {wrong}"
@@ -293,14 +295,33 @@ class Run:
             time.sleep(0.05)
         return {role: (self.state(p.pid), ended.get(role)) for role, p in procs.items()}
 
-    def clean_up(self) -> None:
-        """Kill every announced process still alive with its announced start time; reap the
-        launcher; close the files. A number another process holds now is never signalled."""
+    def clean_up(self, *, quiet: float = CLEANUP_QUIET, bound: float = CLEANUP_BOUND) -> list[str]:
+        """Kill every announced process alive with its announced start time, the parent first; wait
+        for each to end; rescan the markers until none has appeared for ``quiet`` s; reap the
+        launcher; close its pipes. What is still alive after ``bound`` is returned, never killed
+        blind: a number another process holds now is never signalled (Codex round 1, M2)."""
 
-        for p in self.announced().values():
-            alive = probe_state(p.pid) == STATE_ALIVE
-            if alive and p.started is not None and process_started(p.pid) == p.started:
-                _kill(p.pid)
+        if self.proc is not None and self.proc.stdin is not None:
+            with contextlib.suppress(OSError):
+                self.proc.stdin.close()  # the pipe a case writes keys to (verify F6)
+        owned: dict[int, Announced] = {}
+        deadline = time.monotonic() + bound
+        last_new = time.monotonic()
+        while True:
+            fresh = [p for p in self.announced().values() if p.pid not in owned]
+            for p in sorted(
+                fresh, key=lambda a: a.role != "parent"
+            ):  # no new spawn: the parent first
+                owned[p.pid] = p
+                if _is_itself(p):
+                    _kill(p.pid)
+            if fresh:
+                last_new = time.monotonic()
+            alive = [p for p in owned.values() if _is_itself(p)]
+            now = time.monotonic()
+            if (not alive and now - last_new >= quiet) or now >= deadline:
+                break
+            time.sleep(0.05)
         if self.proc is not None:
             if self.proc.poll() is None:
                 self.proc.kill()
@@ -309,6 +330,15 @@ class Run:
         for handle in (getattr(self, "stdout", None), getattr(self, "stderr", None)):
             if handle is not None:
                 handle.close()
+        return [f"{p.role} pid {p.pid}" for p in owned.values() if _is_itself(p)]
+
+
+def _is_itself(p: Announced) -> bool:
+    """Whether ``p.pid`` is alive and still the process that announced (known, equal start time)."""
+
+    if p.started is None or probe_state(p.pid) != STATE_ALIVE:
+        return False
+    return process_started(p.pid) == p.started
 
 
 def _kill(pid: int) -> None:
@@ -334,7 +364,9 @@ def running(
         try:
             yield run, server
         finally:
-            run.clean_up()
+            left = run.clean_up()
+            if left:  # never raised from here: it would hide the case's own failure
+                warnings.warn(f"the cleanup could not end {left}", stacklevel=3)
 
 
 def print_turns(run: Run) -> tuple[Turn, Turn]:
@@ -393,21 +425,41 @@ def sigkill(run: Run, parent: Announced) -> float:
     return killed
 
 
+def late_or_alive(
+    states: dict[str, tuple[str, float | None]], roles: tuple[str, ...], bound: float
+) -> list[str]:
+    """``roles`` not read ended within ``bound`` s of the kill (Codex round 1, M1).
+
+    A first read of "ended" after the bound fails too: it cannot tell whether the
+    process ended inside the bound, and the time spent reaping the parent counts,
+    since the clock starts at the kill.
+    """
+
+    return [role for role in roles if states[role][1] is None or states[role][1] > bound]
+
+
 def sigkill_on_linux(
-    run: Run, procs: dict[str, Announced], *, label: str, asserted: tuple[str, ...]
+    run: Run,
+    procs: dict[str, Announced],
+    *,
+    label: str,
+    asserted: tuple[str, ...],
+    bound: float = 5.0,
 ) -> None:
-    """SIGKILL the parent: ``asserted`` are gone within 5 s (``pdeathsig``); the others are recorded."""
+    """SIGKILL the parent: ``asserted`` are read gone within ``bound`` s (``pdeathsig``); the others are recorded."""
 
     killed = sigkill(run, procs["parent"])
     children = {role: p for role, p in procs.items() if role != "parent"}
-    states = run.watch(children, 5.0, since=killed)
+    states = run.watch(children, bound, since=killed)
     warnings.warn(
-        f"{label}, 5 s after the SIGKILL; {', '.join(asserted)} asserted, the rest recorded only "
+        f"{label}, {bound} s after the SIGKILL; {', '.join(asserted)} asserted, the rest recorded only "
         f"(OQ-C, ADR-0297, ADR-0291 limit 3): " + describe(children, states, run),
         stacklevel=2,
     )
-    left = [role for role in asserted if states[role][0] not in ENDED]
-    assert not left, f"{left} outlived the SIGKILL by 5 s: " + describe(children, states, run)
+    left = late_or_alive(states, asserted, bound)
+    assert not left, f"{left} not read gone within {bound} s of the SIGKILL: " + describe(
+        children, states, run
+    )
 
 
 def sigkill_on_macos(run: Run, procs: dict[str, Announced], *, label: str) -> None:
@@ -424,13 +476,34 @@ def sigkill_on_macos(run: Run, procs: dict[str, Announced], *, label: str) -> No
     assert run.state(procs["parent"].pid) in ENDED, "the parent itself was killed"
 
 
-def terminate_on_windows(procs: dict[str, Announced]) -> None:
-    """Handles on every announced process, then ``TerminateProcess`` the parent: all signalled within 10 s."""
+def terminate_on_windows(
+    procs: dict[str, Announced], *, bound: float = 10.0, kernel: Any = None
+) -> dict[str, Any]:
+    """Handles on every announced process, then ``TerminateProcess`` the parent: each signalled within ``bound`` s.
 
-    with WinHandles(procs) as handles:
-        report = handles.terminate_and_watch("parent", 10.0)
-    left = [role for role, row in report["processes"].items() if row["ended_after"] is None]
-    assert not left, f"{left} outlived TerminateProcess by 10 s: " + json.dumps(report, indent=1)
+    Before the kill every handle must be unsignalled, and ``TerminateProcess``
+    must return success (Codex round 1, M3); a handle read signalled only after
+    the bound fails (M1). It proves the announced processes only, not that a Job
+    is empty. The report says, per process, its image and parent pid, whether
+    it was in any job (``IsProcessInJob(h, NULL)``), its creation time, when it
+    ended and its exit code (verify F3).
+    """
+
+    with WinHandles(procs, kernel=kernel) as handles:
+        report = handles.terminate_and_watch("parent", bound)
+    shown = json.dumps(report, indent=1)
+    assert not report["ended_before_the_kill"], (
+        "ended before the kill, so the kill proves nothing: " + shown
+    )
+    assert report["terminate"]["returned"], "TerminateProcess failed: " + shown
+    rows = report["processes"]
+    left = [
+        role
+        for role, row in rows.items()
+        if row["ended_after"] is None or row["ended_after"] > bound
+    ]
+    assert not left, f"{left} not read ended within {bound} s of TerminateProcess: " + shown
+    return report
 
 
 @LINUX
@@ -444,7 +517,10 @@ def test_l1_a_sigkilled_parents_delegated_child_and_background_shell_are_gone_wi
 
 @WIN32
 def test_l2_a_terminated_parents_announced_processes_all_end_within_10_s(tmp_path: Path) -> None:
-    """Kill-on-close of both Jobs. Proves the announced processes only, not that a Job is empty."""
+    """Both Jobs' kill-on-close, or for the child also the venv launcher's own job: either ends it.
+
+    The assertion covers the announced processes only, not that a Job is empty.
+    """
 
     with running(tmp_path, print_turns) as (run, _server):
         terminate_on_windows(started_print_run(run))
@@ -458,73 +534,128 @@ def test_l3_a_sigkilled_parents_jobs_on_macos_are_recorded_and_cleaned_up(tmp_pa
         sigkill_on_macos(run, started_print_run(run), label="L3 (macOS)")
 
 
-# ── PR c2: a job Ctrl+B moved, then the parent's death (L1a–L3a) ──────────
+# ── win32: the handles the Windows legs read through ─────────────────────
 
 
-def tui_turns(run: Run) -> tuple[Turn, Turn]:
-    """The parent runs one agent in the foreground, then answers; the child runs its sleeper."""
+class Win32Kernel:
+    """The kernel32 calls :class:`WinHandles` makes, through ctypes; win32 only. Tests pass a fake."""
 
-    def parent(_body: dict[str, Any], index: int) -> dict[str, Any]:
-        if index == 0:
-            return call("agent", {"profile": PROFILE, "task": "run the sleeper"})
-        return say(f"parent turn {index}")
+    SYNCHRONIZE = 0x0010_0000
+    QUERY_LIMITED = 0x1000
+    TERMINATE = 0x0001
+    WAIT_OBJECT_0 = 0
+    SNAPPROCESS = 0x2
 
-    return parent, child_turn(run)
+    _k: Any
+    _ctypes: Any
 
+    def __init__(self) -> None:
+        if sys.platform != "win32":  # pragma: no cover - the win32 leg only
+            raise AssertionError("Win32Kernel is win32 only")
+        import ctypes
 
-def moved_tui_run(run: Run, server: Server) -> dict[str, Announced]:
-    """The TUI child: ``go`` submitted; once its delegated child's sleeper announces, Ctrl+B; the move
-    confirmed by the parent's next request, which carries the moved call's answer."""
+        handle, dword, boolean = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        for name, argtypes, restype in (
+            ("OpenProcess", [dword, boolean, dword], handle),
+            ("WaitForSingleObject", [handle, dword], dword),
+            ("GetExitCodeProcess", [handle, ctypes.POINTER(dword)], boolean),
+            ("TerminateProcess", [handle, ctypes.c_uint], boolean),
+            ("GetProcessTimes", [handle, *([ctypes.POINTER(ctypes.c_uint64)] * 4)], boolean),
+            ("IsProcessInJob", [handle, handle, ctypes.POINTER(boolean)], boolean),
+            (
+                "QueryFullProcessImageNameW",
+                [handle, dword, ctypes.c_wchar_p, ctypes.POINTER(dword)],
+                boolean,
+            ),
+            ("CreateToolhelp32Snapshot", [dword, dword], handle),
+            ("Process32FirstW", [handle, ctypes.c_void_p], boolean),
+            ("Process32NextW", [handle, ctypes.c_void_p], boolean),
+            ("CloseHandle", [handle], boolean),
+        ):
+            function = getattr(k, name)
+            function.argtypes, function.restype = argtypes, restype
+        self._k, self._ctypes = k, ctypes
 
-    proc = run.start(TUI_CHILD, stdin=subprocess.PIPE)
-    assert proc.stdin is not None
-    run.wait_for(("parent",))
-    proc.stdin.write(b"go\r")
-    proc.stdin.flush()
-    procs = run.wait_for(TUI_ROLES)
-    run.positive_control(procs)
-    proc.stdin.write(b"\x02")
-    proc.stdin.flush()
-    deadline = time.monotonic() + ANNOUNCE_BOUND
-    while not any(MOVED in text_of(m) for b in server.parent[1:] for m in b.get("messages", [])):
-        if proc.poll() is not None or time.monotonic() > deadline:
-            pytest.fail(
-                f"no move: {len(server.parent)} parent requests, aelix "
-                f"{'exited ' + str(proc.returncode) if proc.poll() is not None else 'running'}; "
-                f"stderr: {run.stderr_tail()}"
+    def _error(self) -> int:
+        return int(self._ctypes.get_last_error())
+
+    def open(self, pid: int) -> int:
+        handle = self._k.OpenProcess(
+            self.SYNCHRONIZE | self.QUERY_LIMITED | self.TERMINATE, False, pid
+        )
+        if not handle:
+            raise OSError(f"OpenProcess(pid {pid}) failed: error {self._error()}")
+        return int(handle)
+
+    def created(self, handle: int) -> float | None:
+        times = [self._ctypes.c_uint64() for _ in range(4)]
+        if not self._k.GetProcessTimes(handle, *(self._ctypes.byref(t) for t in times)):
+            return None
+        return float(times[0].value)
+
+    def in_any_job(self, handle: int) -> bool | None:
+        answer = self._ctypes.c_int()
+        if not self._k.IsProcessInJob(handle, None, self._ctypes.byref(answer)):
+            return None
+        return bool(answer.value)
+
+    def image(self, handle: int) -> str | None:
+        size = self._ctypes.c_uint32(1024)
+        buf = self._ctypes.create_unicode_buffer(1024)
+        if not self._k.QueryFullProcessImageNameW(handle, 0, buf, self._ctypes.byref(size)):
+            return None
+        return str(buf.value)
+
+    def parents(self) -> dict[int, int]:
+        """Every process's parent pid, from one toolhelp snapshot; empty when it cannot be taken."""
+
+        ctypes = self._ctypes
+
+        class Entry(ctypes.Structure):
+            _fields_ = (
+                ("dwSize", ctypes.c_uint32),
+                ("cntUsage", ctypes.c_uint32),
+                ("th32ProcessID", ctypes.c_uint32),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", ctypes.c_uint32),
+                ("cntThreads", ctypes.c_uint32),
+                ("th32ParentProcessID", ctypes.c_uint32),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_uint32),
+                ("szExeFile", ctypes.c_wchar * 260),
             )
-        time.sleep(0.05)
-    assert run.state(procs["child"].pid) == STATE_ALIVE, (
-        "the moved run's child runs on after the move"
-    )
-    return procs
 
+        snapshot = self._k.CreateToolhelp32Snapshot(self.SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return {}
+        found: dict[int, int] = {}
+        try:
+            entry = Entry()
+            entry.dwSize = ctypes.sizeof(Entry)
+            more = self._k.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                found[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                more = self._k.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            self._k.CloseHandle(snapshot)
+        return found
 
-@LINUX
-def test_l1a_a_sigkilled_tui_parents_moved_delegated_child_is_gone_within_5_s(
-    tmp_path: Path,
-) -> None:
-    with running(tmp_path, tui_turns) as (run, server):
-        procs = moved_tui_run(run, server)
-        sigkill_on_linux(run, procs, label="L1a (Linux, moved)", asserted=("child",))
+    def signalled(self, handle: int) -> bool:
+        return bool(self._k.WaitForSingleObject(handle, 0) == self.WAIT_OBJECT_0)
 
+    def exit_code(self, handle: int) -> int | None:
+        code = self._ctypes.c_uint32()
+        if not self._k.GetExitCodeProcess(handle, self._ctypes.byref(code)):
+            return None
+        return int(code.value)
 
-@WIN32
-def test_l2a_a_terminated_tui_parents_moved_job_processes_all_end_within_10_s(
-    tmp_path: Path,
-) -> None:
-    """Kill-on-close of the print channel's Job, which a moved run keeps (ADR-0298: root-only evidence)."""
+    def terminate(self, handle: int) -> tuple[bool, int]:
+        ok = bool(self._k.TerminateProcess(handle, 1))
+        return ok, 0 if ok else self._error()
 
-    with running(tmp_path, tui_turns) as (run, server):
-        terminate_on_windows(moved_tui_run(run, server))
-
-
-@DARWIN
-def test_l3a_a_sigkilled_tui_parents_moved_job_on_macos_is_recorded_and_cleaned_up(
-    tmp_path: Path,
-) -> None:
-    with running(tmp_path, tui_turns) as (run, server):
-        sigkill_on_macos(run, moved_tui_run(run, server), label="L3a (macOS, moved)")
+    def close(self, handle: int) -> None:
+        self._k.CloseHandle(handle)
 
 
 class WinHandles:
@@ -533,124 +664,76 @@ class WinHandles:
     Opened with ``SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION`` to watch it,
     and ``PROCESS_TERMINATE`` to end the parent and clean up. A held handle keeps
     the pid from being reused, and the creation time read through it must be
-    the announced one, so each handle is the announced process.
+    known and the announced one, so each handle is the announced process (Codex
+    round 1, L4). A construction that fails closes what it opened (L5).
     """
 
-    SYNCHRONIZE = 0x0010_0000
-    QUERY_LIMITED = 0x1000
-    TERMINATE = 0x0001
-    WAIT_OBJECT_0 = 0
-
-    # Declared here, assigned past the win32 check: off win32 nothing below it runs.
-    _k: Any
-    _ctypes: Any
-    _wintypes: Any
-    procs: dict[str, Announced]
-    handles: dict[str, int]
-    before: dict[str, dict[str, Any]]
-
-    def __init__(self, procs: dict[str, Announced]) -> None:
-        if sys.platform != "win32":  # pragma: no cover - the win32 leg only
-            raise AssertionError("WinHandles is win32 only")
-        import ctypes
-        from ctypes import wintypes
-
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        k.OpenProcess.restype = wintypes.HANDLE
-        k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        k.WaitForSingleObject.restype = wintypes.DWORD
-        k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        k.GetExitCodeProcess.restype = wintypes.BOOL
-        k.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        k.TerminateProcess.restype = wintypes.BOOL
-        k.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(ctypes.c_uint64)] * 4)]
-        k.GetProcessTimes.restype = wintypes.BOOL
-        k.IsProcessInJob.argtypes = [
-            wintypes.HANDLE,
-            wintypes.HANDLE,
-            ctypes.POINTER(wintypes.BOOL),
-        ]
-        k.IsProcessInJob.restype = wintypes.BOOL
-        k.CloseHandle.argtypes = [wintypes.HANDLE]
-        k.CloseHandle.restype = wintypes.BOOL
-        self._k, self._ctypes, self._wintypes = k, ctypes, wintypes
+    def __init__(self, procs: dict[str, Announced], *, kernel: Any = None) -> None:
+        self.k = kernel if kernel is not None else Win32Kernel()
         self.procs = procs
         self.handles: dict[str, int] = {}
         self.before: dict[str, dict[str, Any]] = {}
-        for role, p in procs.items():
-            handle = k.OpenProcess(
-                self.SYNCHRONIZE | self.QUERY_LIMITED | self.TERMINATE, False, p.pid
-            )
-            if not handle:
-                raise AssertionError(
-                    f"OpenProcess({role}, pid {p.pid}) failed: {ctypes.get_last_error()}"
-                )
-            self.handles[role] = handle
-            self.before[role] = {
-                "pid": p.pid,
-                "in_job": self._in_job(handle),
-                "created": self._created(handle),
+        try:
+            parents = self.k.parents()
+            for role, p in procs.items():
+                handle = self.k.open(p.pid)
+                self.handles[role] = handle
+                self.before[role] = {
+                    "pid": p.pid,
+                    "parent_pid": parents.get(p.pid),
+                    "image": self.k.image(handle),
+                    "in_any_job": self.k.in_any_job(handle),
+                    "created": self.k.created(handle),
+                }
+            unknown_or_moved = {
+                r: (b["created"], procs[r].started)
+                for r, b in self.before.items()
+                if b["created"] is None or b["created"] != procs[r].started
             }
-        moved = {
-            r: (b["created"], procs[r].started)
-            for r, b in self.before.items()
-            if b["created"] != procs[r].started
-        }
-        assert not moved, f"a handle is not the announced process (created now, announced): {moved}"
-
-    def _in_job(self, handle: int) -> bool | None:
-        answer = self._wintypes.BOOL()
-        if not self._k.IsProcessInJob(handle, None, self._ctypes.byref(answer)):
-            return None
-        return bool(answer.value)
-
-    def _created(self, handle: int) -> float | None:
-        times = [self._ctypes.c_uint64() for _ in range(4)]
-        if not self._k.GetProcessTimes(handle, *(self._ctypes.byref(t) for t in times)):
-            return None
-        return float(times[0].value)
-
-    def _exit_code(self, handle: int) -> int | None:
-        code = self._wintypes.DWORD()
-        if not self._k.GetExitCodeProcess(handle, self._ctypes.byref(code)):
-            return None
-        return int(code.value)
-
-    def signalled(self, role: str) -> bool:
-        return bool(self._k.WaitForSingleObject(self.handles[role], 0) == self.WAIT_OBJECT_0)
+            assert not unknown_or_moved, (
+                f"a handle is not known to be the announced process (created now, announced): {unknown_or_moved}"
+            )
+        except BaseException:
+            self._close()
+            raise
 
     def terminate_and_watch(self, target: str, seconds: float) -> dict[str, Any]:
         """``TerminateProcess`` ``target``, then each handle until signalled or ``seconds``: what each did."""
 
-        ok = bool(self._k.TerminateProcess(self.handles[target], 1))
-        error = self._ctypes.get_last_error() if not ok else 0
+        ended_before = [role for role, handle in self.handles.items() if self.k.signalled(handle)]
         since = time.monotonic()
+        returned, error = self.k.terminate(self.handles[target])
         ended: dict[str, float] = {}
         while True:
-            for role in self.handles:
-                if role not in ended and self.signalled(role):
+            for role, handle in self.handles.items():
+                if role not in ended and self.k.signalled(handle):
                     ended[role] = round(time.monotonic() - since, 3)
             if len(ended) == len(self.handles) or time.monotonic() - since >= seconds:
                 break
             time.sleep(0.05)
         return {
-            "terminate": {"target": target, "returned": ok, "last_error": error},
+            "terminate": {"target": target, "returned": returned, "last_error": error},
+            "ended_before_the_kill": ended_before,
             "processes": {
                 role: {
                     **self.before[role],
                     "ended_after": ended.get(role),
-                    "exit_code": self._exit_code(handle),
+                    "exit_code": self.k.exit_code(handle),
                 }
                 for role, handle in self.handles.items()
             },
         }
+
+    def _close(self) -> None:
+        for handle in self.handles.values():
+            self.k.close(handle)
+        self.handles = {}
 
     def __enter__(self) -> WinHandles:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
         for handle in self.handles.values():
-            if self._k.WaitForSingleObject(handle, 0) != self.WAIT_OBJECT_0:
-                self._k.TerminateProcess(handle, 1)
-            self._k.CloseHandle(handle)
+            if not self.k.signalled(handle):
+                self.k.terminate(handle)
+        self._close()
