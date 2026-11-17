@@ -5063,6 +5063,8 @@ def _emulated_suspended_spawn(monkeypatch: pytest.MonkeyPatch, seen: dict[str, A
 
     monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: CREATE_SUSPENDED))
     monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _exec)
+    # The spawn's own handle, as win32's ``Popen`` keeps one: a resume must go through it.
+    monkeypatch.setattr(pc, "_retained_handle", lambda _proc: 0xBEEF)
     # ``raising=False``: on a tree without it (``5cfc9596``) the case still runs and shows the hang.
     monkeypatch.setattr(pc.ProcessTree, "resume_suspended", staticmethod(_resume), raising=False)
 
@@ -5095,7 +5097,7 @@ async def test_an_attach_that_raises_otherwise_resumes_a_suspended_child(
         assert done, "the run never returned: its child was left suspended"
         result = task.result()
         assert [pid for pid, _handle in seen["resumed"]] == [seen["pid"]]
-        assert seen["resumed"][0][1] == _retained_handle(row.proc), "resumed through the spawn's handle"
+        assert seen["resumed"][0][1] == 0xBEEF, "resumed through the spawn's own handle"
         if resume_fails:
             assert result.ok is False, "ended, not run"
         else:
