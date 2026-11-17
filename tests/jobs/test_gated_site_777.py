@@ -18,6 +18,7 @@ checkout's, or this one by another spelling — imported the first again, foreve
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -37,10 +38,10 @@ _PROBE = (
 
 
 def _run(
-    tmp_path: Path, args: list[str], *sites: Path, after: tuple[Path, ...] = ()
+    tmp_path: Path, args: list[str], *sites: Path, after: tuple[Path, ...] = (), **extra: str
 ) -> subprocess.CompletedProcess[str]:
     """``python <args>`` with ``sites``, then a foreign ``sitecustomize`` that prints ``ACTIVE``,
-    then ``after``."""
+    then ``after``; ``extra`` goes into its environment."""
 
     other = tmp_path / "other_site"
     other.mkdir(exist_ok=True)
@@ -50,6 +51,7 @@ def _run(
         tmp_path / "home",
         PYTHONPATH=os.pathsep.join(p for p in entries if p),
         AELIX_CODING_AGENT_DIR=str(tmp_path / "agent"),
+        **extra,
     )
     return subprocess.run(
         [sys.executable, *args],
@@ -78,7 +80,14 @@ def _actives(done: subprocess.CompletedProcess[str]) -> list[str]:
         (["-m", "json.tool", "-m", "aelix_coding_agent"], False),
         (["-c", "aelix_coding_agent"], False),
     ],
-    ids=["-m", "-Pm-joined", "-c-then-m", "script-then-m", "other-module-then-m", "-c-named-like-it"],
+    ids=[
+        "-m",
+        "-Pm-joined",
+        "-c-then-m",
+        "script-then-m",
+        "other-module-then-m",
+        "-c-named-like-it",
+    ],
 )
 def test_only_an_interpreter_running_aelix_as_its_module_is_gated(
     tmp_path: Path, args: list[str], gated: bool
@@ -96,10 +105,16 @@ def test_a_second_copy_of_the_hook_is_skipped_and_the_foreign_one_imported(tmp_p
     shutil.copytree(GATED_SITE, copy, ignore=shutil.ignore_patterns("__pycache__"))
     later = tmp_path / "later_site"
     later.mkdir()
-    (later / "sitecustomize.py").write_text("import sys\nprint('LATER', file=sys.stderr)\n", encoding="utf-8")
-    done = _run(tmp_path, ["-P", "-m", "aelix_coding_agent", "--version"], GATED_SITE, copy, after=(later,))
+    (later / "sitecustomize.py").write_text(
+        "import sys\nprint('LATER', file=sys.stderr)\n", encoding="utf-8"
+    )
+    done = _run(
+        tmp_path, ["-P", "-m", "aelix_coding_agent", "--version"], GATED_SITE, copy, after=(later,)
+    )
     assert _actives(done) == ["ACTIVE True"], done.stderr
-    assert "LATER" not in done.stderr, "only the first foreign sitecustomize is imported, as Python would"
+    assert "LATER" not in done.stderr, (
+        "only the first foreign sitecustomize is imported, as Python would"
+    )
     assert "Error in sitecustomize" not in done.stderr and done.returncode == 0
 
 
@@ -112,3 +127,30 @@ def test_the_same_hook_by_another_spelling_is_skipped(tmp_path: Path) -> None:
     done = _run(tmp_path, ["-P", "-m", "aelix_coding_agent", "--version"], GATED_SITE, link)
     assert _actives(done) == ["ACTIVE True"], done.stderr
     assert "Error in sitecustomize" not in done.stderr and done.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("args", "announced"),
+    [
+        (["-P", "-m", "aelix_coding_agent", "--version"], True),
+        (["-c", "pass", "-m", "aelix_coding_agent"], False),
+    ],
+    ids=["gated", "not-gated"],
+)
+def test_with_the_announce_directory_set_a_gated_interpreter_writes_its_pid_and_start_time(
+    tmp_path: Path, args: list[str], announced: bool
+) -> None:
+    """#777 PR c1: the parent-death cases watch a delegated child by this file (``AELIX_TEST_ANNOUNCE``)."""
+
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    done = _run(tmp_path, args, GATED_SITE, AELIX_TEST_ANNOUNCE=str(marks))
+    assert done.returncode == 0, done.stderr
+    files = sorted(marks.iterdir())
+    if not announced:
+        assert files == []
+        return
+    (only,) = files
+    data = json.loads(only.read_text(encoding="utf-8"))
+    assert only.name == f"child-{data['pid']}.json" and data["role"] == "child"
+    assert data["pid"] != os.getpid() and isinstance(data["started"], float)

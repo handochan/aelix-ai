@@ -68,6 +68,8 @@ from tests.agents_ext.test_tool_and_security import _FakeUI, _text, _write_profi
 from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
 
 POSIX = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+#: No case here takes it since #777 PR c1 (L4): its 23 cases run on windows-latest
+#: too. Kept for the modules that import it, whose cases stay POSIX until measured.
 REAL_CHILD = pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -283,7 +285,6 @@ def test_the_background_paragraph_stays_inside_its_own_budget_and_names_every_ac
 # === spawn ========================================================================
 
 
-@REAL_CHILD
 async def test_spawn_returns_once_launched_and_one_notice_comes_back(tmp_path: Path, jobs_on: Any) -> None:
     """The call returns at launch; the run's records are confirmed and linked; ONE notice, after them."""
 
@@ -320,7 +321,6 @@ async def test_spawn_returns_once_launched_and_one_notice_comes_back(tmp_path: P
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 @pytest.mark.parametrize("bucket", [True, False], ids=["session-file", "no-session-file"])
 async def test_agent_id_session_or_key(tmp_path: Path, jobs_on: Any, bucket: bool) -> None:
     """Codex r1 #15: the agent id is the child's session id, or its spawn key when it has no file."""
@@ -363,7 +363,6 @@ async def test_spawn_takes_one_task_and_nothing_else(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_launch_failure_is_the_calls_error_and_no_notice_follows(tmp_path: Path, jobs_on: Any) -> None:
     """Codex r3 #13/#14 for this kind: a spawn that cannot start is the call's error; its slot comes back."""
 
@@ -393,7 +392,6 @@ def test_wait_bounds() -> None:
     assert wait_bounds(7200) == (1800.0, "(cut to 1800 s, the maximum)")
 
 
-@REAL_CHILD
 async def test_wait_never_stops_the_agent_and_the_third_empty_wait_is_refused(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -424,7 +422,6 @@ async def test_wait_never_stops_the_agent_and_the_third_empty_wait_is_refused(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_status_and_wait_after_delivery(tmp_path: Path, jobs_on: Any) -> None:
     """Codex r1 #15: once the notice was placed, status and wait still answer — from the service's summary."""
 
@@ -443,7 +440,6 @@ async def test_status_and_wait_after_delivery(tmp_path: Path, jobs_on: Any) -> N
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_stop_after_delivery_says_its_result_was_given(tmp_path: Path, jobs_on: Any) -> None:
     """Verify S2: ``stop`` on an agent whose notice was placed promises no notice.
 
@@ -510,7 +506,6 @@ async def test_stop_goes_through_the_barrier_and_its_partial_result_comes_back(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_result_rereads_the_whole_result_and_a_long_one_points_there(tmp_path: Path, jobs_on: Any) -> None:
     """The 16 KiB framed cap (owner, 2026-11-07) points to ``agent(action="result")`` and the session file."""
 
@@ -592,7 +587,6 @@ def test_a_cut_notice_keeps_both_pointers_in_an_uncut_footer(answer: str) -> Non
     assert len(framed.encode("utf-8")) <= NOTICE_MAX_BYTES - nt.PLACEMENT_LINE_RESERVE
 
 
-@REAL_CHILD
 async def test_another_sessions_agent_is_not_found(tmp_path: Path, jobs_on: Any) -> None:
     """Codex r1 #5 for this client: an id from another session reads, waits on and stops nothing."""
 
@@ -625,7 +619,6 @@ async def test_a_notice_turn_keeps_the_prompts_delegation_budget(tmp_path: Path,
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_spawn_is_charged_against_the_prompt_budget(tmp_path: Path, jobs_on: Any) -> None:
     rig = await _rig(tmp_path)
     runtime = rig.ext.runtime
@@ -639,7 +632,6 @@ async def test_a_spawn_is_charged_against_the_prompt_budget(tmp_path: Path, jobs
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_no_free_slot_refuses_before_any_dialog(tmp_path: Path, jobs_on: Any) -> None:
     """F = 0 refuses before consent (contract §2.7): no dialog is shown, nothing starts.
 
@@ -685,7 +677,6 @@ async def test_no_free_slot_refuses_before_any_dialog(tmp_path: Path, jobs_on: A
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_batch_sized_to_free_slots_never_refuses_after_consent(tmp_path: Path, jobs_on: Any) -> None:
     """Codex r1 #17: F = min(4, tasks, free) is reserved before the dialog; the per-call semaphore is F."""
 
@@ -724,7 +715,6 @@ async def test_batch_sized_to_free_slots_never_refuses_after_consent(tmp_path: P
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_foreground_run_holds_its_slot_while_it_lives(tmp_path: Path, jobs_on: Any) -> None:
     """All live delegated agents count, foreground and background (ADR-0199 (d) as amended)."""
 
@@ -739,7 +729,6 @@ async def test_a_foreground_run_holds_its_slot_while_it_lives(tmp_path: Path, jo
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_agents_run_takes_its_slot_too(tmp_path: Path, jobs_on: Any) -> None:
     """The user's door counts as well: with the one slot held, ``/agents run`` is refused, not queued."""
 
@@ -759,7 +748,6 @@ async def test_agents_run_takes_its_slot_too(tmp_path: Path, jobs_on: Any) -> No
 # === the placement hint ==================================================================
 
 
-@REAL_CHILD
 async def test_resume_hint_checked_against_current_branch(tmp_path: Path, jobs_on: Any) -> None:
     """Codex r1 #14: the resume hint is offered only where the branch now current holds the agent's start."""
 
@@ -792,7 +780,6 @@ async def test_resume_hint_checked_against_current_branch(tmp_path: Path, jobs_o
 # === the runner's rules ===================================================================
 
 
-@REAL_CHILD
 async def test_old_runner_never_calls_an_invalidated_api(tmp_path: Path, jobs_on: Any) -> None:
     """ADR-0293 §3 for this client: a reload invalidates the API mid-run, and the job still ends ``done``."""
 
@@ -810,7 +797,6 @@ async def test_old_runner_never_calls_an_invalidated_api(tmp_path: Path, jobs_on
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_esc_on_a_wait_cancels_the_wait_not_the_agent(tmp_path: Path, jobs_on: Any) -> None:
     """The parent's Esc reaches its own turn only: a wait it cancels leaves the agent running (#604)."""
 
@@ -830,7 +816,6 @@ async def test_esc_on_a_wait_cancels_the_wait_not_the_agent(tmp_path: Path, jobs
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -861,7 +846,6 @@ async def test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_door_that_brought_no_slot_takes_one_and_gives_it_back(tmp_path: Path, jobs_on: Any) -> None:
     """``_run``'s belt: a door that reserved nothing takes its slot in the await-free block (#611 S1c)."""
 
@@ -1048,7 +1032,6 @@ async def test_approved_calls_never_run_give_their_slots_back_at_the_next_prompt
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_runner_that_crashes_gives_its_slot_back_once(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1081,7 +1064,6 @@ async def test_a_runner_that_crashes_gives_its_slot_back_once(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_resume_takes_its_slot_before_its_dialog_and_gives_it_back(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1154,7 +1136,6 @@ async def test_a_resume_takes_its_slot_before_its_dialog_and_gives_it_back(
     await rig.service.shutdown()
 
 
-@REAL_CHILD
 async def test_a_branch_holding_only_the_settle_gets_no_resume_hint(tmp_path: Path, jobs_on: Any) -> None:
     """Codex #9: the parent moved branches while the agent ran, so only its settle is on the
     branch the result is placed on — the hint must not name a resume its own lookup refuses.
@@ -1199,7 +1180,6 @@ def test_spawn_refuses_a_background_key() -> None:
             )
 
 
-@REAL_CHILD
 async def test_a_spawn_is_charged_once_admitted_and_two_in_one_message_meet_the_belt(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1375,7 +1355,6 @@ def test_stop_and_result_need_an_id() -> None:
             parse_agent_call({"action": action}, background=True)
 
 
-@REAL_CHILD
 async def test_the_runners_own_soft_leg_stops_the_agent_without_the_services_escalation(
     tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
