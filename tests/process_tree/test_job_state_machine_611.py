@@ -52,6 +52,7 @@ class FakeKernel:
         self.fail: set[str] = set()
         self.resumable = True
         self.dies_on_terminate = True
+        self.resumed_with: list[int | None] = []
 
     def _maybe_fail(self, name: str) -> None:
         if name in self.fail:
@@ -140,6 +141,7 @@ class FakeKernel:
 
     def resume(self, pid: int, handle: int | None) -> None:
         self.calls.append(("resume", pid))
+        self.resumed_with.append(handle)
         self._maybe_fail("resume")
 
     def duplicate(self, handle: int) -> int:
@@ -414,6 +416,84 @@ def test_a_failed_terminate_keeps_ownership(step: str) -> None:
         assert tree._held == {10: max(api.owner)} and max(api.owner) in api.open
     assert "close_job" not in api.names(), "the job, and its kill-on-close, stay with the owner"
     tree.close()
+
+
+def _uncontained_ok(api: FakeKernel, *, latched: bool = False) -> ProcessTree:
+    """The suspended attach with ``uncontained_ok``, handed the spawn's handle (501)."""
+
+    api.owner[501] = 10
+    api.open.add(501)
+    return ProcessTree.attach(
+        10,
+        kill_on_close=True,
+        platform="win32",
+        api=api,
+        handle=501,
+        suspended=True,
+        stop_latched=lambda: latched,
+        uncontained_ok=True,
+    )
+
+
+def test_with_uncontained_ok_a_job_that_holds_it_is_still_assigned_then_resumed() -> None:
+    """#777: the print channel and the rpc client's suspended attach, its job had: as without it."""
+
+    api = FakeKernel()
+    tree = _uncontained_ok(api)
+    assert api.names() == ["duplicate", "create_job", "assign", "resume"]
+    assert tree.contained and tree.state == "open"
+    tree.close()
+
+
+@pytest.mark.parametrize("step", ["create_job", "assign"])
+def test_with_uncontained_ok_a_job_it_cannot_have_resumes_it_outside_one(step: str) -> None:
+    """#777: the unsuspended attach's degrade, kept — resumed, ``contained=False``, never ended.
+
+    Without ``uncontained_ok`` the same failure ends the process
+    (``test_assign_failure_terminates_never_resumes_uncontained``). The launch's
+    handle copy is the tree's, closed with it.
+    """
+
+    api = FakeKernel()
+    api.fail.add(step)
+    tree = _uncontained_ok(api)
+    assert api.names()[-1] == "resume" and "terminate_process" not in api.names()
+    assert api.resumed_with == [501], "resumed through the spawn's own handle (verify r2 mutant P9)"
+    assert not tree.contained and tree.job is None
+    copy = api.next_handle
+    assert tree._held == {10: copy}
+    if step == "assign":
+        assert ("close_job", 7) in api.calls, "the job that held nothing is released"
+    tree.close()
+    assert copy not in api.open
+
+
+@pytest.mark.parametrize("fail", ["latch", "resume"])
+def test_with_uncontained_ok_a_latched_stop_or_a_failed_resume_still_ends_it(fail: str) -> None:
+    """Outside a job too, a stop already asked, or a resume that fails, ends the process unrun."""
+
+    api = FakeKernel()
+    api.fail.add("assign")
+    if fail == "resume":
+        api.fail.add("resume")
+    with pytest.raises(_process_tree.SuspendedLaunchError) as caught:
+        _uncontained_ok(api, latched=fail == "latch")
+    assert ("terminate_process", 10) in api.calls and ("wait", 10) in api.calls
+    assert ("resume" in api.names()) is (fail == "resume")
+    assert caught.value.tree is None
+
+
+def test_resume_suspended_resumes_through_the_handle_and_is_a_no_op_off_win32() -> None:
+    """#777 fix round 2: the print channel's generic arm resumes with it; it raises what the resume raised."""
+
+    api = FakeKernel()
+    ProcessTree.resume_suspended(10, 501, platform="win32", api=api)
+    assert api.calls == [("resume", 10)] and api.resumed_with == [501]
+    api.fail.add("resume")
+    with pytest.raises(OSError, match="resume failed"):
+        ProcessTree.resume_suspended(10, 501, platform="win32", api=api)
+    ProcessTree.resume_suspended(10, 501, platform="linux", api=api)
+    assert len(api.resumed_with) == 2, "nothing is created suspended off win32: no call"
 
 
 def test_missing_ntresumeprocess_spawns_unsuspended() -> None:
