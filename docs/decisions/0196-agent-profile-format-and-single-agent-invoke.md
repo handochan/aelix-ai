@@ -12,6 +12,7 @@ Amended 2026-10-20 (#398): a use that sets a model writes BOTH halves of it back
 `parsed`, so `/new`, `/fork`, `/resume` and `/reload` land on the same provider and id,
 but for two corners from a `models.json` or extension provider that its Known corners
 list (`## Amendment (2026-10-20, #398)` at the end).
+Amended 2026-11-17 by ADR-0304 (#795, #796): the `agents:` key, discovery keeps the losers, a bare `/agents` opens a panel, `/agents list` gains ON, `/agents show` two rows (dated note at the end).
 Date: 2026-07-19
 Amends: ADR-0008 (see its `Amendment (2026-07-19)` section — this ADR is the
 narrow amendment that clause points at)
@@ -898,3 +899,21 @@ and policy through `AgentHarness.restore_active_tools` instead of writing
 `state.active_tool_names`, and the skills catalog it composes is gated on the
 live tool set, as the rebuilder's is.
 
+## Note (2026-11-17, ADR-0304, #795, #796)
+
+- **A new frontmatter key, `agents:`** (#796): three-valued like `tools:` — absent or null is every
+  profile that is on, `[]` or `""` is none, a list is only those names. Each entry must be a
+  profile name by `_validate_name`; an entry that is not one, a glob included, is an error and
+  the profile does not load. A name no profile has is a WARNING that discovery files on the
+  declaring profile, so `--agent` still resolves it
+  (`tests/agents/test_profile_agents_key_796.py`, `tests/agents/test_profile_discovery_795.py`).
+  `_KNOWN_KEYS` holds eighteen keys.
+- **Discovery keeps the profiles that lose a name collision** in
+  `ProfileDiscoveryResult.shadowed`, each with the profile that finally holds the name; the
+  collision warnings are unchanged (`test_a_profile_that_loses_a_collision_is_kept_with_its_winner`).
+  `discovery.complete_profile` is `resolve_profile`'s `missing_path` escalation on its own, with
+  today's text; `count_untrusted_profiles` counts an untrusted `.aelix/agents/` from a listing.
+- **A bare `/agents`** opens the on/off panel in the TUI; a command context with no panel
+  opener lists, as before (`-p` and RPC dispatch no slash command). `/agents list` gains an `ON` column and an identity line, and `/agents show` the rows
+  `delegation` and `agents`, from `CommandContext.agent_delegation`
+  (`tests/tui/test_agents_panel_795.py`).

@@ -119,7 +119,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:1118-1121``), and NO process is
+into a blocked call the model reads (``extension.py:1170-1173``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -272,7 +272,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:1118-1121``) with no process created.
+    # (``extension.py:1170-1173``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -992,7 +992,7 @@ def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> Ag
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:1118-1121``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:1170-1173``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:604-617``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -1153,18 +1153,119 @@ def build_roster(profiles: Iterable[AgentProfile]) -> str:
     return "\n".join(lines)
 
 
-def build_description(roster: str, *, background: bool = False) -> str:
+# === What the model reads when it may not delegate (#795, #796, ADR-0304 D7) ===
+
+
+def available_fragment(names: Sequence[str]) -> str:
+    """``<available>``: every name the model may delegate to, sorted, UNCUT.
+
+    Uncut as today's ``unknown agent profile`` text lists every discovered name,
+    so with nothing filtered a refusal reads byte-identical to before ADR-0304
+    at any profile count (opus 11).
+    """
+
+    if not names:
+        return "no agent profile is available to delegate to"
+    return f"available: {', '.join(sorted(names))}"
+
+
+def unknown_profile_text(
+    name: str, available: Sequence[str], *, discovered_any: bool, agent_dir: str | None
+) -> str:
+    """The ``unknown`` refusal (no ``Delegation refused: `` prefix): today's text.
+
+    ``available`` is ADR-0304 D5's set now. With no profile discovered at all
+    it is today's "no profiles found in <user agents dir>" sentence.
+    """
+
+    if not discovered_any:
+        from aelix_coding_agent.agents.discovery import user_agents_dir
+
+        return f"unknown agent profile {name!r}; no profiles found in {user_agents_dir(agent_dir)}"
+    return f"unknown agent profile {name!r}; {available_fragment(available)}"
+
+
+def refusal_text(verdict: str, name: str, identity: str | None, available: Sequence[str]) -> str:
+    """The run refusal for ``none_listed``, ``not_listed`` and ``off`` (ADR-0304 D7).
+
+    No ``Delegation refused: `` prefix: the ``agent`` hook adds it, as it does
+    for every refusal. The identity's own list is never printed — ``<available>``
+    already is what it allows (opus 15).
+    """
+
+    if verdict == "none_listed":
+        return (
+            f"this session runs as agent profile {identity!r}, whose agents: list is "
+            "empty, so it delegates to no profile"
+        )
+    if verdict == "not_listed":
+        return (
+            f"agent profile {name!r} is not one this session's profile {identity!r} may "
+            f"delegate to; {available_fragment(available)}"
+        )
+    return (
+        f"agent profile {name!r} is turned off in the settings, and only the user can "
+        f"turn it on (with /agents); {available_fragment(available)}"
+    )
+
+
+def _listed_names(allowlist: Sequence[str]) -> str:
+    """The identity's ``agents:`` in written order, cut at :data:`MAX_ROSTER` names."""
+
+    shown = ", ".join(allowlist[:MAX_ROSTER])
+    more = len(allowlist) - MAX_ROSTER
+    return f"{shown}, … (+{more} more)" if more > 0 else shown
+
+
+def empty_roster_text(
+    reason: str | None, identity: str | None, allowlist: Sequence[str]
+) -> str | None:
+    """What replaces ``Available profiles:`` when nothing may be delegated to (ADR-0304 D7).
+
+    ``None`` for "something is available" and for "nothing was discovered",
+    whose sentence stays :func:`_no_profiles_message`. "Only the user can turn
+    … on" is said only where turning a profile on would make it available.
+    """
+
+    head = "No agent profile is available: "
+    if reason == "none_listed":
+        return (
+            f"{head}this session runs as agent profile {identity!r}, whose agents: list is "
+            "empty, so it delegates to no profile."
+        )
+    if reason == "listed_found_off":
+        return (
+            f"{head}this session runs as agent profile {identity!r}, which may delegate only "
+            f"to {_listed_names(allowlist)}, and each of those that is found is turned off. "
+            "Only the user can turn one on (with /agents)."
+        )
+    if reason == "listed_none_found":
+        return (
+            f"{head}this session runs as agent profile {identity!r}, which may delegate only "
+            f"to {_listed_names(allowlist)}, and none of those is found."
+        )
+    if reason == "all_off":
+        return (
+            f"{head}every agent profile found is turned off in the settings. Only the user "
+            "can turn one on (with /agents)."
+        )
+    return None
+
+
+def build_description(roster: str, *, background: bool = False, empty: str | None = None) -> str:
     """The full tool description: the contract, then the roster.
 
     ``background`` appends :data:`_BACKGROUND_HEAD` to the contract — only
     where the background actions exist (#611 S1c); without it the text is what
-    it was before #611.
+    it was before #611. ``empty`` (#795, ADR-0304 D7) is the sentence that
+    replaces the roster when profiles exist but none may be delegated to;
+    ``None`` keeps :func:`_no_profiles_message` for an empty roster.
     """
 
     head = f"{_DESCRIPTION_HEAD}\n\n{_BACKGROUND_HEAD}" if background else _DESCRIPTION_HEAD
     body = roster.strip()
     if not body:
-        return f"{head}\n\n{_no_profiles_message()}"
+        return f"{head}\n\n{empty if empty is not None else _no_profiles_message()}"
     return f"{head}\n\nAvailable profiles:\n{body}"
 
 
@@ -1758,9 +1859,13 @@ __all__ = [
     "AgentCall",
     "AgentCallError",
     "PendingSpawn",
+    "available_fragment",
     "build_description",
     "build_roster",
     "call_literal",
+    "empty_roster_text",
+    "refusal_text",
+    "unknown_profile_text",
     "create_agent_tool",
     "format_partial",
     "parse_agent_call",

@@ -23,6 +23,35 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Agent profiles can be turned off, and the model is then neither offered nor allowed them
+  (#795, ADR-0304).** A bare `/agents` in the TUI opens a panel like `/skill`'s (Space toggles,
+  ←/→ picks the global or this project's file, Enter saves and applies from your next message,
+  Esc discards) that writes a new `agents` settings list in the skills grammar (`-name`,
+  `+name`, `!glob`, `±path`; a plain entry is warned about and ignored). An off profile is left
+  out of the `agent` tool's list and refused when the model names it — a run, a batch, a chain,
+  a background spawn, a resume — with a sentence that says so and lists what is available: at
+  the `agent` tool's hook, before any dialog, budget charge or process; and, should its file
+  change under a `-<path>` entry after you approved the call, at the re-check just before the
+  child starts, after the dialog and still before any budget charge or process
+  (`tests/agents_ext/test_delegation_filter_795_796.py`; live with `openai/gpt-4o-mini` on
+  OpenRouter, ADR-0304 "How it is held"). A saved change of the list that moves no row is
+  shown in the panel on a line of its own until it is applied. You can still run it
+  yourself with `/agents run`, take it with `/agents use` or `--agent`, and RPC `agents/run`
+  is not filtered. `/agents list` gains an `ON` column; RPC `agents/list` gains `enabled` and
+  `decidedBy`, and `settings/get`/`set` gain `agent_profiles` (the global list). A trusted
+  project's file can turn on a profile your global file turned off; an untrusted project's is
+  not read. A call the model already had approved keeps running. Extension authors get
+  `ModelDelegation.resolve_for_model` for tools the model calls; this is a policy on aelix's own
+  doors, not a security boundary — an extension, an RPC host or a `bash` that runs
+  `aelix --agent` is not stopped by it.
+- **A profile can name the profiles it may delegate to (#796, ADR-0304).** `agents: [explorer]`
+  in a profile's frontmatter limits what the model may delegate to while that profile is the
+  session's identity (`--agent`, `/agents use`); `agents: []` delegates to none, and no key keeps
+  every profile that is on. Entries are profile names: a glob or any other non-name fails the
+  profile; a name no profile has is a warning (`tests/agents/test_profile_agents_key_796.py`,
+  `tests/agents/test_profile_discovery_795.py`; live R2 and R3). Aelix 0.1.0b2 and earlier
+  ignore both keys — read from that code, not measured on an installed 0.1.0b2 (#383 owns that
+  check).
 - **Contributors: the way this repository is worked on is in the tree (#733, ADR-0303).**
   `scripts/preflight.py` reads your change (the commits since the merge base with `origin/main`,
   then what is staged, unstaged and untracked) and runs the gates it can fail: `--plan` lists them

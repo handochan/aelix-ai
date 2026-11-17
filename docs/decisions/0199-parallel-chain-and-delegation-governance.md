@@ -26,6 +26,7 @@ shows the whole task (no 300-character cut) and both dialogs the whole directory
 that fits whole while the option rows scroll, and holds every option but `Cancel`
 only while a taller title has not all been drawn — see the note closing §(c)'s
 R2/R3 subsection.**
+Amended 2026-11-17 by ADR-0304 (#796): (g) records the rule a profile's `agents:` will follow when nesting arrives (dated note at the end).
 Date: 2026-07-28
 Builds on: ADR-0196 (the agent-profile identity every child runs under),
 ADR-0197 (the subagent-runtime seam, the clamp, the consent gate, the caps this
@@ -1506,3 +1507,13 @@ once the service admitted it, with §3.5.2.1's belt repeated in its execute
 (`::test_a_spawn_is_charged_against_the_prompt_budget`,
 `::test_a_spawn_is_charged_once_admitted_and_two_in_one_message_meet_the_belt`).
 
+## Note (2026-11-17, ADR-0304, #796)
+
+**(g).** When #16 / #123 raise `MAX_SUBAGENT_DEPTH`, a child's effective set of delegation
+targets is its own `delegation_view` (its own lists and its own `agents:`) intersected with its
+parent's at the spawn, and `role: leaf` wins (ADR-0304 D16, the lead's rule). Written, not
+implemented: `MAX_SUBAGENT_DEPTH` stays 1, and a delegated child reads no `agents` lists
+(`cli/entry.py` `_agent_lists` is empty at depth 1; `tests/cli/test_agent_lists_795.py`
+`test_no_launch_warnings_in_a_delegated_child`). An approved batch or chain runs every member
+as approved, queued ones included, after its profile is turned off
+(`test_an_approved_batch_runs_every_member_after_the_profile_is_turned_off`).

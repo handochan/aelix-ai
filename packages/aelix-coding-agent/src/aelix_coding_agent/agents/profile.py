@@ -67,8 +67,8 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:828``, ``consent.py:556``, ``posture.py:222``,
-``profile.py``'s ``extensions:`` cut, ``discovery.py:357``). ``"bundled"`` falls
+literal ``"project"`` (``runtime.py:428``, ``consent.py:556``, ``posture.py:222``,
+``profile.py``'s ``extensions:`` cut, ``discovery.py:401``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 
 ProfileDiagnosticCode = Literal[
@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4898-4915``."""
+``cli/entry.py:5039-5056``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -114,6 +114,7 @@ _KNOWN_KEYS: frozenset[str] = frozenset(
         "output_cap",
         "timeout_ms",
         "approval_mode",
+        "agents",
     }
 )
 
@@ -193,7 +194,7 @@ class AgentProfile:
 
     skills: tuple[str, ...] = ()
     """ABSOLUTE paths after parse. aelix's ``--skill`` takes a PATH, not a name
-    (``cli/entry.py:1504-1547``) — unlike pi. Relative entries resolve against the
+    (``cli/entry.py:1506-1549``) — unlike pi. Relative entries resolve against the
     PROFILE's own directory, never cwd, so a profile is portable across cwds."""
 
     inherit_skills: bool = True
@@ -212,7 +213,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:2144-2146``)."""
+    paths still load (``cli/entry.py:2226-2228``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's
@@ -258,6 +259,19 @@ class AgentProfile:
     how a profile DECLARES that it needs write authority, which is what lets the
     spawn dialog offer to widen a ``plan`` clamp. It cannot grant that authority
     on its own — only a human answering the dialog can."""
+
+    agents: tuple[str, ...] | None = None
+    """The profiles this one may delegate to while it is the session's identity
+    (#796, ADR-0304 D4). THREE-valued, like :attr:`tools`:
+
+    * :data:`None` — key absent (or YAML null) → every profile that is on.
+    * ``()`` — ``agents: []`` or ``agents: ""`` → delegates to NO profile.
+    * non-empty — only these NAMES (validated like ``name``; no globs), in
+      written order, each once.
+
+    Read by ``core.agent_selection.delegation_view``. It means nothing while
+    the profile is a delegation TARGET: a delegated child has no ``agent``
+    tool (ADR-0197 (c))."""
 
 
 @dataclass(frozen=True)
@@ -435,6 +449,7 @@ def parse_profile(
 
     output_cap = _parse_positive_int(frontmatter, "output_cap", 51200, _err)
     timeout_ms = _parse_ignored_timeout(frontmatter, _warn)
+    agents = _parse_agents(frontmatter, _err)
 
     if any(diag.type == "error" for diag in diagnostics):
         return ParseProfileResult(diagnostics=diagnostics)
@@ -460,6 +475,7 @@ def parse_profile(
         output_cap=output_cap if output_cap is not None else 51200,
         timeout_ms=timeout_ms,
         approval_mode=approval_mode,  # type: ignore[arg-type]
+        agents=agents,
     )
     return ParseProfileResult(profile=profile, diagnostics=diagnostics)
 
@@ -626,6 +642,49 @@ def _coerce_str_list(
     return None
 
 
+_GLOB_MARKS = frozenset("*?[{!")
+
+
+def _parse_agents(frontmatter: dict[str, Any], err: Any) -> tuple[str, ...] | None:
+    """``agents:`` (#796, ADR-0304 D4): ``None``, ``()`` or the names, in order.
+
+    A YAML list or a comma-separated string, as ``tools:`` (absent or null →
+    :data:`None`; ``[]`` or ``""`` → ``()``). Each entry must be a profile NAME
+    by :func:`_validate_name`'s four rules — an entry that is not one is an
+    ERROR, so the profile does not load, as every other invalid value does —
+    and one holding a glob character gets its own message. A name listed twice
+    is kept once. A name no profile has is NOT checked here: discovery warns
+    about it (``discovery.discover_profiles``), because a profile can be
+    created later.
+    """
+
+    raw = frontmatter.get("agents")
+    if raw is None:
+        return None
+    coerced = _coerce_str_list(raw, "agents", err)
+    if coerced is None:
+        return None
+    names: list[str] = []
+    for entry in coerced:
+        if _GLOB_MARKS.intersection(entry):
+            err(
+                "invalid_metadata",
+                f"agents: entries are profile names; {entry!r} is not one "
+                "(globs are not supported)",
+            )
+            continue
+        problems = _validate_name(entry)
+        if problems:
+            err(
+                "invalid_metadata",
+                f"agents: entry {entry!r} is not a profile name: {'; '.join(problems)}",
+            )
+            continue
+        if entry not in names:
+            names.append(entry)
+    return tuple(names)
+
+
 def _parse_path_list(
     frontmatter: dict[str, Any],
     key: str,
@@ -636,11 +695,11 @@ def _parse_path_list(
     """Resolve ``skills:`` / ``extensions:`` entries to ABSOLUTE paths.
 
     aelix's ``--skill`` and ``--extension``/``-e`` take PATHS, not names
-    (``cli/entry.py:1504-1547``, ``args.py``) — a divergence from pi that the spec
+    (``cli/entry.py:1506-1549``, ``args.py``) — a divergence from pi that the spec
     originally got wrong. Relative entries resolve against ``profile_dir``, NOT
     cwd: a profile must mean the same thing from any working directory, and an
     absolute result round-trips unchanged through ``_resolve_skill_tiers``'
-    cwd-relative logic (``entry.py:1544-1550``).
+    cwd-relative logic (``entry.py:1546-1552``).
 
     A non-existent path is a WARNING here — ``/agents list`` must never break —
     and ``discovery.resolve_profile`` escalates it to fatal, because running

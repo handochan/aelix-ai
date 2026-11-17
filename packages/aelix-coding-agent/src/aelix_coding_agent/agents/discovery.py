@@ -79,6 +79,19 @@ class ProfileDiscoveryResult:
 
     profiles: list[AgentProfile] = field(default_factory=list)
     diagnostics: list[ProfileDiagnostic] = field(default_factory=list)
+    shadowed: list[ShadowedProfile] = field(default_factory=list)
+    """#795 (ADR-0304 D10): the profiles that LOST a name collision — across
+    tiers or within one — each with the profile that finally won its name. The
+    ``/agents`` panel draws them as locked ``shadowed`` rows; nothing else reads
+    them (a loser is never a delegation target or an identity)."""
+
+
+@dataclass(frozen=True)
+class ShadowedProfile:
+    """A profile another of the same name replaced (#795, ADR-0304 D10)."""
+
+    profile: AgentProfile
+    winner: AgentProfile
 
 
 def builtin_agents_dir() -> Path:
@@ -101,7 +114,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:85``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_tiers`` (``entry.py:1557``).
+    same convention as ``_resolve_skill_tiers`` (``entry.py:1559``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"
@@ -199,6 +212,7 @@ def discover_profiles(
 
     diagnostics: list[ProfileDiagnostic] = []
     by_name: dict[str, AgentProfile] = {}
+    losers: list[AgentProfile] = []
 
     # ORDER IS PRECEDENCE — last writer wins the ``by_name`` dict below, so this
     # list runs least-authoritative first: bundled → user → project.
@@ -213,6 +227,7 @@ def discover_profiles(
         for profile in _scan_dir(directory, scope, diagnostics):
             previous = by_name.get(profile.name)
             if previous is not None:
+                losers.append(previous)
                 if previous.scope == profile.scope:
                     diagnostics.append(
                         ProfileDiagnostic(
@@ -251,9 +266,38 @@ def discover_profiles(
                     )
             by_name[profile.name] = profile
 
+    diagnostics.extend(_unknown_delegate_warnings(by_name))
     return ProfileDiscoveryResult(
-        profiles=list(by_name.values()), diagnostics=diagnostics
+        profiles=list(by_name.values()),
+        diagnostics=diagnostics,
+        # The winner each loser is shown under is the one that holds the name
+        # at the end, not the one that beat it first (bundled < user < project).
+        shadowed=[ShadowedProfile(lost, by_name[lost.name]) for lost in losers],
     )
+
+
+def _unknown_delegate_warnings(by_name: dict[str, AgentProfile]) -> list[ProfileDiagnostic]:
+    """A WARNING per ``agents:`` name no discovered profile has (#796, ADR-0304 D4).
+
+    Never an error: a profile can be created later, and the name is matched
+    again at every check. Filed on the declaring profile's file, so
+    :func:`resolve_profile`, which escalates only ``missing_path``, still
+    returns that profile for ``--agent``.
+    """
+
+    out: list[ProfileDiagnostic] = []
+    for profile in by_name.values():
+        for name in profile.agents or ():
+            if name not in by_name:
+                out.append(
+                    ProfileDiagnostic(
+                        code="invalid_metadata",
+                        message=(f"agents: names {name!r}, which no agent profile found here has"),
+                        path=profile.file_path,
+                        type="warning",
+                    )
+                )
+    return out
 
 
 def load_profile_file(
@@ -362,14 +406,54 @@ def resolve_profile(
             f"{user_agents_dir(agent_dir)}."
         )
 
-    missing = [d for d in diagnostics if d.code == "missing_path"]
+    return complete_profile(profile, ProfileDiscoveryResult([profile], diagnostics))
+
+
+def complete_profile(profile: AgentProfile, discovered: ProfileDiscoveryResult) -> AgentProfile:
+    """*profile*, or :class:`ProfileError` when a ``skills:`` path it names is gone.
+
+    The ``missing_path`` escalation of :func:`resolve_profile`, on its own
+    (#795, ADR-0304 D5), so the model's door can apply it to the profile its
+    verdict was taken on — out of the SAME discovery result, never a second
+    one. Only the diagnostics filed on *profile*'s own file count, so a
+    shadowed profile's warnings never escalate the winner.
+    """
+
+    missing = [
+        d
+        for d in discovered.diagnostics
+        if d.code == "missing_path" and d.path == profile.file_path
+    ]
     if missing:
         raise ProfileError(
             f"agent profile {profile.name!r} ({profile.file_path}) references "
             f"paths that do not exist: {_format_errors(missing)}"
         )
-
     return profile
+
+
+def count_untrusted_profiles(directory: str | Path) -> int:
+    """How many files an untrusted ``.aelix/agents/`` holds that discovery would read.
+
+    #795 (ADR-0304 D10). A directory LISTING and :func:`_scan_dir`'s own
+    filters — not a dotfile, a ``.md`` name, a regular file — and nothing is
+    opened, as ADR-0279 D3 has it for an untrusted folder. So the count is the
+    profiles trusting the folder would load plus the files that would fail to.
+    Not ``skill_selection.count_untrusted_skills``, whose rules are a skill
+    directory's and count no profile file.
+    """
+
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    return sum(
+        1
+        for name in names
+        if not name.startswith(".")
+        and name.endswith(".md")
+        and os.path.isfile(os.path.join(directory, name))
+    )
 
 
 # === Internals ==============================================================
@@ -500,8 +584,11 @@ def _is_within(target: Path, parent: Path) -> bool:
 __all__ = [
     "ProfileDiscoveryResult",
     "ProfileError",
+    "ShadowedProfile",
     "builtin_agents_dir",
     "classify_scope",
+    "complete_profile",
+    "count_untrusted_profiles",
     "discover_profiles",
     "load_profile_file",
     "project_agents_dir",

@@ -29,7 +29,7 @@ import asyncio
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aelix_agent_core.harness.prompt_templates import (
     format_prompt_template_invocation,
@@ -47,6 +47,9 @@ from aelix_coding_agent.extensions.command_dispatch import (
 )
 from aelix_coding_agent.rpc.control_mcp import RpcMcpController
 from aelix_coding_agent.rpc.control_ui import RpcCommandUI
+
+if TYPE_CHECKING:
+    from aelix_coding_agent.core.agent_selection import DelegationView
 
 _T = TypeVar("_T")
 
@@ -71,6 +74,8 @@ SETTING_FIELDS: dict[str, tuple[str, type, tuple[Any, ...] | None]] = {
     "check_model_catalog": ("check_model_catalog", bool, None),
     "skill_paths": ("skill_paths", list, None),
     "prompt_template_paths": ("prompt_template_paths", list, None),
+    # #795 (ADR-0304 D12): the GLOBAL file's ``agents`` on/off list.
+    "agent_profiles": ("agent_profiles", list, None),
     "enabled_models": ("enabled_models", list, None),
 }
 
@@ -79,6 +84,7 @@ SETTING_FIELDS: dict[str, tuple[str, type, tuple[Any, ...] | None]] = {
 RESOURCE_LIST_KEYS: dict[str, str] = {
     "skill_paths": "skills",
     "prompt_template_paths": "prompts",
+    "agent_profiles": "agents",
 }
 
 READ_ONLY_METHODS = frozenset(
@@ -821,7 +827,12 @@ class RpcControlPlane:
             raise ValueError("Agent profile service is unavailable")
         name = params.get("name")
         if method == "agents/list":
-            profiles = self.agents.list()
+            # #795 (ADR-0304 D12) — the applied ``agents`` lists' answer per
+            # profile, from the service's delegation view when it has one (a
+            # host's own service may not: then every profile reads enabled).
+            delegation = getattr(self.agents, "delegation", None)
+            view = cast("DelegationView | None", delegation() if callable(delegation) else None)
+            profiles = view.discovered if view is not None else self.agents.list()
             return {
                 "profiles": [
                     {
@@ -829,6 +840,12 @@ class RpcControlPlane:
                         "description": profile.description,
                         "scope": profile.scope,
                         "filePath": profile.file_path,
+                        "enabled": view.on(profile.name) if view is not None else True,
+                        "decidedBy": (
+                            view.states.get(profile.name, (True, None))[1]
+                            if view is not None
+                            else None
+                        ),
                     }
                     for profile in profiles.profiles
                 ],

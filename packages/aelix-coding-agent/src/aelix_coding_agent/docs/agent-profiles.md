@@ -75,9 +75,205 @@ can never use a project-scoped profile — only a human naming it can.
 
 Run `/agents list` to see what is discovered and from which tier.
 
+## Turning profiles on and off
+
+A bare `/agents` in the TUI opens a panel like `/skill`'s: one row per profile,
+grouped as PROJECT, GLOBAL and BUNDLED. Space turns the row on or off, ←/→ picks
+the file to save to (global or this project), Enter saves and applies, Esc
+discards. `/agents list` still prints the table, now with an `ON` column. `-p`,
+`--mode json` and RPC have no panel and no slash command: in `-p`, `/agents` is
+sent to the model as a prompt, and RPC `commands/run` answers `not_a_command`
+(RPC reads the same state through `agents/list`).
+
+An **off** profile is hidden from the `agent` tool's list and refused when the
+model names it. It is not gone: you can still run it yourself with
+`/agents run`, take it as your identity with `/agents use` or `--agent`, and an
+extension or RPC host can still start it (see
+[What this does not stop](#what-this-does-not-stop)).
+
+The panel writes the `agents` key of the settings file you chose, in the same
+grammar as `skills` (see
+[skills-and-prompts](skills-and-prompts.md#the-settings-lists)):
+
+```json
+{
+  "agents": ["-general-purpose", "!draft-*"]
+}
+```
+
+| Entry | Meaning |
+| --- | --- |
+| `-name` / `+name` | that profile off / on, by its `name` field |
+| `!glob` | off: every profile whose name or file matches |
+| `-<path>` / `+<path>` | the exact file; a path in the project file reaches project profiles only |
+| a plain entry | **not supported** here: warned about once at launch and ignored (it would add a profile directory) |
+
+Three keys sound alike and are different:
+
+- `agents` (this one) turns single profiles on and off;
+- `features.agents` turns delegation itself on or off, from your global file only
+  ([Enabling delegation](#enabling-delegation));
+- `backgroundJobs.limits.agents` is a count of background jobs.
+
+**Scope and trust are the skills' rules.** A profile's value is the project
+file's if it says anything about it, else the global file's, else on. A trusted
+project's file can therefore turn on a profile your global file turned off; it
+cannot turn delegation itself on. An untrusted project's file is never read, and
+its profiles are not loaded at all: the panel shows one locked row,
+"N profiles not loaded", counted from a directory listing without opening a file.
+
+**When a change takes effect.** Enter applies the change at once when no turn is
+running; the model gets the new list from your next message. Saved during a
+turn, it applies when the turn ends. A hand edit of `settings.json`, or another
+session's save, is pending until you press Enter in the panel or run `/reload`;
+when it moves no row (`!rev*` replacing `-reviewer`), the panel says in a line
+of its own that the saved list is not the one in use yet. `"agents": []` turns
+nothing off.
+
+**Rows that are not plain on/off.**
+
+- A profile that lost a name collision is a locked `shadowed` row under its own
+  folder.
+- A file that did not load is one locked `failed` row, whatever the number of
+  errors in it; its state line starts with "see /agents list".
+- A row that is on but that the model cannot start now says why in its status
+  column: `not listed` (outside your identity's `agents:` list) or `/agents run`
+  (a project profile; the model never starts one). A row this project's file
+  turned off reads `project`, as a skill row does; its state line says off.
+
+**A settings file that does not load** at launch turns nothing off: aelix says
+once on stderr which file did not load and that its `agents` list is not
+applied, and every profile it turns off is on for that run. Fix the file, then
+`/reload`.
+
+## Whom a profile may delegate to
+
+A profile can name the profiles it may hand work to, with `agents:`:
+
+```markdown
+---
+name: orchestrator
+description: Plans the work and hands the reading to explorer.
+agents: [explorer]
+---
+```
+
+| Written | Means |
+| --- | --- |
+| no `agents:` key (or `agents:` with no value) | every profile that is on |
+| `agents: []` or `agents: ""` | no profile: the session delegates to nothing |
+| `agents: [explorer, reviewer]` or `agents: explorer, reviewer` | only those names |
+
+It applies while the profile is the session's identity: `--agent`,
+`--agent-file`, `/agents use`, RPC `agents/use`. It is read when the identity is
+taken, so an edit of the file applies at the next `/agents use` or launch. A
+delegated agent cannot delegate, so the key means nothing while the profile is a
+delegation target.
+
+Entries are profile **names**: lowercase letters, digits and single hyphens, as
+`name` is. A glob (`expl*`) or any other entry that is not a name is an error,
+and the profile does not load at all — not as an identity and not as a target;
+`/agents list` shows the error. A name that no profile has is only a warning
+(`agents: names 'reviewr', which no agent profile found here has`): a profile
+created later is allowed from then on.
+
+Neither list widens the other: a profile on the identity's list that is turned
+off stays off, and a profile that is on but not on the list is refused.
+
+## What the model reads
+
+When the model names a profile it may not start, the `agent` tool refuses before
+any dialog, before the per-prompt budget is charged and before anything starts.
+The same refusal can also come once more just before the child starts, after you
+answered the dialog: that re-check refuses a profile whose file changed under a
+`-<path>` entry in between, still before the budget is charged and before
+anything starts.
+
+| Why | The refusal |
+| --- | --- |
+| turned off | `Delegation refused: agent profile 'reviewer' is turned off in the settings, and only the user can turn it on (with /agents); available: explorer, general-purpose` |
+| not on the identity's list | `Delegation refused: agent profile 'reviewer' is not one this session's profile 'orchestrator' may delegate to; available: explorer` |
+| the identity's list is empty | `Delegation refused: this session runs as agent profile 'orchestrator', whose agents: list is empty, so it delegates to no profile` |
+| no such profile | `Delegation refused: unknown agent profile 'x'; available: …` |
+
+`available` lists exactly what the model may use now. A resume of an agent whose
+profile is turned off or not listed is refused in the same terms
+(`Resume refused: the agent profile 'reviewer' that agent ran as is turned off …`),
+and the list of resumable agents a resume without a known id gets leaves such
+agents out, ending with `- N more ran as an agent profile this session may not
+delegate to now; they cannot be resumed.`
+
+When nothing at all may be delegated to, the `agent` tool's description says
+why instead of listing profiles — for example `No agent profile is available:
+every agent profile found is turned off in the settings. Only the user can turn
+one on (with /agents).`
+
+**An approved call keeps running.** Turning a profile off, or switching to an
+identity that does not list it, applies from the next delegation the model
+starts. A call already approved runs as approved, the members of a parallel
+batch or chain still waiting for their turn included; a background job, or a run
+Ctrl+B moved into one, runs to its end and its result still arrives. A later
+`resume` of that agent is a new start and is refused.
+
+### What this does not stop
+
+The `agents` list and `agents:` decide what aelix's own `agent` tool offers and
+starts. They are a policy on aelix's doors, not a security boundary. They do not
+stop an installed extension that starts a profile through
+`api.runtime.subagents.resolve_profile` and `spawn`, an RPC host that hands
+`agents/run` to a model, or a model with `bash` that runs
+`aelix --agent <profile> -p …`, which starts a new process with that identity.
+Extension authors are asked to use the filtered door
+([below](#extension-tools-the-model-calls)); nothing enforces it.
+
+### Extension tools the model calls
+
+With delegation on, `aelix.runtime.subagents` is the bound delegation runtime
+(`None` when delegation is off: degrade). Its `resolve_profile` and `spawn` are
+the doors a **human** uses — `/agents run`, RPC `agents/run` — and they do not
+apply the user's `agents` settings list or the session identity's `agents:`
+([Turning profiles on and off](#turning-profiles-on-and-off)).
+
+A tool **the model can call** that starts a delegated agent must get its profile
+from `resolve_for_model` instead, and hand its refusal back to the model. A
+runtime that does not offer it is not a `ModelDelegation` and cannot say which
+profiles the model may start, so such a tool refuses:
+
+```python
+from aelix_coding_agent.subagent_contract import ModelDelegation
+
+runtime = aelix.runtime.subagents
+if not isinstance(runtime, ModelDelegation):
+    return error("this aelix cannot check which agent profiles the model may start")
+try:
+    resolved = runtime.resolve_for_model(profile)
+except Exception as exc:  # every exception is a refusal; its text is for the model
+    return error(f"Delegation refused: {exc}")
+result = await runtime.spawn(resolved, task)  # still asks its own consent
+```
+
+`resolve_for_model` raises `DelegationNotAllowed` (from `subagent_contract`)
+for a profile the settings turn off or the identity does not list, and an error
+of its own for an unknown name or a project profile, which no model may start.
+It is not consent: `spawn` still asks, and with no UI (`-p`, RPC without dialogs)
+it does not ask. And it is a policy on aelix's own doors, not a security
+boundary — nothing makes an extension use it.
+
+### Older aelix
+
+An aelix from before these keys (0.1.0b2 and earlier) ignores both. It keeps a
+profile's `agents:` as a diagnostic, `unknown frontmatter key 'agents'
+(ignored)`, that `/agents list` shows — a `--agent … -p` launch printed no such line —
+and then lets that profile's session delegate to every profile. It drops a
+top-level `agents` settings key without a word, so nothing is turned off, and a
+later write of another setting by that aelix keeps the `agents` value in the
+file. That launch was run on the commit this change starts from; the
+rest is read from that code. Neither is measured on an installed 0.1.0b2: #383
+owns that check.
+
 ## The frontmatter keys
 
-All seventeen. `name` and `description` are required; everything else has a
+All eighteen. `name` and `description` are required; everything else has a
 default. An unknown key is a warning, not an error — your profile still loads.
 
 | Key | Type | Default | What it does |
@@ -99,6 +295,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. A parallel or chain call also shares one 64 KiB budget, split evenly across its tasks (8 192 bytes each for eight) and covering each task's summary and error note together, so a member can be cut shorter than its own cap. A single delegation gets this cap alone. When the child has a session file, the full text is kept there. |
 | `timeout_ms` | int | none | **Ignored (#604).** A delegated agent has no time limit; it runs until it finishes or you stop it (Esc, Ctrl+C). The key still loads, with one warning in `/agents list`, so an old profile keeps working. |
 | `approval_mode` | `inherit` \| `ask` \| `auto` \| `deny` | `inherit` | How the profile **declares** it needs write authority. |
+| `agents` | list \| `[]` \| absent | absent | **Three-valued.** The profiles this one may delegate to while it is the session's identity: absent → every profile that is on, `[]` → none, a list → only those names. An entry that is not a profile name fails the whole profile. See [Whom a profile may delegate to](#whom-a-profile-may-delegate-to). |
 
 ### The ones that are easy to get wrong
 

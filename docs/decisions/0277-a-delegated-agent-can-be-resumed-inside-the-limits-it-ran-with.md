@@ -28,6 +28,7 @@ covers every string the model sends `agent` — `profile`, `task`, each of
 holding either does not parse, and the runtime's own doors refuse such a task,
 instruction, `cwd` or built profile too; a chain's `{previous}` carrying either
 is made sendable (U+FFFD) instead. See `## Amendment (2026-10-31, #627)`.**
+Amended 2026-11-17 by ADR-0304 (#795, #796): a resume of a profile the session may not delegate to now has its own refusal, and D7's listing leaves such agents out (dated note at the end).
 Date: 2026-10-30
 Issue: #610 (phase 1 of the #604 delegation track). Design:
 `.omc/specs/610-design-2026-10-30.md` (rev 2), with its critique
@@ -1949,3 +1950,15 @@ same in each):
 - A background `resume` is not built (design D16).
 Inert until #611 S3.
 
+## Note (2026-11-17, ADR-0304, #795, #796)
+
+The row "the profile cannot be re-found" (`RESUME_PROFILE_CHANGED`) is narrowed: a profile that
+is still found but that the session's `agents` lists turn off, or its identity's `agents:` does
+not list (or lists nothing), is refused at the hook with its own text, e.g. `Resume refused: the
+agent profile 'reviewer' that agent ran as is turned off in the settings, and only the user can
+turn it on (with /agents). Available: explorer, general-purpose.` Unknown, project and every
+other failure keep `RESUME_PROFILE_CHANGED`. D7's listing leaves out the agents whose profile
+those settings or that identity rule out now and ends with one count line; an unknown or
+project profile's agent is listed as before, and with no policy in force the listing is
+byte-identical and takes no discovery
+(`tests/agents_ext/test_delegation_filter_795_796.py`, resume rows; live R4 in ADR-0304).

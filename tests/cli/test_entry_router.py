@@ -260,6 +260,9 @@ async def test_interactive_mode_dispatches_to_run_tui(
         tool_control: object = None,
         # #25 (ADR-0284) — /extension's Installed tab over the build inventory.
         extension_control: object = None,
+        # #795 (ADR-0304 D14) — the /agents panel's selection and kind, built
+        # once before the mode branch. Accepted for the same reason.
+        agent_control: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -287,6 +290,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # tests/cli/test_first_run_onboarding.py.
         tui_permission["first_run_login"] = first_run_login
         tui_permission["late_route"] = late_route
+        tui_permission["agent_control"] = agent_control
         assert callable(prompt_file_paths)
         tui_permission["prompt_file_paths"] = prompt_file_paths()
         return 0
@@ -350,6 +354,12 @@ async def test_interactive_mode_dispatches_to_run_tui(
     assert isinstance(tui_permission["extensions"], list)
     # #23: always a concrete bool — run_tui must never have to guess.
     assert isinstance(tui_permission["first_run_login"], bool)
+    # #795 (ADR-0304 D14): with an AgentProfileService, the router hands the TUI
+    # the one mode-independent /agents control.
+    from aelix_coding_agent.core.agent_selection import AgentControl
+
+    if tui_permission["agent_service"] is not None:
+        assert isinstance(tui_permission["agent_control"], AgentControl)
     assert tui_permission["prompt_file_paths"] == [str(system_file)]
     # #367: the rule is always threaded; this launch refused nothing.
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
@@ -764,7 +774,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     # route, and does NOT claim non-existent doc files.
     # #111 — CORRECTED. This used to assert ``/login`` was ABSENT, on the
     # stated ground that "Aelix does not register one". It does:
-    # ``tui/commands.py:2422`` is ``BuiltinCommand("login", "Sign in / add a
+    # ``tui/commands.py:2542`` is ``BuiltinCommand("login", "Sign in / add a
     # provider API key", …)``, and the first-run wizard has been telling users
     # to run it since #23. The message now names it — prefixed by "run
     # 'aelix'", which is what makes a TUI-only command actionable from a

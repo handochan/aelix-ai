@@ -25,7 +25,7 @@ The complete list comes from
 
 | Resource | Why it is gated |
 | --- | --- |
-| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore` and `checkModelCatalog`. Read only when the project is trusted (#369). |
+| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore` and `checkModelCatalog`. Its `agents` list can turn on an agent profile your global file turned off ([agent-profiles](agent-profiles.md#turning-profiles-on-and-off)). Read only when the project is trusted (#369). |
 | `<cwd>/.aelix/extensions/` | `importlib` `exec_module`s arbitrary Python with your privileges. |
 | `<cwd>/.aelix/mcp.json` | Declares MCP servers; a `stdio` one spawns a subprocess on connect. |
 | `<cwd>/.aelix/SYSTEM.md` | Replaces the generated system prompt, including the agent identity and tool guidance (#287, ADR-0257). |
@@ -328,7 +328,7 @@ between words at your terminal's width, as pi's does (#380).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1864`, registered at `:2423`)
+selector from inside a session (`tui/commands.py:1984`, registered at `:2543`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every
@@ -374,7 +374,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:1052-1054`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3967-3972`, the text at `:1001-1006`), because a silent drop looks identical to a
+(`cli/entry.py:4066-4071`, the text at `:1003-1008`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

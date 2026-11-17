@@ -198,7 +198,10 @@ The `themes` and `packages` keys are not read yet; a non-empty one is reported
 rather than silently ignored. `extensions` uses this grammar to turn extensions
 on and off (`/extension`, see
 [extension-authoring](extension-authoring.md#turning-one-extension-off)); a plain
-path there is not supported yet and is reported (`-e <path>` adds an extension).
+path there is not supported yet and is reported (`-e <path>` adds an extension). `agents` uses
+it to turn agent profiles on and off (`/agents`, see
+[agent-profiles](agent-profiles.md#turning-profiles-on-and-off)); a plain entry
+there is not supported and is reported.
 
 ## Prompt templates
 

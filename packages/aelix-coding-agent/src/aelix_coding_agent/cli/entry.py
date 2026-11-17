@@ -74,6 +74,7 @@ from aelix_coding_agent.agents import (
     apply_profile_to_args,
     resolve_profile,
 )
+from aelix_coding_agent.agents.discovery import discover_profiles
 
 # ``agents.prompt`` imports nothing but ``collections.abc`` (it is the one
 # mirrored kernel join, deliberately dependency-free), so this cannot cycle
@@ -89,6 +90,7 @@ from aelix_coding_agent.cli.session_labels import (
     short_field,
     with_conversation,
 )
+from aelix_coding_agent.core.agent_selection import agent_list_problems, build_agent_control
 from aelix_coding_agent.core.extension_selection import (
     EXTENSIONS_PARENT_OFF_ENV,
     ExtensionControl,
@@ -1657,6 +1659,86 @@ def _extension_lists(
         project_base=project_base,
         project_trusted=project_trusted,
     )
+
+
+def _agent_lists(
+    settings_manager: SettingsManager | None, cwd: str, project_trusted: bool
+) -> SettingsLists:
+    """Both ``agents`` lists as this process loaded them (#795, ADR-0304 D3).
+
+    Read at launch and by a ``/reload`` build. Empty at depth 1 and below: a
+    delegated child has no ``agent`` tool (ADR-0197 (c)) and reads no lists.
+    """
+
+    if subagent_depth() >= MAX_SUBAGENT_DEPTH:
+        return SettingsLists()
+    global_base, project_base = _settings_bases(settings_manager, cwd)
+    return settings_lists(
+        settings_manager,
+        "agents",
+        global_base=global_base,
+        project_base=project_base,
+        project_trusted=project_trusted,
+    )
+
+
+def _identity_of(box: dict[str, Any]) -> AgentProfile | None:
+    """The session's identity now (ADR-0304 D4): the service's once it exists, else the launch's.
+
+    A dict rather than a closure over a later-assigned local, so the getter
+    ``AgentsExtension`` holds answers before ``agent_service`` is built.
+    """
+
+    service = box.get("service")
+    if service is not None:
+        return service.active
+    return box.get("launch")
+
+
+def _agent_selection_warnings(
+    lists: SettingsLists,
+    settings_manager: SettingsManager | None,
+    *,
+    cwd: str,
+    project_trusted: bool,
+    identity: AgentProfile | None,
+) -> list[str]:
+    """ADR-0304 D13's launch warnings about the ``agents`` lists and the identity's ``agents:``.
+
+    Once per launch, main session only (depth 0), whether delegation is on or
+    off: the lists also feed ``/agents list`` and the panel. Discovery runs
+    only when there is an entry or an identity list to check.
+    """
+
+    if subagent_depth() > 0:
+        return []
+    out: list[str] = []
+    if settings_manager is not None:
+        for scope in ("global", "project") if project_trusted else ("global",):
+            if settings_manager.load_error(scope) is not None:
+                path = settings_manager.scope_path(scope) or f"the {scope} settings"
+                out.append(
+                    f'{path} did not load, so its "agents" list is not applied: every agent '
+                    "profile it turns off is on this run (fix the file, then /reload)"
+                )
+    entries = any(
+        scope_list is not None and scope_list.entries
+        for scope_list in (lists.global_list, lists.project_list)
+    )
+    listed = identity is not None and bool(identity.agents)
+    if not entries and not listed:
+        return [*out, *lists.problems]
+    discovered = discover_profiles(cwd, project_trusted=project_trusted, agent_dir=get_agent_dir())
+    out.extend(agent_list_problems(lists, discovered))
+    if identity is not None:
+        names = {p.name for p in discovered.profiles}
+        out.extend(
+            # A profile's own warning, printed with its own prefix (ADR-0304 D13).
+            _unknown_listed_warning(identity.name, name)
+            for name in identity.agents or ()
+            if name not in names
+        )
+    return out
 
 
 def _unsupported_settings_warnings(settings_manager: SettingsManager | None) -> list[str]:
@@ -3349,6 +3431,15 @@ async def _async_main(argv: list[str]) -> int:
         jobs_activation.install_service(_with_bash_kind(jobs_service))
         jobs_ext = JobsExtension(jobs_service)
 
+    # #795 (ADR-0304 D3) — the APPLIED ``agents`` lists, read at launch, by a
+    # ``/reload`` build and by the /agents panel's apply; and #796 (D4) — the
+    # session identity, the launch's until ``agent_service`` exists, then its.
+    # Both reach ``AgentsExtension`` as live getters in EVERY mode.
+    agent_lists_holder: dict[str, SettingsLists] = {
+        "result": _agent_lists(settings_manager, cwd, project_trusted)
+    }
+    identity_box: dict[str, Any] = {"launch": None, "service": None}
+
     # === Agent delegation (ADR-0197 §(a)/§(b), P2) ============================
     # The bundled ``aelix-agents`` extension. Constructed ONCE and threaded by
     # held reference into every harness rebuild (the mirror of ``permission_ext``)
@@ -3433,6 +3524,11 @@ async def _async_main(argv: list[str]) -> int:
                 # #775 (ADR-0298) — Ctrl+B is the TUI's: only there is a running
                 # ``run``/``resume`` awaited through the delegate that can move it.
                 detach_host=lambda: app_mode == "interactive",
+                # #795, #796 (ADR-0304 D5) — the applied ``agents`` lists and the
+                # live identity, so the roster and the model's door are filtered
+                # in -p, json, RPC and the TUI alike.
+                agent_lists=lambda: agent_lists_holder["result"],
+                active_profile=lambda: _identity_of(identity_box),
             )
 
     # === Agent profile identity (ADR-0196) ===================================
@@ -3525,6 +3621,9 @@ async def _async_main(argv: list[str]) -> int:
                 f"Notice: agent profile: CLI flags override {', '.join(application.skipped)}",
                 file=sys.stderr,
             )
+    # #796 (ADR-0304 D4) — the identity whose ``agents:`` the model's door reads
+    # until ``agent_service`` exists (then the service's ``active``).
+    identity_box["launch"] = active_profile
 
     # #368 — with an agent profile, the "--provider requires --model" check
     # runs HERE, right after the overlay: the profile's ``provider:``/``model:``
@@ -4033,8 +4132,16 @@ async def _async_main(argv: list[str]) -> int:
         *skills_holder["result"].problems,
         *prompt_holder["result"].problems,
         *_unsupported_settings_warnings(settings_manager),
+        # #795, #796 (ADR-0304 D13) — the ``agents`` lists and the identity's ``agents:``.
+        *_agent_selection_warnings(
+            agent_lists_holder["result"],
+            settings_manager,
+            cwd=cwd,
+            project_trusted=project_trusted,
+            identity=active_profile,
+        ),
     ):
-        print(f"Warning: settings: {problem}", file=sys.stderr)
+        print(f"Warning: {_warning_kind(problem)}{problem}", file=sys.stderr)
 
     # #367 — the late-provider rule (``runtime_bootstrap.LateRoute``): a provider
     # in the registry now that was not there when the launch route was chosen is
@@ -4142,6 +4249,9 @@ async def _async_main(argv: list[str]) -> int:
             prompt_holder["result"] = _load_prompt_catalog(
                 parsed, cwd, project_trusted, settings_manager
             )
+            # #795 (ADR-0304 D3) — and the ``agents`` lists, rolled back with
+            # the catalogs when this build fails (``_harness_factory``).
+            agent_lists_holder["result"] = _agent_lists(settings_manager, cwd, project_trusted)
         restore_report: dict[str, Any] = {}
         # #25 — this build's extension holders, published at the end (F08).
         staged_extensions: list[Any] = []
@@ -4442,11 +4552,19 @@ async def _async_main(argv: list[str]) -> int:
             # running session has them: a reload's rescan above is undone, so
             # the build that puts the session back (``ReloadSeed.restore``) and
             # every later one read what the session was running with.
-            catalogs = (skills_holder["result"], prompt_holder["result"])
+            catalogs = (
+                skills_holder["result"],
+                prompt_holder["result"],
+                agent_lists_holder["result"],
+            )
             try:
                 return await _build_harness(new_session, reload_seed=reload_seed)
             except BaseException:
-                skills_holder["result"], prompt_holder["result"] = catalogs
+                (
+                    skills_holder["result"],
+                    prompt_holder["result"],
+                    agent_lists_holder["result"],
+                ) = catalogs
                 raise
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
@@ -4505,7 +4623,11 @@ async def _async_main(argv: list[str]) -> int:
             # other route-less use keeps the live model — and where that
             # re-resolve lands on a late provider it holds instead (round 3, D1).
             late_route=late_rule,
+            # #795 (ADR-0304 D5) — ``/agents list``, ``/agents show``, RPC
+            # ``agents/list`` and the panel read the applied lists through it.
+            agent_lists=lambda: agent_lists_holder["result"],
         )
+    identity_box["service"] = agent_service
     # Forwarded to ``run_tui`` as a kwarg only when it exists: the TUI half of
     # ADR-0196 (the ``agent_service`` parameter + the ``/agents`` command) lands
     # with ``agents/service.py``, and passing an unknown keyword to the current
@@ -4685,6 +4807,25 @@ async def _async_main(argv: list[str]) -> int:
     # that one door open onto the exact defect.
     runtime.set_writer_lock(session_lock)
     session_host["runtime"] = runtime
+    # #795 (ADR-0304 D14) — the /agents panel's selection and kind, built once
+    # here for EVERY mode, so the TUI and #624's RPC get the same object.
+    agent_global_base, agent_project_base = _settings_bases(settings_manager, cwd)
+    agent_control = (
+        build_agent_control(
+            settings_manager,
+            cwd=cwd,
+            project_trusted=project_trusted,
+            global_base=agent_global_base,
+            project_base=agent_project_base,
+            agent_dir=get_agent_dir(),
+            holder=agent_lists_holder,
+            delegation=agent_service.delegation,
+            harness=lambda: runtime.harness,
+            gate=selection_apply_gate,
+        )
+        if agent_service is not None
+        else None
+    )
     # #510 (ADR-0283, ADR-0279 D8) — once per launch, now that the registry is
     # whole: an ``--exclude-tools`` entry that matches nothing, a ``--tools``
     # name an exclusion removes, and the ``defaultTools`` entries that are
@@ -5092,6 +5233,7 @@ async def _async_main(argv: list[str]) -> int:
                 skill_control=skill_control,
                 tool_control=tool_control,
                 extension_control=extension_control,
+                agent_control=agent_control,
                 prompt_file_paths=lambda: [
                     path
                     for path in (
@@ -5937,6 +6079,27 @@ def _latch_jobs_switch(settings_manager: Any) -> bool:
     return activation.enabled_at_start(
         settings_manager, warn=lambda text: print(f"Warning: {text}", file=sys.stderr)
     )
+
+
+class _ProfileWarning(str):
+    """A D13 launch warning about the identity's ``agents:``, not about a settings file.
+
+    Printed ``Warning: agent profile …``, the family of ``--agent``'s ``Notice:
+    agent profile:`` lines, where a settings problem is ``Warning: settings: …``
+    (ADR-0304 D13). Defined here, at the end, so no line the docs cite moves.
+    """
+
+
+def _unknown_listed_warning(identity: str, name: str) -> _ProfileWarning:
+    return _ProfileWarning(
+        f"agent profile {identity!r}: agents: names {name!r}, which no agent profile found here has"
+    )
+
+
+def _warning_kind(problem: str) -> str:
+    """The word after ``Warning:`` for one launch problem: a profile's own, or ``settings:``."""
+
+    return "" if isinstance(problem, _ProfileWarning) else "settings: "
 
 
 __all__ = [

@@ -169,6 +169,8 @@ simple commands); richer output should go through `ctx.ui`. Built-in commands
 (`/help`, `/model`, …) win on a name collision, and a command colliding with
 another extension's gets a `name:N` invocation name.
 
+Delegating from a tool the model calls: see [agent-profiles](agent-profiles.md#extension-tools-the-model-calls).
+
 ## Other `ExtensionAPI` surface
 
 The handle exposes more than tools and commands. The most useful members:

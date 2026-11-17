@@ -30,6 +30,7 @@ fallback — see the amendment under the argv paragraph.**
 PROVENANCE. §(e)'s child floor now also blocks every MCP / extension tool, and
 §(i)'s "`agent` is not mutating" is now the `delegation` provenance of the object
 `aelix_agents` builds. See the dated note at the end of §(e).**
+Amended 2026-11-17 by ADR-0304 (#795, #796): the roster and the model's door are filtered by the `agents` lists and the identity's `agents:`; the human doors are not; the seam gains the optional `ModelDelegation` and `DelegationNotAllowed` with no version bump (dated note at the end).
 Design record that lands with the P2 implementation (same pattern as
 ADR-0186/0187/0188/0189/0196).
 Date: 2026-07-26
@@ -1530,3 +1531,23 @@ kind-agnostic under ADR-0008's gate as ADR-0293 §13 replaced it, and every dele
 part — consent, profiles, the clamp, the run, its records and its recovery — stays in
 `aelix_agents` (`jobs_client.py`).
 
+## Note (2026-11-17, ADR-0304, #795, #796)
+
+**(f) and (l).** The `agent` tool's roster and every door aelix opens to the model — a run, a
+batch, a chain, a background `spawn`, a resume, the pre-spawn re-check — now resolve through
+`_SubagentRuntimeImpl.resolve_for_model`, which takes ONE `delegation_for(host)` view: the
+applied `agents` settings lists and the session identity's `agents:` decide first, then finding
+B5 refuses a project profile as before. The human doors (`/agents run`, RPC `agents/run`,
+`/agents use`, `--agent`) keep `resolve_profile`, unfiltered: an off profile stays open to them
+(owner, 2026-11-16, "위임에서만 막기"), RPC `agents/run` is not filtered (owner, O2 "적용 안 함"),
+and the identity's `agents:` list not applying to them is the lead's call (ADR-0304). The model door's
+unknown-name text no longer peeks at an untrusted `.aelix/agents/` and no longer says
+`--approve` (ADR-0304 D7). Held by `tests/agents_ext/test_delegation_filter_795_796.py` and the
+structural gate `tests/agents/test_delegation_filter_gate_795.py`.
+
+**The seam.** `subagent_contract` gains `ModelDelegation` (a `runtime_checkable` Protocol with
+`resolve_for_model`) and `DelegationNotAllowed`. `SubagentRuntime` keeps its seven members, so
+`bind_subagents`' shape check is unchanged, a runtime with only those seven still binds
+(`test_a_runtime_with_only_the_seven_members_still_binds`), and `CONTRACT_VERSION` stays 1. The
+bundled runtime implements `ModelDelegation`; its `DelegationRefused` is a `ProfileError` and a
+`DelegationNotAllowed`. `SubagentHost` gains `agent_lists` and `active_profile` (default `None`).
