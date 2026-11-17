@@ -17,12 +17,19 @@ It hides any other ``sitecustomize`` the interpreter would have imported, so it
 imports the first one on ``sys.path`` that is not a copy of itself — a second
 checkout's ``gated_site``, or this one by another spelling of its path, is a
 copy, known by :data:`_MARK` in its source (``tests/jobs/test_gated_site_777.py``).
+
+With ``AELIX_TEST_ANNOUNCE`` set, an interpreter it gates also writes its pid
+and start time there as ``child-<pid>.json`` (:func:`_announce`, the launcher's
+``announce`` again: this hook cannot import the launcher). #777 PR c1's
+parent-death cases watch a delegated child by that announcement.
 """
 
 from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
+import os
 import sys
 
 _MARK = "aelix-gated-site-hook"
@@ -60,6 +67,21 @@ def _is_a_copy(origin: str | None) -> bool:
         return False
 
 
+def _announce(role: str) -> None:
+    """``tests/jobs/gated_cli.py``'s ``announce``, for an interpreter this hook gates."""
+
+    where = os.environ.get("AELIX_TEST_ANNOUNCE")
+    if not where:
+        return
+    from aelix_ai.utils._process_identity import process_started
+
+    pid = os.getpid()
+    path = os.path.join(where, f"{role}-{pid}.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        json.dump({"role": role, "pid": pid, "started": process_started(pid)}, handle)
+    os.replace(path + ".tmp", path)
+
+
 def _import_the_next_sitecustomize() -> None:
     for entry in sys.path:
         spec = importlib.machinery.PathFinder.find_spec("sitecustomize", [entry])
@@ -73,5 +95,6 @@ if main_module(list(getattr(sys, "orig_argv", [])), list(sys.argv)) == "aelix_co
     from aelix_coding_agent.jobs import activation
 
     activation.ACTIVE = True
+    _announce("child")
 
 _import_the_next_sitecustomize()

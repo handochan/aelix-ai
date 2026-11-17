@@ -504,6 +504,34 @@ user may configure, under core's hard maxima; product-core declares `HARD_MAX_PE
 - Delegation (`agent(action=spawn|…)`), the versioned `print_done`, background `bash`, the
   launch ledger, Ctrl+B, the rich panel and the flip are S1c, S2 and S3.
 
+*2026-11-17 note (#777, #611 S3c PRs c1 and c2, which land as one PR — 리드 판단, the lead's call;
+behind `ACTIVE = False`, run through the test launcher `tests/jobs/gated_cli.py`): the parent's
+death, measured.* A real `-p` run against a scripted local model starts a background delegation,
+whose child blocks in a foreground `bash` sleeper, and a background `bash` sleeper. Every process a case watches writes its own pid and start time to a marker
+(the two aelix interpreters through the launcher and its `sitecustomize`, each shell through its
+sleeper). All are alive, with a known start time, before the kill, and each is read by identity
+after it. A process counts as gone only when it is first read gone within the bound, counted from
+the kill (`tests/cli/test_parent_death_611.py`; its checks are pinned against fakes in
+`tests/cli/test_parent_death_checks_777.py`). The cleanup rescans the markers, so it also kills a process
+that announces itself while the cleanup runs; one that announces only after the cleanup has returned is
+past any rescan. On POSIX these are guards of `b6100968`'s behaviour.
+
+| Platform | The kill | `-p` (PR c1) |
+|---|---|---|
+| Linux | SIGKILL | The delegated child and the background shell asserted gone within 5 s, `pdeathsig` on each (`test_l1_…`). Linux docker (`python:3.12-slim`, `--init`), 20 of 20 runs over two rounds: the child gone 0.004–0.39 s after the kill, the background shell 0.003–0.01 s. Recorded only: the child's own shell and sleeper gone within 0.01 s (its own cleanup, ADR-0291 limit 3), and the background shell's sleeper alive at 5 s in 20 of 20 (owner OQ-C/D, 2026-11-10, "둘 다 권고대로 (권장)": `pdeathsig` on the shell only, ADR-0297). |
+| Windows | `TerminateProcess` | Every announced process's handle, opened before the kill with no Job handle held, unsignalled at the kill and signalled within 10 s after it, and the kill must succeed (`test_l2_…`). It proves the announced processes only, not that a Job is empty, and the delegated child also ends when the venv launcher's own job ends the interpreter, so its row does not tell which job did. At `b69890da`, in the lead's CI round (run 43998348364): passed on all four legs. At this head: pending the lead's CI round. |
+| macOS | SIGKILL | Nothing about the children (`test_l3_…`). Local macOS, Python 3.12, 20 of 20 runs over two rounds: the delegated child, both shells and both sleepers all alive 5 s after the kill, then killed by the case. The documented limit: no `pdeathsig` (ADR-0291 limit 3). |
+
+The 23 real-child cases of `tests/agents_ext/test_agent_background_611.py` (L4), and the launcher's two
+smoke cases with them, now run on windows-latest as well: the first run of the evidence legs against a real
+Job. At `b69890da` 22 of the 23 and both smoke cases passed on all four legs; the 23rd,
+`test_result_rereads_the_whole_result_and_a_long_one_points_there`, failed there with WinError 206: its
+own `-c` script is 41,530 characters (`len` of the script, on macOS), and its whole command line was
+41,684 on macOS with this lane's interpreter path (`subprocess.list2cmdline`, recorded at the spawn),
+past the 32,767 a win32 command line holds. It now runs its stub from a file; the longest command line
+of the other cases was 1,748, measured the same way. At this head they are pending the lead's CI round,
+so the **Windows** bullet above stands until it is in.
+
 ## Note (2026-11-08, ADR-0295, #723)
 
 S1c registered the first client, delegation (ADR-0295), and needed two generic additions, both
