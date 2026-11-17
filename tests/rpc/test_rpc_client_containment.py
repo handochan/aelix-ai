@@ -44,6 +44,7 @@ from typing import Any
 
 import pytest
 from aelix_ai.utils._process_tree import (
+    CREATE_SUSPENDED,
     ProcessTree,
     _retained_handle,
     kill_process_tree,
@@ -717,6 +718,57 @@ async def test_the_rpc_site_asks_for_kill_on_close(
         # ``OpenProcess`` and being refused ``ACCESS_DENIED``. ``None`` here is
         # correct on POSIX and would be a real defect on win32.
         assert "handle" in seen_kwargs
+    finally:
+        await client.stop()
+
+
+@pytest.mark.parametrize("suspend", [CREATE_SUSPENDED, 0], ids=["resumable", "no-resume"])
+async def test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it(
+    monkeypatch: pytest.MonkeyPatch, suspend: int
+) -> None:
+    """#772: given ``CREATE_SUSPENDED``, the spawn carries it and the attach is told ``suspended``.
+
+    The child then runs only once it is in its job; ``uncontained_ok`` keeps
+    the attach's old degrade (a job that cannot be had resumes it outside one).
+    Unsuspended, the attach came a few proactor turns after the spawn, and on the
+    windows runner the child is the venv launcher, which starts the interpreter
+    at once: py3.14 in run 43998348364 saw one "NOT in job" and alive 10.05 s
+    after the kill. ``suspend_flags`` is forced on any host; the suspend bit is
+    recorded and taken off the spawn (POSIX ``Popen`` refuses
+    ``creationflags``), and ``suspended`` recorded and taken off the attach
+    (POSIX ``attach`` refuses it). Given 0 (no ``NtResumeProcess``) it spawns
+    running, as before. The ``resumable`` case is red on ``b6100968``: no
+    suspend bit and no ``suspended``. The real job is windows-latest's
+    (``test_rpc_client_start_cancel_360.py``).
+    """
+
+    real_spawn = asyncio.create_subprocess_exec
+    real_attach = rpc_client_module.ProcessTree.attach
+    flags: list[int] = []
+    asked: list[tuple[object, object]] = []
+
+    async def _spawn(*argv: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        flags.append(kwargs.get("creationflags", 0))
+        rest = kwargs.pop("creationflags", 0) & ~CREATE_SUSPENDED
+        if rest:
+            kwargs["creationflags"] = rest
+        return await real_spawn(*argv, **kwargs)
+
+    def _attach(pid: int, **kwargs: Any) -> ProcessTree:
+        asked.append((kwargs.pop("suspended", None), kwargs.pop("uncontained_ok", None)))
+        return real_attach(pid, **kwargs)
+
+    monkeypatch.setattr(
+        rpc_client_module.ProcessTree, "suspend_flags", staticmethod(lambda **_: suspend)
+    )
+    monkeypatch.setattr(rpc_client_module.asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _attach)
+
+    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_STUB]))
+    await client.start()
+    try:
+        assert [flag & CREATE_SUSPENDED for flag in flags] == [suspend], flags
+        assert asked == [(suspend != 0, True)]
     finally:
         await client.stop()
 
