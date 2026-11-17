@@ -388,6 +388,14 @@ counted from the kill (`tests/cli/test_parent_death_611.py`):
 | Windows | `TerminateProcess` | asserted, with the shell and sleeper, as each announced handle signalled within 10 s (`test_l2_…`); the Windows Job is ADR-0238's, and the child also ends when the venv launcher's own job ends it | at `b69890da` passed on all four windows-latest legs (the lead's CI round, run 43998348364); at this head pending |
 | macOS | SIGKILL | recorded only (`test_l3_…`); local, 20 of 20 runs over two rounds: alive 5 s after the kill | recorded only: alive 5 s after the kill in 20 of 20 |
 
+The same for a TUI delegation (the TUI through `tests/jobs/gated_tui_child.py`), moved into a job by
+Ctrl+B or left in the turn: on Linux the child asserted gone within 5 s (`test_l1a_…`, docker, 20 of 20
+runs, 0.009–0.39 s; `test_l1b_…`, 10 of 10, 0.004–0.30 s), its shell and sleeper recorded gone within
+0.07 s; on macOS all recorded alive at 5 s (`test_l3a_…`, 20 of 20 runs; `test_l3b_…`, 10 of 10). On Windows `test_l2a_…`
+failed on all four legs at `b69890da`, the child's shell and sleeper alive 10 s after the kill, which
+#777's suspended print-channel spawn addresses (ADR-0238's 2026-11-17 note); `test_l2a_…` and
+`test_l2b_…` are pending the lead's CI round.
+
 ## Verification
 
 After the change, on the same branch, the macOS table above has no survivor on any of its nine
