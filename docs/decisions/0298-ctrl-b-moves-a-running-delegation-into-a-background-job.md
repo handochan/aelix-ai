@@ -343,6 +343,23 @@ completes.
   the point. A product helper that ever tripped it would refuse every Ctrl+B, and
   `test_detach_crossing_611.py::test_the_product_chain_is_admitted_five_of_five` would turn red.
 
+*2026-11-17 note (#777, #611 S3c PR c2): a moved job's processes when its aelix dies.* The row of a
+moved run stays the print channel's, so the parent-death legs are the delegation's: `pdeathsig` on
+Linux and the Job's kill-on-close on Windows (ADR-0291 limit 3). A real TUI, started through
+`tests/jobs/gated_tui_child.py` with background jobs on, moves its foreground delegation with Ctrl+B
+once the child's sleeper runs, and is killed once the parent's next request carries the moved call's
+answer (`tests/cli/test_parent_death_611.py`, each process read by the pid and start time it
+announced):
+
+| Platform | The kill | Asserted (case) | Measured |
+|---|---|---|---|
+| Linux | SIGKILL | the delegated child gone within 5 s (`test_l1a_…`) | Linux docker (`python:3.12-slim`, `--init`), 10 of 10 runs: gone 0.009–0.39 s after the kill; its shell and sleeper, recorded only, gone within 0.07 s |
+| Windows | `TerminateProcess` | each announced handle (the child, its shell, its sleeper; opened before the kill, no Job handle held) signalled within 10 s (`test_l2a_…`) | pending the lead's windows-latest CI round; whether the TUI launcher runs there is not measured |
+| macOS | SIGKILL | nothing about the children (`test_l3a_…`) | local, 10 of 10 runs: the child, its shell and its sleeper all alive 5 s after the kill, then killed by the case |
+
+The **Windows** limit above stands: L2a reads the processes through handles, so it measures the
+Job's kill-on-close, not what a moved job's notice certifies from its root-only evidence.
+
 ## CHANGELOG
 
 This change's `[Unreleased]` entry was written with S3a ("built and switched off", 리드 판단). S3e,
@@ -353,3 +370,21 @@ which turns the gate on, adds no second entry for Ctrl+B.
 The move with a real model; Linux and Windows CI (the lead's and CI's); PID reuse between the spawn
 and the commit; an adopted run through `/reload`'s bound (S3c2); the TUI with the gate on in a
 terminal other than the pty capture this lane made.
+
+*2026-11-17 note (#777, #611 S3c PR c2): two of these measured in-process* (real extension, job
+service and `PrintChannel` child; `tests/agents_ext/test_detach_acceptance_777.py`, POSIX):
+- **An adopted run through `/reload`'s bound.** The reload's stop kills and reaps the child and the
+  run's cleanup is held past the bound. `/reload` returns at the bound with the job
+  `unresolved(reload_timeout)`, its slot held and its row still there. The extension's runtime is
+  invalidated as the rebuild does, the run is then let go, and the job ends `stopped` with its
+  settle and outcome in the session it was moved in and its slot back. The bound there is 0.5 s and
+  the stop and exit graces 30 s, so the run's own late end is what ends it. With the product's 10 s,
+  2 s and 45 s, the stop's escalation (`JobService._escalate`: a grace, its legs, a grace, then the
+  cancel) would cancel such a run at about 4 s, inside the bound; that is read from the code, not
+  measured.
+- **A stop in the step of the move.** A `request_stop` asked in the commit's last step (`give_slot`)
+  does not cancel the job's task, as #775's verify round 1 measured (§9). The task runs, `_drive` takes the run,
+  and the stop reaches it (no escalation). The child is reaped, the row popped, the cleanup ended,
+  and `_finalize` writes `stopped` and frees the slot. The rescue proper is §9's case.
+
+The parent's death after a move: the Limits note above. Linux and Windows CI are still the lead's.

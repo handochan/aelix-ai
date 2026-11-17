@@ -387,6 +387,11 @@ announced (`tests/cli/test_parent_death_611.py`):
 | Windows | `TerminateProcess` | asserted, with the shell and sleeper, as each announced handle signalled within 10 s (`test_l2_…`) | pending the lead's windows-latest CI round |
 | macOS | SIGKILL | recorded only (`test_l3_…`); local, 10 of 10 runs: alive 5 s after the kill | recorded only: alive 5 s after the kill in 10 of 10 |
 
+The same for a delegation Ctrl+B moved into a job (PR c2, the TUI through `tests/jobs/gated_tui_child.py`):
+on Linux the child asserted gone within 5 s (`test_l1a_…`; docker, 10 of 10 runs, 0.009–0.39 s), its
+shell and sleeper recorded gone within 0.07 s; on macOS all recorded alive at 5 s (`test_l3a_…`, 10 of
+10); Windows (`test_l2a_…`) pending the lead's CI round.
+
 ## Verification
 
 After the change, on the same branch, the macOS table above has no survivor on any of its nine
