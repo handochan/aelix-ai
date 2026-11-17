@@ -753,8 +753,10 @@ runtime.stop / stop_all in the grace      no cancel                             
    (on py3.14 in run 43998348364 it found an interpreter "NOT in job" alive 10.05 s after the kill),
    `test_on_win32_what_the_child_starts_at_once_is_born_in_its_job` and
    `test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran`, pending the lead's CI
-   round. Six cases spawn the child running (`_unsuspended`): the five that hold the spawn and
-   need the child to run during the hold, and the injected-API case, whose api does not resume.
+   round. Six cases spawn the child running (`tests/unsuspended.py`'s `unsuspended`): the five that
+   hold the spawn and need the child to run during the hold, and the injected-API case, whose api
+   does not resume. Any other raise out of the attach ends the child through the abandon, by design;
+   the print channel resumes its child there instead (ADR-0238's 2026-11-17 notes).
 8. **`stop()` itself is unchanged once `start` has returned.** A cancel inside its soft
    or hard wait skips its release (the fields stay set, `_stopping` stays true, a
    second `stop()` finishes it), and two concurrent `stop()` calls both send their

@@ -649,7 +649,10 @@ class RpcClient:
         A job that cannot be had resumes the child outside one, as the
         unsuspended attach degraded (``uncontained_ok``); a resume that fails
         ends it unrun, and :class:`SuspendedLaunchError` is raised with the tree
-        that still holds it, if any, set here for :meth:`_abandon_start`.
+        that still holds it, if any, set here for :meth:`_abandon_start`. Any
+        other raise propagates, and :meth:`_abandon_start` ends the child,
+        suspended or not: unlike the print channel, which resumes it there
+        (degrade, never abandon), by design (#777 fix round 2).
         """
 
         try:

@@ -44,6 +44,7 @@ from typing import Any
 
 import pytest
 from aelix_ai.utils._process_tree import (
+    CREATE_NEW_PROCESS_GROUP,
     CREATE_SUSPENDED,
     ProcessTree,
     _retained_handle,
@@ -744,13 +745,18 @@ async def test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it(
 
     real_spawn = asyncio.create_subprocess_exec
     real_attach = rpc_client_module.ProcessTree.attach
+    real_containment = rpc_client_module.containment_spawn_kwargs
     flags: list[int] = []
     asked: list[tuple[object, object]] = []
+
+    def _containment(**kwargs: Any) -> dict[str, Any]:
+        # win32's group flag on every host, so the suspend bit is seen added to it, not replacing it.
+        return {**real_containment(**kwargs), "creationflags": CREATE_NEW_PROCESS_GROUP}
 
     async def _spawn(*argv: Any, **kwargs: Any) -> asyncio.subprocess.Process:
         flags.append(kwargs.get("creationflags", 0))
         rest = kwargs.pop("creationflags", 0) & ~CREATE_SUSPENDED
-        if rest:
+        if rest and sys.platform == "win32":
             kwargs["creationflags"] = rest
         return await real_spawn(*argv, **kwargs)
 
@@ -763,11 +769,13 @@ async def test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it(
     )
     monkeypatch.setattr(rpc_client_module.asyncio, "create_subprocess_exec", _spawn)
     monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _attach)
+    monkeypatch.setattr(rpc_client_module, "containment_spawn_kwargs", _containment)
 
     client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_STUB]))
     await client.start()
     try:
-        assert [flag & CREATE_SUSPENDED for flag in flags] == [suspend], flags
+        # The whole flags, as the print channel's pin asserts them (verify r2 mutant R7).
+        assert flags == [CREATE_NEW_PROCESS_GROUP | suspend], flags
         assert asked == [(suspend != 0, True)]
     finally:
         await client.stop()
