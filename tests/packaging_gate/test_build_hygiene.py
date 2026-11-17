@@ -499,8 +499,13 @@ def test_sdist_carries_no_developer_state(root_sdist: list[str]) -> None:
 #: #777 — the gated test launcher and the ``sitecustomize`` it puts first on a
 #: delegated child's ``PYTHONPATH``. Python imports a ``sitecustomize.py`` it
 #: finds on the path at every start-up, so one that shipped would run in every
-#: interpreter of the installing user's environment.
-GATED_LAUNCHER_FILES = ("tests/jobs/gated_cli.py", "tests/jobs/gated_site/sitecustomize.py")
+#: interpreter of the installing user's environment. PR c1 adds the ``-e``
+#: extension whose job swallows every stop (L6), test-only as the launcher is.
+GATED_LAUNCHER_FILES = (
+    "tests/jobs/gated_cli.py",
+    "tests/jobs/gated_site/sitecustomize.py",
+    "tests/jobs/fixtures/hold_kind_ext.py",
+)
 
 
 def test_the_gated_test_launcher_ships_in_no_artifact(
