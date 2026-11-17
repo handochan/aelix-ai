@@ -26,7 +26,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.stream import _StreamState, _strip_control, latest_run_closed
 
-# ``AgentProfile.output_cap``'s default (``agents/profile.py:241``), duplicated
+# ``AgentProfile.output_cap``'s default (``agents/profile.py:242``), duplicated
 # as a module constant so a caller that has no profile (a spawn that died before
 # resolution) still has a budget.
 DEFAULT_OUTPUT_CAP = 51200

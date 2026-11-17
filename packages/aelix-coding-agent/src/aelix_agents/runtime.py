@@ -49,18 +49,20 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.session_lock import SessionWriterLock
-from aelix_coding_agent.agents.discovery import ProfileError
+from aelix_coding_agent.agents.discovery import ProfileError, complete_profile, discover_profiles
 from aelix_coding_agent.agents.discovery import resolve_profile as discover_profile
 from aelix_coding_agent.agents.profile import unlaunchable_profile
 from aelix_coding_agent.agents.resolver import child_model_id, model_pin_route_moved
 from aelix_coding_agent.agents.sendable import unsendable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.cli.args import VALID_THINKING_LEVELS
+from aelix_coding_agent.core.agent_selection import DelegationView, delegation_view
 from aelix_coding_agent.subagent_contract import (
     CONTRACT_VERSION,
+    DelegationNotAllowed,
     ProjectScopeRefused,
     ResolvedProfile,
     SubagentProgress,
@@ -347,6 +349,99 @@ class ProjectScopeProfileError(ProfileError, ProjectScopeRefused):
     """
 
 
+class DelegationRefused(ProfileError, DelegationNotAllowed):
+    """The model door's refusal for a profile the session may not delegate to (ADR-0304 D5).
+
+    ``verdict`` is ``none_listed``, ``not_listed`` or ``off``; the message is
+    the run text without the ``Delegation refused: `` prefix the hook adds.
+    Both bases on purpose, as :class:`ProjectScopeProfileError` has them: every
+    ``except ProfileError`` keeps catching it, and an extension tool can tell
+    it apart by the contract's type.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        verdict: str,
+        name: str,
+        identity: str | None,
+        allowlist: tuple[str, ...] | None,
+        available: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+        self.name = name
+        self.identity = identity
+        self.allowlist = allowlist
+        self.available = available
+
+
+def delegation_for(host: SubagentHost) -> DelegationView:
+    """ONE discovery under the host's applied lists and identity (ADR-0304 D5).
+
+    The only ``discover_profiles`` in ``aelix_agents``
+    (``tests/agents/test_delegation_filter_gate_795.py``, A1): the roster and
+    every model door read the profiles through here.
+    """
+
+    discovered = discover_profiles(
+        host.cwd(), project_trusted=host.project_trusted(), agent_dir=host.agent_dir()
+    )
+    return delegation_view(discovered, host.agent_lists(), host.active_profile())
+
+
+_POLICY_REFUSALS = frozenset({"none_listed", "not_listed", "off"})
+"""The verdicts a session's settings or identity decide (ADR-0304 D5, D7)."""
+
+
+def _policy_in_force(host: SubagentHost) -> bool:
+    """Whether the applied ``agents`` lists or the identity's ``agents:`` can refuse anything."""
+
+    lists = host.agent_lists()
+    identity = host.active_profile()
+    entries = lists is not None and any(
+        scope_list is not None and scope_list.entries
+        for scope_list in (lists.global_list, lists.project_list)
+    )
+    return entries or getattr(identity, "agents", None) is not None
+
+
+def _refuse_a_path(name: str) -> None:
+    """NAME ONLY on every door of the runtime (finding B5): see ``resolve_profile``."""
+
+    if "/" in name or "\\" in name:
+        raise ProfileError(
+            f"agent profile {name!r} looks like a path; delegation "
+            "resolves profiles by NAME only. Use --agent-file at launch for "
+            "a path you typed yourself."
+        )
+
+
+def _resolved(profile: Any, *, allow_project: bool) -> ResolvedProfile:
+    """The one ``ResolvedProfile(`` in the two packages, with finding B5's refusal.
+
+    ``tests/agents/test_delegation_filter_gate_795.py`` (B1) holds that no
+    other place builds one.
+    """
+
+    if profile.scope == "project" and not allow_project:
+        # TYPED (MEDIUM #8), so ``/agents run`` can recognise the one refusal
+        # it may cure without matching on this message's wording.
+        raise ProjectScopeProfileError(
+            f"agent profile {profile.name!r} ({profile.file_path}) is "
+            "project-local and needs a per-identity confirmation; a "
+            "model-chosen delegation cannot give one. Run it yourself with "
+            f"/agents run {profile.name}, or start aelix with --approve."
+        )
+    return ResolvedProfile(
+        name=profile.name,
+        profile=profile,
+        source_path=profile.file_path,
+        scope=profile.scope,
+    )
+
+
 def _default_consent_context() -> Any:
     """No UI, no consent dialog — the headless default.
 
@@ -396,7 +491,7 @@ class SubagentHost:
     holds the design argument.
 
     LIVE, like every other field here, and measurably so: ``/agents use`` edits
-    the parent's ``Args`` IN PLACE — ``agents/service.py:411`` resets it with
+    the parent's ``Args`` IN PLACE — ``agents/service.py:429`` resets it with
     ``__dict__.update`` and then ``apply_profile_to_args`` sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Probed
     on one ``Args``: same object id throughout, ``False → True`` on the
@@ -505,6 +600,15 @@ class SubagentHost:
     a ``spawn`` job's and a moved run's, until the job's barrier. Neither is a row
     of this runtime once it runs elsewhere, so :meth:`_SubagentRuntimeImpl.resume_refusal`
     asks this too. Empty while background jobs are off."""
+    agent_lists: Callable[[], Any] = lambda: None
+    """The APPLIED ``agents`` settings lists (#795, ADR-0304 D3), read live —
+    ``cli/entry.py``'s holder, which the ``/agents`` panel's apply and
+    ``/reload`` replace. ``None``, the default and every host that predates
+    ADR-0304, means every profile is on (:func:`delegation_for`)."""
+    active_profile: Callable[[], Any] = lambda: None
+    """The session's identity (``--agent``, ``/agents use``), read live, whose
+    ``agents:`` narrows what the MODEL may delegate to (#796, ADR-0304 D4).
+    ``None``: no identity, no narrowing."""
 
 
 @dataclass(frozen=True)
@@ -676,7 +780,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:568``/``tool.py:1362`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:568``/``tool.py:1463`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -800,10 +904,10 @@ class _SubagentRuntimeImpl:
         SECURITY (finding B5). Directory trust is a yes-once decision that
         ancestors inherit (``cli/project_trust.py:84-85``); it is NOT consent to
         a project-local IDENTITY, which additionally WINS a name collision
-        against the user's own (``agents/service.py:109-110``). So a
+        against the user's own (``agents/service.py:111-112``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a
         per-identity confirmation happened, exactly as
-        ``agents/service.py:356-372`` does for ``/agents use``.
+        ``agents/service.py:374-390`` does for ``/agents use``.
 
         NAME ONLY, and that is a security choice, not a limitation. The
         Protocol parameter is spelled ``name_or_path`` for P3 shape stability,
@@ -813,33 +917,71 @@ class _SubagentRuntimeImpl:
         path-taking door is the CLI's ``--agent-file``, where a human typed it.
         """
 
-        if "/" in name_or_path or "\\" in name_or_path:
-            raise ProfileError(
-                f"agent profile {name_or_path!r} looks like a path; delegation "
-                "resolves profiles by NAME only. Use --agent-file at launch for "
-                "a path you typed yourself."
-            )
+        _refuse_a_path(name_or_path)
         profile = discover_profile(
             name_or_path,
             cwd=self.host.cwd(),
             project_trusted=self.host.project_trusted(),
             agent_dir=self.host.agent_dir(),
         )
-        if profile.scope == "project" and not allow_project:
-            # TYPED (MEDIUM #8), so ``/agents run`` can recognise the one refusal
-            # it may cure without matching on this message's wording.
-            raise ProjectScopeProfileError(
-                f"agent profile {profile.name!r} ({profile.file_path}) is "
-                "project-local and needs a per-identity confirmation; a "
-                "model-chosen delegation cannot give one. Run it yourself with "
-                f"/agents run {profile.name}, or start aelix with --approve."
+        return _resolved(profile, allow_project=allow_project)
+
+    # ── The model's door (#795, #796, ADR-0304 D5, D17) ───────────
+
+    def delegation(self) -> DelegationView:
+        """Which profiles the model may delegate to now: :func:`delegation_for` of the host."""
+
+        return delegation_for(self.host)
+
+    def resolve_for_model(self, name: str) -> ResolvedProfile:
+        """Resolve *name* for a delegation the MODEL chose, or raise (ADR-0304 D5).
+
+        PUBLIC (D17): the ``subagent_contract.ModelDelegation`` member. The
+        ``agent`` tool's hook, its resume and the pre-spawn re-check call it;
+        a model-facing extension tool must too. In order:
+
+        1. a path-shaped name → :class:`ProfileError` (today's text);
+        2. ONE :meth:`delegation` — one discovery — and its verdict;
+        3. ``unknown`` → :class:`ProfileError` naming what IS available. No
+           peek at an untrusted ``.aelix/agents/`` (Codex 6): its profiles are
+           refused here whatever the folder holds, so "pass --approve" was
+           advice the model's retry cannot use;
+        4. ``none_listed`` / ``not_listed`` / ``off`` → :class:`DelegationRefused`;
+        5. else the profile from THAT view's discovery result, its
+           ``missing_path`` escalation applied (``discovery.complete_profile``),
+           through :func:`_resolved` with ``allow_project=False`` — so a
+           project profile meets finding B5's refusal, today's type and text.
+
+        The profile returned is the one the verdict was taken on (Codex 3).
+        :meth:`resolve_profile` — the human doors' — is not filtered.
+        """
+
+        from aelix_agents.tool import refusal_text, unknown_profile_text
+
+        _refuse_a_path(name)
+        view = self.delegation()
+        verdict = view.verdict(name)
+        available = tuple(p.name for p in view.available)
+        if verdict == "unknown":
+            raise ProfileError(
+                unknown_profile_text(
+                    name,
+                    available,
+                    discovered_any=bool(view.profiles),
+                    agent_dir=self.host.agent_dir(),
+                )
             )
-        return ResolvedProfile(
-            name=profile.name,
-            profile=profile,
-            source_path=profile.file_path,
-            scope=profile.scope,
-        )
+        if verdict in ("none_listed", "not_listed", "off"):
+            raise DelegationRefused(
+                refusal_text(verdict, name, view.identity, available),
+                verdict=verdict,
+                name=name,
+                identity=view.identity,
+                allowlist=view.allowlist,
+                available=available,
+            )
+        profile = complete_profile(cast("Any", view.winner(name)), view.discovered)  # ok/project
+        return _resolved(profile, allow_project=False)
 
     # ── Authority (§(i)) ──────────────────────────────────────────
 
@@ -1089,7 +1231,34 @@ class _SubagentRuntimeImpl:
         :func:`aelix_agents.child_session.find_resume_target`.
         """
 
-        return await _find_resume_target(self._parent_session(), child_id)
+        return await _find_resume_target(
+            self._parent_session(), child_id, listed=self._listed_predicate()
+        )
+
+    def _listed_predicate(self) -> Callable[[str], bool] | None:
+        """Whether an agent's recorded profile is one the session may delegate to now.
+
+        For the listing a missing or unknown resume id carries (ADR-0304 D7):
+        an agent whose profile the ``agents`` settings or the identity's
+        ``agents:`` rule out (``none_listed``, ``not_listed``, ``off``) is left
+        out and counted. An unknown or project profile is listed as before —
+        its resume is refused as before (``RESUME_PROFILE_CHANGED``, B5) — so
+        with no policy in force the listing is byte-identical to today's, and
+        then no discovery is taken at all (``None``). The view is taken once,
+        on the predicate's first call, so a found id — and ``resume_granted``'s
+        second lookup — costs no discovery.
+        """
+
+        if not _policy_in_force(self.host):
+            return None
+        held: list[DelegationView] = []
+
+        def listed(profile: str) -> bool:
+            if not held:
+                held.append(self.delegation())
+            return held[0].verdict(profile) not in _POLICY_REFUSALS
+
+        return listed
 
     async def resumable_agents(self) -> str:
         """The listing a resume refusal carries (#610 D7), on its own."""

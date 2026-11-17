@@ -770,7 +770,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:318-428``), which blocks for the whole
+    (``cli/entry.py:320-430``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -793,7 +793,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2552-2569``) nor child (``modes/print_mode.py:253-312``)
+    (``tui/shell.py:2607-2624``) nor child (``modes/print_mode.py:253-312``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -2700,7 +2700,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1362`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1463`` and
     ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
@@ -3027,7 +3027,7 @@ def test_orchestrator_and_leaf_produce_different_depth(
 ) -> None:
     """Closes finding I3 — ``role`` is arithmetically INERT at MAX == 1.
 
-    Both branches yield 1 there, and ``agents/profile.py:232`` defaults ``role``
+    Both branches yield 1 there, and ``agents/profile.py:233`` defaults ``role``
     to ``"leaf"``, so the shipped test would pass vacuously. Raising the cap is
     what makes the two branches distinguishable, and it is exactly what P3 does.
     """
@@ -3047,7 +3047,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:373-381``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:375-383``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"
@@ -3235,7 +3235,7 @@ async def test_nested_project_extension_not_executed_in_relocated_child(
     """§(g) clause 2, against a REAL child.
 
     ``inherit_extensions: true`` on purpose: with the shipped default
-    (``False``, ``agents/profile.py:211``) ``profile_to_flags`` already
+    (``False``, ``agents/profile.py:212``) ``profile_to_flags`` already
     emits ``--no-extensions`` and NO project extension is discovered at all, so
     the trust flag would be untestable. This is the one profile shape where
     clause 2 is the thing standing between the child and the vendored code —

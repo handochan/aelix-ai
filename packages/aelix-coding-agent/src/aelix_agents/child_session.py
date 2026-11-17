@@ -102,7 +102,7 @@ from aelix_coding_agent.tools import ALL_TOOL_NAMES
 from aelix_agents.envelope import child_line
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from aelix_coding_agent.subagent_contract import SubagentResult
 
@@ -529,6 +529,42 @@ RESUME_PROFILE_CHANGED = (
     "Resume refused: the agent profile that agent ran as has changed — it was "
     "removed, renamed, or now resolves to another file. Delegate the task anew."
 )
+def _available_sentence(available: Sequence[str]) -> str:
+    """``<available>`` of ADR-0304 D7, capitalised and ending with a period."""
+
+    if not available:
+        return "No agent profile is available to delegate to."
+    return f"Available: {', '.join(available)}."
+
+
+def resume_refusal_text(
+    verdict: str, profile: str, identity: str | None, available: Sequence[str]
+) -> str:
+    """The resume refusal for a profile the session may not delegate to now (ADR-0304 D7).
+
+    Amends ADR-0277's "the profile cannot be re-found" row for three verdicts;
+    ``unknown``, ``project`` and every other failure stay
+    :data:`RESUME_PROFILE_CHANGED`.
+    """
+
+    if verdict == "none_listed":
+        return (
+            f"Resume refused: this session runs as agent profile {identity!r}, whose "
+            "agents: list is empty, so it resumes no agent."
+        )
+    if verdict == "not_listed":
+        return (
+            f"Resume refused: the agent profile {profile!r} that agent ran as is not one "
+            f"this session's profile {identity!r} may delegate to. "
+            f"{_available_sentence(available)}"
+        )
+    return (
+        f"Resume refused: the agent profile {profile!r} that agent ran as is turned off "
+        "in the settings, and only the user can turn it on (with /agents). "
+        f"{_available_sentence(available)}"
+    )
+
+
 RESUME_CONVERSATION_CHANGED = (
     "Resume refused: the conversation changed before the resume could start, so "
     "that agent is not this conversation's to resume. Delegate the task anew."
@@ -1467,7 +1503,12 @@ async def _branch_runs(session: Any) -> dict[str, list[_Run]] | None:
     return _group_by_child(_fold_runs(branch))
 
 
-async def find_resume_target(session: Any | None, child_id: str | None) -> ResumeTarget | str:
+async def find_resume_target(
+    session: Any | None,
+    child_id: str | None,
+    *,
+    listed: Callable[[str], bool] | None = None,
+) -> ResumeTarget | str:
     """The child ``child_id`` names, if THIS parent may resume it; else the refusal.
 
     #610 D5–D7. ``session`` is the parent's live session (``SubagentHost.session``)
@@ -1501,6 +1542,10 @@ async def find_resume_target(session: Any | None, child_id: str | None) -> Resum
     :data:`CHILD_SCAN_BYTES`. NOTHING IS WRITTEN anywhere. The refusals are
     complete, model-facing sentences (``RESUME_*``).
 
+    ``listed`` (#795, ADR-0304 D7) answers whether an agent's recorded profile
+    may be delegated to now; the listing leaves out the agents it refuses and
+    counts them. ``None`` lists as before.
+
     ``runtime.resume_granted`` runs THIS function again right before the
     launch (F3), so what it checks holds at the hook and at execute alike.
     """
@@ -1522,10 +1567,10 @@ async def find_resume_target(session: Any | None, child_id: str | None) -> Resum
     if groups is None:
         return RESUME_UNREADABLE
     if not child_id:
-        return f"{RESUME_NEEDS_ID}\n\n{_listing(groups)}"
+        return f"{RESUME_NEEDS_ID}\n\n{_listing(groups, listed)}"
     runs = groups.get(child_id)
     if runs is None:
-        return f"{RESUME_UNKNOWN_ID}\n\n{_listing(groups)}"
+        return f"{RESUME_UNKNOWN_ID}\n\n{_listing(groups, listed)}"
     lineage = _lineage(runs)
     if isinstance(lineage, str):
         return lineage
@@ -1988,7 +2033,14 @@ async def resumable_agents(session: Any | None) -> str:
     return _listing(groups) if groups is not None else RESUMABLE_NONE
 
 
-def _listing(groups: dict[str, list[_Run]]) -> str:
+def _not_delegable_line(count: int) -> str:
+    return (
+        f"- {count} more ran as an agent profile this session may not delegate to now; "
+        "they cannot be resumed."
+    )
+
+
+def _listing(groups: dict[str, list[_Run]], listed: Callable[[str], bool] | None = None) -> str:
     """Children this branch could resume, newest first, from the RECORDS ONLY.
 
     No candidate's file is opened (critique cut): the listing is a pointer, and
@@ -1997,9 +2049,14 @@ def _listing(groups: dict[str, list[_Run]]) -> str:
     the stats already do. Only model-door runs with recorded limits are listed
     (D5, D9). At most :data:`LISTED_AGENTS` entries inside
     :data:`LISTING_BYTES`; the rest are counted, not shown.
+
+    ``listed`` (#795, ADR-0304 D7): an agent whose first run's profile it
+    refuses is left out — never named — and counted in one closing line, so
+    such agents cannot fill the ten places and push out the resumable ones.
     """
 
     rows: list[tuple[int, str, _Run, _Run]] = []
+    hidden = 0
     for session_id, runs in groups.items():
         if not _SESSION_ID.fullmatch(session_id):
             continue
@@ -2011,14 +2068,20 @@ def _listing(groups: dict[str, list[_Run]]) -> str:
             first.identity.get("limits"), dict
         ):
             continue
+        profile = first.identity.get("profile")
+        if listed is not None and not listed(profile if isinstance(profile, str) else ""):
+            hidden += 1
+            continue
         rows.append((latest.position, session_id, first, latest))
+    tail = f"\n{_not_delegable_line(hidden)}" if hidden else ""
     if not rows:
-        return RESUMABLE_NONE
+        return f"{RESUMABLE_NONE}{tail}"
     rows.sort(key=lambda row: row[0], reverse=True)
     lines = [RESUMABLE_HEAD]
     size = _utf8_len(RESUMABLE_HEAD)
-    # Room for the overflow line, so adding it can never break the budget.
-    reserve = _utf8_len(f"\n- … and {len(rows)} more not shown")
+    # Room for the overflow line and the count line, so adding them can never
+    # break the budget.
+    reserve = _utf8_len(f"\n- … and {len(rows)} more not shown{tail}")
     for _position, session_id, first, latest in rows[:LISTED_AGENTS]:
         line = _listing_line(session_id, first, latest)
         cost = 1 + _utf8_len(line)
@@ -2029,7 +2092,7 @@ def _listing(groups: dict[str, list[_Run]]) -> str:
     more = len(rows) - (len(lines) - 1)
     if more:
         lines.append(f"- … and {more} more not shown")
-    return "\n".join(lines)
+    return "\n".join(lines) + tail
 
 
 def _listing_line(session_id: str, first: _Run, latest: _Run) -> str:
@@ -2102,6 +2165,7 @@ __all__ = [
     "resumable_agents",
     "resume_damaged",
     "resume_lineage_refusal",
+    "resume_refusal_text",
     "session_id_of",
     "usage_is_complete",
     "place_children",

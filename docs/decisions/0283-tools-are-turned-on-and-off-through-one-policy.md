@@ -3,6 +3,7 @@
 Status: Accepted (2026-11-01, #510). Amended 2026-11-03 by ADR-0284 (#25): two Limits
 closed and D3's `/reload` union widened by the tools a rebuild newly registers
 (dated notes there).
+Amended 2026-11-17 by ADR-0304 (#795): the panel's live state carries a kind's own words, which come before the `project` word (dated note at the end).
 Date: 2026-11-01
 Issue: #510. Design, owner decisions (2026-10-31: 1–6, 12, 13) and the Codex
 design review's triage: `.omc/specs/510-25-design-2026-10-31.md`; the review:
@@ -285,3 +286,13 @@ malformed `defaultTools` entry, and a `defaultTools` name no loaded tool has.
   ([ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) D6):* replaced — under the TUI the factory prints nothing and
   `/reload` commits one entry naming what changed and what failed.
 - `PolicyExtension(deny_tools=…)` stays an unwired library gate.
+
+## Note (2026-11-17, ADR-0304, #795)
+
+**D10.** `ItemState.live_note` — `(status word, state-line clause)` — lets a kind word its "not
+in use now" rows itself: `AgentKind` says `not listed` or `/agents run`. While a row is saved on
+and has a live note, its status word comes before the `project` provenance word, and the state
+line keeps "Saved on (this project's file)"; an unsaved edit, a failed load and a pending value
+still come first. A tool row has no live note and keeps `off now` / `turned off this run`
+(`tests/tui/test_agents_panel_795.py` `test_the_not_in_use_words_and_the_project_word`;
+`tests/tui/test_tool_panel_510.py` unchanged and green).

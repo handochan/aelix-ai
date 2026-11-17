@@ -31,6 +31,7 @@ locks gain the tool flags. Amended 2026-11-03 by ADR-0284 (#25): D1 (a plain
 path entry in `extensions` is deferred — Codex F12; a path form compares
 case-insensitively on Windows), D8 (the `extensions` warning is the list's own)
 and D16 (the extension half is done).
+Amended 2026-11-17 by ADR-0304 (#795): a fourth kind, `agents`; D6's busy apply also compares a kind's applied lists (dated note at the end).
 Date: 2026-10-31
 Issue: #511 (absorbs #595). Design (owner-approved layout A and §7 decisions
 2–11 and 13) and its triage: `.omc/specs/511-design-2026-10-31.md`; the review
@@ -662,3 +663,27 @@ default. `ScopeList.present` tells an absent key from `[]`, and
 - A `/reload` does not reprint the D8 warnings.
 - A malformed legacy `skills` object is still dropped by the load migration
   (pi parity) — only `edit_list` refuses to write over it.
+
+## Note (2026-11-17, ADR-0304, #795)
+
+Agent profiles are the fourth kind under this contract: `core/agent_selection.py` `AgentKind`
+(`kind="agent"`, `settings_key="agents"`, `effect="next_request"`), D1's per-item grammar,
+D2/D3's scope and trust, D4's `edit_list`, D11's panel (`/agents`). Three things change, each held
+by a test named in ADR-0304 "How it is held":
+
+- **D1:** a plain path entry in `agents` is not supported — it would add a profile directory, a
+  discovery tier with its own trust question (as ADR-0284 D9 deferred it for `extensions`); it is
+  warned once at launch and ignored (`tests/cli/test_agent_lists_795.py`
+  `test_the_launch_warnings_print_once_at_depth_zero`).
+- **D6:** for a kind that keeps LISTS rather than names (it declares `applied_policy()`), a busy
+  apply also defers when the snapshot's lists differ from the applied ones although no row moves
+  — `!rev*` replacing `-reviewer` while only `reviewer` exists
+  (`tests/core/test_agent_selection_795.py`
+  `test_a_busy_apply_defers_a_change_of_lists_that_moves_no_row`, and under a held `ApplyGate`).
+  A kind without `applied_policy` (skills, tools, extensions) keeps the row-only check.
+- **D8:** the launch warnings for `agents` are ADR-0304 D13's: the lists' own problems, the
+  plain-entry hint, an entry that matches no profile, an identity `agents:` name no profile has,
+  and a settings file that did not load (its list is not applied for the run).
+
+`ResourceSelection` gains `read_lists(key)` (both files' lists as on disk now, and the files
+that could not be read), `Snapshot.policy`, and an optional kind member `live_notes()`.

@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4111-4385``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4218-4492``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -51,6 +51,8 @@ from aelix_coding_agent.cli.runtime_bootstrap import (
     set_settings_seed_active,
     settings_seed_active,
 )
+from aelix_coding_agent.core.agent_selection import DelegationView, delegation_view
+from aelix_coding_agent.core.resource_selection import SettingsLists
 from aelix_coding_agent.core.runnable_models import (
     is_runnable,
     turn_refusal,
@@ -82,16 +84,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4427-4429``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4537-4539``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2946``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:3028``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:3988`` / ``:4354``).
+        reads on every (re)build (``cli/entry.py:4087`` / ``:4464``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -139,6 +141,10 @@ class AgentProfileService:
     active: AgentProfile | None = None
     confirm_project: Callable[[AgentProfile], Awaitable[bool]] | None = None
     late_route: LateRoute | None = None
+    agent_lists: Callable[[], SettingsLists | None] | None = None
+    """#795 (ADR-0304 D3): the APPLIED ``agents`` settings lists, read live
+    (``cli/entry.py``'s holder). ``None`` — every embedder and test that
+    predates ADR-0304 — means every profile is on."""
 
     def _route_applies(self, profile: AgentProfile | None) -> bool:
         """Whether ``profile``'s own ``model:`` / ``provider:`` applies over the baseline (#412).
@@ -223,6 +229,18 @@ class AgentProfileService:
             project_trusted=self.project_trusted,
             agent_dir=self.agent_dir,
         )
+
+    def delegation(self) -> DelegationView:
+        """Which profiles the MODEL may delegate to now (#795, #796, ADR-0304 D5).
+
+        One discovery (:meth:`list`) under the applied ``agents`` lists and the
+        session identity's ``agents:`` (:attr:`active`). What ``/agents list``,
+        ``/agents show``, RPC ``agents/list`` and the panel show; never a gate on
+        a human door.
+        """
+
+        lists = self.agent_lists() if self.agent_lists is not None else None
+        return delegation_view(self.list(), lists, self.active)
 
     def show(self, name: str) -> AgentProfile:
         """Resolve ONE profile by name, or raise :class:`ProfileError`.

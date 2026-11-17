@@ -70,7 +70,7 @@ SubagentState = Literal["starting", "running", "done", "error", "stopped"]
 SubagentOutcome = Literal["ok", "error", "timeout", "aborted", "declined"]
 # Only "single" is live in P2 — ``spawn`` raises ``ValueError`` on the other
 # two. The literal ships whole so the on-the-wire vocabulary never changes
-# shape between phases (same reasoning as ``agents/profile.py:232``'s ``role``).
+# shape between phases (same reasoning as ``agents/profile.py:233``'s ``role``).
 SubagentMode = Literal["single", "parallel", "chain"]
 
 
@@ -393,6 +393,47 @@ class ProjectScopeRefused(Exception):
     """
 
 
+class DelegationNotAllowed(Exception):
+    """The session's settings or identity rule a profile out for the MODEL (ADR-0304 D17).
+
+    Raised by :meth:`ModelDelegation.resolve_for_model` when the profile is
+    turned off in the ``agents`` settings lists, is not on the session
+    identity's ``agents:`` list, or that list is empty. The message is written
+    for the model and names the profiles it may use. A human-typed door
+    (``/agents run``, RPC ``agents/run``) never sees it: those call
+    :meth:`SubagentRuntime.resolve_profile`, which this policy does not filter.
+
+    A plain ``Exception`` subclass, as :class:`ProjectScopeRefused` is: the
+    bundled runtime combines it with its own ``ProfileError``.
+    """
+
+
+@runtime_checkable
+class ModelDelegation(Protocol):
+    """The filtered door for a delegation the MODEL chose (ADR-0304 D17).
+
+    An OPTIONAL member of the seam, kept out of :class:`SubagentRuntime` so a
+    third-party runtime that implements only that Protocol still binds and
+    :data:`CONTRACT_VERSION` does not move. The bundled runtime implements it.
+
+    A tool the model can call that starts a delegated agent must get its
+    profile from :meth:`resolve_for_model` and hand the refusal's text back to
+    the model; a runtime that is not a :class:`ModelDelegation` cannot answer,
+    so such a tool refuses. It is not consent — ``spawn`` still asks its own —
+    and it is a policy on aelix's own doors, not a security boundary.
+    """
+
+    def resolve_for_model(self, name: str) -> ResolvedProfile:
+        """Resolve *name* for a model-chosen delegation, or raise.
+
+        Raises :class:`DelegationNotAllowed` for a profile the session's
+        settings or identity rule out, and the runtime's own error for an
+        unknown name, a path, or a project-scoped profile (which no model may
+        start). Every exception is a refusal whose text is for the model.
+        """
+        ...
+
+
 @runtime_checkable
 class SubagentRuntime(Protocol):
     """Bound onto ``_ExtensionRuntime`` by the ``aelix-agents`` extension.
@@ -412,7 +453,7 @@ class SubagentRuntime(Protocol):
         unless ``allow_project`` is True. Directory trust is a yes-once decision
         ancestors inherit (``cli/project_trust.py:84-85``); it is not consent to
         a project-local IDENTITY, which additionally wins a name collision
-        against the user's own. Mirrors ``agents/service.py:356-372``.
+        against the user's own. Mirrors ``agents/service.py:374-390``.
         Model-driven callers must always pass False.
 
         THE REFUSAL IS TYPED: raise :class:`ProjectScopeRefused` (or a subclass)
@@ -508,6 +549,8 @@ __all__ = [
     "SUBAGENT_END",
     "SUBAGENT_START",
     "SUBAGENT_TOOL",
+    "DelegationNotAllowed",
+    "ModelDelegation",
     "ProjectScopeRefused",
     "ResolvedProfile",
     "SubagentMode",

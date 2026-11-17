@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from aelix_coding_agent.agents import AgentProfile, ProfileDiscoveryResult
+    from aelix_coding_agent.core.agent_selection import DelegationView
     from aelix_coding_agent.subagent_contract import SubagentResult
     from aelix_coding_agent.tui.chrome import AelixChrome
 
@@ -206,6 +207,11 @@ class CommandContext:
     same ``selection_panel`` over the session's ``ToolKind``. ``None`` in
     headless tests and a host with no settings, where ``/tool`` (and its alias
     ``/tools``) fall back to the read-only list of active tools."""
+    agent_panel: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to the ``/agents`` on/off panel (#795, ADR-0304
+    D10): the same ``selection_panel`` over the session's ``AgentKind``. A bare
+    ``/agents`` opens it; ``None`` — headless tests, a host with no settings —
+    keeps the bare command's list."""
     statusline_action: Callable[[], Awaitable[None]] | None = None
     """``run_tui`` wires this to its ``_open_statusline`` flow (a multi-checkbox
     picker over the footer-segment registry that persists the enabled-id set to
@@ -256,6 +262,13 @@ class CommandContext:
     profile the user can SEE listed must always be inspectable, including the
     broken one they are trying to debug — which the fatal
     ``AgentProfileService.show`` resolve would refuse."""
+    agent_delegation: Callable[[], DelegationView] | None = None
+    """``run_tui`` wires this to ``AgentProfileService.delegation`` (#795, #796,
+    ADR-0304 D11): the APPLIED view — the ``agents`` lists in force and the
+    identity's ``agents:`` — that ``/agents list``'s ON column, its identity
+    line, ``/agents show``'s two rows and ``/agents run``'s note read. Never the
+    settings files: that would show saved-but-unapplied state. ``None`` leaves
+    every one of them out (today's output)."""
     use_agent: Callable[[str | None], Awaitable[str]] | None = None
     """``run_tui`` wires this to ``AgentProfileService.use`` over the LIVE
     harness: swap the whole agent identity (system prompt, skills, tools, model,
@@ -704,7 +717,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1159-1181``).
+    made ``--tools ''`` enable everything (``entry.py:1161-1183``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -770,7 +783,10 @@ def _profile_model_cell(profile: AgentProfile, registry: Any) -> Text:
 
 
 def _render_agents_table(
-    result: ProfileDiscoveryResult, registry: Any = None, live_tools: Any = None
+    result: ProfileDiscoveryResult,
+    registry: Any = None,
+    live_tools: Any = None,
+    view: DelegationView | None = None,
 ) -> RenderableType:
     """``/agents list`` — name / scope / model / tools / description.
 
@@ -778,26 +794,59 @@ def _render_agents_table(
     profile whose ``tools:`` names something this build has no tool for. Like
     ``registry``, it defaults to :data:`None` = do not annotate, so the many
     render-only tests keep calling this with one argument.
+
+    ``view`` (#795, ADR-0304 D11) is the applied delegation view: with it the
+    table gains an ``ON`` column (``on`` / ``off`` from the applied ``agents``
+    lists — what the panel edits) and, when the identity has an ``agents:``
+    list, one dim line under it. Without it the table is today's.
     """
+
+    from rich.console import Group
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
+    if view is not None:
+        table.add_column(style="white", no_wrap=True)
     table.add_column(style="magenta", no_wrap=True)
     table.add_column(style="white", no_wrap=True)
     # TOOLS and DESCRIPTION wrap — an allowlist or a one-liner can be long, and
     # pushing the remaining columns off the terminal is worse than two rows.
     table.add_column(style="white")
     table.add_column(style="white")
-    table.add_row("NAME", "SCOPE", "MODEL", "TOOLS", "DESCRIPTION", style="dim")
+    heads = ["NAME", "SCOPE", "MODEL", "TOOLS", "DESCRIPTION"]
+    if view is not None:
+        heads.insert(1, "ON")
+    table.add_row(*heads, style="dim")
     for profile in sorted(result.profiles, key=lambda p: p.name):
-        table.add_row(
+        cells: list[Any] = [
             profile.name,
             profile.scope,
             _profile_model_cell(profile, registry),
             _profile_tools_cell(profile, live_tools),
             _profile_cell(profile.description),
+        ]
+        if view is not None:
+            on = view.on(profile.name)
+            cells.insert(1, Text("on" if on else "off", style="green" if on else "dim"))
+        table.add_row(*cells)
+    line = _identity_line(view)
+    body: RenderableType = table if line is None else Group(table, Text(line, style="dim"))
+    return Panel(body, title="Agent profiles", box=ROUNDED, border_style="cyan")
+
+
+def _identity_line(view: DelegationView | None) -> str | None:
+    """ADR-0304 D11's line under ``/agents list``, when the identity has an ``agents:`` list."""
+
+    if view is None or view.allowlist is None:
+        return None
+    if not view.allowlist:
+        return (
+            f"This session runs as {view.identity!r}, which delegates to no profile (agents: [])."
         )
-    return Panel(table, title="Agent profiles", box=ROUNDED, border_style="cyan")
+    return (
+        f"This session runs as {view.identity!r}, which may delegate only to: "
+        f"{', '.join(view.allowlist)}."
+    )
 
 
 def _render_agents_diagnostics(result: ProfileDiscoveryResult) -> RenderableType | None:
@@ -833,7 +882,10 @@ def _render_agents_diagnostics(result: ProfileDiscoveryResult) -> RenderableType
 
 
 def _render_agent_profile(
-    profile: AgentProfile, registry: Any = None, exclude_tools: tuple[str, ...] = ()
+    profile: AgentProfile,
+    registry: Any = None,
+    exclude_tools: tuple[str, ...] = (),
+    view: DelegationView | None = None,
 ) -> list[RenderableType]:
     """``/agents show <name>`` — the parsed fields, then the DRY RUN.
 
@@ -883,6 +935,14 @@ def _render_agent_profile(
     fields.add_row("inherit extensions", "yes" if profile.inherit_extensions else "no")
     if profile.extensions:
         fields.add_row("extensions", "\n".join(profile.extensions))
+    if view is not None:
+        # #795, #796 (ADR-0304 D11) — like ``role``, the second row must not
+        # imply an effect it does not have: a delegated agent cannot delegate.
+        fields.add_row(
+            "delegation",
+            "on" if view.on(profile.name) else "off in /agents: the model cannot start it",
+        )
+        fields.add_row("agents", _delegates_to_cell(profile))
 
     dry_run = Text()
     dry_run.append("flags  ", style="bold cyan")
@@ -916,8 +976,26 @@ def _render_agent_profile(
     ]
 
 
+def _delegates_to_cell(profile: AgentProfile) -> Text:
+    """``/agents show``'s ``agents`` row (#796, ADR-0304 D11), with its dim note."""
+
+    if profile.agents is None:
+        value = "every profile that is on"
+    elif not profile.agents:
+        value = "none"
+    else:
+        value = ", ".join(profile.agents)
+    cell = Text(value)
+    cell.append(
+        "\nused while this profile is the session's identity (--agent, /agents use); "
+        "a delegated agent cannot delegate",
+        style="dim",
+    )
+    return cell
+
+
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5283-5297`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5351-5365`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -965,7 +1043,7 @@ unrecognised refusal is surfaced verbatim and no confirmation is offered, so the
 worst case is a user being told to re-run rather than a profile running
 unconfirmed.
 
-Deliberately NARROWER than ``"project-local"``: ``agents/discovery.py:357-363``
+Deliberately NARROWER than ``"project-local"``: ``agents/discovery.py:401-407``
 raises a different project-local refusal — the DIRECTORY is untrusted — that no
 per-identity answer can cure (it needs ``--approve`` at launch, and the second
 resolve would raise it again). Prompting for a decision that changes nothing is
@@ -1012,7 +1090,7 @@ def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
 
     Shown in the confirmation dialog because the PATH is the part a human can go
     and read; a bare name is exactly what a name collision weaponises (a project
-    profile WINS against the user's own of the same name — ``agents/service.py:109-110``).
+    profile WINS against the user's own of the same name — ``agents/service.py:111-112``).
     Resolved through the same listing ``/agents show`` uses, and ``None`` when no
     listing is wired, in which case the dialog says so rather than inventing one.
     """
@@ -1048,7 +1126,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:4029`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4097`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1258,7 +1336,8 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
 async def _agents_handler(ctx: CommandContext, args: str) -> None:
     """``/agents [list | show <name> | use <name> | use --none]`` (ADR-0196).
 
-    - no arg / ``list`` — every discoverable profile + the scan diagnostics.
+    - no arg — the on/off panel where one is wired (#795, ADR-0304 D10), else ``list``.
+    - ``list`` — every discoverable profile + the scan diagnostics.
     - ``show <name>`` — the parsed fields and the dry-run flags/prompt.
     - ``use <name>`` — swap the LIVE identity (prompt, skills, tools, thinking, and
       the model where its route applies or it drops one: #412), no reload, history kept.
@@ -1273,61 +1352,19 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
     """
 
     parts = args.split(maxsplit=1)
+    if not parts and ctx.agent_panel is not None:
+        # #795 (ADR-0304 D10, D11) — bare /agents opens the on/off panel when
+        # the TUI wired one, as /skill does; a context without one lists.
+        try:
+            await ctx.agent_panel()
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ /agents failed: {exc}", style="bold red"))
+        return
     sub = parts[0] if parts else "list"
     rest = parts[1].strip() if len(parts) > 1 else ""
 
     if sub in ("list", "show"):
-        if ctx.agent_profiles is None:
-            ctx.commit(Text("Agent profiles are unavailable.", style="yellow"))
-            return
-        try:
-            result = ctx.agent_profiles()
-        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            ctx.commit(Text(f"✖ agents failed: {exc}", style="bold red"))
-            return
-        if sub == "list":
-            if not result.profiles and not result.diagnostics:
-                ctx.commit(Text("No agent profiles found.", style="yellow"))
-                return
-            if result.profiles:
-                # #155 — the live registry, so an extension/MCP tool named in a
-                # profile is not mis-flagged as unknown.
-                live_tools = getattr(
-                    getattr(ctx.harness, "state", None), "tools", None
-                )
-                ctx.commit(
-                    _render_agents_table(result, ctx.model_registry, live_tools)
-                )
-            diagnostics = _render_agents_diagnostics(result)
-            if diagnostics is not None:
-                ctx.commit(diagnostics)
-            return
-        if not rest:
-            ctx.commit(
-                Text(f"/agents show needs a profile name. {_AGENTS_USAGE}", style="yellow")
-            )
-            return
-        # Resolved against the LISTED profiles (not the fatal
-        # ``AgentProfileService.show``) so anything visible in /agents list is
-        # always inspectable — including the broken profile being debugged.
-        match = next((p for p in result.profiles if p.name == rest), None)
-        if match is None:
-            known = ", ".join(sorted(p.name for p in result.profiles)) or "(none)"
-            ctx.commit(
-                Text(
-                    f"✖ unknown agent profile {rest!r}; available: {known}",
-                    style="bold red",
-                )
-            )
-            return
-        from aelix_agent_core.harness.tool_policy import ToolPolicy  # noqa: PLC0415
-
-        from aelix_coding_agent.core.tool_selection import delegated_exclusions  # noqa: PLC0415
-
-        policy = getattr(ctx.harness, "tool_policy", None)
-        exclude = delegated_exclusions(policy) if isinstance(policy, ToolPolicy) else ()
-        for renderable in _render_agent_profile(match, ctx.model_registry, exclude):
-            ctx.commit(renderable)
+        await _agents_list_or_show(ctx, sub, rest)
         return
 
     if sub == "use":
@@ -1367,104 +1404,187 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
         return
 
     if sub == "run":
-        if getattr(ctx.harness, "disposed", False) is True:
-            # #663 (verify V7) — a stopped runtime's harness unbound the
-            # delegation seam: say the stop, not "Relaunch with --agents". One a
-            # reload or session change is replacing holds no turns and is not
-            # stopped (verify R1V2).
-            from aelix_agent_core.runtime import TRANSITION_RUNNING_MESSAGE
-
-            from aelix_coding_agent.tui.shell import _reload_text
-            from aelix_coding_agent.tui.width import terminal_columns
-
-            reason = getattr(ctx.harness, "turns_held", None) or TRANSITION_RUNNING_MESSAGE
-            ctx.commit(_reload_text([("bold red", f"✖ {reason}")], terminal_columns(ctx.chrome)))
-            return
-        runtime = _subagent_runtime(ctx)
-        if runtime is None:
-            ctx.commit(Text(_DELEGATION_UNAVAILABLE, style="yellow"))
-            return
-        name, _, task = rest.partition(" ")
-        task = task.strip()
-        if not name or not task:
-            ctx.commit(
-                Text(f"/agents run needs a name and a task. {_AGENTS_USAGE}", style="yellow")
-            )
-            return
-        # #627: a NUL or half of a character is refused before the profile is
-        # resolved, so a project profile's confirmation is never asked for a
-        # task that cannot run. The runtime would refuse it after that dialog.
-        from aelix_coding_agent.agents.sendable import unsendable_refusal
-
-        refusal = unsendable_refusal(task, where="The task", resend="the task")
-        if refusal is not None:
-            ctx.commit(Text(f"✖ agents run failed: {refusal}", style="bold red"))
-            return
-        # ``allow_project`` starts FALSE and is only ever raised by the explicit
-        # per-identity confirmation below (ADR-0197 §(f)) — the identity door is
-        # deliberately STRICTER than the authority door, and it fails closed.
-        try:
-            resolved = runtime.resolve_profile(name)
-        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            if not _is_project_scope_refusal(exc):
-                error = _sanitize_child_prose(str(exc))
-                ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
-                return
-            path = _project_agent_source_path(ctx, name)
-            if not await _confirm_project_agent_for_run(ctx, name, path):
-                ctx.commit(Text("Project agent profile declined.", style="yellow"))
-                return
-            try:
-                resolved = runtime.resolve_profile(name, allow_project=True)
-            except Exception as confirmed_exc:  # noqa: BLE001
-                error = _sanitize_child_prose(str(confirmed_exc))
-                ctx.commit(
-                    Text(f"✖ agents run failed: {error}", style="bold red")
-                )
-                return
-        # The progress states say whether a child ever ran, so an interrupt that
-        # lands before one did — during the spawn-time consent dialog, most
-        # often — is not reported as an agent "ended before it finished" (#604
-        # review). ``running`` is a live child, ``stopped`` the kill of one,
-        # ``done`` one that finished; a run that never got a process only ever
-        # says ``starting`` (and ``error`` on its way out).
-        states: set[str] = set()
-        try:
-            # ``spawn`` takes its OWN spawn-time consent (§(i)) and returns a
-            # ``status="declined"`` result rather than raising when the human
-            # says no — so an exception here is a real failure, not a refusal.
-            #
-            # THROUGH ``run_cancellable`` WHEN THE HOST HAS ONE (#604, D15): the
-            # delegation has no time limit, so the interrupt is the only way to
-            # end one whose child stalled. Cancelling ``spawn`` kills the child
-            # the way Esc kills a cancelled ``agent`` call.
-            work = runtime.spawn(
-                resolved, task, on_event=lambda progress: states.add(progress.state)
-            )
-            if ctx.run_cancellable is not None:
-                result = await ctx.run_cancellable(work)
-            else:
-                result = await work
-        except CommandInterrupted:
-            name = sanitize_for_terminal(resolved.name)
-            ctx.commit(
-                Text(
-                    f"Delegation to {name!r} stopped — the agent was ended before it finished."
-                    if states & {"running", "stopped", "done"}
-                    else f"Delegation to {name!r} stopped before the agent started.",
-                    style="yellow",
-                )
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            error = _sanitize_child_prose(str(exc))
-            ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
-            return
-        for renderable in _render_subagent_result(result):
-            ctx.commit(renderable)
+        await _agents_run(ctx, rest)
         return
 
     ctx.commit(Text(f"Unknown /agents subcommand {sub!r}. {_AGENTS_USAGE}", style="yellow"))
+
+
+async def _agents_list_or_show(ctx: CommandContext, sub: str, rest: str) -> None:
+    """``/agents list`` and ``/agents show <name>`` (ADR-0196; #795 adds the applied view)."""
+
+    if ctx.agent_profiles is None:
+        ctx.commit(Text("Agent profiles are unavailable.", style="yellow"))
+        return
+    try:
+        # #795 (ADR-0304 D11) — the applied view, when wired: one discovery
+        # serves the table and the ON column alike.
+        view = ctx.agent_delegation() if ctx.agent_delegation is not None else None
+        result = view.discovered if view is not None else ctx.agent_profiles()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ agents failed: {exc}", style="bold red"))
+        return
+    if sub == "list":
+        if not result.profiles and not result.diagnostics:
+            ctx.commit(Text("No agent profiles found.", style="yellow"))
+            return
+        if result.profiles:
+            # #155 — the live registry, so an extension/MCP tool named in a
+            # profile is not mis-flagged as unknown.
+            live_tools = getattr(getattr(ctx.harness, "state", None), "tools", None)
+            ctx.commit(_render_agents_table(result, ctx.model_registry, live_tools, view))
+        diagnostics = _render_agents_diagnostics(result)
+        if diagnostics is not None:
+            ctx.commit(diagnostics)
+        return
+    if not rest:
+        ctx.commit(Text(f"/agents show needs a profile name. {_AGENTS_USAGE}", style="yellow"))
+        return
+    # Resolved against the LISTED profiles (not the fatal
+    # ``AgentProfileService.show``) so anything visible in /agents list is
+    # always inspectable — including the broken profile being debugged.
+    match = next((p for p in result.profiles if p.name == rest), None)
+    if match is None:
+        known = ", ".join(sorted(p.name for p in result.profiles)) or "(none)"
+        ctx.commit(
+            Text(
+                f"✖ unknown agent profile {rest!r}; available: {known}",
+                style="bold red",
+            )
+        )
+        return
+    from aelix_agent_core.harness.tool_policy import ToolPolicy  # noqa: PLC0415
+
+    from aelix_coding_agent.core.tool_selection import delegated_exclusions  # noqa: PLC0415
+
+    policy = getattr(ctx.harness, "tool_policy", None)
+    exclude = delegated_exclusions(policy) if isinstance(policy, ToolPolicy) else ()
+    for renderable in _render_agent_profile(match, ctx.model_registry, exclude, view):
+        ctx.commit(renderable)
+
+
+def _not_delegable_note(ctx: CommandContext, name: str) -> str | None:
+    """ADR-0304 D11's dim line before ``/agents run`` of a profile the model could not start."""
+
+    if ctx.agent_delegation is None:
+        return None
+    try:
+        view = ctx.agent_delegation()
+    except Exception:  # noqa: BLE001 — the run goes on without the note
+        return None
+    verdict = view.verdict(name)
+    if verdict in ("not_listed", "none_listed"):
+        return (
+            f"{view.identity}'s agents: does not list {name}, so the model cannot delegate "
+            "to it; you can still run it."
+        )
+    if verdict == "off":
+        return (
+            f"{name} is off in /agents, so the model cannot delegate to it; you can still run it."
+        )
+    return None
+
+
+async def _agents_run(ctx: CommandContext, rest: str) -> None:
+    """``/agents run <name> <task>`` (ADR-0197 §(c)/§(f)): the human door, not filtered.
+
+    #795, #796 (ADR-0304 D6, D11): a profile the ``agents`` settings turn off, or
+    the identity's ``agents:`` leaves out, still runs here — a human typed it —
+    after one dim line saying the model could not have started it.
+    """
+
+    if getattr(ctx.harness, "disposed", False) is True:
+        # #663 (verify V7) — a stopped runtime's harness unbound the
+        # delegation seam: say the stop, not "Relaunch with --agents". One a
+        # reload or session change is replacing holds no turns and is not
+        # stopped (verify R1V2).
+        from aelix_agent_core.runtime import TRANSITION_RUNNING_MESSAGE
+
+        from aelix_coding_agent.tui.shell import _reload_text
+        from aelix_coding_agent.tui.width import terminal_columns
+
+        reason = getattr(ctx.harness, "turns_held", None) or TRANSITION_RUNNING_MESSAGE
+        ctx.commit(_reload_text([("bold red", f"✖ {reason}")], terminal_columns(ctx.chrome)))
+        return
+    runtime = _subagent_runtime(ctx)
+    if runtime is None:
+        ctx.commit(Text(_DELEGATION_UNAVAILABLE, style="yellow"))
+        return
+    name, _, task = rest.partition(" ")
+    task = task.strip()
+    if not name or not task:
+        ctx.commit(Text(f"/agents run needs a name and a task. {_AGENTS_USAGE}", style="yellow"))
+        return
+    # #627: a NUL or half of a character is refused before the profile is
+    # resolved, so a project profile's confirmation is never asked for a
+    # task that cannot run. The runtime would refuse it after that dialog.
+    from aelix_coding_agent.agents.sendable import unsendable_refusal
+
+    refusal = unsendable_refusal(task, where="The task", resend="the task")
+    if refusal is not None:
+        ctx.commit(Text(f"✖ agents run failed: {refusal}", style="bold red"))
+        return
+    # ``allow_project`` starts FALSE and is only ever raised by the explicit
+    # per-identity confirmation below (ADR-0197 §(f)) — the identity door is
+    # deliberately STRICTER than the authority door, and it fails closed.
+    try:
+        resolved = runtime.resolve_profile(name)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        if not _is_project_scope_refusal(exc):
+            error = _sanitize_child_prose(str(exc))
+            ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
+            return
+        path = _project_agent_source_path(ctx, name)
+        if not await _confirm_project_agent_for_run(ctx, name, path):
+            ctx.commit(Text("Project agent profile declined.", style="yellow"))
+            return
+        try:
+            resolved = runtime.resolve_profile(name, allow_project=True)
+        except Exception as confirmed_exc:  # noqa: BLE001
+            error = _sanitize_child_prose(str(confirmed_exc))
+            ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
+            return
+    note = _not_delegable_note(ctx, name)
+    if note is not None:
+        ctx.commit(Text(note, style="dim"))
+    # The progress states say whether a child ever ran, so an interrupt that
+    # lands before one did — during the spawn-time consent dialog, most
+    # often — is not reported as an agent "ended before it finished" (#604
+    # review). ``running`` is a live child, ``stopped`` the kill of one,
+    # ``done`` one that finished; a run that never got a process only ever
+    # says ``starting`` (and ``error`` on its way out).
+    states: set[str] = set()
+    try:
+        # ``spawn`` takes its OWN spawn-time consent (§(i)) and returns a
+        # ``status="declined"`` result rather than raising when the human
+        # says no — so an exception here is a real failure, not a refusal.
+        #
+        # THROUGH ``run_cancellable`` WHEN THE HOST HAS ONE (#604, D15): the
+        # delegation has no time limit, so the interrupt is the only way to
+        # end one whose child stalled. Cancelling ``spawn`` kills the child
+        # the way Esc kills a cancelled ``agent`` call.
+        work = runtime.spawn(resolved, task, on_event=lambda progress: states.add(progress.state))
+        if ctx.run_cancellable is not None:
+            result = await ctx.run_cancellable(work)
+        else:
+            result = await work
+    except CommandInterrupted:
+        name = sanitize_for_terminal(resolved.name)
+        ctx.commit(
+            Text(
+                f"Delegation to {name!r} stopped — the agent was ended before it finished."
+                if states & {"running", "stopped", "done"}
+                else f"Delegation to {name!r} stopped before the agent started.",
+                style="yellow",
+            )
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        error = _sanitize_child_prose(str(exc))
+        ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
+        return
+    for renderable in _render_subagent_result(result):
+        ctx.commit(renderable)
 
 
 async def _mode_handler(ctx: CommandContext, args: str) -> None:
@@ -2156,11 +2276,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1982-1985``
+    # The double count was the same text twice over: ``cli/entry.py:2064-2067``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:781-787``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1982``.
+    # level up, at ``cli/entry.py:2064``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module
@@ -2439,7 +2559,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     ),
     BuiltinCommand(
         "agents",
-        "List, show, switch, or delegate to agent profiles",
+        "Turn agent profiles on or off (Space toggles, Enter saves)",
         _agents_handler,
     ),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),

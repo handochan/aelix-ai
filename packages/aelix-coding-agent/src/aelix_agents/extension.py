@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2179-2181`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2261-2263`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -64,7 +64,6 @@ from typing import TYPE_CHECKING, Any
 from aelix_agent_core.harness.hooks import ToolCallResult
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
-from aelix_coding_agent.agents.discovery import discover_profiles
 from aelix_coding_agent.agents.resolver import child_model_id
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.extensions.api import ExtensionError
@@ -75,7 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.aggregate import render_batch_result, render_cancel_report
 from aelix_agents.batch import MAX_CONCURRENCY, run_batch
-from aelix_agents.child_session import RESUME_PROFILE_CHANGED
+from aelix_agents.child_session import RESUME_PROFILE_CHANGED, resume_refusal_text
 from aelix_agents.consent import (
     SpawnGrant,
     build_disclosure_line,
@@ -96,9 +95,11 @@ from aelix_agents.prompt_file import sweep_stale_prompt_dirs
 from aelix_agents.runtime import (
     MAX_DELEGATIONS_PER_PROMPT,
     CallEnvelopes,
+    DelegationRefused,
     SpawnRecordMeta,
     SubagentHost,
     _SubagentRuntimeImpl,
+    delegation_for,
 )
 from aelix_agents.tool import (
     EMPTY_WAITS_REFUSED_AT,
@@ -109,6 +110,7 @@ from aelix_agents.tool import (
     build_roster,
     call_literal,
     create_agent_tool,
+    empty_roster_text,
     format_partial,
     parse_agent_call,
     render_subagent_result,
@@ -156,6 +158,26 @@ _IDENTITY_MISMATCH = (
     "Delegation refused: the approved profile and the resolved profile do not "
     "match. Nothing was started."
 )
+
+def _resume_refusal(exc: DelegationRefused) -> str:
+    """ADR-0304 D7's resume text for a profile the session may not delegate to now."""
+
+    return resume_refusal_text(exc.verdict, exc.name, exc.identity, exc.available)
+
+
+def _recheck_refusal(refused: DelegationRefused | None, pending: PendingSpawn) -> str:
+    """What the pre-spawn re-check says when it does not hold (ADR-0304 D7).
+
+    A policy refusal is said as the hook would have said it — the run text, or
+    the resume text for a resume; anything else is :data:`_IDENTITY_MISMATCH`.
+    """
+
+    if refused is None:
+        return _IDENTITY_MISMATCH
+    if pending.resume is not None:
+        return _resume_refusal(refused)
+    return f"Delegation refused: {refused}"
+
 
 def _over_budget(asked: int, remaining: int) -> str:
     """The §3.5.2.1 refusal, taken at the hook before any dialog or process.
@@ -236,7 +258,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3365-3381`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3456-3472`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -296,7 +318,7 @@ class AgentsExtension:
     overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
     factory closed over. Probed on one object — ``apply_profile_to_args`` with
     a ``context_files: false`` profile flips it to ``True``, and
-    ``agents/service.py:411``'s ``__dict__.update`` reset flips it back — same
+    ``agents/service.py:429``'s ``__dict__.update`` reset flips it back — same
     ``id()`` throughout. A bool captured at construction would be stale in both
     directions.
 
@@ -399,6 +421,19 @@ class AgentsExtension:
     key. ``None`` — the bare form the tests build — means no, so every other
     host, and every test that does not ask, awaits its call as before. Read
     only while the ``agent`` job kind is registered."""
+
+    agent_lists: Callable[[], Any] | None = None
+    """The APPLIED ``agents`` settings lists, read live (#795, ADR-0304 D3).
+
+    Wired in ``cli/entry.py`` to its holder in every mode. ``None`` — the bare
+    form the tests build, and every embedder that predates ADR-0304 — means
+    every profile is on."""
+
+    active_profile: Callable[[], Any] | None = None
+    """The session's identity, read live (#796, ADR-0304 D4): ``--agent`` at
+    launch, then whatever ``/agents use`` or RPC ``agents/use`` switched to.
+    Its ``agents:`` narrows what the model may delegate to. ``None``: no
+    identity, no narrowing."""
 
     _api: Any | None = field(default=None, init=False)
     _ctx: Any | None = field(default=None, init=False)
@@ -645,7 +680,21 @@ class AgentsExtension:
             on_disclosure=self._publish_disclosure,
             session=self._host_session,
             has_ui=self._host_has_ui,
+            agent_lists=self._host_agent_lists,
+            active_profile=self._host_active_profile,
         )
+
+    def _host_agent_lists(self) -> Any:
+        """The applied ``agents`` lists RIGHT NOW (ADR-0304 D3); ``None`` when unwired."""
+
+        getter = self.agent_lists
+        return getter() if getter is not None else None
+
+    def _host_active_profile(self) -> Any:
+        """The session's identity RIGHT NOW (ADR-0304 D4); ``None`` when unwired."""
+
+        getter = self.active_profile
+        return getter() if getter is not None else None
 
     def _host_cwd(self) -> str:
         ctx = self._ctx
@@ -989,30 +1038,32 @@ class AgentsExtension:
 
     # ── the roster ────────────────────────────────────────────────
 
-    def _roster(self) -> str:
-        """The profiles this parent may delegate to, as prompt text.
+    def _roster(self) -> tuple[str, str | None]:
+        """The profiles this parent may delegate to, as prompt text, and the
+        sentence that replaces them when there are none (ADR-0304 D7).
 
         Discovery is re-run per prompt rather than cached: a user who writes a
         new profile file mid-session expects the next turn to see it, and
         ``discover_profiles`` is a non-recursive glob of at most two
-        directories.
+        directories. It runs through ``runtime.delegation_for`` — the view the
+        model's door reads too (#795, #796, ADR-0304 D5) — over the extension's
+        own host, so the roster works before a runtime is bound: a profile the
+        ``agents`` settings turn off, or the identity's ``agents:`` leaves out,
+        is not listed.
 
         PROJECT-SCOPED PROFILES ARE LISTED BUT NOT REACHABLE from this tool —
-        ``resolve_profile(..., allow_project=False)`` refuses them (finding B5).
-        Listing them with their scope is deliberate: the model sees why its call
-        was refused and can tell the user to run ``/agents run`` themselves,
-        instead of retrying a name that will never work.
+        ``resolve_for_model`` refuses them (finding B5). Listing them with their
+        scope is deliberate: the model sees why its call was refused and can
+        tell the user to run ``/agents run`` themselves, instead of retrying a
+        name that will never work.
         """
 
         try:
-            discovered = discover_profiles(
-                self._host_cwd(),
-                project_trusted=self._host_project_trusted(),
-                agent_dir=self.agent_dir,
-            )
+            view = delegation_for(self._host())
         except Exception:  # noqa: BLE001 — a broken profile dir must not kill a turn
-            return ""
-        return build_roster(sorted(discovered.profiles, key=lambda p: p.name))
+            return "", None
+        empty = empty_roster_text(view.empty_reason(), view.identity, view.allowlist or ())
+        return build_roster(view.available), empty
 
     # ── hooks ─────────────────────────────────────────────────────
 
@@ -1070,8 +1121,9 @@ class AgentsExtension:
         api, tool = self._api, self._tool
         if api is None or tool is None:
             return
+        roster, empty = self._roster()
         description = build_description(
-            self._roster(), background=self._jobs_facade is not None
+            roster, background=self._jobs_facade is not None, empty=empty
         )
         if description == tool.description:
             return
@@ -1134,16 +1186,17 @@ class AgentsExtension:
             return await self._approve_resume(event, ctx, runtime, call)
 
         try:
-            # ALWAYS ``allow_project=False`` (finding B5), and there is no code
-            # path that may pass True here. The MODEL chose this string, so repo
+            # THE MODEL'S DOOR (#795, #796, ADR-0304 D5): the ``agents`` settings
+            # lists and the identity's ``agents:`` decide first, then finding
+            # B5 — a project profile is refused with no code path that may pass
+            # ``allow_project=True`` here. The MODEL chose this string, so repo
             # content — a README, a comment, a fixture — must not be able to
             # select a project-authored identity with a replaced system prompt.
             # ``/agents run`` is the door where a human may consent to one.
-            resolved = runtime.resolve_profile(call.profile, allow_project=False)
+            resolved = runtime.resolve_for_model(call.profile)
         except Exception as exc:  # noqa: BLE001 — every failure is a refusal
-            # ``ProfileError``'s own message already lists the available names
-            # (``agents/discovery._unknown_name_message``), so the roster
-            # reaches the model without being rebuilt here.
+            # Every refusal's own message names what IS available (ADR-0304
+            # D7), so the roster reaches the model without being rebuilt here.
             return ToolCallResult(block=True, reason=f"Delegation refused: {exc}")
 
         try:
@@ -1155,7 +1208,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1620-1630``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1789-1799``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1281,7 +1334,11 @@ class AgentsExtension:
         if call.profile != target.profile:
             return ToolCallResult(block=True, reason=_not_its_profile(target.profile))
         try:
-            resolved = runtime.resolve_profile(target.profile, allow_project=False)
+            resolved = runtime.resolve_for_model(target.profile)
+        except DelegationRefused as exc:
+            # #795, #796 (ADR-0304 D7): the profile is still there, and the
+            # session may not delegate to it now — said as such, with what is.
+            return ToolCallResult(block=True, reason=_resume_refusal(exc))
         except Exception:  # noqa: BLE001 — an identity that cannot be re-found is a refusal
             return ToolCallResult(block=True, reason=RESUME_PROFILE_CHANGED)
         refusal = runtime.resume_refusal(target, resolved=resolved)
@@ -1481,7 +1538,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1520-1529``).
+        seam is released on teardown, ``extension.py:1577-1586``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1726,23 +1783,27 @@ class AgentsExtension:
         # are separated by the kernel's parallel execute phase, and the profile
         # search path is a directory the model's own tools can write. If the
         # name now resolves to a DIFFERENT file — a project-scoped profile that
-        # appeared and wins the collision (``agents/service.py:109-110``), a
+        # appeared and wins the collision (``agents/service.py:111-112``), a
         # user-scope file replaced by one somewhere else on the search path —
         # then what the human approved is not what would run.
         #
-        # ``allow_project=False`` and a bare ``except`` are both deliberate: this
-        # is the model-driven door (finding B5), and ANY failure to re-establish
+        # The MODEL'S door and a bare ``except`` are both deliberate: this is
+        # the model-driven door (finding B5), and ANY failure to re-establish
         # the identity — the file was deleted, discovery raised, a project
         # profile now shadows the approved one — is a refusal, never a spawn.
+        # A profile the session may no longer delegate to (#795, #796: a
+        # symlink under a ``-<path>`` entry re-pointed since the hook) is
+        # refused in the hook's words, not as a mismatch (ADR-0304 D7).
+        refused: DelegationRefused | None = None
         try:
-            recheck = runtime.resolve_profile(
-                pending.call.profile, allow_project=False
-            )
+            recheck = runtime.resolve_for_model(pending.call.profile)
             still_the_same = recheck.source_path == pending.grant.source_path
+        except DelegationRefused as exc:
+            refused, still_the_same = exc, False
         except Exception:  # noqa: BLE001 — unresolvable identity is a refusal
             still_the_same = False
         if not still_the_same:
-            return _error(_IDENTITY_MISMATCH)
+            return _error(_recheck_refusal(refused, pending))
         if pending.call.action == "spawn":
             # #611 S1c — a job of this session, not a child of this call: no
             # panel group, no envelopes for an Esc, and the tool returns once
@@ -1760,7 +1821,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1631``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1800``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1782,7 +1843,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2167-2171``) with no ``await`` between them, so THIS
+            # (``runtime.py:2336-2340``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

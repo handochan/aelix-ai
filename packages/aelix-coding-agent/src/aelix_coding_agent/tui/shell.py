@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
+    from aelix_coding_agent.core.agent_selection import AgentControl
     from aelix_coding_agent.core.extension_selection import ExtensionControl
     from aelix_coding_agent.core.skill_selection import SkillControl
     from aelix_coding_agent.core.tool_selection import ToolControl
@@ -251,6 +252,59 @@ def skill_effect_note(harness: object) -> str:
         "The model gets the new list from your next message; skill text it "
         "already read stays in this conversation."
     )
+
+
+def agents_effect_note(harness: object) -> str:
+    """What an ``/agents`` save does for the model, as the panel's summary says it (ADR-0304 D10).
+
+    Keyed on whether ``agent`` is among the live harness's active tools: with
+    no ``agent`` tool this session (``features.agents`` off, ``--no-agents``,
+    ``/tool``), a save changes nothing the model is offered here.
+    """
+
+    getter = getattr(harness, "_action_get_active_tools", None)
+    if callable(getter):
+        try:
+            active = {str(name) for name in cast("Iterable[object]", getter() or ())}
+        except Exception:  # noqa: BLE001 — the usual note
+            active = None
+        if active is not None and "agent" not in active:
+            return (
+                "The model has no agent tool in this session; the choice applies where it has one."
+            )
+    return (
+        "The model gets the new agent list from your next message; delegations already "
+        "running keep running."
+    )
+
+
+def agents_panel_opener(
+    ctx: Callable[[], Any],
+    control: AgentControl,
+    harness: Callable[[], Any],
+    width_cap: Callable[[], int | None],
+) -> Callable[[], Awaitable[None]]:
+    """The ``/agents`` panel (#795, ADR-0304 D10), as ``CommandContext.agent_panel``.
+
+    Module level, not nested in ``run_tui``: ``run_tui`` passes lambdas for the
+    command context, the live harness and the render ceiling, so it gains no
+    branch (its C901 score is listed in ``complexity-baseline.json``).
+    """
+
+    async def _open() -> None:
+        from aelix_coding_agent.tui.selection_panel import run_selection_panel
+
+        await run_selection_panel(
+            ctx(),
+            control.selection,
+            control.kind,
+            title="Agents",
+            noun=("profile", "profiles"),
+            effect_note=lambda: agents_effect_note(harness()),
+            render_width_cap=width_cap,
+        )
+
+    return _open
 
 
 @dataclass(frozen=True)
@@ -851,6 +905,7 @@ async def run_tui(
     tool_control: ToolControl | None = None,
     extension_control: ExtensionControl | None = None,
     jobs: Any = None,
+    agent_control: AgentControl | None = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -2335,7 +2390,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4982``) always passes one, so this is
+            # production caller (``entry.py:5123``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2745,6 +2800,19 @@ async def run_tui(
         # ADR-0196 — both stay ``None`` when entry.py built no service, and
         # ``/agents`` degrades to a committed message rather than raising.
         agent_profiles=agent_service.list if agent_service is not None else None,
+        # #795, #796 (ADR-0304 D10, D11) — the applied delegation view the
+        # /agents subcommands read, and the bare command's on/off panel.
+        agent_delegation=agent_service.delegation if agent_service is not None else None,
+        agent_panel=(
+            agents_panel_opener(
+                lambda: command_ctx,
+                agent_control,
+                lambda: runtime_host.harness,
+                lambda: render_width_cap["value"],
+            )
+            if agent_control is not None
+            else None
+        ),
         use_agent=_use_agent if agent_service is not None else None,
         run_cancellable=_run_cancellable,
     )
@@ -4598,11 +4666,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1982``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:2064``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1965`` already printed at startup, and one that
+    #       what ``entry.py:2047`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -5439,7 +5507,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4911-4927 and
+            # Two audiences, discriminated exactly as entry.py:5052-5068 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

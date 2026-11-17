@@ -237,24 +237,25 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 46 optional fields — every field defaults to ``None`` so unset →
+# 48 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, render_max_width, session_dir, default_project_trust,
 # hide_compaction_summary, features, respect_gitignore, check_model_catalog) —
-# all 46 are covered by SETTINGS_PY_TO_JSON.
+# all 48 are covered by SETTINGS_PY_TO_JSON.
 # (This count has been wrong before — it read 42 while the dataclass held 41,
 # then 42 while it held 43. Re-measured 2026-09-07 under #238: 43 before this
 # field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same; 45 after #609's
-# ``check_model_catalog``; 46 after #722's ``background_jobs``. Recount before
-# trusting it.)
+# ``check_model_catalog``; 46 after #722's ``background_jobs`` — but 47 were
+# there at 69e43857 when #795 recounted, and 48 after its ``agents``;
+# ``tests/core/test_agent_selection_795.py`` now recounts it.)
 
 
 @dataclass
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    44 optional top-level fields (Pi's original 33 + aelix-original
+    48 optional top-level fields (Pi's original 33 + aelix-original
     additions). Defaults are applied in the per-getter methods on
     :class:`SettingsManager` (NOT here) — this dataclass is the
     structural shape only.
@@ -319,6 +320,11 @@ class Settings:
     skills: list[str] | None = None
     prompts: list[str] | None = None
     themes: list[str] | None = None
+    # Aelix-original (#795, ADR-0304): which agent profiles the model may
+    # delegate to, in ADR-0279 D1's per-item grammar (``+name`` / ``-name`` /
+    # ``!glob`` / ``±path``). NOT ``features.agents`` (whether delegation exists
+    # at all) and not ``backgroundJobs.limits.agents`` (a job count).
+    agents: list[str] | None = None
     # pi's ``defaultTools`` (``settings-manager.ts``), with the aelix base of
     # every tool on (#510, ADR-0283): plain names replace the BUILT-IN set,
     # ``+name`` / ``-name`` turn any tool on or off, in order; a project list
@@ -435,6 +441,9 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "skills": "skills",
     "prompts": "prompts",
     "themes": "themes",
+    # #795 (ADR-0304): the agent-profile on/off list; without this entry the
+    # loader drops the key silently, as it does any key absent from this table.
+    "agents": "agents",
     "default_tools": "defaultTools",
     "enable_skill_commands": "enableSkillCommands",
     "terminal": "terminal",

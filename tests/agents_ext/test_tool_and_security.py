@@ -598,7 +598,7 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
     (``loop.py:1055-1058``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
-    (``agents/service.py:109-110``) — the exact B5 shape, arriving one step later.
+    (``agents/service.py:111-112``) — the exact B5 shape, arriving one step later.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
@@ -737,7 +737,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:1630``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:1799``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1091,7 +1091,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:1118-1121``) rendered by the kernel
+# the model as a blocked call (``extension.py:1170-1173``) rendered by the kernel
 # as an immediate error result (``loop.py:604-617``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
@@ -1482,7 +1482,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so the note's repeat check could be dropped from
-    ``tool.py:1718`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:1819`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the

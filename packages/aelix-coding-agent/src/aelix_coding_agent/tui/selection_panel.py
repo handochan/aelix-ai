@@ -263,6 +263,12 @@ class SelectionModel:
         if state.pending:
             after = "/reload" if self.effect == "reload" else "pending"
             return f"{'on' if state.saved else 'off'} · {after}", _YELLOW
+        if state.live is False and state.live_note is not None and state.saved:
+            # #795 (ADR-0304 D10): the kind's own "not in use now" word comes
+            # before the ``project`` provenance word — a profile this project's
+            # file turned on that the identity does not list says ``not listed``
+            # (the state line keeps "this project's file").
+            return state.live_note[0], _DIM
         if state.decided_by == "project":
             return "project", _DIM
         if not state.saved:
@@ -395,8 +401,15 @@ class Layout:
         return max(1, self.height - self.fixed_rows)
 
 
+#: A kind that applies LISTS (#795, ADR-0304 D10): the saved lists differ from
+#: the applied ones although no row may show it (Codex 6 r1).
+POLICY_PENDING = "The saved list is not the one this session uses yet; Enter applies it."
+
+
 def _banners(model: SelectionModel) -> list[tuple[str, str]]:
     rows = [(n, _DIM) for n in model.snapshot.notices]
+    if model.snapshot.policy_pending:
+        rows.append((POLICY_PENDING, _YELLOW))
     problems = list(model.snapshot.problems)
     if model.snapshot.unreadable:
         rows.append(
@@ -716,7 +729,10 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
                 text = f"Saved {_word(state.saved)}{decided} · {text}"
             if lock.value and state.live is False:
                 # A run lock lets an extension narrow, never widen (ADR-0283).
-                text += " · off now (turned off this run)"
+                clause = (
+                    state.live_note[1] if state.live_note is not None else "turned off this run"
+                )
+                text += f" · off now ({clause})"
         if state.problem is not None:
             # #683 — the load error, after what locks the row (an ``-e`` row
             # said only "Locked on: loaded by -e for this run").
@@ -730,7 +746,8 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
     now = state.live if state.live is not None else state.applied
     text = f"Saved {_word(state.saved)}{decided} · now {_word(now)}"
     if state.live is False and state.applied:
-        text += " (turned off this run)"
+        # #795 (ADR-0304 D10): a kind's own clause, else the tools' wording.
+        text += f" ({state.live_note[1] if state.live_note is not None else 'turned off this run'})"
     edit = model.edits.get(state.item.key)
     if edit is not None:
         # The title row's words (#510 V12): "This project" did not fit at 50 columns.
@@ -966,8 +983,12 @@ def summary(
     width: int = 80,
     always_note: bool = False,
     held: Sequence[tuple[str, bool, str]] = (),
+    lists_applied: bool = False,
 ) -> Text:
     """The transcript lines Enter leaves behind (ADR-0279 D11), wrapped to *width* with their indent.
+
+    *lists_applied* (#795, ADR-0304 D10): the apply took saved LISTS that moved no
+    row (``Snapshot.policy_pending``), which "nothing to save" alone would hide.
 
     *always_note* (a kind whose effect is ``reload``, #25): Enter saved and
     applied nothing, so the guidance is said whenever something was saved.
@@ -1028,6 +1049,8 @@ def summary(
                 else:
                     what = "these"
                 line(f"Nothing changes for the model: this session already had {what}.", "dim")
+            if lists_applied and not moved:
+                line("The saved list is in use now; no row changed.", "dim")
     elif always_note and effect_note and save is not None and save.changed:
         line(effect_note, "dim")
     return out
@@ -1260,6 +1283,9 @@ class SelectionPanelBody:
                 width=self._width(),
                 always_note=reload_bound,
                 held=self._held(save, applied),
+                lists_applied=model.snapshot.policy_pending
+                and applied is not None
+                and applied.applied,
             )
         ]
 
@@ -1307,7 +1333,11 @@ class SelectionPanelBody:
             if state.lock is not None:
                 why = state.lock.reason
             elif state.live is False and state.applied:
-                why = "it was turned off for this run"
+                why = (
+                    state.live_note[1]
+                    if state.live_note is not None
+                    else "it was turned off for this run"
+                )
             else:
                 why = ""
             out.append((label, value, why))

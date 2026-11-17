@@ -112,6 +112,11 @@ class ItemState:
     """Whether it is in use right now, when that can differ from the applied
     selection — a tool an extension turned off this run. ``None``: same as
     :attr:`applied`."""
+    live_note: tuple[str, str] | None = None
+    """Why a row is not in use now, in the kind's own words: ``(status word,
+    state-line clause)`` (#795, ADR-0304 D10 — ``not listed``, ``/agents run``).
+    ``None``: the panel's own ``off now`` / ``turned off this run``. Read only
+    while :attr:`live` is ``False``."""
 
     @property
     def in_force(self) -> bool:
@@ -146,6 +151,17 @@ class Snapshot:
     """Files that SHOULD have been read and could not be (Codex X3). Not an absent
     or untrusted scope: their entries are unknown, so nothing may be applied
     from this snapshot (an off skill would read as on)."""
+    policy: tuple[tuple[str, ...] | None, tuple[str, ...] | None] = (None, None)
+    """The entries this snapshot read from the global and the project file
+    (``None`` for an absent, untrusted or unread scope). Compared with a kind's
+    ``applied_policy()`` by :meth:`ResourceSelection.apply` (#795, ADR-0304 D3)."""
+    policy_pending: bool = False
+    """The kind applies LISTS (``applied_policy()``) and the lists this snapshot
+    read differ from them, whether or not a row moves (``!rev*`` replacing
+    ``-reviewer`` while only ``reviewer`` exists). The panel says so on its own
+    line, apart from the rows' pending values and from unsaved edits (#795,
+    ADR-0304 D10; Codex 6 r1). ``False`` for a snapshot with an unreadable
+    file: nothing is applied from it."""
 
 
 @dataclass(frozen=True)
@@ -263,8 +279,12 @@ class ResourceKind(Protocol):
 
     Optional members, read with ``getattr``: ``grammar`` (a
     :class:`SelectionGrammar`; D1's when absent), ``live()`` (the keys in use
-    right now, when an applied selection can be narrowed at run time) and
-    ``item_problems()`` (row key → why it failed to load).
+    right now, when an applied selection can be narrowed at run time),
+    ``live_notes()`` (row key → :attr:`ItemState.live_note`, #795),
+    ``item_problems()`` (row key → why it failed to load) and
+    ``applied_policy()`` (the entries of the two lists the kind has applied, in
+    :attr:`Snapshot.policy`'s shape — for a kind that keeps LISTS rather than
+    names, so a busy apply defers a change of lists that moves no row, #795).
     """
 
     kind: str
@@ -423,6 +443,26 @@ class ResourceSelection:
             return ScopeStatus(scope, path, False, f"{path or scope} did not load: {error}", exists)
         return ScopeStatus(scope, path, True, None, exists)
 
+    def read_lists(self, key: str) -> tuple[SettingsLists, tuple[str, ...]]:
+        """Both files' lists for *key* as they are on disk now, and the files that could not be read.
+
+        #795 (ADR-0304 D3): what ``AgentKind.apply`` commits. The project file
+        only when it may be read (:meth:`_project_readable`); an unreadable
+        file is named in the second item and its list is ``None``.
+        """
+
+        problems: list[str] = []
+        unreadable: list[str] = []
+        global_list = self._scope_list("global", key, problems, unreadable)
+        project_list = self._scope_list("project", key, problems, unreadable)
+        labels = {
+            scope: self._path(scope) or f"the {scope} settings" for scope in ("global", "project")
+        }
+        return (
+            SettingsLists(global_list, project_list, tuple(problems), labels),
+            tuple(unreadable),
+        )
+
     def snapshot(self, kind: ResourceKind) -> Snapshot:
         """A fresh read of both files (the project's only when trusted), evaluated for every item."""
 
@@ -439,6 +479,10 @@ class ResourceSelection:
         live = cast("set[str]", live_of()) if callable(live_of) else None
         problems_of = getattr(kind, "item_problems", None)
         failed = cast("Mapping[str, str]", problems_of()) if callable(problems_of) else {}
+        notes_of = getattr(kind, "live_notes", None)
+        notes = cast("Mapping[str, tuple[str, str]]", notes_of()) if callable(notes_of) else {}
+        policy_of = getattr(kind, "applied_policy", None)
+        policy = (_entries_of(global_list), _entries_of(project_list))
         items = kind.items()
         values = grammar.evaluate_all(items, global_list, project_list)
         states = []
@@ -453,6 +497,7 @@ class ResourceSelection:
                     locks.get(item.key),
                     problem=failed.get(item.key),
                     live=(item.key in live) if live is not None else None,
+                    live_note=notes.get(item.key),
                 )
             )
         return Snapshot(
@@ -462,6 +507,8 @@ class ResourceSelection:
             problems=tuple(problems),
             notices=tuple(kind.notices()),
             unreadable=tuple(unreadable),
+            policy=policy,
+            policy_pending=not unreadable and callable(policy_of) and policy_of() != policy,
         )
 
     # --- saving ------------------------------------------------------------
@@ -616,10 +663,13 @@ class ResourceSelection:
         if previous is not None and not previous.done():
             previous.cancel()
         on, off = _delta(snap)
-        if not on and not off:
+        if not on and not off and not snap.policy_pending:
             # Nothing saved differs from what is applied (#510 TUI): there is
             # nothing to wait for, and "applies when the turn ends" would be
-            # a promise about nothing.
+            # a promise about nothing. A kind that applies LISTS (#795,
+            # ADR-0304 D3) also waits when only its lists changed: ``!rev*``
+            # replacing ``-reviewer`` moves no row today and decides a profile
+            # file a later discovery finds.
             return ApplyResult(True)
 
         async def _later() -> None:
@@ -639,6 +689,10 @@ class ResourceSelection:
 
         self._deferred[kind.kind] = asyncio.get_running_loop().create_task(_later())
         return ApplyResult(False, deferred=True, turned_on=on, turned_off=off)
+
+
+def _entries_of(scope_list: ScopeList | None) -> tuple[str, ...] | None:
+    return tuple(scope_list.entries) if scope_list is not None else None
 
 
 def _refused(snapshot: Snapshot) -> ApplyResult:

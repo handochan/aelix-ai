@@ -6,6 +6,7 @@ resolves an agent to its newest job, the audit sees aliases and helpers, an unkn
 unresolved). **Inert until #611 S3e:** everything below is behind
 `aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12). With it off, Ctrl+B is
 prompt_toolkit's emacs `backward-char`, as it was, and every delegation is awaited as before.
+Amended 2026-11-17 by ADR-0304 (#795, #796): Ctrl+B is not gated by the agents policy; a moved run keeps running (dated note at the end).
 Date: 2026-11-12
 Issue: #775 (#611 slice S3a). Parent: #611. Contract: `.omc/specs/611-s3-contract-r4-2026-11-12.md`
 (r4, with its 정오표; where it says "as r3" or "as r2", the r3 and r2 contracts in the same
@@ -392,3 +393,13 @@ POSIX):
   and `_finalize` writes `stopped` and frees the slot. The rescue proper is §9's case.
 
 The parent's death after a move: the Limits note above. Windows CI is still the lead's.
+
+## Note (2026-11-17, ADR-0304, #795, #796)
+
+Ctrl+B starts nothing and resolves no profile, so the `agents` settings lists and the identity's
+`agents:` do not gate it: a run whose profile is turned off after it started still moves, runs to
+its end, and its notice arrives; a later `resume` of that agent is a new start and is refused
+(ADR-0304 D8). Ctrl+B is still offered for a single `run` or a `resume` only
+(`tests/agents_ext/test_detach_driver_611.py`
+`test_a_gate_off_or_non_tui_call_builds_no_delegate`), so no batch or chain leaves the
+foreground with members queued.
