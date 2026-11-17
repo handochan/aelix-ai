@@ -1,10 +1,10 @@
 # 0297. A bash command can run in the background as a job of its session
 
 Status: Accepted (2026-11-11, #760). Amended 2026-11-12 (#769, #770): §8's settled jobs are no
-longer all kept for the process's life; delegation pages by bytes too. **Inert until #611 S3:**
-everything below is behind
-`aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12), and with it off the
-`bash` tool is the tool it was (§1).
+longer all kept for the process's life; delegation pages by bytes too. **Active since #611 S3
+(#779, 2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True` (ADR-0293 §12); with
+it off — a rollback, or `backgroundJobs.enabled: false` — the `bash` tool is the tool it was (§1).
+See the note of 2026-11-17 (#779) at the end.
 Date: 2026-11-11
 Issue: #760 (#611 slice S2d). Parent: #611. Contract: `.omc/specs/611-s2-contract-r3-2026-11-10.md`
 (r3; where it says "as r2", `611-s2-contract-r2-2026-11-10.md` §5 and §7 S2d), with Codex's two
@@ -314,7 +314,7 @@ aelix SIGKILLed, the shell gone within 5 s, the shell's `sleep` child still aliv
 ## Limits and what S2d does not do
 
 - **Not visible**: `ACTIVE` stays `False`; S3 flips it, and the guide text below goes into
-  `docs/guides/tools.md` then.
+  `docs/guides/tools.md` then. *2026-11-17 (#779): flipped, and the text is in the guide.*
 - **Windows is unmeasured here.** The real Job paths — preserve after a normal exit, a failed
   preserve held, kill-on-close when aelix dies, the suspended spawn under a real resume — have
   windows-latest tests (`::test_a_normal_exit_preserves_its_helpers`,
@@ -340,7 +340,7 @@ aelix SIGKILLed, the shell gone within 5 s, the shell's `sleep` child still aliv
 - A restored notice says "it keeps checking" or not by ADR-0293's rule; a restart never stops a
   command it finds running.
 
-## Guide text for the S3 flip (draft; not in the published guide while the gate is off)
+## Guide text for the S3 flip (published in `docs/guides/tools.md` by #779)
 
 > ### Running a command in the background
 >
@@ -354,3 +354,16 @@ aelix SIGKILLed, the shell gone within 5 s, the shell's `sleep` child still aliv
 > seconds (600; 0 for none); in the TUI there is no default. A command that ends normally leaves
 > what it started running, as a foreground one does, and the notice says when it left any. Not
 > available over RPC or ACP yet (#612) or with a remote shell.
+
+## Note (2026-11-17, #779)
+
+**Active (#611 S3e).** `run_in_background` is offered in the TUI, `-p` and json with the local
+shell. The gate-off pin `tests/tools/test_bash_background_611.py::test_the_parameter_is_absent_with_the_gate_off`
+runs under the `jobs_inactive` fixture, with its twin on the shipped gate
+(`::test_with_the_shipped_gate_a_host_that_offers_it_gets_the_parameter`, fails on `bf507d59`);
+`::test_building_bash_imports_the_background_module_only_with_the_gate_on` (was
+`test_with_the_gate_off_building_bash_imports_nothing_of_the_background_module`) pins both, in a
+child interpreter. The draft above is in `docs/guides/tools.md`, "Running a command in the
+background", as written except its "At most 4": that is the default of `backgroundJobs.limits.bash`,
+from 1 to 16 (Codex, #779 review: five held with the limit at 5); `job` and `job_stop` are built-in tools and not on RPC or ACP (ADR-0293's
+note of this date).

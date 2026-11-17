@@ -2393,7 +2393,7 @@ class ExtensionAPI:
 
         return self._runtime.event_bus
 
-    # --- #722 (ADR-0293) — background jobs, inert until #611 S3 ---
+    # --- #722 (ADR-0293) — background jobs, on since #611 S3e (#779) ---
 
     def _jobs_absent(self, name: str) -> None:
         """While background jobs are off, ``name`` is not there: the interpreter's own error for it.
@@ -2417,8 +2417,8 @@ class ExtensionAPI:
 
         While background jobs are off (``jobs/activation.py``) this attribute is
         not there: reading it raises the interpreter's own ``AttributeError``,
-        so ``hasattr`` and ``getattr(…, None)`` answer as they did before #722. The whole feature is unreachable until #611 S3
-        turns it on. The facade is bound to this extension and to this
+        so ``hasattr`` and ``getattr(…, None)`` answer as they did before #722. The gate is on since #611 S3e
+        (#779); off is a rollback or ``backgroundJobs.enabled: false``. The facade is bound to this extension and to this
         runtime: it refuses every call once a reload or a session change has
         invalidated the runtime. See :class:`~aelix_coding_agent.jobs.facade.JobsFacade`.
         """

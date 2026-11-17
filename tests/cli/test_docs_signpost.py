@@ -344,14 +344,16 @@ def test_the_block_prose_stays_within_its_measured_budget() -> None:
     that growing this block into a chapter has to be a decision. #511 made one:
     its ``skills-and-prompts`` guide is listed like every bundled guide, 623 ->
     643 chars of prose, and the budget moved from 640 to 660 with it. #510 made
-    another: its ``tools`` guide, 663 chars, and the budget moved to 680.
+    another: its ``tools`` guide, 663 chars, and the budget moved to 680. #779
+    made a third: its ``background-jobs`` guide, 663 -> 680 chars, and the budget
+    moved to 700.
     """
 
     block = _agent_context._docs_signpost(_ALL_TOOL_NAMES_SET)
     docs_dir = str(bundled_docs_dir())
     assert docs_dir in block
     prose = len(block) - len(docs_dir)
-    assert prose < 680, prose
+    assert prose < 700, prose
 
 
 def test_the_names_line_carries_no_path_the_model_must_assemble_twice() -> None:

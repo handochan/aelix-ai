@@ -185,6 +185,7 @@ def _base_argv(ext: Path) -> list[str]:
 # === 1. Built-ins drop, extension + MCP tools stay ===========================
 
 
+@pytest.mark.usefixtures("jobs_inactive")  # #779: gate on, see tests/cli/test_job_tools_builtin_779.py
 async def test_builtins_dropped_extension_and_mcp_kept(
     _isolated_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

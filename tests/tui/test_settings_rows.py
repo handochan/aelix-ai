@@ -24,6 +24,7 @@ def _rows(sm: SettingsManager) -> dict[str, SettingsRow]:
     return {r.key: r for r in build_settings_rows(sm)}
 
 
+@pytest.mark.usefixtures("jobs_inactive")  # #779: the shipped gate's count is the next test's
 async def test_build_rows_count_and_keys() -> None:
     sm = SettingsManager.in_memory({})
     rows = build_settings_rows(sm)
@@ -52,6 +53,17 @@ async def test_build_rows_count_and_keys() -> None:
         "hide_thinking_block",
         "hide_compaction_summary",
     ]
+
+
+async def test_with_the_shipped_jobs_gate_the_background_jobs_row_is_one_more() -> None:
+    """#779: the shipped jobs gate is on, so ``/settings`` has the "Background jobs" row (#778): 25.
+
+    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, and there were 24 rows.
+    """
+
+    keys = [r.key for r in build_settings_rows(SettingsManager.in_memory({}))]
+    assert "background_jobs" in keys
+    assert len(keys) == 25
 
 
 async def test_rows_read_current_values_for_seeded_manager() -> None:
@@ -792,7 +804,19 @@ def _bool_rows(sm: SettingsManager) -> list[SettingsRow]:
     return [r for r in build_settings_rows(sm) if r.kind == "bool"]
 
 
-async def test_every_bool_row_is_dispatchable() -> None:
+@pytest.mark.parametrize(
+    ("gate", "count"),
+    [
+        # #779: the gate pinned off (``jobs_inactive``), the rollback's 13 rows,
+        pytest.param("jobs_inactive", 13, id="jobs-off"),
+        # and the shipped gate, on: the "Background jobs" row is the 14th (fails
+        # on ``bf507d59``, where ``ACTIVE`` shipped ``False`` and there were 13).
+        pytest.param(None, 14, id="shipped"),
+    ],
+)
+async def test_every_bool_row_is_dispatchable(
+    request: pytest.FixtureRequest, gate: str | None, count: int
+) -> None:
     """① Every ``kind="bool"`` row survives a REAL toggle, not just a lookup.
 
     ``_row_bool`` indexes ``_BOOL_GETTERS[row.key]``, so a bool row missing from
@@ -807,9 +831,11 @@ async def test_every_bool_row_is_dispatchable() -> None:
 
     from aelix_coding_agent.tui.settings_rows import _BOOL_GETTERS, _BOOL_SETTERS
 
+    if gate is not None:
+        request.getfixturevalue(gate)
     probe = SettingsManager.in_memory({})
     rows = _bool_rows(probe)
-    assert len(rows) == 13, [r.key for r in rows]
+    assert len(rows) == count, [r.key for r in rows]
     for row in rows:
         assert row.key in _BOOL_GETTERS, f"{row.key} cannot be READ by apply_setting"
         assert row.key in _BOOL_SETTERS, f"{row.key} cannot be WRITTEN by apply_setting"

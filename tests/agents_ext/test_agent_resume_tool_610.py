@@ -376,7 +376,7 @@ async def test_a_run_that_carries_an_id_is_refused_and_nothing_runs(tmp_path: Pa
         ({"mode": ""}, "mode=''"),
         ({"cwd": "sub"}, "'cwd'"),
         ({"cwd": ""}, "'cwd'"),
-        ({"background": True}, "Background delegation is not available"),
+        # #779 (R10): ``background`` is the next test's, by host.
     ],
 )
 async def test_a_resume_refuses_every_key_that_would_make_it_another_run(
@@ -385,6 +385,29 @@ async def test_a_resume_refuses_every_key_that_would_make_it_another_run(
     """A resume gives ONE agent its next instruction, in the directory it ran
     in, in the foreground. Each key that would choose otherwise is REFUSED, not
     ignored — ignored, the model would believe it had got what it asked for."""
+
+    with pytest.raises(AgentCallError, match=re.escape(says)):
+        parse_agent_call({**_RESUME, **extra})
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(bench, {**_RESUME, **extra})
+    assert result.is_error is True and says in _text(result)
+    assert bench.channel.plans == []
+
+
+async def test_a_resume_refuses_background_on_a_host_where_the_kind_is_not_registered(
+    tmp_path: Path,
+) -> None:
+    """``background: true`` on a resume, where no job kind is registered: ADR-0197's refusal.
+
+    #779 (R10, the lead's call): this case was the last row of the test above,
+    whose refusal text is the host's: this bench builds no job service, so the
+    ``agent`` job kind is not registered, gate on or off. Where it is registered
+    the key is refused pointing at ``action="spawn"``:
+    ``tests/agents_ext/test_agent_background_611.py::test_where_the_kind_is_registered_background_true_points_to_spawn``.
+    """
+
+    extra, says = {"background": True}, "Background delegation is not available"
 
     with pytest.raises(AgentCallError, match=re.escape(says)):
         parse_agent_call({**_RESUME, **extra})

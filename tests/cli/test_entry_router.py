@@ -198,6 +198,7 @@ class _FakeTTYStdin:
         return ""
 
 
+@pytest.mark.usefixtures("jobs_inactive")  # #779: the shipped gate's ``jobs=`` is the next test's
 async def test_interactive_mode_dispatches_to_run_tui(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -366,6 +367,39 @@ async def test_interactive_mode_dispatches_to_run_tui(
 
     late_route = tui_permission["late_route"]
     assert isinstance(late_route, LateRoute) and late_route.last is None
+
+
+async def test_interactive_mode_hands_run_tui_the_job_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#779: with the shipped jobs gate on, the router hands ``run_tui`` the process's job service.
+
+    The double above is pinned with the gate off; this one takes only what the
+    gate adds. Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, and no
+    ``jobs`` reached ``run_tui``.
+    """
+
+    from aelix_coding_agent.jobs.service import JobService
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+    handed: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, *, cwd: str, jobs: object = None, **_rest: object) -> int:
+        handed["jobs"] = jobs
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session"])
+    assert code == 0
+    assert isinstance(handed["jobs"], JobService)
 
 
 async def test_auth_callback_wired_without_api_key(

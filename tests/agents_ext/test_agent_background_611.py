@@ -42,10 +42,15 @@ from aelix_agents.jobs_client import (
 from aelix_agents.print_channel import AGENT_TOOL_NAME, PrintChannel
 from aelix_agents.tool import (
     _BACKGROUND_HEAD,
+    _BACKGROUND_IS_SPAWN,
     _BACKGROUND_REFUSED,
     AGENT_TOOL_PARAMETERS,
     BACKGROUND_HEAD_MAX_BYTES,
+    DESCRIPTION_HEAD_MAX_BYTES,
+    MAX_ROSTER,
+    ROSTER_MAX_BYTES,
     build_description,
+    build_roster,
 )
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
@@ -63,7 +68,7 @@ from aelix_coding_agent.jobs.records import JOB_FACT_TYPE
 from aelix_coding_agent.jobs.service import JobService
 
 from tests.agents_ext.test_child_session_records import _parent
-from tests.agents_ext.test_print_channel_spawn import _stub
+from tests.agents_ext.test_print_channel_spawn import _profile, _resolved, _stub
 from tests.agents_ext.test_tool_and_security import _FakeUI, _text, _write_profile
 from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
 
@@ -238,8 +243,13 @@ def _spawned_id(result: ToolResult) -> str:
 # === the gate ====================================================================
 
 
+@pytest.mark.usefixtures("jobs_inactive")
 async def test_with_the_gate_off_the_tool_is_what_it_was(tmp_path: Path) -> None:
-    """``ACTIVE`` off: the schema key for key, the description, and a spawn refused as before #611."""
+    """``ACTIVE`` off: the schema key for key, the description, and a spawn refused as before #611.
+
+    #779: pinned off through ``jobs_inactive``, since the shipped gate is on; the
+    path a rollback (``ACTIVE = False``) restores. Its on twin follows.
+    """
 
     assert not activation.is_active()
     runtime = _ExtensionRuntime()
@@ -264,6 +274,29 @@ async def test_with_the_gate_off_the_tool_is_what_it_was(tmp_path: Path) -> None
     assert blocked is not None and blocked.reason == _BACKGROUND_REFUSED
 
 
+async def test_with_the_shipped_gate_the_tool_offers_the_background_actions(tmp_path: Path) -> None:
+    """#779: the shipped gate, no fixture, is on: the five actions, the paragraph, the kind and a spawn.
+
+    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, so ``is_active()`` is false.
+    """
+
+    assert activation.is_active(), "the shipped gate is on (#779)"
+    try:
+        rig = await _rig(tmp_path)
+        actions = rig.tool.parameters["properties"]["action"]["enum"]
+        assert {"run", "resume", "spawn", "wait", "status", "stop", "result"} <= set(actions)
+        assert _BACKGROUND_HEAD in rig.tool.description
+        assert rig.service.registry.get(KIND) is not None
+        assert rig.ext.runtime is not None and rig.ext.runtime.host.reserve is not None
+        result = await rig.call({"action": "spawn", "profile": "scout", "task": "count files"})
+        _spawned_id(result)
+        snap = await _settled(rig)
+        assert snap.state == "done" and snap.brief == "the background answer"
+        await rig.service.shutdown()
+    finally:
+        activation.install_service(None)
+
+
 async def test_an_rpc_host_refuses_the_background_actions_until_612(tmp_path: Path, jobs_on: Any) -> None:
     """Jobs on, an RPC host: the tool is the pre-#611 one and the kind is not registered (#612)."""
 
@@ -280,6 +313,88 @@ def test_the_background_paragraph_stays_inside_its_own_budget_and_names_every_ac
     assert len(_BACKGROUND_HEAD.encode("utf-8")) <= BACKGROUND_HEAD_MAX_BYTES
     for action in ("spawn", "status", "wait", "stop", "result"):
         assert f'action="{action}"' in _BACKGROUND_HEAD
+
+
+# === ADR-0295's four, where the kind is registered (#779, R10) ===================
+#
+# ADR-0295 listed four tests "to rewrite at the flip". Each builds no job service,
+# so the ``agent`` job kind is not registered there and they pass with the gate
+# on as well (re-measured at #779); R10 (the lead's call) renamed them "on a host
+# where the kind is not registered". These are their twins with the gate on
+# (``jobs_on``, set here, not read from the shipped value: fix-r1, verify r1 F6)
+# and a service, where the kind is registered. They pin what the gate-on build
+# did on ``bf507d59`` already, so they are guards there.
+
+
+async def test_where_the_kind_is_registered_the_seam_still_refuses_background(tmp_path: Path, jobs_on: Any) -> None:
+    """The seam's ``spawn(background=True)`` — ``/agents run``'s and RPC ``agents/run``'s door — refuses
+    even where the kind is registered: a background agent is ``action="spawn"``, a job of the service.
+
+    Twin of ``test_print_channel_spawn.py::test_background_true_is_rejected_at_the_seam_on_a_host_where_the_kind_is_not_registered``.
+    """
+
+    try:
+        rig = await _rig(tmp_path)
+        assert rig.service.registry.get(KIND) is not None, "the gate on registers the kind"
+        assert rig.ext.runtime is not None
+        with pytest.raises(ValueError, match="background"):
+            await rig.ext.runtime.spawn(_resolved(_profile()), "go", background=True)
+        assert rig.jobs() == []
+        await rig.service.shutdown()
+    finally:
+        activation.install_service(None)
+
+
+@pytest.mark.parametrize("action", [None, "resume"], ids=["run", "resume"])
+async def test_where_the_kind_is_registered_background_true_points_to_spawn(
+    tmp_path: Path, jobs_on: Any, action: str | None
+) -> None:
+    """``background: true`` on a run or a resume, where the kind is registered: refused, naming ``spawn``.
+
+    Twin of ``test_tool_and_security.py::test_background_true_is_rejected_on_a_host_where_the_kind_is_not_registered``
+    and ``test_agent_resume_tool_610.py::test_a_resume_refuses_background_on_a_host_where_the_kind_is_not_registered``.
+    """
+
+    args: dict[str, Any] = {"profile": "scout", "task": "go", "background": True}
+    if action is not None:
+        args.update(action=action, id="a-0123456789ab")
+    try:
+        rig = await _rig(tmp_path)
+        assert rig.service.registry.get(KIND) is not None, "the gate on registers the kind"
+        result = await rig.call(args)
+        assert result.is_error and _text(result) == _BACKGROUND_IS_SPAWN
+        assert _BACKGROUND_REFUSED not in _text(result)
+        assert rig.jobs() == []
+        await rig.service.shutdown()
+    finally:
+        activation.install_service(None)
+
+
+async def test_where_the_kind_is_registered_the_description_adds_only_the_background_paragraph(
+    tmp_path: Path, jobs_on: Any
+) -> None:
+    """The live description is the background build, and the worst case adds one budget to the other two.
+
+    Twin of ``test_tool_and_security.py::test_the_whole_description_stays_inside_head_plus_roster_where_the_kind_is_not_registered``.
+    """
+
+    profiles = [_profile(name=f"agent{i:02d}", description="y" * 400) for i in range(MAX_ROSTER)]
+    whole = build_description(build_roster(profiles), background=True)
+    assert len(whole.encode("utf-8")) <= (
+        DESCRIPTION_HEAD_MAX_BYTES + BACKGROUND_HEAD_MAX_BYTES + ROSTER_MAX_BYTES + 64
+    )
+    try:
+        rig = await _rig(tmp_path)
+        assert rig.service.registry.get(KIND) is not None, "the gate on registers the kind"
+        await rig.prompt_started()
+        live = rig.tool.description
+        assert _BACKGROUND_HEAD in live
+        assert len(live.encode("utf-8")) <= (
+            DESCRIPTION_HEAD_MAX_BYTES + BACKGROUND_HEAD_MAX_BYTES + ROSTER_MAX_BYTES + 64
+        )
+        await rig.service.shutdown()
+    finally:
+        activation.install_service(None)
 
 
 # === spawn ========================================================================

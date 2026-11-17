@@ -637,13 +637,12 @@ async def test_integration_untrusted_headless_skips_project_extension(
     assert code in (0, 1)  # no RuntimeError from the poison extension
 
 
-async def test_integration_approve_loads_project_extension(
-    _isolated_env: Path, monkeypatch, capsys
-) -> None:
-    """``--approve`` in the same untrusted dir → project_trusted=True (the
-    project-local extension tier is enabled)."""
+async def _approve_with_a_project_probe(
+    isolated_env: Path, monkeypatch
+) -> tuple[dict[str, object], Path, int]:
+    """Run ``--approve`` in an untrusted dir holding one project-local probe extension."""
 
-    proj = _isolated_env / "proj"
+    proj = isolated_env / "proj"
     ext = proj / ".aelix" / "extensions"
     ext.mkdir(parents=True)
     # Same sentinel pattern as the untrusted test, but a CLEAN probe (registers
@@ -663,6 +662,7 @@ async def test_integration_approve_loads_project_extension(
         captured["project_trusted"] = kw.get("project_trusted")
         opts = await real_build(parsed, session, **kw)
         captured["extension_count"] = len(opts.extensions)
+        captured["extension_names"] = [getattr(e, "name", None) for e in opts.extensions]
         return opts
 
     monkeypatch.setattr(entry_mod, "_build_harness_options", _spy_build)
@@ -673,6 +673,21 @@ async def test_integration_approve_loads_project_extension(
         proj,
         monkeypatch,
     )
+    return captured, sentinel, code
+
+
+@pytest.mark.usefixtures("jobs_inactive")
+async def test_integration_approve_loads_project_extension(
+    _isolated_env: Path, monkeypatch, capsys
+) -> None:
+    """``--approve`` in the same untrusted dir → project_trusted=True (the
+    project-local extension tier is enabled).
+
+    #779: background jobs pinned off (``jobs_inactive``), so the count is the one
+    before their bridge extension; the shipped gate's count is the next test's.
+    """
+
+    captured, sentinel, code = await _approve_with_a_project_probe(_isolated_env, monkeypatch)
     assert captured["project_trusted"] is True
     # LOAD-BEARING positive arm (paired with the untrusted test's sentinel):
     # ``--approve`` enables the project-local tier, so the probe IS executed (its
@@ -682,6 +697,22 @@ async def test_integration_approve_loads_project_extension(
     # approved → sentinel / 3 exts.
     assert sentinel.exists()
     assert captured["extension_count"] == 4
+    assert code in (0, 1)
+
+
+async def test_integration_approve_with_the_shipped_jobs_gate_adds_the_jobs_extension(
+    _isolated_env: Path, monkeypatch, capsys
+) -> None:
+    """#779: the shipped jobs gate is on, so the same launch builds one extension more, the jobs bridge.
+
+    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, and the count was 4.
+    """
+
+    captured, sentinel, code = await _approve_with_a_project_probe(_isolated_env, monkeypatch)
+    assert captured["project_trusted"] is True
+    assert sentinel.exists()
+    assert captured["extension_count"] == 5
+    assert "JobsExtension" in captured["extension_names"]  # type: ignore[operator]
     assert code in (0, 1)
 
 

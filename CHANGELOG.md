@@ -75,16 +75,53 @@ unwritten. Add them with the next release.
   worktree or a fresh clone asks the project trust question once, and `-p` prints a Notice line
   until the folder is trusted (ADR-0281).
 
-- **Background jobs, built and switched off (#722, #611 S1b, ADR-0293).** A generic job
+- **Background jobs are on (#779, #611 S3e; ADR-0293, ADR-0295, ADR-0297, ADR-0298,
+  ADR-0299).** `jobs/activation.py` `ACTIVE` is now `True`. In the TUI, `-p` and `--mode json`
+  the model can run an agent in the background with `agent(action="spawn")` and a command with
+  `bash`'s `run_in_background` (local shell), read either with the `job` tool, and stop a
+  background command with `job_stop` and an agent with `agent(action="stop")` (`job_stop`
+  refuses an agent and says to use that); a `-p` run through the product's own entry point
+  offers `agent`'s `spawn`, background `bash` and the job tools, and its
+  delegated child offers background `bash`
+  (`tests/jobs/test_gated_cli_611.py::test_without_the_launcher_the_shipped_gate_is_on_in_both_processes`).
+  `-p` and json wait for the jobs they started, and `/new`, `/resume`, `/fork`, quitting and
+  `/reload` stop them; the TUI has the footer segment, the `/jobs` panel, Ctrl+B and a
+  "Background jobs" row in `/settings`
+  (`tests/tui/test_settings_rows.py::test_with_the_shipped_jobs_gate_the_background_jobs_row_is_one_more`);
+  each is the entry below that built it. For the tool flags `job` and `job_stop` count as
+  built-in tools (R9, the lead's call): `--no-builtin-tools` and a profile's `builtin_tools:
+  false` turn them off, `--tools` keeps them only when it names them, `--no-tools` turns them
+  off, a reload keeps that; `defaultTools` treats them as extension tools, as it treats `agent`
+  and `aelix_status`. Only the TUI, `-p` and json register them: RPC and ACP register neither
+  until #612, while the job service and `/jobs` are still built there
+  (`tests/cli/test_job_tools_builtin_779.py`). Over RPC and ACP a delegated agent's bound stays
+  `MAX_LIVE_CHILDREN = 4`, not a setting. An extension's own `ctrl+b` shortcut is skipped while
+  Ctrl+B is bound (`tests/tui/test_detach_key_611.py::test_an_extensions_ctrl_b_is_skipped_while_the_key_is_bound`),
+  and `ExtensionAPI.jobs` and `ExtensionAPI.post_notice` are there. To turn it all off for a
+  launch, set `"backgroundJobs": {"enabled": false}` in the global settings (the #778 entry
+  below). The product rollback is the one line `ACTIVE = False`. Every gate-off path keeps a
+  test pinned with the `jobs_inactive` fixture, and in real processes with a launcher that rolls
+  the gate back (`tests/jobs/test_gated_cli_611.py::test_with_the_gate_rolled_back_neither_process_is_gated`);
+  with the line applied these pass, and the ten tests that pin the shipped value fail by design
+  (`test_the_shipped_gate_is_on` and the nine shipped-gate twins; ADR-0293's note). A session
+  written with jobs on, holding a moved job, a placed notice and a waiting one, opened by the real
+  CLI with the gate rolled back or switched off, sends only the user's request, with the placed
+  notice replayed once and the waiting one not delivered; opened on again, it delivers the waiting
+  one once and never places or sends the other again
+  (`tests/jobs/test_rollback_779.py::test_jobs_on_then_off_then_on`). Guides: the new
+  `docs/guides/background-jobs.md`, "Background delegation" in `agent-profiles.md`, "Running a
+  command in the background" in `tools.md`, and `ExtensionAPI.jobs` and `post_notice` in
+  `background-jobs.md`.
+- **Background jobs (#722, #611 S1b, ADR-0293), on since #779.** A generic job
   service in product-core (`aelix_coding_agent/jobs/`), the kernel's notice inbox
   (`AgentHarness.post_notice`, `prompt_notices`), monitoring (a 5 s liveness loop, a footer
-  segment, `/jobs`, the `job` and `job_stop` tools), the `-p` drain and the TUI's waker are in the
-  tree **behind `jobs/activation.py` `ACTIVE = False`**, and the kernel inbox behind
-  `AgentHarnessOptions.notice_inbox`, which is off by default
+  segment, `/jobs`, the `job` and `job_stop` tools), the `-p` drain and the TUI's waker, gated
+  by `jobs/activation.py` `ACTIVE` (on since #779; see the #779 entry above), and the kernel
+  inbox behind `AgentHarnessOptions.notice_inbox`, which is off by default
   (`tests/harness/test_notice_inbox_722.py::test_with_the_inbox_off_the_kernel_is_what_it_was`)
   and which the CLI turns on only while `ACTIVE`, for `-p`, RPC and the harness a `new_session`
   rebuilds (`tests/cli/test_notice_inbox_wiring_722.py`).
-  With the gate off there is no `/jobs`, no job tool and no footer segment, the `backgroundJobs`
+  With the gate off (a rollback) there is no `/jobs`, no job tool and no footer segment, the `backgroundJobs`
   settings are not read (`tests/jobs/test_synthetic_kind_611.py::test_the_gate_off_refuses_the_facade`),
   and an extension probing `ExtensionAPI.jobs` or `ExtensionAPI.post_notice` sees what it saw
   before: `hasattr` is `False`, `getattr(…, None)` is `None`, `inspect.getmembers` lists neither,
@@ -92,16 +129,15 @@ unwritten. Add them with the next release.
   `.obj` (`tests/jobs/test_facade_611.py::test_with_the_gate_off_jobs_and_post_notice_read_as_absent`).
   The two names do appear in `dir()` and on the class, as properties.
   `-p`, RPC and TUI runs compared against the build before it with a scripted model and a real
-  one showed no difference (the #722 fix round's gate-off diff). #611 S3 turns it on with the
-  delegation client (#723) and its guide. Tests: `tests/jobs/`,
+  one showed no difference (the #722 fix round's gate-off diff). Tests: `tests/jobs/`,
   `tests/harness/test_notice_inbox_722.py`, `tests/cli/test_print_verdict_611.py`,
   `tests/cli/test_print_mode_background_611.py`, `tests/cli/test_notice_inbox_wiring_722.py`,
   `tests/tui/test_wake_611.py`, `tests/tui/test_restore_611.py`,
   `tests/tui/test_notice_never_touches_dialogs_611.py`.
-- **Background delegation, built and switched off (#723, #611 S1c, ADR-0295).** Delegation is
+- **Background delegation (#723, #611 S1c, ADR-0295), on since #779.** Delegation is
   the job service's first client: `agent(action="spawn")` runs one task as a job of the session,
-  and `wait`, `status`, `stop` and `result` answer for the session's own agents — all **behind
-  `jobs/activation.py` `ACTIVE = False`**, so nothing of it is visible yet. With the gate off the
+  and `wait`, `status`, `stop` and `result` answer for the session's own agents, in the TUI,
+  `-p` and json (the guide's "Background delegation", `docs/guides/agent-profiles.md`). With the gate off (a rollback) the
   `agent` tool's schema and description are what they were, a `spawn` is refused exactly as
   before, `/agents run` reserves nothing, and the live-children count and batch semaphore decide
   as before (`tests/agents_ext/test_agent_background_611.py::test_with_the_gate_off_the_tool_is_what_it_was`).
@@ -111,26 +147,24 @@ unwritten. Add them with the next release.
   and a delegated child no longer inherits that variable or `AELIX_JOB` from whatever launched
   aelix (`tests/agents_ext/test_agent_background_611.py::test_the_child_is_asked_for_print_done_and_a_foreground_one_is_not`);
   a delegated run's envelope reads the line only when its parent asked for it
-  (`tests/agents_ext/test_latest_run_611.py`). #611 S3 turns it on. Tests:
+  (`tests/agents_ext/test_latest_run_611.py`). Tests:
   `tests/agents_ext/test_agent_background_611.py`,
   `tests/agents_ext/test_agent_background_ownership_611.py`,
   `tests/agents_ext/test_child_recovery_611.py`, `tests/cli/test_print_done_protocol_611.py`.
-- **Background bash, built and switched off (#760, #611 S2d, ADR-0297).** `bash` is the job
+- **Background bash (#760, #611 S2d, ADR-0297), on since #779.** `bash` is the job
   service's second client: `run_in_background: true` returns a job id at once, the command's
   output goes to a file of its own, and one notice brings back the end of it and the file's path
   (or says the output may be incomplete when a starved reader could not confirm it read
-  everything), with `job(action="result")` paging the file by bytes — all **behind `jobs/activation.py`
-  `ACTIVE = False`**, so nothing of it is visible yet. With the gate off the `bash` tool's schema
+  everything), with `job(action="result")` paging the file by bytes, in the TUI, `-p` and json
+  with the local shell (`docs/guides/tools.md`). With the gate off (a rollback) the `bash` tool's schema
   and description are what they were, and a call that carries `run_in_background` runs in the
   foreground as before (`tests/tools/test_bash_background_611.py::test_the_parameter_is_absent_with_the_gate_off`).
   The job service's `start` takes a kind's `client_start`, its adapters a required
   `restored_note`, and its pages a `next_offset`; delegation's paging was unchanged by it and
-  pages by bytes since #770 (the next entry). #611 S3 turns it
-  on. Tests: `tests/tools/test_bash_background_611.py`, `tests/jobs/test_client_start_611.py`,
+  pages by bytes since #770 (the next entry). Tests: `tests/tools/test_bash_background_611.py`, `tests/jobs/test_client_start_611.py`,
   `tests/cli/test_bash_background_cli_760.py`.
-- **Background jobs' last residuals before the switch-on, built and switched off (#749, #769,
-  #770; ADR-0293, ADR-0295, ADR-0297).** All behind `jobs/activation.py` `ACTIVE = False`, so
-  nothing of it is visible yet. The job service keeps a session's ended jobs whole only up to 64;
+- **Background jobs' last residuals before the switch-on (#749, #769, #770; ADR-0293,
+  ADR-0295, ADR-0297), on since #779.** The job service keeps a session's ended jobs whole only up to 64;
   past that it lets go of the oldest that owes nothing — every notice of it placed or held out of
   every drain, in whatever order, its outcome written — keeping only what its session's records say of it with its elapsed
   time and last progress. It does so only for a kind that declares its ended jobs read from what
@@ -159,8 +193,8 @@ unwritten. Add them with the next release.
   result cannot be read is a sentence, not a code. A restored job whose processes are gone holds
   no slot, and a failed read or `recover` is tried again on the next pass
   (`tests/agents_ext/test_restored_texts_749.py`, `tests/jobs/test_residuals_749.py`).
-- **An off switch for background jobs, built and switched off with them (#778, #611 S3d;
-  ADR-0293).** With the job gate on, `"backgroundJobs": {"enabled": false}` in the global
+- **An off switch for background jobs (#778, #611 S3d; ADR-0293), on since #779.** With the
+  job gate on, as it is since #779, `"backgroundJobs": {"enabled": false}` in the global
   settings turns background jobs off for a launch: no service, no `job` or `job_stop` tool, no
   `spawn`, no background `bash`, no footer segment and no `/jobs` — a `-p` launch offers the model
   what a gate-off launch offers, field by field, and every extension's `setup()` — `aelix
@@ -172,7 +206,7 @@ unwritten. Add them with the next release.
   the next launch; it is shown only while the gate is on. With the gate off nothing changes and
   the setting is not read (`tests/jobs/test_enabled_setting_611.py`).
 - **A background agent whose answer holds half an emoji ends its job like any other (#782;
-  ADR-0295), built and switched off with it.** A lone surrogate (`"\ud83d"`) in a background
+  ADR-0295).** A lone surrogate (`"\ud83d"`) in a background
   agent's answer killed its job before its outcome and notice were written, and
   `agent(action="result")` raised on it. The delegation client now turns each lone surrogate into
   U+FFFD where a child's text enters it — its answer, its brief and its progress — so the job ends
@@ -183,8 +217,8 @@ unwritten. Add them with the next release.
   agent's result keeps the half as before; on openai-completions its model reads the answer with
   the half dropped. With the Anthropic adapter such a foreground result still ends the turn with
   an encoding error before anything is sent, as before this change.
-- **Ctrl+B moves a running delegation into the background, built and switched off (#775, #611
-  S3a, ADR-0298).** In the TUI, with background jobs on, Ctrl+B moves the one running `agent`
+- **Ctrl+B moves a running delegation into the background (#775, #611 S3a, ADR-0298), on since
+  #779.** In the TUI, with background jobs on, Ctrl+B moves the one running `agent`
   call with one task, or a `resume`, into a background job of the session without starting it
   again: the call returns at once with "Moved to the background at the user's request: …", the
   agent keeps running, and its result comes back once as a notice
@@ -204,10 +238,10 @@ unwritten. Add them with the next release.
   background agent — spawned or moved — is now refused as running ("that agent is already
   running"), before its dialog; with the gate on and before this change a running spawned agent's
   resume was refused by its child session's writer lock instead ("that agent's session is in use by
-  another process"). All of it is
-  **behind `jobs/activation.py` `ACTIVE = False`**: with the gate off Ctrl+B is `backward-char` and
-  every call is awaited as before. #611 S3e turns it on and adds no second entry for it.
-- **`/jobs` opens a background-jobs panel, built and switched off (#776, #611 S3b, ADR-0299).** In
+  another process"). With the gate off (a rollback) or `backgroundJobs.enabled: false`, Ctrl+B is
+  `backward-char` and every call is awaited as before (`tests/tui/test_detach_key_611.py::test_without_jobs_ctrl_b_is_backward_char_as_before`).
+  In tmux press it twice (`docs/guides/agent-profiles.md`).
+- **`/jobs` opens a background-jobs panel (#776, #611 S3b, ADR-0299), on since #779.** In
   the TUI a bare `/jobs` opens a panel in place of the input line that lists the session's
   background jobs —
   delegations and bash commands alike — and redraws every second at a fixed height: `↑↓` select,
@@ -224,7 +258,7 @@ unwritten. Add them with the next release.
   column now says what a job does instead of repeating its title, AGE goes before TITLE gets
   under 20 cells, so TITLE keeps 20 cells at 80 columns (it had 5), and long, CJK or emoji titles
   (`❤️`, `1️⃣`, joined sequences) are cut by terminal cells with `…` instead of wrapping, measured
-  for `rich` 13.7.1 to 14.3.4, the `[tui]` extra's range (`tests/jobs/test_jobs_table_776.py`). With the gate off there is no `/jobs`, as before.
+  for `rich` 13.7.1 to 14.3.4, the `[tui]` extra's range (`tests/jobs/test_jobs_table_776.py`). With the gate off (a rollback) there is no `/jobs`, as before.
 - **A turn that is over leaves a dim `✓ done · 4.2s · 14:05` line in the TUI (#702,
   ADR-0153).** The `Working…` row used to vanish and leave nothing of how long the turn took
   or when it ended. A typed turn now ends with one dim line: `✓ done`, `stopped` after `Esc`

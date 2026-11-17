@@ -102,6 +102,13 @@ added every extension tool. Now nothing widens them: an extension's
 An agent profile's `tools:` and `builtin_tools: false` (`--agent`, `/agents
 use`) are locks in the same way, shown as `profile` until `/agents use --none`.
 
+The background-job tools `job` and `job_stop` count as built-ins for these flags
+(#779; the lead's call, R9): `--no-builtin-tools` and a profile's `builtin_tools:
+false` turn them off, and `--tools` keeps them only when it names them, through
+`/reload` too (`tests/cli/test_job_tools_builtin_779.py`). `defaultTools` treats
+them as extension tools, as it treats `agent` and `aelix_status`. See
+[background-jobs.md](background-jobs.md).
+
 ## The `/tool` panel
 
 `/tool` (or `/tools`) lists every tool, grouped by where it came from — here
@@ -225,3 +232,22 @@ server off in `mcp.json`, or cover the names with a `*` pattern in
 with the reason, instead of leaving it out. A tool `defaultTools` turns off is
 turned on, as the panel can — for this run, until the settings are read again
 (`resources/reload`, a new session); nothing is written.
+
+## Running a command in the background
+
+`bash` can run a command without waiting for it: `run_in_background: true` returns a job id at
+once, the command's output goes to a file of its own, and the model gets a notice when it ends —
+with the end of its output, the file's path and how to read the rest
+(`job(action="result", id=…)`, a page at a time). `job_stop(id=…)` or `/jobs stop` stops it;
+`/new`, `/resume`, `/fork`, quitting and `/reload` stop the session's background commands. By
+default at most 4 run at once; `backgroundJobs.limits.bash` in your global settings sets 1 to 16. `-p` and `--mode json` wait for them. In those
+unattended runs a command without `timeout` is stopped after `AELIX_BASH_DEFAULT_TIMEOUT`
+seconds (600; 0 for none); in the TUI there is no default. A command that ends normally leaves
+what it started running, as a foreground one does, and the notice says when it left any. Not
+available over RPC or ACP yet (#612) or with a remote shell.
+
+This is ADR-0297's text for the switch-on, with the limit given as the default it is
+([ADR-0297](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md),
+`tests/tools/test_bash_background_611.py`, `tests/cli/test_bash_background_cli_760.py`). What
+background jobs share — the footer, `/jobs`, notices, the settings and what is left when aelix is
+killed — is in [background-jobs.md](background-jobs.md).

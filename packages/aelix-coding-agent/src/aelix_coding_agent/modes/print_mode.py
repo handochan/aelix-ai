@@ -223,7 +223,7 @@ async def run_print_mode(
     :func:`~aelix_coding_agent.model_registry.clear_command_value_cache`.
 
     ``jobs`` is the process's job service, passed only while background jobs
-    are active (#722, ADR-0293; off until #611 S3). With it, the run drains
+    are active (#722, ADR-0293; on since #611 S3e, #779). With it, the run drains
     before its verdict (:func:`_drain_background`) and the verdict latches the
     first failed answer among one user prompt and the notice turns after it
     (:class:`_FirstFailure`); without it nothing here differs from #410.

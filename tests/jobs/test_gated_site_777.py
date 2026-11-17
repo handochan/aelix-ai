@@ -4,8 +4,11 @@ The launcher puts that directory first on its process's ``PYTHONPATH``, so every
 ``python`` the agent's tools run imports the hook. Each case starts a real
 interpreter with that directory and, after it, a second one whose own
 ``sitecustomize`` prints ``activation.ACTIVE`` as the interpreter starts: the
-line is there only if the hook imported the ``sitecustomize`` it hides, and it
-reads ``True`` only if the hook turned the gate on.
+line is there only if the hook imported the ``sitecustomize`` it hides. Since
+#779 the gate is shipped on, so a gated interpreter and one the hook left alone
+can read the same value; which one the hook gated is read from what only a gated
+one does: it announces itself (``AELIX_TEST_ANNOUNCE``), and one it left alone
+reads what the same command reads with no hook.
 
 Fails on ``639dcdf6`` (#777 fix round 1): the hook read ``-m aelix_coding_agent``
 anywhere in ``sys.orig_argv``, so the ``-c`` and script cases read ``True``
@@ -85,10 +88,25 @@ def _actives(done: subprocess.CompletedProcess[str]) -> list[str]:
 def test_only_an_interpreter_running_aelix_as_its_module_is_gated(
     tmp_path: Path, args: list[str], gated: bool
 ) -> None:
+    """A gated interpreter reads ``ACTIVE True`` and announces itself; any other reads what it
+    reads with no hook at all, and announces nothing.
+
+    #779: ``ACTIVE`` is shipped on, so before fix-r1 the four not-gated cases read
+    ``ACTIVE True`` as a hard-coded value and would fail under a rollback
+    (verify r1 F6). They now compare with the same command run without the hook,
+    which reads the shipped value, whatever it is.
+    """
+
     script = tmp_path / "script.py"
     script.write_text("pass\n", encoding="utf-8")
-    done = _run(tmp_path, [str(script) if a == "{script}" else a for a in args], GATED_SITE)
-    assert _actives(done) == [f"ACTIVE {gated}"], done.stderr
+    argv = [str(script) if a == "{script}" else a for a in args]
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    done = _run(tmp_path, argv, GATED_SITE, AELIX_TEST_ANNOUNCE=str(marks))
+    control = _run(tmp_path, argv)
+    assert len(_actives(control)) == 1, control.stderr
+    assert _actives(done) == (["ACTIVE True"] if gated else _actives(control)), done.stderr
+    assert bool(list(marks.iterdir())) is gated, done.stderr
 
 
 def test_a_second_copy_of_the_hook_is_skipped_and_the_foreign_one_imported(tmp_path: Path) -> None:

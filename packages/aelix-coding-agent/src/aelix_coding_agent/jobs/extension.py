@@ -2,7 +2,10 @@
 
 Built once by the CLI, only while background jobs are active, and threaded into
 every build by reference (as the permission and delegation extensions are). It
-registers the ``job`` and ``job_stop`` tools and the ``/jobs`` command, and turns a
+registers the ``job`` and ``job_stop`` tools — for the TUI, ``-p`` and json hosts
+only, so not over RPC or under ACP, which drives aelix over RPC, until #612 (#779,
+R9: the lead's call) —
+and the ``/jobs`` command, and turns a
 ``session_shutdown`` into the service's stop of that session's jobs — every
 reason stops them: ``/new``, ``/resume``, ``/fork`` and quitting end the owner,
 and ``/reload`` stops them too (owner decision 4, 2026-11-07). The stop is
@@ -27,13 +30,15 @@ if TYPE_CHECKING:
 class JobsExtension:
     name = "aelix-jobs"
 
-    def __init__(self, service: JobService) -> None:
+    def __init__(self, service: JobService, *, tools: bool = True) -> None:
         self._service = service
+        self._tools = tools
         self.command = JobsCommand(service)
 
     def __call__(self, aelix: ExtensionAPI) -> None:
-        aelix.register_tool(create_job_tool(self._service))
-        aelix.register_tool(create_job_stop_tool(self._service))
+        if self._tools:
+            aelix.register_tool(create_job_tool(self._service))
+            aelix.register_tool(create_job_stop_tool(self._service))
         aelix.register_command(
             "jobs",
             handler=self.command,

@@ -100,12 +100,14 @@ async def test_text_mode_never_writes_it(tmp_path: Path, monkeypatch: pytest.Mon
     assert PRINT_DONE_EVENT not in "".join(written)
 
 
+@pytest.mark.usefixtures("jobs_inactive")
 async def test_with_the_gate_off_an_inherited_request_changes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Codex #1: ``ACTIVE`` off and ``AELIX_JOBS_PROTOCOL=1`` inherited — no extra line.
 
-    Fails on ``b387b4b5``: the stream ended with ``aelix_print_done``.
+    Fails on ``b387b4b5``: the stream ended with ``aelix_print_done``. #779: pinned
+    off through ``jobs_inactive``, since the shipped gate is on.
     """
 
     assert not activation.is_active()
@@ -116,3 +118,18 @@ async def test_with_the_gate_off_an_inherited_request_changes_nothing(
     kinds = [e.get("type") if isinstance(e, dict) else e for e in _events(asked)]
     assert PRINT_DONE_EVENT not in kinds
     assert kinds == [e.get("type") if isinstance(e, dict) else e for e in _events(plain)]
+
+
+async def test_with_the_shipped_gate_an_inherited_request_writes_the_line_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#779: the shipped gate, no fixture, is on: an inherited request ends the stream with the line.
+
+    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, so the stream was the plain one.
+    """
+
+    assert activation.is_active(), "the shipped gate is on (#779)"
+    monkeypatch.setenv(JOBS_PROTOCOL_ENV, "1")
+    code, written = await _run(tmp_path, monkeypatch, "json")
+    assert code == 0
+    assert _events(written)[-1] == {"type": PRINT_DONE_EVENT}

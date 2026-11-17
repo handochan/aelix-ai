@@ -86,7 +86,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   method once, as the owner decided on 2026-11-09; the 2026-09-19 count, which lists each method
   twice, is printed and written beside it for comparison.
 - [0299 — `/jobs` opens a background-jobs panel; `/jobs list` keeps the table](0299-jobs-opens-a-background-jobs-panel.md)
-  (Accepted 2026-11-17; #776, #611 S3b; inert until #611 S3e). In the TUI a bare `/jobs` opens an
+  (Accepted 2026-11-17; #776, #611 S3b; active since #611 S3e, #779). In the TUI a bare `/jobs` opens an
   in-flow modal over a generic list panel (`tui/list_panel.py`, which names no job, for #795): the
   session's jobs — a state mark, the short id, the label, row 0, the state, the age and the
   activity (row 1, else `Ns ago`/`quiet Nm`) — redrawn every second at a fixed height (3 job rows,
@@ -105,7 +105,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   its id, a bash job's its command and `<bytes> → <path>`. Limits: no notice turn while open, no
   dedicated open key, Ctrl+B inert inside it, rendering measured in a macOS pty only.
 - [0298 — Ctrl+B moves a running foreground delegation into a background job](0298-ctrl-b-moves-a-running-delegation-into-a-background-job.md)
-  (Accepted 2026-11-12; #775, #611 S3a; inert until #611 S3e). In the TUI, with background jobs on,
+  (Accepted 2026-11-12; #775, #611 S3a; active since #611 S3e, #779). In the TUI, with background jobs on,
   Ctrl+B moves the one running `agent` `run` (one task) or `resume` into a job of the session
   without starting it again: the call is awaited through a PEP 380 delegate (`aelix_agents/detach.py`
   `drive`), the run's one safe point is `_stream_and_reap`'s live wait, and a synchronous commit in
@@ -126,7 +126,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the runner rule, a lost start fact.
   Amended 2026-11-17 (ADR-0304, #795, #796): Ctrl+B is not gated by the agents policy; a moved run keeps running.
 - [0297 — A bash command can run in the background as a job of its session](0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md)
-  (Accepted 2026-11-11; #760, #611 S2d; inert until #611 S3; amended 2026-11-12, #769 and #770:
+  (Accepted 2026-11-11; #760, #611 S2d; active since #611 S3, #779; amended 2026-11-12, #769 and #770:
   a settled command past the per-session bound is kept only as its records read, and delegation
   pages by bytes too). Background `bash` is the job service's
   second client (ADR-0293): `bash(run_in_background=true)` returns a job id at once, writes the
@@ -155,7 +155,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   platform-binary helpers.
 
 - [0295 — A delegated agent can run in the background as a job of its session](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md)
-  (Accepted 2026-11-08; #723, #611 S1c; inert until #611 S3; amended 2026-11-12, #749, #770 and
+  (Accepted 2026-11-08; #723, #611 S1c; active since #611 S3, #779; amended 2026-11-12, #749, #770 and
   #769: the restored and unresolved texts say only what stays true, `result` names no code,
   `job(action="result")` pages it by bytes, and a background agent's result is written to a 0600
   file beside its child session and read from there once the job is let go; amended 2026-11-12,
@@ -191,7 +191,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the line already says. Not persisted (the measure-first rule stands). pi has no relaxation.
 
 - [0293 — Background work is a job its session owns: product-core runs it, the kernel delivers its notice once, clients render it](0293-background-work-is-a-job-its-session-owns.md)
-  (Accepted 2026-11-08; #722, #611 S1b; inert until #611 S3; amended 2026-11-12, #769 and #749:
+  (Accepted 2026-11-08; #722, #611 S1b; active since #611 S3, #779; amended 2026-11-12, #769 and #749:
   past 64 ended jobs of a session the oldest that owes nothing, of a kind declaring
   `reads_persisted`, and that reads back alike is kept only as its records read, `JobSnapshot.processes_gone`, and a restored job whose processes are gone
   holds no slot; amended 2026-11-12, #778: with the gate on, the global

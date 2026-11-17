@@ -7,8 +7,10 @@ server records every request, so what each process was offered is read off the
 wire: the parent's ``agent`` tool offers ``spawn`` and it holds ``job`` only
 with the gate on, and the child's ``bash`` offers ``run_in_background`` only with
 its own gate on, which shows the launcher reached the child too
-(``gated_site/sitecustomize.py``); a parent started without the launcher gives
-its child no such offer, the negative control. The server is the shape
+(``gated_site/sitecustomize.py``). Since #779 the gate is shipped on, so a parent
+started without the launcher is gated as well, and the negative control is a
+parent whose global settings say ``backgroundJobs.enabled: false``: neither it
+nor its child gets the offers. The server is the shape
 of ``tests/agents_ext/test_agent_resume_real_child_610.py``'s.
 
 Green on ``52bc607a`` once the launcher exists: it is the prerequisite itself.
@@ -211,7 +213,7 @@ class Scratch:
         self, *args: str, launcher: Path | None = LAUNCHER, timeout: float = 120.0
     ) -> subprocess.CompletedProcess[str]:
         """``gated_cli.py --agents --provider mockp --model mockm <args>`` in the scratch;
-        ``launcher=None`` runs ``python -P -m aelix_coding_agent`` instead, the gate off."""
+        ``launcher=None`` runs ``python -P -m aelix_coding_agent`` instead: the shipped gate (#779)."""
 
         env = child_env(
             self.home,
@@ -270,10 +272,17 @@ def run_then_answer(body: dict[str, Any], index: int) -> dict[str, Any]:
     return say(f"parent turn {index}")
 
 
-def test_without_the_launcher_neither_process_is_gated(tmp_path: Path) -> None:
-    """The negative control for the wire readings above: the product's own entry point."""
+def test_switched_off_in_the_global_settings_neither_process_is_gated(tmp_path: Path) -> None:
+    """The negative control for the wire readings above: ``backgroundJobs.enabled: false`` (#778).
+
+    #779: with the gate shipped on, the product's own entry point is gated too
+    (the next case), so the off control is the user's switch: the parent reads
+    it at start and so does its delegated child, from the same global file. A
+    guard: on ``bf507d59`` the shipped gate was off and the run was the same.
+    """
 
     scratch = Scratch(tmp_path)
+    scratch.settings({"backgroundJobs": {"enabled": False}})
     with ModelServer(run_then_answer) as server:
         scratch.point_at(server)
         done = scratch.run("-p", "go", launcher=None)
@@ -283,4 +292,71 @@ def test_without_the_launcher_neither_process_is_gated(tmp_path: Path) -> None:
     first = server.parent[0]
     assert "spawn" not in agent_actions(first) and "job" not in tools(first)
     assert not offers_background_bash(first) and not offers_background_bash(server.child[0])
+    assert CHILD_ANSWER in all_text(server.parent[1]), "the foreground run returned its answer"
+
+
+def _rolled_back_launcher(root: Path) -> Path:
+    """A launcher whose process and delegated children run with ``ACTIVE = False``: a product rollback.
+
+    The rollback is the one source line; a test cannot edit the source a child
+    imports, so the launcher sets the attribute before ``main_sync`` and hands its
+    children a ``sitecustomize`` that sets it at their start (``gated_site``'s
+    shape, the other way).
+    """
+
+    site = root / "rolled_back_site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text(
+        "from aelix_coding_agent.jobs import activation\n\nactivation.ACTIVE = False\n", encoding="utf-8"
+    )
+    launcher = root / "rolled_back_cli.py"
+    launcher.write_text(
+        "import os\n"
+        f"os.environ['PYTHONPATH'] = os.pathsep.join([{str(site)!r}, *(p for p in os.environ.get('PYTHONPATH', '').split(os.pathsep) if p)])\n"
+        "from aelix_coding_agent.jobs import activation\n"
+        "activation.ACTIVE = False\n"
+        "from aelix_coding_agent.cli.entry import main_sync\n"
+        "main_sync()\n",
+        encoding="utf-8",
+    )
+    return launcher
+
+
+def test_with_the_gate_rolled_back_neither_process_is_gated(tmp_path: Path) -> None:
+    """#779 fix-r1 (verify r1 F7): the gate itself off, in real processes, as a rollback ships it.
+
+    The settings case above is the user's switch; this is ``ACTIVE = False``. A
+    guard: on ``bf507d59``, where the gate shipped off, the run is the same.
+    """
+
+    scratch = Scratch(tmp_path)
+    launcher = _rolled_back_launcher(tmp_path)
+    with ModelServer(run_then_answer) as server:
+        scratch.point_at(server)
+        done = scratch.run("-p", "go", launcher=launcher)
+
+    assert done.returncode == 0, done.stderr
+    assert len(server.child) == 1
+    first = server.parent[0]
+    assert "spawn" not in agent_actions(first) and not {"job", "job_stop"} & set(tools(first))
+    assert not offers_background_bash(first) and not offers_background_bash(server.child[0])
+    assert CHILD_ANSWER in all_text(server.parent[1]), "the foreground run returned its answer"
+
+
+def test_without_the_launcher_the_shipped_gate_is_on_in_both_processes(tmp_path: Path) -> None:
+    """#779: the product's own entry point, no launcher: both processes offer what the gate adds.
+
+    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, so neither process was gated.
+    """
+
+    scratch = Scratch(tmp_path)
+    with ModelServer(run_then_answer) as server:
+        scratch.point_at(server)
+        done = scratch.run("-p", "go", launcher=None)
+
+    assert done.returncode == 0, done.stderr
+    assert len(server.child) == 1
+    first = server.parent[0]
+    assert "spawn" in agent_actions(first) and {"job", "job_stop"} <= set(tools(first))
+    assert offers_background_bash(first) and offers_background_bash(server.child[0])
     assert CHILD_ANSWER in all_text(server.parent[1]), "the foreground run returned its answer"

@@ -5,9 +5,9 @@ unresolved texts, `result`'s refusals, paging by bytes through `job(action="resu
 background agent's result written to a 0600 file beside its child session and read from there once
 the job service lets the job go; see the note of that date. Amended 2026-11-12 (#782): a lone
 surrogate in a background agent's text is replaced by U+FFFD where it enters the client; see the
-note at the end. **Inert until #611 S3:** everything below is behind
-`aelix_coding_agent/jobs/activation.py` `ACTIVE = False` (ADR-0293 §12), and nothing of it is
-reachable from the product before S3 sets it.
+note at the end. **Active since #611 S3 (#779, 2026-11-17):** `aelix_coding_agent/jobs/activation.py`
+`ACTIVE = True` (ADR-0293 §12); until then everything below was inert behind `ACTIVE = False`. See
+the note of 2026-11-17 (#779) at the end.
 Date: 2026-11-08
 Issue: #723 (#611 slice S1c). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract: §2.2's A rows, §2.3, §2.4, §2.10), with rounds 3–5 and Codex's reviews
@@ -383,7 +383,7 @@ and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row get
 
 ## Limits and what S1c does not do
 
-- **Not visible**: `ACTIVE` stays `False`; S3 flips it.
+- **Not visible**: `ACTIVE` stays `False`; S3 flips it. *2026-11-17 (#779): flipped.*
 - **Windows**: the real Job-object evidence legs a background child's barrier runs are proven
   against an injected api only (ADR-0293 §Limits); the tests that start a real background child
   are POSIX-only until S3's Windows acceptance.
@@ -402,7 +402,8 @@ and `stop`, `stop_all` and the CLI's last drain join it. A service-owned row get
   the tool refuses `background` with ADR-0197's sentence, and the seam's `spawn(background=True)`
   — the door `/agents run` and RPC `agents/run` use — still refuses
   (`runtime._BACKGROUND_REJECTED`, ADR-0197's note); the background paragraph has its own budget
-  test. S3 rewrites them when it turns the gate on.
+  test. S3 rewrites them when it turns the gate on. *2026-11-17 (#779): rewritten; see the note at
+  the end.*
 - **A restart stops nothing it finds.** An agent the restart found unfinished keeps running until
   it ends on its own; `stop` cannot reach it from the new process.
 - **Helpers** on POSIX were `unverified` until S2; since #719 they are swept and confirmed or
@@ -646,3 +647,29 @@ now a resume of a running spawned agent was stopped only by the child's writer l
 says the session "is in use by another process" (on `c91cdc7b`, measured with a real child by
 verify round 2). What changes with the gate on is the refusal's reason and wording; that
 `RESUME_RUNNING` stays is 리드 판단 (`::test_a_running_spawned_agent_is_claimed_against_resume`).
+
+## Note (2026-11-17, #779)
+
+**Active (#611 S3e).** The background actions are offered in the TUI, `-p` and json wherever the
+kind registers (§1). The gate-off pins keep their names and run under the `jobs_inactive` fixture
+(`tests/agents_ext/test_agent_background_611.py::test_with_the_gate_off_the_tool_is_what_it_was`,
+`tests/cli/test_print_done_protocol_611.py::test_with_the_gate_off_an_inherited_request_changes_nothing`),
+each with a twin on the shipped gate that fails on `bf507d59`
+(`::test_with_the_shipped_gate_the_tool_offers_the_background_actions`,
+`::test_with_the_shipped_gate_an_inherited_request_writes_the_line_last`).
+
+**The four tests "to rewrite at the flip" (Limits).** Re-measured with the gate on at #779: all four
+pass, because each builds no job service and so the `agent` kind is not registered
+(`.omc/probes/779/impl/adr0295-four-gate-on.txt`). As the lead decided (R10), each is renamed to say
+so, and has a twin where the kind is registered, with the gate on (`jobs_on`; fix round 1 sets it
+there rather than reading the shipped value, so a rollback does not fail them):
+
+| Renamed (gate on or off: the kind not registered) | Twin, where the kind is registered (`test_agent_background_611.py`) |
+| --- | --- |
+| `test_print_channel_spawn.py::test_background_true_is_rejected_at_the_seam_on_a_host_where_the_kind_is_not_registered` (was `…_in_p2`) | `::test_where_the_kind_is_registered_the_seam_still_refuses_background`: the seam's `spawn(background=True)` still raises |
+| `test_tool_and_security.py::test_background_true_is_rejected_on_a_host_where_the_kind_is_not_registered` (was `…_always`) | `::test_where_the_kind_is_registered_background_true_points_to_spawn[run]`: refused with `_BACKGROUND_IS_SPAWN` |
+| `test_agent_resume_tool_610.py::test_a_resume_refuses_background_on_a_host_where_the_kind_is_not_registered` (was the `background` row of `test_a_resume_refuses_every_key_that_would_make_it_another_run`) | `::test_where_the_kind_is_registered_background_true_points_to_spawn[resume]` |
+| `test_tool_and_security.py::test_the_whole_description_stays_inside_head_plus_roster_where_the_kind_is_not_registered` | `::test_where_the_kind_is_registered_the_description_adds_only_the_background_paragraph`: head, background paragraph and roster, each under its own budget |
+
+**Hosts.** RPC and ACP still refuse the background actions and keep `MAX_LIVE_CHILDREN = 4` through
+`_admit_live` (§1, #612); `docs/guides/agent-profiles.md`, "Background delegation", says so.

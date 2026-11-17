@@ -145,7 +145,7 @@ from aelix_coding_agent.extensions.loader import (
 )
 from aelix_coding_agent.mcp import McpClientManager
 from aelix_coding_agent.subagent_contract import MAX_SUBAGENT_DEPTH, subagent_depth
-from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
+from aelix_coding_agent.tools import ALL_TOOL_NAMES, BUILTIN_TOOL_NAMES, create_all_tools
 from aelix_coding_agent.util.stdio import harden_stdio, read_all_text
 
 from .agent_context import build_system_prompt, discover_context_files
@@ -1926,7 +1926,7 @@ def _tool_policy(
     if saved_off is None:
         lists = default_tools_lists(settings_manager, project_trusted=project_trusted)
         saved_off = resolve_saved_off(lists.global_list, lists.project_list, ALL_TOOL_NAMES)
-    return build_tool_policy(parsed, saved_off=saved_off, builtin=ALL_TOOL_NAMES)
+    return build_tool_policy(parsed, saved_off=saved_off, builtin=BUILTIN_TOOL_NAMES)  # #779 R9
 
 
 def _resolve_system_prompt(
@@ -3413,8 +3413,8 @@ async def _async_main(argv: list[str]) -> int:
         )
 
     # #722 (ADR-0293) — the process's one job service and its bridge extension,
-    # built only while background jobs are active (``jobs/activation.py``: off
-    # until #611 S3, settings unread) and, #778, the GLOBAL settings do not say
+    # built only while background jobs are active (``jobs/activation.py``: on
+    # since #611 S3e, #779; off, settings unread) and, #778, the GLOBAL settings do not say
     # ``backgroundJobs.enabled: false``, as latched once above.
     jobs_service: Any = None
     jobs_ext: Any = None
@@ -3429,7 +3429,7 @@ async def _async_main(argv: list[str]) -> int:
             warn=lambda text: print(f"Warning: {text}", file=sys.stderr),
         )
         jobs_activation.install_service(_with_bash_kind(jobs_service))
-        jobs_ext = JobsExtension(jobs_service)
+        jobs_ext = JobsExtension(jobs_service, tools=app_mode in ("interactive", "print", "json"))  # #779 R9: not RPC/ACP (#612)
 
     # #795 (ADR-0304 D3) — the APPLIED ``agents`` lists, read at launch, by a
     # ``/reload`` build and by the /agents panel's apply; and #796 (D4) — the
