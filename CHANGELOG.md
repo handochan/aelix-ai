@@ -1510,6 +1510,16 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **On Windows, a delegated agent now runs only once it is in aelix's Job, so what its `bash` starts
+  ends with aelix (#777).** The print-mode child was assigned to its Job a few event-loop turns after
+  its spawn. The child is the venv's `python.exe`, a launcher that starts the interpreter at once in a
+  job of its own whose children break away from it, so a delegated agent's shell could belong to no
+  job of aelix's: on windows-latest the shell and command of a TUI delegation outlived a terminated
+  aelix on all four Python legs (`tests/cli/test_parent_death_611.py`, L2a; the cause read from the
+  code). Now the child is created suspended, assigned to its Job, then resumed, where
+  `NtResumeProcess` resolves; a Job that cannot be had still runs it outside one, as before. Pinned
+  on every host (`tests/agents_ext/test_print_channel_spawn.py::test_the_spawn_asks_for_containment_kwargs_per_platform`);
+  the windows-latest result is pending. Off Windows nothing changes.
 - **What a delegated agent's finished `bash` call left in the background stops with the delegation
   (#719, #750, ADR-0296).** A `cmd &`, `(cmd &)` or `nohup cmd &` helper — an `npm run dev &`, say —
   of a `bash` call that had already returned kept running after the delegation ended or was stopped,
