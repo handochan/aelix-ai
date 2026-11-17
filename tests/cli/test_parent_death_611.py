@@ -328,7 +328,8 @@ def running(
     cleaned up whatever the case did."""
 
     run = Run(tmp_path)
-    with Server(*turns(run)) as server:
+    server = Server(*turns(run))
+    with server:
         run.scratch.point_at(server)
         try:
             yield run, server
@@ -539,7 +540,14 @@ class WinHandles:
     QUERY_LIMITED = 0x1000
     TERMINATE = 0x0001
     WAIT_OBJECT_0 = 0
-    STILL_ACTIVE = 259
+
+    # Declared here, assigned past the win32 check: off win32 nothing below it runs.
+    _k: Any
+    _ctypes: Any
+    _wintypes: Any
+    procs: dict[str, Announced]
+    handles: dict[str, int]
+    before: dict[str, dict[str, Any]]
 
     def __init__(self, procs: dict[str, Announced]) -> None:
         if sys.platform != "win32":  # pragma: no cover - the win32 leg only

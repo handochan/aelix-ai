@@ -109,7 +109,7 @@ async def test_reload_leaves_it_unresolved_and_its_release_ends_it_stopped(
     event = asyncio.Event()
     marker = tmp_path / "release"
 
-    def release(params: Any) -> Callable[[], Awaitable[None]]:
+    def release(params: Any) -> Callable[[], Awaitable[object]]:
         return event.wait if released_by == "event" else module.file_release(params)
 
     harness, hold = await _build(tmp_path, service, module.extension(release))

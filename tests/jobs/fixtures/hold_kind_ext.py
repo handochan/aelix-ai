@@ -43,11 +43,11 @@ KIND = "test:hold"
 RELEASE_FILE = "hold-release"
 """The release file ``/hold`` waits for when it is given no path, in the cwd."""
 
-Release = Callable[[Mapping[str, Any]], Callable[[], Awaitable[None]]]
+Release = Callable[[Mapping[str, Any]], Callable[[], Awaitable[object]]]
 """A job's params -> what its run awaits until it is released."""
 
 
-def file_release(params: Mapping[str, Any]) -> Callable[[], Awaitable[None]]:
+def file_release(params: Mapping[str, Any]) -> Callable[[], Awaitable[object]]:
     """Released once ``params["release"]`` exists; polled every 0.1 s."""
 
     path = str(params["release"])
@@ -103,7 +103,7 @@ class HoldRunner:
 
     instances: list[HoldRunner] = []
 
-    def __init__(self, release: Callable[[], Awaitable[None]]) -> None:
+    def __init__(self, release: Callable[[], Awaitable[object]]) -> None:
         self._release = release
         self.cancels = 0
         self.stops: list[str] = []
