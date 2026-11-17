@@ -79,10 +79,11 @@ what ``ResumeThread`` would need): :meth:`ProcessTree.suspend_flags` and
 ``attach(suspended=True)`` are that primitive (#611 S2b); its callers are the
 background ``bash`` of #611 S2d (behind the job gate, ADR-0297) and, since #777,
 the print-mode delegation child, whose attach also passes ``uncontained_ok`` so
-a job that cannot be had still degrades. On the windows runner
-``sys.executable`` is a venv launcher that starts the interpreter at once
-(CPython ``PC/launcher2.c``), so an unsuspended child can have a child before
-its attach. Every other spawn keeps the window. Belt and braces:
+a job that cannot be had still degrades. Since #772 ``RpcClient.start`` is one
+too, the same way. On the windows runner ``sys.executable`` is a venv launcher
+that starts the interpreter at once (CPython ``PC/launcher2.c``), so an
+unsuspended child can have a child before its attach. Every other spawn keeps
+the window. Belt and braces:
 :meth:`ProcessTree.hard_kill` runs ``taskkill /T /F`` FIRST, while the root is
 still alive, so ``/T`` can walk to an escapee through its live parent link, and
 ``TerminateJobObject`` second.
@@ -1082,6 +1083,7 @@ class ProcessTree:
         path). The print channel asks for it: its attach has always degraded
         and never refused a spawn. A latch already set, or a resume that fails,
         still ends the process.
+        ``RpcClient`` asks for it too (#772).
 
         ``platform`` and ``api`` are injection seams for the tests. Attaching
         with ``platform="win32"`` and no ``api`` off Windows raises.

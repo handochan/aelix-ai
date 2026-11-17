@@ -737,6 +737,26 @@ runtime.stop / stop_all in the grace      no cancel                             
    attach — is not in the job either. Closing it means creating the child suspended
    (or with `PROC_THREAD_ATTRIBUTE_JOB_LIST`) so the job is assigned before it runs,
    failing closed when no job can be had, and native tests for each; out of reach here.
+
+   *2026-11-17 note (#772, with #777 fix round 1): the child is created suspended.*
+   `RpcClient.start` adds `ProcessTree.suspend_flags()`'s `CREATE_SUSPENDED` to the spawn where
+   `NtResumeProcess` resolves, and attaches with `suspended=True`: assigned, then resumed. It does
+   NOT fail closed: with `uncontained_ok`, a job that cannot be had resumes the child outside one,
+   as the attach did before, and only a resume that fails ends the child, with `start` raising
+   `SuspendedLaunchError` and the abandon killing through the tree the error carries. Failing
+   closed stays open, for its own decision (리드 판단, the lead's call). On a cancelled spawn the
+   late attach takes the child as it is and never resumes it. Pinned on every host by
+   `tests/rpc/test_rpc_client_containment.py::test_the_rpc_child_is_spawned_suspended_and_its_attach_resumes_it`
+   (red on `b6100968`: no suspend bit, no `suspended`) and
+   `tests/rpc/test_rpc_client_start_cancel_360.py::test_a_suspended_launch_that_fails_is_ended_through_the_tree_it_carries`.
+   The real job is windows-latest's: `test_a_premature_exit_ends_the_group_and_closes_the_transport`
+   (on py3.14 in run 43998348364 it found an interpreter "NOT in job" alive 10.05 s after the kill),
+   `test_on_win32_what_the_child_starts_at_once_is_born_in_its_job` and
+   `test_on_win32_a_cancel_inside_the_spawn_ends_a_child_that_never_ran`, pending the lead's CI
+   round. Six cases spawn the child running (`tests/unsuspended.py`'s `unsuspended`): the five that
+   hold the spawn and need the child to run during the hold, and the injected-API case, whose api
+   does not resume. Any other raise out of the attach ends the child through the abandon, by design;
+   the print channel resumes its child there instead (ADR-0238's 2026-11-17 notes).
 8. **`stop()` itself is unchanged once `start` has returned.** A cancel inside its soft
    or hard wait skips its release (the fields stay set, `_stopping` stays true, a
    second `stop()` finishes it), and two concurrent `stop()` calls both send their
