@@ -907,10 +907,16 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     3.14, so it was removed (owner, 2026-11-18: "검사를 SDDL 비교로 단일화 (권장)"). What the
     comparison refuses is an original whose owner, group or DACL differs from the temp's, and
     the temp gets what a new file in that folder gets; explicit ACEs are refused only when a new
-    file there gets other ones. That run does not say which part of the removed check refused
-    the runner's files (a protected, absent or empty DACL, or an ACE not marked inherited);
-    `test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor` prints the
-    folder's, the file's and a sibling temp's descriptor in the next run.
+    file there gets other ones. The next run (44232091409, on `c9e5aca5`) printed the
+    descriptors (`test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor`):
+    on all four legs the file and a temp beside it had the same owner, group and DACL, an
+    unprotected DACL of three inherited ACEs (`D:(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;OW)`
+    under the protected `tmp_path` folder Python 3.12 to 3.14 create, `…;;;LA)` on 3.11). The
+    removed check should have accepted that DACL, so it misread it; that code is gone. In that
+    run every ordinary save on Windows was written, and its 6 failures on each leg were all
+    temps a refusal left behind: the temp was deleted while its handle was open, which Windows
+    refuses. A refusal now closes the temp before deleting it
+    (`test_a_refused_temp_is_closed_before_it_is_deleted` emulates that rule everywhere).
   - **Windows, the replacement compared (fix round 1, Codex CX-2).** "Inherited only" does not
     prove the temp inherits the SAME ACEs (a restored file, or ACEs changed through an API, can
     differ from what the parent gives now), nor that it gets the same owner. So before each
@@ -1176,9 +1182,9 @@ The `mcp` selection kind is the `mcp.json` view; the two are different lists by 
     CI run, the only Windows access rule), the read-only attribute, the named-mutex
     lock and the checks before each replace retry are designed, and first measured in CI: their
     tests run only on Windows, or with the Windows path forced on or stubbed elsewhere (the
-    two-process lock test runs everywhere). The one Windows run recorded here, PR #818's run
-    44219585507, stopped every save that reached the removed up-front check, so the
-    comparison has not yet run on Windows;
+    two-process lock test runs everywhere). PR #818's run 44219585507 stopped every save that
+    reached the removed up-front check; run 44232091409 wrote every ordinary save through the
+    comparison and failed only on temps a refusal left behind (D14);
   - Windows' `st_ctime` is the creation time, so there the identity sees a permission change
     only through the descriptor comparison; `st_uid` and `st_gid` are 0;
   - an `mcp.json` whose replacement would get another owner, group or DACL (a protected DACL
