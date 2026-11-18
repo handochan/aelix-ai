@@ -2064,9 +2064,9 @@ class AgentHarness:
 
         Applied to whichever stream function ``_run`` chose, unconditionally, so ``_run``
         (baseline-listed) gains no branch. Empty tools, not ``tool_choice`` (a provider-dependent
-        optimisation). What the wire then carries is each adapter's: chat-completions sends
-        ``tools: []`` beside tool history, the others leave the key out (ADR-0306 D6 lists them
-        and says what was measured). ``None`` stays ``None`` (the loop resolves its default).
+        optimisation). What the wire then carries is each adapter's: every one leaves ``tools``
+        out, chat-completions too unless the model's compat asks for ``[]`` (ADR-0306 D6 lists
+        them and says what was measured). ``None`` stays ``None`` (the loop resolves its default).
         """
 
         if fn is None:

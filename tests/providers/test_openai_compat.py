@@ -158,9 +158,10 @@ def test_get_compat_honors_dict_override(monkeypatch) -> None:
 
 
 def test_compat_has_17_fields() -> None:
-    """Pi parity: ``ResolvedOpenAICompletionsCompat`` has 17 fields."""
+    """Pi parity: ``ResolvedOpenAICompletionsCompat`` has 17 fields at pi ``734e08e``;
+    ``requires_tools_with_tool_history`` (pi #11891) is the eighteenth."""
 
-    assert len(OpenAICompletionsCompat.__dataclass_fields__) == 17
+    assert len(OpenAICompletionsCompat.__dataclass_fields__) == 18
 
 
 def test_cloudflare_workers_ai_long_cache_disabled() -> None:

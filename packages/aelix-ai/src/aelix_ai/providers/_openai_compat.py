@@ -84,7 +84,8 @@ COMPAT_DEFERRED_ALLOWLIST: dict[str, str] = {
 
 @dataclass(frozen=True)
 class OpenAICompletionsCompat:
-    """Pi parity: ``ResolvedOpenAICompletionsCompat`` (17 fields).
+    """Pi parity: ``ResolvedOpenAICompletionsCompat`` (its 17 fields at pi
+    ``734e08e``, plus ``requires_tools_with_tool_history`` from pi #11891).
 
     Every field defaults to the OpenAI baseline (i.e. what the default
     ``api.openai.com`` endpoint accepts). :func:`detect_compat` flips
@@ -100,6 +101,11 @@ class OpenAICompletionsCompat:
     )
     requires_tool_result_name: bool = False
     requires_assistant_after_tool_result: bool = False
+    requires_tools_with_tool_history: bool = False
+    """Send ``tools: []`` on a request that has no tools but whose history holds
+    tool calls or results. Off by default (pi #11891): a vLLM behind LiteLLM is
+    reported to answer an empty ``tools`` array with HTTP 400 (pi issue #11843;
+    not run here). A proxy that requires the key sets it in the model's ``compat``."""
     requires_thinking_as_text: bool = False
     requires_reasoning_content_on_assistant_messages: bool = False
     thinking_format: Literal[
@@ -279,6 +285,7 @@ def detect_compat(model: Model) -> OpenAICompletionsCompat:
         max_tokens_field="max_tokens" if use_max_tokens else "max_completion_tokens",
         requires_tool_result_name=False,
         requires_assistant_after_tool_result=False,
+        requires_tools_with_tool_history=False,
         requires_thinking_as_text=False,
         requires_reasoning_content_on_assistant_messages=is_deep_seek,
         thinking_format=thinking_format,
@@ -331,6 +338,7 @@ def get_compat(model: Model) -> OpenAICompletionsCompat:
         "max_tokens_field": "maxTokensField",
         "requires_tool_result_name": "requiresToolResultName",
         "requires_assistant_after_tool_result": "requiresAssistantAfterToolResult",
+        "requires_tools_with_tool_history": "requiresToolsWithToolHistory",
         "requires_thinking_as_text": "requiresThinkingAsText",
         "requires_reasoning_content_on_assistant_messages": (
             "requiresReasoningContentOnAssistantMessages"
@@ -377,6 +385,10 @@ def get_compat(model: Model) -> OpenAICompletionsCompat:
         requires_assistant_after_tool_result=_pick(
             "requires_assistant_after_tool_result",
             detected.requires_assistant_after_tool_result,
+        ),
+        requires_tools_with_tool_history=_pick(
+            "requires_tools_with_tool_history",
+            detected.requires_tools_with_tool_history,
         ),
         requires_thinking_as_text=_pick(
             "requires_thinking_as_text",

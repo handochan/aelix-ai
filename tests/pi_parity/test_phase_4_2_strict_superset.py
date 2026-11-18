@@ -162,7 +162,8 @@ def test_compat_field_set_matches_pi() -> None:
     assert set(pi_compat_fields_snake.keys()) == expected_pi_fields
     aelix_fields = set(OpenAICompletionsCompat.__dataclass_fields__.keys())
     assert set(pi_compat_fields_snake.values()) <= aelix_fields
-    assert len(OpenAICompletionsCompat.__dataclass_fields__) == 17
+    # 17 at the fixture's pi commit, plus one ported since (pi #11891).
+    assert aelix_fields - set(pi_compat_fields_snake.values()) == {"requires_tools_with_tool_history"}
 
 
 # === §D — Env-key table superset of Pi ===

@@ -10,6 +10,13 @@ Tests for the pure helpers in :mod:`aelix_ai.providers.openai_completions`:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import Any
+
+from aelix_agent_core import AgentTool
+from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
@@ -17,15 +24,17 @@ from aelix_ai.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from aelix_ai.providers._openai_compat import detect_compat, get_compat
+from aelix_ai.providers._openai_compat import OpenAICompletionsCompat, detect_compat, get_compat
 from aelix_ai.providers.openai_completions import (
     OpenAICompletionsOptions,
     _map_stop_reason,
     build_params,
     convert_messages,
     convert_tools,
+    stream_openai_completions,
 )
-from aelix_ai.streaming import Context, Model
+from aelix_ai.streaming import AssistantMessageEvent, Context, Model, SimpleStreamOptions
+from aelix_ai.tools import ToolResult
 
 
 def _model(**kwargs) -> Model:
@@ -225,23 +234,93 @@ def test_build_params_zai_enable_thinking_toggle() -> None:
     assert params.get("enable_thinking") is True
 
 
-def test_build_params_tool_history_seeds_tools_field() -> None:
-    """When messages contain tool calls but tools is empty, params['tools'] = []."""
+def _tool_history() -> list[Any]:
+    return [
+        AssistantMessage(content=[ToolCallContent(tool_call_id="t1", tool_name="x")]),
+        ToolResultMessage(tool_call_id="t1", content=[TextContent(text="ok")]),
+    ]
+
+
+def test_build_params_tool_history_without_tools_sends_no_tools_key() -> None:
+    """pi #11891: a request with no tools carries no ``tools`` key, tool history or
+    not. A vLLM behind LiteLLM is reported to answer ``tools: []`` with HTTP 400
+    (pi issue #11843; not run here)."""
 
     model = _model()
-    compat = get_compat(model)
-    messages = [
-        AssistantMessage(
-            content=[ToolCallContent(tool_call_id="t1", tool_name="x")]
-        ),
-        ToolResultMessage(
-            tool_call_id="t1", content=[TextContent(text="ok")]
-        ),
-    ]
-    params = build_params(
-        model, Context(messages=messages), None, compat, "short"
-    )
-    assert params.get("tools") == []
+    params = build_params(model, Context(messages=_tool_history()), None, get_compat(model), "short")
+    assert "tools" not in params
+
+
+def test_build_params_tool_history_with_the_compat_flag_sends_empty_tools() -> None:
+    """``compat.requires_tools_with_tool_history`` (either spelling of the model's
+    override) restores ``tools: []`` beside tool history, and only beside it."""
+
+    for key in ("requires_tools_with_tool_history", "requiresToolsWithToolHistory"):
+        model = _model(compat={key: True})
+        compat = get_compat(model)
+        assert compat.requires_tools_with_tool_history is True
+        params = build_params(model, Context(messages=_tool_history()), None, compat, "short")
+        assert params["tools"] == [], key
+        plain = build_params(model, Context(messages=[UserMessage(content=[TextContent(text="hi")])]), None, compat, "short")
+        assert "tools" not in plain, "no tool history: the flag adds nothing"
+    assert OpenAICompletionsCompat().requires_tools_with_tool_history is False
+    assert get_compat(_model()).requires_tools_with_tool_history is False
+    assert detect_compat(_model(compat={"requiresToolsWithToolHistory": True})).requires_tools_with_tool_history is False
+
+
+class _ScriptedCompletions:
+    """``client.chat.completions.with_raw_response.create``: call 1 asks for ``probe``,
+    every later call answers in text. Each call's kwargs are kept."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(with_raw_response=self))
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            call = SimpleNamespace(index=0, id="c1", type="function", function=SimpleNamespace(name="probe", arguments="{}"))
+            deltas = [(SimpleNamespace(content=None, tool_calls=[call]), None), (SimpleNamespace(content=None, tool_calls=None), "tool_calls")]
+        else:
+            deltas = [(SimpleNamespace(content="done", tool_calls=None), None), (SimpleNamespace(content=None, tool_calls=None), "stop")]
+        chunks = [
+            SimpleNamespace(id="chatcmpl-x", model="gpt-4", usage=None, choices=[SimpleNamespace(delta=delta, finish_reason=finish)])
+            for delta, finish in deltas
+        ]
+
+        async def stream() -> AsyncIterator[Any]:
+            for chunk in chunks:
+                yield chunk
+
+        response = SimpleNamespace(status_code=200, headers={})
+        return SimpleNamespace(parse=stream, http_response=response)
+
+
+async def test_a_consumed_final_reaches_the_wire_with_no_tools_key() -> None:
+    """Kernel to adapter (#123 V9): the harness makes the call after a consumed final
+    with no tools; on a chat-completions model that request has tool history and no
+    tools, and it goes out with no ``tools`` key."""
+
+    client = _ScriptedCompletions()
+    harness: AgentHarness
+
+    async def adapter(model: Model, context: Context, options: SimpleStreamOptions) -> AsyncIterator[AssistantMessageEvent]:
+        async for event in stream_openai_completions(model, context, replace(options, client=client, api_key="k")):
+            yield event
+
+    async def probe(_args: Any, _ctx: Any) -> ToolResult:
+        await harness.steer("FINAL", final=True)
+        return ToolResult(content=[TextContent(text="probed")])
+
+    harness = AgentHarness(AgentHarnessOptions(model=_model(), stream_fn=adapter, tools=[AgentTool(name="probe", execute=probe)]))
+    harness.state.auto_retry_enabled = False
+    await harness.prompt("go")
+
+    assert len(client.calls) == 2, [sorted(call) for call in client.calls]
+    first, last = client.calls
+    assert [tool["function"]["name"] for tool in first["tools"]] == ["probe"]
+    assert [message["role"] for message in last["messages"]][-3:] == ["assistant", "tool", "user"], "tool history, then the final"
+    assert "tools" not in last
 
 
 # === convert_messages ===

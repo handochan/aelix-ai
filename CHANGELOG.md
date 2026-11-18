@@ -1708,6 +1708,19 @@ unwritten. Add them with the next release.
   puts this folder under project trust and needs a confirmation", and the next Enter asks
   (`tests/tui/test_selection_panel_624.py`; `tests/core/test_resource_selection_624.py`, with a
   barrier that deletes the file after the lock and before the read).
+- **A chat-completions request that has no tools no longer carries `"tools": []` (#815, pi PR
+  11891).** The `openai-completions` adapter sent an empty `tools` array whenever a request had no
+  tools but its history held tool calls or results. LiteLLM in front of vLLM is reported to answer
+  that with HTTP 400 "`tools` must not be an empty array" (pi issue 11843; not run here), and a
+  wrapped-up delegated agent (#123) makes exactly that request. The key is now left out, as the
+  Responses, Codex, Google and Anthropic adapters leave it out. **If your proxy needs the key
+  beside tool history**, set `requiresToolsWithToolHistory: true` (or
+  `requires_tools_with_tool_history`) in that model's or provider's `compat` in `models.json`: the
+  request then carries `"tools": []` when its history holds tool calls, and only then. A request
+  that has tools is unchanged. Measured through OpenRouter only: 39 requests on 13 (model,
+  upstream) pairs answered HTTP 200 with the key empty, left out or filled; no direct upstream was
+  run.
+
 - **On Windows, a delegated agent now runs only once it is in aelix's Job, so what its `bash` starts
   ends with aelix (#777).** The print-mode child was assigned to its Job a few event-loop turns after
   its spawn. The child is the venv's `python.exe`, a launcher that starts the interpreter at once in a
