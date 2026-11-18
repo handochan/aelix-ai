@@ -1053,6 +1053,7 @@ class SettingsManager:
         fn: Callable[[list[str]], list[str]] | Callable[[list[str] | None], list[str] | None],
         *,
         nullable: bool = False,
+        may_create: bool = True,
     ) -> list[str]:
         """Apply *fn* to the list under JSON *key* as it is ON DISK now, and write the result.
 
@@ -1085,6 +1086,12 @@ class SettingsManager:
         taken. A call cancelled while it waits for the lock writes nothing; one
         cancelled after its list was built cannot stop that write, and the
         in-memory scope takes the list when the write ends (round 2, R3).
+
+        With *may_create* false, a file that does not exist when the lock is
+        held raises instead of being created (ADR-0305 D6): creating
+        ``.aelix/settings.json`` puts the folder under project trust, so its
+        caller asks first, and a file deleted after that check is not
+        re-created without the question.
         """
 
         if scope == "project":
@@ -1105,6 +1112,11 @@ class SettingsManager:
                 raise _EditAbandoned  # the caller was cancelled: write nothing
             if scope == "project":
                 self._assert_project_trusted_for_write()
+            if current is None and not may_create:
+                raise SettingsFileError(
+                    f"{self._scope_label(scope)} does not exist now; creating it puts this "
+                    "folder under project trust and needs a confirmation"
+                )
             data = self._parse_scope_text(scope, current)
             raw = self._list_under(scope, data, key)
             old: list[str] | None

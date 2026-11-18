@@ -1,0 +1,137 @@
+{
+  "contract": "control-v1",
+  "method": "extensions/list",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {},
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "an installed extension",
+      "rig": "full",
+      "replay": false,
+      "setup": "an_installed_extension",
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "extensions"
+        ],
+        "properties": {
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "distribution",
+                "version",
+                "entry"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "distribution": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "entry": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "fixture-pack",
+                "distribution": "aelix-fixture-pack",
+                "version": "1.0.0",
+                "entry": "aelix_fixture_pack:setup"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the child lists what is installed",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "extensions"
+        ],
+        "properties": {
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "distribution",
+                "version",
+                "entry"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "distribution": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "entry": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

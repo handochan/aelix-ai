@@ -490,7 +490,9 @@ async def test_a_panel_snapshot_judges_a_repointed_skill_link_by_its_new_target(
     (agent / "settings.json").write_text(json.dumps({"skills": [f"!{root}/team-a/**"]}))
     manager = SettingsManager.create(root / "work", agent, project_trusted=True)
     holder: dict[str, Any] = {
-        "result": load_skill_catalog([SkillSource("global", str(agent / "skills"))], SettingsLists())
+        "result": load_skill_catalog(
+            [SkillSource("global", str(agent / "skills"))], SettingsLists()
+        )
     }
     kind = SkillKind(
         holder=holder,
@@ -578,17 +580,39 @@ def test_the_launch_wiring_holds_the_apply_gate_over_every_build() -> None:
     assert factories and set(factories) == {"_harness_factory"}
     assert runtime == ["_harness_factory"]
 
+    # #624 (ADR-0305 D10): the kinds are built by ``_selection_controls``, which
+    # the TUI and the RPC branch of ``_async_main`` both call with the one gate.
+    helper = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_selection_controls"
+    )
+    calls = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "_selection_controls"
+    ]
+    assert len(calls) == 2, "the TUI and the RPC branch each build the controls"
+    for call in calls:
+        assert {kw.arg: ast.unparse(kw.value) for kw in call.keywords}.get(
+            "gate"
+        ) == "selection_apply_gate", f"_selection_controls at line {call.lineno} lacks the gate"
     for name in ("SkillKind", "ToolKind"):
-        kinds = [
+        assert not [
             node
             for node in ast.walk(main)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == name
+        ], f"{name} is built in _async_main again, outside the helper"
+        kinds = [
+            node
+            for node in ast.walk(helper)
             if isinstance(node, ast.Call) and ast.unparse(node.func) == name
         ]
         assert kinds, f"no {name} built at launch"
         for kind in kinds:
-            assert {kw.arg: ast.unparse(kw.value) for kw in kind.keywords}.get(
-                "gate"
-            ) == "selection_apply_gate", f"{name} at line {kind.lineno} is not given the gate"
+            assert {kw.arg: ast.unparse(kw.value) for kw in kind.keywords}.get("gate") == "gate", (
+                f"{name} at line {kind.lineno} is not given the gate"
+            )
 
 
 def test_the_catalog_is_a_load_result() -> None:

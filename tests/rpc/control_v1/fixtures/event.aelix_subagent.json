@@ -1,0 +1,468 @@
+{
+  "contract": "control-v1",
+  "event": "aelix_subagent",
+  "frameType": "aelix_subagent",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "frame": {
+    "type": "object",
+    "required": [
+      "type",
+      "event",
+      "data"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "aelix_subagent"
+      },
+      "event": {
+        "type": "string",
+        "enum": [
+          "subagent_start",
+          "subagent_tool",
+          "subagent_end"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "id",
+          "profile",
+          "state",
+          "current_tool",
+          "elapsed_ms",
+          "tokens",
+          "cost",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "profile": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "current_tool": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "elapsed_ms": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "tokens": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "cost": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:515-516",
+        "src/aelix_acp/session.py:524-536",
+        "src/aelix_acp/runtime/subagents.py:17-41",
+        "src/aelix_acp/runtime/subagents.py:62-79"
+      ],
+      "sends": [],
+      "reads": [
+        "event",
+        "data.id",
+        "data.profile",
+        "data.state",
+        "data.current_tool",
+        "data.elapsed_ms",
+        "data.tokens",
+        "data.cost",
+        "data.model",
+        "data.provider"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/session.py:526-531",
+        "src/aelix_acp/runtime/subagents.py:35-37",
+        "src/aelix_acp/runtime/subagents.py:66-69"
+      ],
+      "via": [
+        "_aelix/subagent"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "an agents/run is their parent",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "t"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "subagent_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "state",
+                  "current_tool",
+                  "elapsed_ms",
+                  "tokens",
+                  "cost",
+                  "model",
+                  "provider"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "child-1"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "starting"
+                  },
+                  "current_tool": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "elapsed_ms": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer"
+                  },
+                  "cost": {
+                    "type": "number"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "subagent_tool"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "state",
+                  "current_tool",
+                  "elapsed_ms",
+                  "tokens",
+                  "cost",
+                  "model",
+                  "provider"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "child-1"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "current_tool": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "elapsed_ms": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer"
+                  },
+                  "cost": {
+                    "type": "number"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "subagent_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "state",
+                  "current_tool",
+                  "elapsed_ms",
+                  "tokens",
+                  "cost",
+                  "model",
+                  "provider"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "child-1"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "done"
+                  },
+                  "current_tool": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "elapsed_ms": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer"
+                  },
+                  "cost": {
+                    "type": "number"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "ok"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "no parent: a value with only an id",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "emit_subagent": {
+          "event": "subagent_start",
+          "value": {
+            "id": "orphan-1"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "subagent_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "state",
+                  "current_tool",
+                  "elapsed_ms",
+                  "tokens",
+                  "cost",
+                  "model",
+                  "provider"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "orphan-1"
+                  },
+                  "profile": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "state": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "current_tool": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "elapsed_ms": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "tokens": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "cost": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "model": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "provider": {
+                    "type": "null",
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

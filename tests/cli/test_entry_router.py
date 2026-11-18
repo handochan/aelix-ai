@@ -264,6 +264,10 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # #795 (ADR-0304 D14) — the /agents panel's selection and kind, built
         # once before the mode branch. Accepted for the same reason.
         agent_control: object = None,
+        # #624 (ADR-0305 D16) — the bare /mcp panel's selection and kind, built
+        # by ``_selection_controls`` with the other four. Accepted for the same
+        # reason, and asserted below to be the mcp control.
+        mcp_control: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -292,6 +296,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         tui_permission["first_run_login"] = first_run_login
         tui_permission["late_route"] = late_route
         tui_permission["agent_control"] = agent_control
+        tui_permission["mcp_control"] = mcp_control
         assert callable(prompt_file_paths)
         tui_permission["prompt_file_paths"] = prompt_file_paths()
         return 0
@@ -340,6 +345,9 @@ async def test_interactive_mode_dispatches_to_run_tui(
     # mcp_manager is threaded too (None here: --no-session run has no MCP
     # contribs, so entry.py leaves it None — the kwarg must still be accepted).
     assert mcp_manager is None
+    # #624: the /mcp panel's control is built whatever MCP has, so /mcp can
+    # show the file a launch here reads even when it lists no server.
+    assert type(tui_permission["mcp_control"]).__name__ == "McpControl"
     # WP-0 nit: run_tui must receive the SAME held permission instances entry.py
     # built (identity, not a fresh per-call object) so shift+tab + the gate share
     # state across rebuilds. ``created`` holds the singletons entry.py constructed.
@@ -808,7 +816,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     # route, and does NOT claim non-existent doc files.
     # #111 — CORRECTED. This used to assert ``/login`` was ABSENT, on the
     # stated ground that "Aelix does not register one". It does:
-    # ``tui/commands.py:2542`` is ``BuiltinCommand("login", "Sign in / add a
+    # ``tui/commands.py:2557`` is ``BuiltinCommand("login", "Sign in / add a
     # provider API key", …)``, and the first-run wizard has been telling users
     # to run it since #23. The message now names it — prefixed by "run
     # 'aelix'", which is what makes a TUI-only command actionable from a

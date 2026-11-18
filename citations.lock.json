@@ -824,7 +824,7 @@
   "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:110-110": [
    "if py_field is None:"
   ],
-  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1352-1361": [
+  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1364-1373": [
    "def _save(self) -> None:",
    "\"\"\"Pi parity: ``settings-manager.ts:524-538`` ``save``.",
    "",
@@ -834,7 +834,7 @@
    "self._settings = deep_merge_settings(",
    "self._global_settings, self._project_settings"
   ],
-  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1852-1852": [
+  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1864-1864": [
    "def get_shell_path(self) -> str | None:"
   ],
   "packages/aelix-ai/src/aelix_ai/settings/storage.py:369-369": [
@@ -2151,7 +2151,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5123-5123": [
    "# The [tui] extra (prompt-toolkit + rich) is not installed."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5402-5402": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5354-5354": [
    "print(format_no_model_selected_message(), file=sys.stderr)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:71-76": [
@@ -2682,13 +2682,13 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:1645-1645": [
    "result = await runtime_host.fork(cmd.entry_id)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2278-2281": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2279-2282": [
    "raise RuntimeError(",
    "\"repo and fs must not be supplied when runtime_host is \"",
    "\"explicit — the runtime owns them\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2428-2430": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2429-2431": [
    "def _on_line(line: str) -> None:",
    "if not line.strip():",
    "return"
@@ -2909,17 +2909,17 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:971-971": [
    "self._modal: AnyContainer | None = None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1586-1587": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1590-1591": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1984-1984": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1999-1999": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2542-2542": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2557-2557": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2543-2543": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2558-2558": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1000-1003": [
@@ -3059,13 +3059,13 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:346-346": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1153-1153": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1154-1154": [
    "# through the same queue as committed lines keeps them ordered — otherwise a"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1647-1647": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1648-1648": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2607-2624": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2608-2625": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3075,21 +3075,21 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3546-3548": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3553-3555": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3834-3834": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3841-3841": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3979-3979": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3986-3986": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4097-4097": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4104-4104": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4930-4930": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4937-4937": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:516-532": [
@@ -3102,10 +3102,10 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5270-5270": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5277-5277": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5351-5365": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:5358-5372": [
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
    "# args = the text after the command word (Sprint 6h₁₂d). The",

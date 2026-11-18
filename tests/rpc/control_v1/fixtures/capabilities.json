@@ -1,0 +1,685 @@
+{
+  "contract": "control-v1",
+  "method": "capabilities",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {},
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/controls.py:60",
+        "src/aelix_acp/runtime/controls.py:157",
+        "src/aelix_acp/session.py:236-238",
+        "src/aelix_acp/session.py:239-253",
+        "src/aelix_acp/runtime/controls.py:29",
+        "src/aelix_acp/session.py:349",
+        "src/aelix_acp/session.py:370"
+      ],
+      "sends": [],
+      "reads": [
+        "version",
+        "methods[]",
+        "thinkingLevels[]",
+        "activeAgent"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:271-274"
+      ],
+      "via": [
+        "_aelix/capabilities.runtime"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "a host with every service",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods",
+          "permissionModes",
+          "thinkingLevels",
+          "activeAgent",
+          "subagentsEnabled",
+          "selectionKinds"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "commands/run"
+                }
+              },
+              {
+                "contains": {
+                  "const": "commands/cancel"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/reload"
+                }
+              },
+              {
+                "contains": {
+                  "const": "tools/set_active"
+                }
+              },
+              {
+                "contains": {
+                  "const": "ui/enable"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/configure"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/status"
+                }
+              },
+              {
+                "contains": {
+                  "const": "extensions/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "sessions/branch"
+                }
+              },
+              {
+                "contains": {
+                  "const": "settings/get"
+                }
+              },
+              {
+                "contains": {
+                  "const": "settings/set"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/get"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/set"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/evaluate"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/status"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/set_api_key"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/logout"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/login"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/show"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/use"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/run"
+                }
+              },
+              {
+                "contains": {
+                  "const": "selections/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "selections/set"
+                }
+              }
+            ]
+          },
+          "permissionModes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "default",
+                "auto-accept-edits",
+                "plan",
+                "yolo",
+                "auto"
+              ]
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "default"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auto-accept-edits"
+                }
+              },
+              {
+                "contains": {
+                  "const": "plan"
+                }
+              },
+              {
+                "contains": {
+                  "const": "yolo"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auto"
+                }
+              }
+            ]
+          },
+          "thinkingLevels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "activeAgent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subagentsEnabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "selectionKinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "extension",
+                "mcp",
+                "skill",
+                "tool"
+              ],
+              "open": true
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "agent"
+                }
+              },
+              {
+                "contains": {
+                  "const": "extension"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp"
+                }
+              },
+              {
+                "contains": {
+                  "const": "skill"
+                }
+              },
+              {
+                "contains": {
+                  "const": "tool"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the server-ws shape serves only the unconditional methods",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods",
+          "permissionModes",
+          "thinkingLevels",
+          "activeAgent",
+          "subagentsEnabled",
+          "selectionKinds"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "commands/run"
+                }
+              },
+              {
+                "contains": {
+                  "const": "commands/cancel"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/reload"
+                }
+              },
+              {
+                "contains": {
+                  "const": "tools/set_active"
+                }
+              },
+              {
+                "contains": {
+                  "const": "ui/enable"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/configure"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/status"
+                }
+              },
+              {
+                "contains": {
+                  "const": "extensions/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "sessions/branch"
+                }
+              }
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "contains": {
+                    "const": "selections/list"
+                  }
+                },
+                {
+                  "contains": {
+                    "const": "selections/set"
+                  }
+                }
+              ]
+            }
+          },
+          "permissionModes": {
+            "type": "array",
+            "const": []
+          },
+          "thinkingLevels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "activeAgent": {
+            "type": "null",
+            "const": null
+          },
+          "subagentsEnabled": {
+            "type": "boolean",
+            "const": false
+          },
+          "selectionKinds": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "the cli-rpc child",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods",
+          "permissionModes",
+          "thinkingLevels",
+          "activeAgent",
+          "subagentsEnabled",
+          "selectionKinds"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "commands/run"
+                }
+              },
+              {
+                "contains": {
+                  "const": "commands/cancel"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "resources/reload"
+                }
+              },
+              {
+                "contains": {
+                  "const": "tools/set_active"
+                }
+              },
+              {
+                "contains": {
+                  "const": "ui/enable"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/configure"
+                }
+              },
+              {
+                "contains": {
+                  "const": "mcp/status"
+                }
+              },
+              {
+                "contains": {
+                  "const": "extensions/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "sessions/branch"
+                }
+              },
+              {
+                "contains": {
+                  "const": "settings/get"
+                }
+              },
+              {
+                "contains": {
+                  "const": "settings/set"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/get"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/set"
+                }
+              },
+              {
+                "contains": {
+                  "const": "permissions/evaluate"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/status"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/set_api_key"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/logout"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auth/login"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/list"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/show"
+                }
+              },
+              {
+                "contains": {
+                  "const": "agents/use"
+                }
+              }
+            ]
+          },
+          "permissionModes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "default",
+                "auto-accept-edits",
+                "plan",
+                "yolo",
+                "auto"
+              ]
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "default"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auto-accept-edits"
+                }
+              },
+              {
+                "contains": {
+                  "const": "plan"
+                }
+              },
+              {
+                "contains": {
+                  "const": "yolo"
+                }
+              },
+              {
+                "contains": {
+                  "const": "auto"
+                }
+              }
+            ]
+          },
+          "thinkingLevels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "activeAgent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subagentsEnabled": {
+            "type": "boolean"
+          },
+          "selectionKinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "extension",
+                "mcp",
+                "skill",
+                "tool"
+              ],
+              "open": true
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "const": "mcp"
+                }
+              },
+              {
+                "contains": {
+                  "const": "skill"
+                }
+              },
+              {
+                "contains": {
+                  "const": "tool"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the profile in use is named",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "agents/use",
+          "params": {
+            "name": "reviewer"
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "activeAgent"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "activeAgent": {
+            "type": "string",
+            "const": "reviewer"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "contract": "control-v1",
+  "method": "permissions/set",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "posture",
+  "params": {
+    "mode": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "default",
+        "auto-accept-edits",
+        "plan",
+        "yolo",
+        "auto"
+      ]
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/controls.py:173-183"
+      ],
+      "sends": [
+        "mode"
+      ],
+      "reads": [
+        "mode"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-studio",
+      "ref": "0285f5c3",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "scripts/studio-preview/fixtures/nativeFailure.py:39-41"
+      ],
+      "sends": [
+        "mode"
+      ],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "sets default",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "auto-accept-edits"
+          }
+        }
+      ],
+      "params": {
+        "mode": "default"
+      },
+      "sensitive": {
+        "mode": "auto-accept-edits"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "default"
+          }
+        }
+      }
+    },
+    {
+      "name": "sets auto-accept-edits",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {
+        "mode": "auto-accept-edits"
+      },
+      "sensitive": {
+        "mode": "plan"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "auto-accept-edits"
+          }
+        }
+      }
+    },
+    {
+      "name": "sets plan",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "yolo"
+          }
+        }
+      ],
+      "params": {
+        "mode": "plan"
+      },
+      "sensitive": {
+        "mode": "yolo"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "sets yolo",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "auto"
+          }
+        }
+      ],
+      "params": {
+        "mode": "yolo"
+      },
+      "sensitive": {
+        "mode": "auto"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "yolo"
+          }
+        }
+      }
+    },
+    {
+      "name": "sets auto",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "default"
+          }
+        }
+      ],
+      "params": {
+        "mode": "auto"
+      },
+      "sensitive": {
+        "mode": "default"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "auto"
+          }
+        }
+      }
+    },
+    {
+      "name": "an unknown mode is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "mode": "nope"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "refused during a turn",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "mode": "plan"
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "sets the child's mode",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "default"
+          }
+        }
+      ],
+      "params": {
+        "mode": "yolo"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "yolo"
+          }
+        }
+      }
+    }
+  ]
+}

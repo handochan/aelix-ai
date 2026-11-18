@@ -231,7 +231,9 @@ server off in `mcp.json`, or cover the names with a `*` pattern in
 `--mode rpc`, `tools/set_active` refuses a tool the run removes or locks off,
 with the reason, instead of leaving it out. A tool `defaultTools` turns off is
 turned on, as the panel can — for this run, until the settings are read again
-(`resources/reload`, a new session); nothing is written.
+(`resources/reload`, a new session); nothing is written. To save, RPC
+`selections/set` with kind `tool` writes `defaultTools` as the panel does and
+applies it to the session (`tests/rpc/test_selections_same_bytes_624.py`).
 
 ## Running a command in the background
 

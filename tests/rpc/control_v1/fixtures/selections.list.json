@@ -1,0 +1,2292 @@
+{
+  "contract": "control-v1",
+  "method": "selections/list",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "selections",
+  "params": {
+    "kind": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "agent",
+        "extension",
+        "mcp",
+        "skill",
+        "tool"
+      ]
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "lists the skills",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill"
+      },
+      "sensitive": {
+        "kind": "tool"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "applied",
+                    "key",
+                    "lock",
+                    "pending",
+                    "refusal",
+                    "role",
+                    "saved"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "pending": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "lock": {
+                      "type": "null",
+                      "const": null
+                    },
+                    "refusal": {
+                      "type": "null",
+                      "const": null
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "lists the tools, with a tool the run keeps off locked",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "tool"
+      },
+      "sensitive": {
+        "kind": "skill"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "tool"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "applied",
+                    "key",
+                    "refusal",
+                    "role",
+                    "saved"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "read"
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "refusal": {
+                      "type": "null",
+                      "const": null
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "lock",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "find"
+                    },
+                    "lock": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "value"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "cli"
+                        },
+                        "value": {
+                          "type": "boolean",
+                          "const": false
+                        }
+                      }
+                    },
+                    "refusal": {
+                      "type": "string",
+                      "pattern": "^find is locked: "
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "lists the extensions, applied at the next reload",
+      "rig": "full",
+      "replay": false,
+      "setup": "an_extension_on_disk",
+      "params": {
+        "kind": "extension"
+      },
+      "sensitive": {
+        "kind": "agent"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "extension"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "reload"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "lock",
+                    "refusal",
+                    "role",
+                    "saved"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "lock": {
+                      "type": "null",
+                      "const": null
+                    },
+                    "refusal": {
+                      "type": "null",
+                      "const": null
+                    },
+                    "label": {
+                      "type": "string",
+                      "const": "listed.py"
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "lock"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "builtin:agents"
+                    },
+                    "lock": {
+                      "type": "object",
+                      "required": [
+                        "kind"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "always_on"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "lists the agent profiles",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "agent"
+      },
+      "sensitive": {
+        "kind": "extension"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "agent"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "applied",
+                    "key",
+                    "refusal",
+                    "role",
+                    "saved"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "reviewer"
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "refusal": {
+                      "type": "null",
+                      "const": null
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "lock",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "const": "placeholder"
+                    },
+                    "lock": {
+                      "type": "object",
+                      "required": [
+                        "kind"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "status"
+                        }
+                      }
+                    },
+                    "refusal": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "lists the mcp.json servers, applied at the next start",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "mcp"
+      },
+      "sensitive": {
+        "kind": "skill"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "mcp"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "restart"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "reason": {
+                    "type": "string",
+                    "pattern": "#644$"
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "applied",
+                    "decidedBy",
+                    "key",
+                    "lock",
+                    "pending",
+                    "refusal",
+                    "role",
+                    "saved"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "seeded"
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "applied": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "pending": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "decidedBy": {
+                      "type": "string",
+                      "const": "global"
+                    },
+                    "lock": {
+                      "type": "null",
+                      "const": null
+                    },
+                    "refusal": {
+                      "type": "null",
+                      "const": null
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "an untrusted folder's project scope says why, without /trust",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "kind": "skill"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "effect",
+          "scopes",
+          "items",
+          "problems",
+          "notices",
+          "unreadable",
+          "policyPending"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "scopes": {
+            "type": "object",
+            "required": [
+              "global",
+              "project"
+            ],
+            "properties": {
+              "project": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "reason": {
+                    "type": "string",
+                    "const": "this folder is not trusted"
+                  },
+                  "exists": {
+                    "type": "boolean",
+                    "const": false
+                  }
+                }
+              },
+              "global": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "writable",
+                  "reason",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "writable": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "global",
+                "project"
+              ]
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "role",
+                "invocation",
+                "description",
+                "group",
+                "groupLabel",
+                "location",
+                "identities",
+                "path",
+                "scope",
+                "sourceBase",
+                "packagePath",
+                "saved",
+                "applied",
+                "inForce",
+                "pending",
+                "decidedBy",
+                "lock",
+                "problem",
+                "live",
+                "liveNote",
+                "refusal"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "item",
+                    "placeholder"
+                  ],
+                  "open": true
+                },
+                "invocation": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "groupLabel": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "identities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sourceBase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "packagePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "saved": {
+                  "type": "boolean"
+                },
+                "applied": {
+                  "type": "boolean"
+                },
+                "inForce": {
+                  "type": "boolean"
+                },
+                "pending": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "global",
+                    "project",
+                    null
+                  ]
+                },
+                "lock": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "value",
+                    "reason",
+                    "tag",
+                    "kind",
+                    "refusal"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "",
+                        "always_on",
+                        "cli",
+                        "profile",
+                        "shadowed",
+                        "status",
+                        "unavailable",
+                        "untrusted"
+                      ],
+                      "open": true
+                    },
+                    "refusal": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "problem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "live": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "liveNote": {
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "refusal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "role"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "item"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyPending": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "an unknown kind is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "nope"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Unknown selection kind: nope \\(this host serves: agent, extension, mcp, skill, tool\\)$"
+      }
+    },
+    {
+      "name": "a kind that is not a string is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": 3
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Unknown selection kind: "
+      }
+    },
+    {
+      "name": "a missing kind is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Unknown selection kind: "
+      }
+    },
+    {
+      "name": "the server-ws shape serves no selections",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "kind": "skill"
+      },
+      "error": {
+        "type": "string",
+        "const": "This RPC host serves no selections"
+      }
+    }
+  ]
+}

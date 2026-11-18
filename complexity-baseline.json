@@ -41,7 +41,7 @@
     "packages/aelix-coding-agent/src/aelix_coding_agent/hosted_catalog_source.py::refresh_hosted": 53,
     "packages/aelix-coding-agent/src/aelix_coding_agent/jobs/records.py::fold": 21,
     "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py::run_print_mode": 58,
-    "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/control.py::RpcControlPlane._dispatch": 27,
+    "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/control.py::RpcControlPlane._dispatch": 26,
     "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py::run_rpc_mode": 45,
     "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py::_LocalBashOperations.exec": 26,
     "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py::AelixChrome._build_key_bindings": 52,

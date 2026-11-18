@@ -217,6 +217,40 @@ def test_a_test_change_starts_the_touched_tests_and_the_hygiene_scans() -> None:
     assert _would_run("tests/test_agent_skills.py") == ALWAYS | {"test-hygiene", "touched-tests"}
 
 
+RPC = "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/"
+
+
+@pytest.mark.parametrize(
+    ("path", "runs"),
+    [
+        (RPC + "control.py", True),
+        (RPC + "control_mcp.py", True),
+        (RPC + "control_ui.py", True),
+        (RPC + "rpc_mode.py", True),
+        ("tests/rpc/control_v1/fixtures/permissions.set.json", True),
+        ("tests/rpc/control_v1/floor_v1.json", True),
+        ("docs/contracts/control-v1.md", True),
+        (RPC + "rpc_client.py", False),
+        (RPC + "rpc_types.py", False),
+        ("tests/rpc/test_runtime_control.py", False),
+        ("docs/contracts/README.md", False),
+    ],
+)
+def test_the_control_v1_gate_runs_on_what_can_change_version_1(path: str, runs: bool) -> None:
+    """#623 (ADR-0302 D8): R3 and the fixtures run when the control plane, its fixtures or the list move."""
+
+    assert ("control-v1" in _would_run(path, tests=())) is runs
+
+
+def test_the_control_v1_gate_checks_r3_against_the_changes_base_then_runs_the_fixtures() -> None:
+    changes = _changes(RPC + "control.py")
+    ctx = pf.Context(REPO, sys.executable, changes, [], _args())
+    steps = pf._control_v1_steps(ctx)
+    assert not isinstance(steps, str)
+    assert steps[0].shown == f"python scripts/check_control_v1.py --check --base {changes.base_sha}"
+    assert steps[1].argv == [sys.executable, *pf.PYTEST, *pf.TOUCHED_FLAGS, "tests/rpc/control_v1"]
+
+
 @pytest.mark.parametrize(
     ("path", "runs"),
     [
@@ -671,6 +705,7 @@ def test_every_gate_but_pythons_runs_through_this_interpreter(monkeypatch: pytes
         "pyproject.toml",
         "scripts/preflight.py",
         "tests/test_agent_skills.py",
+        "docs/contracts/control-v1.md",
     )
     argv = ("--docker", "--pythons", "3.11", "--windows-clock", "--fix-citations")
     ctx = pf.Context(REPO, sys.executable, changes, ["tests/test_agent_skills.py"], _args(*argv))

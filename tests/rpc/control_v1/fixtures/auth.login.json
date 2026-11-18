@@ -1,0 +1,316 @@
+{
+  "contract": "control-v1",
+  "method": "auth/login",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "auth",
+  "frameType": "extension_ui_request",
+  "params": {
+    "provider": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:166-167",
+        "src/aelix_acp/session.py:403-407"
+      ],
+      "sends": [
+        "provider"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "logs in through the dialogs",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "provider": "fixture-oauth"
+      },
+      "sensitive": {
+        "provider": "no-such-oauth"
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "authProgress"
+              },
+              "message": {
+                "type": "string",
+                "const": "fixture login started"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "url",
+              "instructions"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "oauth"
+              },
+              "url": {
+                "type": "string",
+                "const": "https://auth.invalid/authorize"
+              },
+              "instructions": {
+                "type": "string",
+                "const": "Open the url"
+              }
+            }
+          },
+          "reply": {}
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "options"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "oauthSelect"
+              },
+              "title": {
+                "type": "string",
+                "const": "Pick an account"
+              },
+              "options": {
+                "type": "array",
+                "const": [
+                  {
+                    "id": "a1",
+                    "label": "Account one"
+                  }
+                ]
+              }
+            }
+          },
+          "reply": {
+            "value": "a1"
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "placeholder"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "input"
+              },
+              "title": {
+                "type": "string",
+                "const": "Paste the code"
+              },
+              "placeholder": {
+                "type": "string",
+                "const": "code"
+              }
+            }
+          },
+          "reply": {
+            "value": "code-1"
+          }
+        }
+      ],
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-oauth",
+                "configured": true,
+                "source": "stored"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a cancelled dialog ends the login",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "provider": "fixture-oauth"
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "authProgress"
+              },
+              "message": {
+                "type": "string",
+                "const": "fixture login started"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "url",
+              "instructions"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "oauth"
+              },
+              "url": {
+                "type": "string",
+                "const": "https://auth.invalid/authorize"
+              },
+              "instructions": {
+                "type": "string",
+                "const": "Open the url"
+              }
+            }
+          },
+          "reply": {
+            "cancelled": true
+          }
+        }
+      ],
+      "error": {
+        "type": "string",
+        "const": "Authentication cancelled"
+      }
+    },
+    {
+      "name": "without dialogs it is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-oauth"
+      },
+      "error": {
+        "type": "string",
+        "const": "OAuth requires the RPC dialog client"
+      }
+    },
+    {
+      "name": "an unknown provider is refused",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "provider": "no-such-oauth"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no-such-oauth"
+      }
+    }
+  ]
+}

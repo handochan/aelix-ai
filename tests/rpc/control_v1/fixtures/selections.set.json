@@ -1,0 +1,1967 @@
+{
+  "contract": "control-v1",
+  "method": "selections/set",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "selections",
+  "frameType": "extension_ui_request",
+  "params": {
+    "kind": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "agent",
+        "extension",
+        "mcp",
+        "skill",
+        "tool"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "required": false,
+      "enum": [
+        "global",
+        "project"
+      ],
+      "absent": "allowed only with an empty changes: nothing is written, and what the files say now is applied"
+    },
+    "changes": {
+      "type": "array",
+      "required": true,
+      "maxItems": 1024,
+      "fields": {
+        "key": {
+          "type": "string",
+          "required": true,
+          "maxLength": 8192
+        },
+        "on": {
+          "type": "boolean",
+          "required": true
+        }
+      }
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "turns a skill off in the global file",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "sensitive": {
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": true
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    }
+                  }
+                ]
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "turns a skill off in the project file",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "sensitive": {
+        "scope": "global"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "project"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "\\.aelix[/\\\\]settings\\.json$"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    }
+                  }
+                ]
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "turns a tool off",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "tool",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "read",
+            "on": false
+          }
+        ]
+      },
+      "sensitive": {
+        "kind": "skill"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "tool"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "read"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "string",
+                      "const": "read"
+                    }
+                  }
+                ]
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "turns an extension off, applied at the next reload",
+      "rig": "full",
+      "replay": false,
+      "setup": "an_extension_on_disk",
+      "params": {
+        "kind": "extension",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "$rig:listed_key",
+            "on": false
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "extension"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "reload"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "listed.py"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "null",
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "turns an agent profile off",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "agent",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "reviewer",
+            "on": false
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "agent"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "reviewer"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "turns an mcp.json server on, applied at the next start",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "mcp",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "seeded",
+            "on": true
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "mcp"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "restart"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "mcp\\.json$"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "seeded"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "null",
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "no changes apply what the files say, writing nothing",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "changes": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "scope": {
+            "type": "null",
+            "const": null
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 0
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 0
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "no changes with a scope write nothing either",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "kind": "tool",
+        "scope": "global",
+        "changes": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "tool"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 0
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 0
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "only no-ops write nothing",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": true
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 0
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 0
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "1024 changes are accepted",
+      "rig": "full",
+      "replay": false,
+      "setup": "many_mcp_servers",
+      "params": {
+        "kind": "mcp",
+        "scope": "global",
+        "changes": {
+          "$gen": "objects",
+          "count": 1024,
+          "template": {
+            "key": "s{n}",
+            "on": true
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "mcp"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "restart"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 0
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 0
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "null",
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a key of 8192 characters is accepted",
+      "rig": "full",
+      "replay": false,
+      "setup": "a_long_mcp_server_name",
+      "params": {
+        "kind": "mcp",
+        "scope": "global",
+        "changes": [
+          {
+            "key": {
+              "$gen": "text",
+              "count": 8192,
+              "char": "k"
+            },
+            "on": false
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "mcp"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "global"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "restart"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "null",
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "creating the project file asks, and a confirmation saves",
+      "rig": "full",
+      "replay": false,
+      "setup": "project_settings_absent",
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "id",
+              "method",
+              "title",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "extension_ui_request"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^ui-"
+              },
+              "method": {
+                "type": "string",
+                "const": "confirm"
+              },
+              "title": {
+                "type": "string",
+                "const": "This creates .aelix/settings.json: the folder falls under project trust."
+              },
+              "message": {
+                "type": "string",
+                "const": "next launch may ask; -p may need --approve"
+              }
+            }
+          },
+          "reply": {
+            "confirmed": true
+          }
+        }
+      ],
+      "data": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scope",
+          "effect",
+          "written",
+          "changed",
+          "mismatches",
+          "apply"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "skill"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": "project"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "next_request",
+              "reload",
+              "restart"
+            ],
+            "open": true,
+            "const": "next_request"
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "\\.aelix[/\\\\]settings\\.json$"
+            },
+            "minItems": 1
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "saved"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "saved": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "label",
+                    "saved"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    },
+                    "saved": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "apply": {
+            "type": "object",
+            "required": [
+              "applied",
+              "deferred",
+              "turnedOn",
+              "turnedOff",
+              "warning"
+            ],
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "deferred": {
+                "type": "boolean",
+                "const": false
+              },
+              "turnedOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turnedOff": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "string",
+                      "const": "fixture-skill"
+                    }
+                  }
+                ]
+              },
+              "warning": {
+                "type": "null",
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "creating the project file, declined, writes nothing",
+      "rig": "full",
+      "replay": false,
+      "setup": "project_settings_absent",
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "id",
+              "method",
+              "title",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "extension_ui_request"
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^ui-"
+              },
+              "method": {
+                "type": "string",
+                "const": "confirm"
+              },
+              "title": {
+                "type": "string",
+                "const": "This creates .aelix/settings.json: the folder falls under project trust."
+              },
+              "message": {
+                "type": "string",
+                "const": "next launch may ask; -p may need --approve"
+              }
+            }
+          },
+          "reply": {
+            "confirmed": false
+          }
+        }
+      ],
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Not saved: creating .*settings\\.json was not confirmed$"
+      }
+    },
+    {
+      "name": "creating the project file with dialogs off is refused",
+      "rig": "full",
+      "replay": false,
+      "setup": "project_settings_absent",
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Saving to this project creates .*settings\\.json, which puts the folder under project trust; turn on dialogs \\(ui/enable\\) to confirm it, or create the file first$"
+      }
+    },
+    {
+      "name": "a client boolean is not consent",
+      "rig": "full",
+      "replay": false,
+      "setup": "project_settings_absent",
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "createProjectFile": true,
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Saving to this project creates "
+      }
+    },
+    {
+      "name": "an untrusted folder's project file is refused",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "kind": "skill",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Cannot save to This project: this folder is not trusted"
+      }
+    },
+    {
+      "name": "a locked row is refused with the panel's words",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "tool",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "find",
+            "on": true
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^find is locked: "
+      }
+    },
+    {
+      "name": "a placeholder row is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "tool",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "ext-failed:broken_extension.py",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^broken_extension\\.py is unavailable: "
+      }
+    },
+    {
+      "name": "an unknown row is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "no-such-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Unknown skill row: no-such-skill"
+      }
+    },
+    {
+      "name": "an unknown kind is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "nope",
+        "scope": "global",
+        "changes": []
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Unknown selection kind: nope "
+      }
+    },
+    {
+      "name": "changes as an object (round 0's shape) is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": {
+          "fixture-skill": false
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "changes must be an array of {key, on}"
+      }
+    },
+    {
+      "name": "1025 changes are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": {
+          "$gen": "objects",
+          "count": 1025,
+          "template": {
+            "key": "s{n}",
+            "on": true
+          }
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "changes has 1025 entries; at most 1024"
+      }
+    },
+    {
+      "name": "a key of 8193 characters is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": {
+              "$gen": "text",
+              "count": 8193,
+              "char": "k"
+            },
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^changes\\[0\\]\\.key is longer than 8192 characters: k{120}…$"
+      }
+    },
+    {
+      "name": "a key named twice is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          },
+          {
+            "key": "fixture-skill",
+            "on": true
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "changes names fixture-skill twice"
+      }
+    },
+    {
+      "name": "an on that is not a boolean is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": "false"
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "changes[0] must be {key: string, on: boolean}"
+      }
+    },
+    {
+      "name": "a missing scope is refused when there are changes",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "scope is required with changes: global or project"
+      }
+    },
+    {
+      "name": "an unknown scope is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "both",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Unknown scope: both (global or project)"
+      }
+    },
+    {
+      "name": "a project mcp.json is not written in a folder that reads the global one",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "mcp",
+        "scope": "project",
+        "changes": [
+          {
+            "key": "seeded",
+            "on": true
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Cannot save to This project: aelix reads one mcp\\.json: .*#644$"
+      }
+    },
+    {
+      "name": "refused during a turn",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": [
+          {
+            "key": "fixture-skill",
+            "on": false
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "the server-ws shape serves no selections",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "kind": "skill",
+        "scope": "global",
+        "changes": []
+      },
+      "error": {
+        "type": "string",
+        "const": "This RPC host serves no selections"
+      }
+    }
+  ]
+}

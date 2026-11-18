@@ -1,0 +1,222 @@
+{
+  "contract": "control-v1",
+  "method": "tools/set_active",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {
+    "names": {
+      "type": "array",
+      "required": true,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:325",
+        "src/aelix_acp/session.py:335-345",
+        "src/aelix_acp/runtime/commands.py:147-148",
+        "src/aelix_acp/server.py:311-312"
+      ],
+      "sends": [
+        "names"
+      ],
+      "reads": [
+        "activeTools"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "sets the active tools",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "names": [
+          "read"
+        ]
+      },
+      "sensitive": {
+        "names": [
+          "bash"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "activeTools"
+        ],
+        "properties": {
+          "activeTools": {
+            "type": "array",
+            "const": [
+              "read"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "an empty list is accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "names": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "activeTools"
+        ],
+        "properties": {
+          "activeTools": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a tool the run keeps off is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "names": [
+          "read",
+          "find"
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Cannot turn on find: "
+      }
+    },
+    {
+      "name": "an unknown tool is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "names": [
+          "no-such-tool"
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Active tool names must refer to loaded tools"
+      }
+    },
+    {
+      "name": "names that are not strings are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "names": [
+          1
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "refused during a turn",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "names": [
+          "read"
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "the server-ws shape",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "names": [
+          "alpha"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "activeTools"
+        ],
+        "properties": {
+          "activeTools": {
+            "type": "array",
+            "const": [
+              "alpha"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "sets the child's tools",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "agents/use",
+          "params": {
+            "name": "--none"
+          }
+        }
+      ],
+      "params": {
+        "names": [
+          "read",
+          "bash"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "activeTools"
+        ],
+        "properties": {
+          "activeTools": {
+            "type": "array",
+            "const": [
+              "read",
+              "bash"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

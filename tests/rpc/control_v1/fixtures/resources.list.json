@@ -1,0 +1,593 @@
+{
+  "contract": "control-v1",
+  "method": "resources/list",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {},
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:322-330",
+        "src/aelix_acp/session.py:343",
+        "src/aelix_acp/runtime/extensions.py:81-82",
+        "src/aelix_acp/runtime/extensions.py:192-195"
+      ],
+      "sends": [],
+      "reads": [
+        "tools[].name",
+        "activeTools",
+        "extensionErrors",
+        "extensions[].source",
+        "extensions[].name"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:145-152"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output (/tools, /skills, /hooks, /mcp)"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "every collection populated",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "mcp/configure",
+          "params": {
+            "servers": [
+              {
+                "name": "fixture",
+                "command": "$rig:python",
+                "args": [
+                  "$rig:mcp_script"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "commands",
+          "tools",
+          "activeTools",
+          "skills",
+          "prompts",
+          "projectTrusted",
+          "mcp",
+          "extensionErrors",
+          "extensions",
+          "hooks"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "activeTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description",
+                "filePath"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "projectTrusted": {
+            "type": "boolean",
+            "const": true
+          },
+          "mcp": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "extensionErrors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "source",
+                "message"
+              ],
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "source"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "extension",
+                "events"
+              ],
+              "properties": {
+                "extension": {
+                  "type": "string"
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "the server-ws shape",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "commands",
+          "tools",
+          "activeTools",
+          "skills",
+          "prompts",
+          "mcp",
+          "extensionErrors",
+          "extensions",
+          "hooks",
+          "projectTrusted"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "const": []
+          },
+          "tools": {
+            "type": "array"
+          },
+          "activeTools": {
+            "type": "array"
+          },
+          "skills": {
+            "type": "array",
+            "const": []
+          },
+          "prompts": {
+            "type": "array"
+          },
+          "mcp": {
+            "type": "array"
+          },
+          "extensionErrors": {
+            "type": "array"
+          },
+          "extensions": {
+            "type": "array"
+          },
+          "hooks": {
+            "type": "array"
+          },
+          "projectTrusted": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "an empty selection reads back empty",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "tools/set_active",
+          "params": {
+            "names": []
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "activeTools",
+          "tools"
+        ],
+        "properties": {
+          "activeTools": {
+            "type": "array",
+            "const": []
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "the child lists the fixture extension",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "agents/use",
+          "params": {
+            "name": "--none"
+          }
+        },
+        {
+          "method": "tools/set_active",
+          "params": {
+            "names": [
+              "read",
+              "bash"
+            ]
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "tools",
+          "activeTools",
+          "commands",
+          "skills",
+          "prompts",
+          "projectTrusted",
+          "mcp",
+          "extensionErrors",
+          "extensions",
+          "hooks"
+        ],
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1,
+            "contains": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "fixture_echo"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "activeTools": {
+            "type": "array",
+            "const": [
+              "read",
+              "bash"
+            ]
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "contains": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "fixture-ok"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description",
+                "filePath"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "projectTrusted": {
+            "type": "boolean",
+            "const": false
+          },
+          "mcp": {
+            "type": "array",
+            "const": []
+          },
+          "extensionErrors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "source",
+                "message"
+              ],
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "source"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "extension",
+                "events"
+              ],
+              "properties": {
+                "extension": {
+                  "type": "string"
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

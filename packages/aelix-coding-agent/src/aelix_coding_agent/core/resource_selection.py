@@ -34,11 +34,31 @@ from .resource_filter import (
 if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
 
-Effect = Literal["next_request", "reload"]
+Effect = Literal["next_request", "reload", "restart"]
+"""When a saved change takes effect: the next model request (applied at once),
+``/reload`` (#25), or the next aelix start (``mcp.json``, ADR-0305 D15)."""
 Role = Literal["item", "placeholder", "info"]
 LockKind = Literal[
     "", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted", "status"
 ]
+
+# --- words the panels and RPC share (ADR-0305 D3, D6, D10) -----------------------
+
+UNTRUSTED_LOCK_REASON = "this folder is not trusted; /trust to decide"
+"""An untrusted project's locked row (skills, extensions, agents, mcp)."""
+UNTRUSTED_SCOPE_REASON = "this folder is not trusted (/trust to decide)"
+"""Why an untrusted project's scope cannot be saved to."""
+RPC_UNTRUSTED = "this folder is not trusted"
+"""What RPC says instead of either text above: its client decides trust elsewhere
+(ADR-0305 D3, opus L8)."""
+CREATE_PROJECT_FILE_NOTE = (
+    "This creates .aelix/settings.json: the folder falls under project trust."
+)
+"""The panel's question before a save creates the project settings file (ADR-0279 C22)."""
+CREATE_PROJECT_FILE_HINT = "next launch may ask; -p may need --approve"
+"""What that file does next, after the question (the panel's hint row says it)."""
+SCOPE_WORD: Mapping[str, str] = {"global": "Global", "project": "This project"}
+"""How the "Save to" control and its refusals name a scope."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -434,9 +454,7 @@ class ResourceSelection:
             return ScopeStatus(scope, path, False, "settings are not available here", False)
         if scope == "project" and not self._project_readable():
             # Not even a stat: what an untrusted project holds is not looked at.
-            return ScopeStatus(
-                scope, path, False, "this folder is not trusted (/trust to decide)", False
-            )
+            return ScopeStatus(scope, path, False, UNTRUSTED_SCOPE_REASON, False)
         exists = path is not None and os.path.lexists(path)
         error = manager.load_error(scope)
         if error is not None:
@@ -488,6 +506,11 @@ class ResourceSelection:
         states = []
         for item in items:
             saved, decided_by = values.get(item.key, (True, None))
+            if item.role == "info":
+                # A status row is saved nowhere: its ``saved`` is what this launch has,
+                # as the ``mcp`` kind's status rows say it (ADR-0305 D16; verify r1,
+                # live-RPC 5: "saved: true, applied: false" beside "connected").
+                saved, decided_by = item.key in applied, None
             states.append(
                 ItemState(
                     item,
@@ -521,7 +544,14 @@ class ResourceSelection:
         status = self._status("project")
         return status.writable and not status.exists
 
-    async def save(self, kind: ResourceKind, scope: Scope, edits: Mapping[str, bool]) -> SaveResult:
+    async def save(
+        self,
+        kind: ResourceKind,
+        scope: Scope,
+        edits: Mapping[str, bool],
+        *,
+        may_create_project_file: bool = False,
+    ) -> SaveResult:
         """Write *edits* (``row key -> wanted value``) to ONE file, and report what both say now.
 
         One scope per save (ADR-0279 D4, C20), so a save either happened or did
@@ -531,6 +561,15 @@ class ResourceSelection:
         edit under a grammar that :attr:`~SelectionGrammar.checks_both_files`
         is checked against this project's file as it is on disk now (#510
         verify V1). A grammar that refuses an edit writes nothing either.
+
+        An edit whose value is what the files already say, in the snapshot
+        taken here, is dropped (ADR-0305 D4): the TUI and RPC then write the
+        same bytes for the same files and edits, also after another writer
+        changed a file under an open panel. The project file is created only
+        with *may_create_project_file* — the caller's confirmation — and that
+        is checked inside the write, after its lock (ADR-0305 D6): a file
+        deleted after :meth:`needs_new_project_file` said it existed is not
+        re-created without a question.
         """
 
         manager = self.settings_manager
@@ -541,10 +580,17 @@ class ResourceSelection:
             return SaveResult(False, f"Cannot save to {status.path or scope}: {status.reason}")
         before = self.snapshot(kind)
         items = {s.item.key: s.item for s in before.states}
+        before_saved = {s.item.key: s.saved for s in before.states}
+        # A no-op is judged only from files that were read (Codex X3): with one
+        # unreadable, a saved value is a guess, so the edit goes on to be refused.
+        known = before_saved if not before.unreadable else {}
         wanted = {
             k: want
             for k, want in edits.items()
-            if k in items and items[k].identities and items[k].role == "item"
+            if k in items
+            and items[k].identities
+            and items[k].role == "item"
+            and known.get(k) != want
         }
         if not wanted:
             return SaveResult(True)
@@ -589,14 +635,19 @@ class ResourceSelection:
             return entries
 
         try:
-            await manager.edit_list(scope, key, _apply_edits, nullable=grammar.nullable)
+            await manager.edit_list(
+                scope,
+                key,
+                _apply_edits,
+                nullable=grammar.nullable,
+                may_create=scope == "global" or may_create_project_file,
+            )
         except Exception as exc:  # noqa: BLE001 — the panel shows it and stays open
             return SaveResult(False, f"{exc}")
         written = (
             (status.path or scope,) if lists_seen and lists_seen[-1][0] != lists_seen[-1][1] else ()
         )
         after = self.snapshot(kind)
-        before_saved = {s.item.key: s.saved for s in before.states}
         changed = tuple(
             (s.item.label, s.saved)
             for s in after.states
@@ -789,7 +840,117 @@ async def wait_harness_idle(harness: Callable[[], Any], gate: ApplyGate | None) 
             waiter.cancel()
 
 
+# --- what the panel and RPC both call (ADR-0305 D10) ------------------------------
+
+
+def edit_refusal(state: ItemState) -> str | None:
+    """Why a row cannot be turned on or off, or ``None`` when it can.
+
+    The panel's Space refusal, word for word (ADR-0279 D11, #25, #510): a status
+    row names where it is managed; a locked row says why it is locked. Plus
+    ADR-0305 D3's placeholder rule: a row that is not an ``item``, or names
+    nothing a settings list can hold, and has no lock, cannot change either —
+    a save would drop it, so it is refused instead of looking saved. A built-in
+    with no identity (``always_on``, ``JobsExtension``) is named as the other
+    built-ins are: "<label> is locked: …" (#624 fix round 2, verify N5).
+    """
+
+    item, lock = state.item, state.lock
+    if item.role == "info":
+        if lock is not None:
+            return lock.refusal or lock.reason
+        return f"{item.label} is status only"
+    if lock is not None:
+        if lock.kind == "unavailable":
+            name = f"{item.label} is unavailable"
+        elif item.identities or lock.kind == "always_on":
+            name = f"{item.label} is locked"
+        else:
+            name = "Locked"
+        return f"{name}: {lock.reason}"
+    if item.role != "item" or not item.identities:
+        return f"{item.label} cannot be turned on or off here"
+    return None
+
+
+def scope_refusal(snapshot: Snapshot, scope: str) -> str | None:
+    """Why *scope* cannot be saved to, in the panel's ←/→ words, or ``None`` when it can."""
+
+    status = snapshot.scopes.get(cast("Scope", scope))
+    word = SCOPE_WORD.get(scope, scope)
+    if status is None:
+        return f"Cannot save to {word}: not available"
+    if status.writable:
+        return None
+    return f"Cannot save to {word}: {status.reason}"
+
+
+class _Selection(Protocol):
+    async def save(
+        self,
+        kind: Any,
+        scope: Scope,
+        edits: Mapping[str, bool],
+        *,
+        may_create_project_file: bool = False,
+    ) -> SaveResult: ...
+
+    async def apply(
+        self,
+        kind: Any,
+        snapshot: Snapshot | None = None,
+        *,
+        on_deferred: Callable[[ApplyResult], None] | None = None,
+    ) -> ApplyResult: ...
+
+
+async def commit(
+    selection: _Selection,
+    kind: Any,
+    scope: Scope,
+    edits: Mapping[str, bool],
+    *,
+    may_create_project_file: bool = False,
+    on_deferred: Callable[[ApplyResult], None] | None = None,
+    on_apply_error: Callable[[Exception], ApplyResult | None] | None = None,
+) -> tuple[SaveResult | None, ApplyResult | None]:
+    """Save *edits* to *scope* when there are any, then apply — the panel's Enter.
+
+    ``(save, apply)``: *save* is ``None`` when there was nothing to save; a save
+    that failed is returned with ``None`` and nothing applied. A kind whose
+    effect is ``reload`` or ``restart`` is never applied here (ADR-0305 D4, D8,
+    D15). An exception from the save is a failed save; one from the apply goes to
+    *on_apply_error* when given (its return is the apply result), else it is the
+    warning "saved, but not applied (…)".
+    """
+
+    save: SaveResult | None = None
+    if edits:
+        try:
+            save = await selection.save(
+                kind, scope, edits, may_create_project_file=may_create_project_file
+            )
+        except Exception as exc:  # noqa: BLE001 — reported as a failed save
+            save = SaveResult(False, str(exc))
+        if not save.ok:
+            return save, None
+    if getattr(kind, "effect", "next_request") in ("reload", "restart"):
+        return save, None
+    try:
+        return save, await selection.apply(kind, on_deferred=on_deferred)
+    except Exception as exc:  # noqa: BLE001 — saved, not applied: said
+        if on_apply_error is not None:
+            return save, on_apply_error(exc)
+        return save, ApplyResult(False, warning=f"saved, but not applied ({exc})")
+
+
 __all__ = [
+    "CREATE_PROJECT_FILE_HINT",
+    "CREATE_PROJECT_FILE_NOTE",
+    "RPC_UNTRUSTED",
+    "SCOPE_WORD",
+    "UNTRUSTED_LOCK_REASON",
+    "UNTRUSTED_SCOPE_REASON",
     "ApplyGate",
     "ApplyResult",
     "SettingsLists",
@@ -807,7 +968,10 @@ __all__ = [
     "ScopeStatus",
     "SelectionGrammar",
     "Snapshot",
+    "commit",
+    "edit_refusal",
     "grammar_of",
     "harness_busy",
+    "scope_refusal",
     "wait_harness_idle",
 ]

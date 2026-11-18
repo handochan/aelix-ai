@@ -1,7 +1,9 @@
 # 0198. Print-mode JSON event-envelope stability contract (`--mode json`)
 
 Status: Accepted (2026-07-26) — lands with the P2 implementation. Amended
-2026-10-20 by ADR-0268 (#410): §D5's first clause no longer holds.
+2026-10-20 by ADR-0268 (#410): §D5's first clause no longer holds. Amended
+2026-11-18 by ADR-0302 (#623): the control-v1 part of "Partial fulfilment"'s
+`rpc` half (note at the end).
 Date: 2026-07-26
 Relates: ADR-0056 (RPC JSONL framing — the same LF-only, one-object-per-line
 discipline this stream inherits), ADR-0057 (RPC types & envelope — the serializer
@@ -315,3 +317,14 @@ date), strictly: exactly `{"type": …}`, after the latest run closed, and taken
 `agent_start`. A consumer that does not know the type ignores it, as the delegation reducer always
 ignored unknown types.
 
+## Note (2026-11-18, ADR-0302, #623)
+
+"Partial fulfilment of spec §9": the control-v1 part of the `rpc` half is ADR-0302 — the
+`aelix_control` methods and the `aelix_subagent` and `extension_ui` event families. It has a
+consumer list (`docs/contracts/control-v1.md`) and fixtures replayed in process and on a real
+`--mode rpc` child (`tests/rpc/control_v1/`), held by a merge-base ratchet
+(`scripts/check_control_v1.py`). ADR-0302 also keeps this ADR's lesson that a dataclass's field
+names become wire names: `agents/show.profile`, `agents/run.result` and
+`agents/list.diagnostics[]` are `asdict` and are frozen by name, and the new selection rows are
+serialised field by field (ADR-0305 D3). The classic RPC roster and the cross-channel parity
+test are still not covered.

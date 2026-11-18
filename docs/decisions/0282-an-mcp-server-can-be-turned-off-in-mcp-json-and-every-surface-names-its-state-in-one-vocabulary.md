@@ -1,7 +1,10 @@
 # 0282. An MCP server can be turned off in `mcp.json`, and every surface names its state in one vocabulary
 
 Status: Accepted (2026-10-31, #512). Amended 2026-11-01 (review rounds 1 and 2:
-D9, and the corrections listed under it).
+D9, and the corrections listed under it). Amended 2026-11-18 by ADR-0305
+(#624): D8's second bullet is superseded (a bare `/mcp` turns servers on and
+off), D1's warning names a type, not a value, and D6 gains a row (note at the
+end).
 Date: 2026-10-31
 Issue: #512 (phase 1 of its checklist). Deferred: the global/project merge and a
 `/mcp` toggle (D8).
@@ -338,3 +341,29 @@ guide says to put the entry in the project file too.
   delegated-agent paragraphs, D6's delegated-agent row, the Context's
   "trusted" and "headers", and the CHANGELOG line that said delegated agents
   "read the same file".
+
+## Note (2026-11-18, ADR-0305, #624)
+
+- **D8's second bullet is superseded.** Owner, 2026-11-17: "쓰기까지 지금 구현". A bare `/mcp`
+  opens a panel that writes `enabled` into the `mcp.json` a launch in this directory reads, and
+  RPC does the same through `selections/set` kind `mcp` (ADR-0305 D11–D16). Only the `enabled`
+  bytes change, and the file keeps its owner, group, mode bits and (Linux, macOS) ACL and
+  extended attributes, or nothing is written (ADR-0305 D14; the Windows rules are designed and
+  first measured in CI).
+- **D2's one-file rule is kept.** The writer edits only the file in force, never creates
+  `.aelix/mcp.json`, and cannot turn a global server off in one project; `$AELIX_MCP_CONFIG`'s
+  file is listed and not written. That, and D8's first bullet (the merge), stay with #644, which
+  the owner decides after beta.3 (2026-11-18, "beta.3 뒤에 결정 (권장)").
+- **D1's warning names the value's JSON type, not the value**: `"enabled" must be true or false,
+  not a string; not started` (or `a number`, `null`, `a list`, `an object`), so a value pasted
+  there never reaches the launch's stderr or `aelix status`. The loader also turns a file that is
+  not UTF-8, or is nested too deep to parse, into a warning instead of an exception. Such a
+  warning reads "<path>: not valid JSON (<the exception's class>)", and a JSON syntax error's
+  "<path>: not valid JSON at line N column M (JSONDecodeError)", two numbers and nothing quoted
+  from the file (`tests/cli/test_mcp_loader_624.py`).
+- **D6's table gains a row**: RPC `selections/list` / `selections/set` kind `mcp` → this
+  directory's `mcp.json` in force; an `enabled` change there takes effect at the next start.
+  `mcp/configure`, `mcp/status` and `resources/list.mcp` keep their meaning (ADR-0305 D18).
+- **D7**: `aelix status` is unchanged except D1's words; it shows a toggle at once as `enabled`
+  or `disabled`, and its JSON gains no key
+  (`test_aelix_status_json_flips_the_state_and_gains_no_key`).

@@ -1,0 +1,858 @@
+{
+  "contract": "control-v1",
+  "method": "settings/set",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "settings",
+  "params": {
+    "key": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "default_provider",
+        "default_model",
+        "default_thinking_level",
+        "steering_mode",
+        "follow_up_mode",
+        "compaction_enabled",
+        "retry_enabled",
+        "hide_thinking_block",
+        "hide_compaction_summary",
+        "respect_gitignore",
+        "check_for_updates",
+        "check_model_catalog",
+        "skill_paths",
+        "prompt_template_paths",
+        "agent_profiles",
+        "enabled_models"
+      ]
+    },
+    "value": {
+      "type": "string|boolean|array",
+      "required": true,
+      "maxItems": 256,
+      "maxLength": 4096,
+      "note": "the key's own type, and a choice where the key has choices"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:160",
+        "src/aelix_acp/runtime/commands.py:163"
+      ],
+      "sends": [
+        "key",
+        "value"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "saves default_provider",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "default_provider",
+        "value": "openrouter"
+      },
+      "sensitive": {
+        "key": "default_model"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "default_provider"
+          },
+          "value": {
+            "type": "string",
+            "const": "openrouter"
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves default_model",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "default_model",
+        "value": "fixture-model"
+      },
+      "sensitive": {
+        "value": "other-model"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "default_model"
+          },
+          "value": {
+            "type": "string",
+            "const": "fixture-model"
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves default_thinking_level",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "default_thinking_level",
+        "value": "high"
+      },
+      "sensitive": {
+        "value": "low"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "default_thinking_level"
+          },
+          "value": {
+            "type": "string",
+            "const": "high"
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves steering_mode",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "steering_mode",
+        "value": "all"
+      },
+      "sensitive": {
+        "value": "one-at-a-time"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "steering_mode"
+          },
+          "value": {
+            "type": "string",
+            "const": "all"
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves follow_up_mode",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "follow_up_mode",
+        "value": "all"
+      },
+      "sensitive": {
+        "value": "one-at-a-time"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "follow_up_mode"
+          },
+          "value": {
+            "type": "string",
+            "const": "all"
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves compaction_enabled",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "compaction_enabled",
+        "value": false
+      },
+      "sensitive": {
+        "value": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "compaction_enabled"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves retry_enabled",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "retry_enabled",
+        "value": false
+      },
+      "sensitive": {
+        "value": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "retry_enabled"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves hide_thinking_block",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "hide_thinking_block",
+        "value": true
+      },
+      "sensitive": {
+        "value": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "hide_thinking_block"
+          },
+          "value": {
+            "type": "boolean",
+            "const": true
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves hide_compaction_summary",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "hide_compaction_summary",
+        "value": true
+      },
+      "sensitive": {
+        "value": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "hide_compaction_summary"
+          },
+          "value": {
+            "type": "boolean",
+            "const": true
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves respect_gitignore",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "respect_gitignore",
+        "value": false
+      },
+      "sensitive": {
+        "value": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "respect_gitignore"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves check_for_updates",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "check_for_updates",
+        "value": false
+      },
+      "sensitive": {
+        "value": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "check_for_updates"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves check_model_catalog",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "check_model_catalog",
+        "value": false
+      },
+      "sensitive": {
+        "value": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "check_model_catalog"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves skill_paths",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "skill_paths",
+        "value": [
+          "-a"
+        ]
+      },
+      "sensitive": {
+        "value": [
+          "-b"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "skill_paths"
+          },
+          "value": {
+            "type": "array",
+            "const": [
+              "-a"
+            ]
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves prompt_template_paths",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "prompt_template_paths",
+        "value": [
+          "-p"
+        ]
+      },
+      "sensitive": {
+        "value": [
+          "-q"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "prompt_template_paths"
+          },
+          "value": {
+            "type": "array",
+            "const": [
+              "-p"
+            ]
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves agent_profiles",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "agent_profiles",
+        "value": [
+          "-reviewer"
+        ]
+      },
+      "sensitive": {
+        "value": [
+          "-explorer"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "agent_profiles"
+          },
+          "value": {
+            "type": "array",
+            "const": [
+              "-reviewer"
+            ]
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "saves enabled_models",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "enabled_models",
+        "value": [
+          "fixture/*"
+        ]
+      },
+      "sensitive": {
+        "value": [
+          "other/*"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "enabled_models"
+          },
+          "value": {
+            "type": "array",
+            "const": [
+              "fixture/*"
+            ]
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "an empty list is accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "enabled_models",
+        "value": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "enabled_models"
+          },
+          "value": {
+            "type": "array",
+            "const": []
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "256 entries are accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "enabled_models",
+        "value": {
+          "$gen": "strings",
+          "count": 256,
+          "prefix": "m"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "enabled_models"
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 256,
+            "maxItems": 256
+          }
+        }
+      }
+    },
+    {
+      "name": "257 entries are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "enabled_models",
+        "value": {
+          "$gen": "strings",
+          "count": 257,
+          "prefix": "m"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "Setting must be a bounded list of non-empty strings"
+      }
+    },
+    {
+      "name": "4096 characters are accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "default_model",
+        "value": {
+          "$gen": "text",
+          "count": 4096,
+          "char": "m"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "default_model"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 4096,
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    {
+      "name": "4097 characters are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "default_model",
+        "value": {
+          "$gen": "text",
+          "count": 4097,
+          "char": "m"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "Setting must be a bounded, non-empty string"
+      }
+    },
+    {
+      "name": "an unknown key is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "api_key",
+        "value": "secret"
+      },
+      "error": {
+        "type": "string",
+        "const": "Unknown or unavailable settings key"
+      }
+    },
+    {
+      "name": "a value of the wrong type is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "key": "retry_enabled",
+        "value": "true"
+      },
+      "error": {
+        "type": "string",
+        "const": "Invalid setting value for retry_enabled"
+      }
+    },
+    {
+      "name": "a global file that did not load is refused",
+      "rig": "full",
+      "replay": false,
+      "setup": "global_settings_unreadable",
+      "params": {
+        "key": "retry_enabled",
+        "value": false
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Setting 'retry_enabled' was not saved: the global settings file did not load"
+      }
+    },
+    {
+      "name": "refused during a turn",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "key": "retry_enabled",
+        "value": false
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "saves on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "key": "retry_enabled",
+        "value": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "requiresReload"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "const": "retry_enabled"
+          },
+          "value": {
+            "type": "boolean",
+            "const": false
+          },
+          "requiresReload": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+{
+  "contract": "control-v1",
+  "method": "auth/logout",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "auth",
+  "params": {
+    "provider": {
+      "type": "string",
+      "required": true,
+      "maxLength": 128
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:166-167"
+      ],
+      "sends": [
+        "provider"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "forgets a stored key",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "auth/set_api_key",
+          "params": {
+            "provider": "fixture-key",
+            "key": "synthetic-key"
+          }
+        }
+      ],
+      "params": {
+        "provider": "fixture-key"
+      },
+      "sensitive": {
+        "provider": "fixture-other"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": false,
+                "source": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a 128-character provider is accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": {
+          "$gen": "text",
+          "count": 128,
+          "char": "p"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "a 129-character provider is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": {
+          "$gen": "text",
+          "count": 129,
+          "char": "p"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "Provider id is required"
+      }
+    },
+    {
+      "name": "forgets a key on the child",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "auth/set_api_key",
+          "params": {
+            "provider": "fixture-key",
+            "key": "synthetic-key"
+          }
+        }
+      ],
+      "params": {
+        "provider": "fixture-key"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": false,
+                "source": null
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

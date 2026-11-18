@@ -1,6 +1,6 @@
 ---
 name: aelix-preflight
-description: Use before pushing a branch, opening or updating a pull request, or saying a change is done in the aelix-ai repository. Runs scripts/preflight.py, which picks the gates a diff needs (ruff, the pyright gate, the citation lock, the docs bundle, import direction, the band rule, packaging, pi parity, the scans every test or product file must pass, the touched tests, Windows pyright) and writes a claims block for the PR. Also covers how to read each red gate, when to add Linux docker, Python 3.11 and 3.14, or the coarse Windows clock, and the full-suite run that is still owed at the end.
+description: Use before pushing a branch, opening or updating a pull request, or saying a change is done in the aelix-ai repository. Runs scripts/preflight.py, which picks the gates a diff needs (ruff, the pyright gate, the citation lock, the docs bundle, import direction, the band rule, packaging, pi parity, the control-v1 floor, the scans every test or product file must pass, the touched tests, Windows pyright) and writes a claims block for the PR. Also covers how to read each red gate, when to add Linux docker, Python 3.11 and 3.14, or the coarse Windows clock, and the full-suite run that is still owed at the end.
 ---
 
 # aelix-preflight
@@ -104,6 +104,18 @@ gates that other checkout.
   pyright analyses your own platform only. Guard POSIX-only `os.*` calls with
   `sys.platform != "win32"`, not with `hasattr`: pyright narrows on the first and
   not on the second.
+- **You changed `rpc/control*.py`, `rpc/rpc_mode.py`, `tests/rpc/control_v1/` or
+  `docs/contracts/control-v1.md`:** the `control-v1` gate runs. It checks that the floor
+  (`tests/rpc/control_v1/floor_v1.json`) still holds the floor at the merge base
+  (`scripts/check_control_v1.py --check --base <base>`), then runs `tests/rpc/control_v1`, a
+  real `--mode rpc` child included. Version 1 only grows (ADR-0302):
+  - a new fixture or case says `"since": "#<issue>"`; run
+    `uv run python scripts/check_control_v1.py --update` and commit the floor with it;
+  - a `since: "v1"` case is frozen as written, so editing one fails the gate. A correction is a
+    withdrawal (`--update --withdraw <method>:<case> --note <YYYY-MM-DD> --issue '#<n>'`) with a
+    dated note on ADR-0302;
+  - an addition leaves `V1_SHA256` in `tests/rpc/control_v1/test_additive_only.py` alone. If
+    it moved, a v1 case was edited.
 - **You edited `docs/guides/`:** run `uv run python scripts/sync_bundled_docs.py`.
   The wheel ships a byte-identical copy that `tests/test_docs_bundle_sync.py` gates
   in both directions (ADR-0218).

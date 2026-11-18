@@ -1,0 +1,578 @@
+{
+  "contract": "control-v1",
+  "method": "mcp/configure",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {
+    "servers": {
+      "type": "array",
+      "required": true,
+      "maxItems": 32,
+      "fields": {
+        "name": {
+          "type": "string",
+          "required": true
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ],
+          "absent": "stdio"
+        },
+        "command": {
+          "type": "string",
+          "required": false,
+          "absent": "required for stdio"
+        },
+        "args": {
+          "type": "array",
+          "required": false,
+          "absent": "[]",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "array",
+          "fields": {
+            "name": {
+              "type": "string",
+              "required": true
+            },
+            "value": {
+              "type": "string",
+              "required": true
+            }
+          },
+          "required": false,
+          "absent": "[]"
+        },
+        "url": {
+          "type": "string",
+          "required": false,
+          "absent": "required for http and sse"
+        },
+        "headers": {
+          "type": "array",
+          "fields": {
+            "name": {
+              "type": "string",
+              "required": true
+            },
+            "value": {
+              "type": "string",
+              "required": true
+            }
+          },
+          "required": false,
+          "absent": "[]"
+        }
+      }
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:337-340"
+      ],
+      "sends": [
+        "servers"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:306-307"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "a stdio server with env",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": [
+          {
+            "name": "fixture",
+            "command": "$rig:python",
+            "args": [
+              "$rig:mcp_script"
+            ],
+            "env": [
+              {
+                "name": "FIXTURE_ENV",
+                "value": "1"
+              }
+            ]
+          }
+        ]
+      },
+      "sensitive": {
+        "servers": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "acp_fixture",
+                "clientName": "fixture",
+                "transport": "stdio",
+                "connected": true
+              }
+            ]
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a stdio server named by type",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": [
+          {
+            "name": "fixture",
+            "command": "$rig:python",
+            "args": [
+              "$rig:mcp_script"
+            ],
+            "type": "stdio"
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "acp_fixture",
+                "clientName": "fixture",
+                "transport": "stdio",
+                "connected": true
+              }
+            ]
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "an http server with headers",
+      "rig": "full",
+      "replay": false,
+      "setup": "net_mcp_servers",
+      "params": {
+        "servers": [
+          {
+            "name": "web",
+            "type": "http",
+            "url": "$rig:mcp_http_url",
+            "headers": [
+              {
+                "name": "X-Fixture",
+                "value": "1"
+              }
+            ]
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "acp_web",
+                "clientName": "web",
+                "transport": "http",
+                "connected": true
+              }
+            ]
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "an sse server",
+      "rig": "full",
+      "replay": false,
+      "setup": "net_mcp_servers",
+      "params": {
+        "servers": [
+          {
+            "name": "events",
+            "type": "sse",
+            "url": "$rig:mcp_sse_url"
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "acp_events",
+                "clientName": "events",
+                "transport": "sse",
+                "connected": true
+              }
+            ]
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "32 servers are accepted",
+      "rig": "full",
+      "replay": false,
+      "setup": "net_mcp_servers",
+      "params": {
+        "servers": {
+          "$gen": "objects",
+          "count": 32,
+          "template": {
+            "name": "web{n}",
+            "type": "http",
+            "url": "$rig:mcp_http_url"
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "33 servers are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": {
+          "$gen": "objects",
+          "count": 33,
+          "template": {
+            "name": "s{n}",
+            "command": "$rig:python"
+          }
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "MCP servers must be a list of at most 32 entries"
+      }
+    },
+    {
+      "name": "an empty list ends the lease",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "mcp/configure",
+          "params": {
+            "servers": [
+              {
+                "name": "fixture",
+                "command": "$rig:python",
+                "args": [
+                  "$rig:mcp_script"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "params": {
+        "servers": []
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "const": []
+          },
+          "skippedTools": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a stdio server without a command is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": [
+          {
+            "name": "x"
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "MCP stdio command is required"
+      }
+    },
+    {
+      "name": "a url with credentials is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": [
+          {
+            "name": "x",
+            "type": "http",
+            "url": "https://user:pw@example.invalid"
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "without embedded credentials"
+      }
+    },
+    {
+      "name": "an unknown transport is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "servers": [
+          {
+            "name": "x",
+            "type": "ws",
+            "url": "https://example.invalid"
+          }
+        ]
+      },
+      "error": {
+        "type": "string",
+        "const": "Unsupported MCP transport"
+      }
+    }
+  ]
+}

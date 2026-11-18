@@ -2,7 +2,9 @@
 
 - **Status:** Accepted — **AMENDED 2026-09-08 by #251** (`## Amendment (2026-09-08, #251)`
   below): the picker row format now carries the tier the model receives, so it is no longer
-  `N. {level}` alone. Everything else in this ADR stands.
+  `N. {level}` alone. Everything else in this ADR stands. Amended 2026-11-18 by ADR-0305
+  (#624): a bare `/mcp` opens the on/off panel and `/mcp list` is this ADR's table (note at the
+  end).
 - **Date:** 2026-06-21
 - **Sprint:** 6h₂₇
 - **Supersedes/relates:** ADR-0154 (`/model` rich picker — the gold-standard DI template mirrored here),
@@ -139,3 +141,11 @@ connect raised), `disconnected`, and `disabled` — an `"enabled": false` entry,
 listed last with the file and key that turn it back on. The title adds
 `· N disabled`. A manager holding only disabled entries is listed rather than
 "No MCP servers configured.". It is still a read-only snapshot.
+
+## Note (2026-11-18, ADR-0305, #624): a bare `/mcp` turns servers on and off
+
+A bare `/mcp` opens the on/off panel over the `mcp.json` a launch here reads (ADR-0305 D16);
+`/mcp list` is the read-only status table this ADR decided, unchanged, and a launch with no MCP
+control keeps the table on a bare `/mcp`. Anything else after `/mcp` answers "Usage: /mcp
+[list]". The command's description is "Turn MCP servers on or off (/mcp list: status, tool
+counts)". Both forms still run while the model answers (`tests/tui/test_mcp_panel_624.py`).

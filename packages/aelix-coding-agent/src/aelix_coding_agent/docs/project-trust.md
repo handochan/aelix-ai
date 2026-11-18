@@ -65,7 +65,10 @@ launch the folder is decided like any other with a gated resource — an
 extension's `project_trust` answer, then a saved decision, then
 `defaultProjectTrust`, then the question (`project_trust.py`'s order; `-p`
 denies, so needs `--approve`, where nothing earlier decides) — so the panel says this and waits
-for a second Enter before creating it. In an untrusted folder the
+for a second Enter before creating it. RPC `selections/set` asks the same question as a
+`confirm` dialog (`ui/enable`) and takes no parameter as consent. A panel or RPC save that
+finds the file gone after it checked is refused instead of creating it, and the panel's next
+Enter asks (`tests/core/test_resource_selection_624.py`). In an untrusted folder the
 target cannot be chosen at all, and the project's skills appear in `/skill` as
 one locked row per directory — `.aelix/skills/` and each `.agents/skills/` a
 trusted run would read — whose count comes from listing it: no `SKILL.md` in
@@ -328,7 +331,7 @@ between words at your terminal's width, as pi's does (#380).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1984`, registered at `:2543`)
+selector from inside a session (`tui/commands.py:1999`, registered at `:2558`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every

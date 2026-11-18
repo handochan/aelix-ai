@@ -1,0 +1,142 @@
+{
+  "contract": "control-v1",
+  "method": "permissions/get",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "posture",
+  "params": {},
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/controls.py:187"
+      ],
+      "sends": [],
+      "reads": [
+        "mode"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "reads the default",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "default"
+          }
+        }
+      }
+    },
+    {
+      "name": "reads the mode set before",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "reads the child's mode",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "auto"
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "auto"
+          }
+        }
+      }
+    },
+    {
+      "name": "the server-ws shape has no posture",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "const": "This RPC host has no permission posture"
+      }
+    }
+  ]
+}

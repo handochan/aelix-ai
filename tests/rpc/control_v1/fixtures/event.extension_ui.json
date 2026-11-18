@@ -1,0 +1,975 @@
+{
+  "contract": "control-v1",
+  "event": "extension_ui",
+  "frameType": "extension_ui_request",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "frame": {
+    "type": "object",
+    "required": [
+      "type",
+      "id",
+      "method"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "extension_ui_request"
+      },
+      "id": {
+        "type": "string",
+        "pattern": "^ui-"
+      },
+      "method": {
+        "type": "string",
+        "enum": [
+          "select",
+          "confirm",
+          "input",
+          "editor",
+          "notify",
+          "setStatus",
+          "setWidget",
+          "setTitle",
+          "oauth",
+          "oauthSelect",
+          "authProgress"
+        ],
+        "open": true
+      }
+    }
+  },
+  "reply": {
+    "type": "object",
+    "required": [
+      "type",
+      "id"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "extension_ui_response"
+      },
+      "id": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "confirmed": {
+        "type": "boolean"
+      },
+      "cancelled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:620-628"
+      ],
+      "sends": [],
+      "reads": [
+        "method",
+        "message",
+        "text"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/session.py:620-623",
+        "src/aelix_acp/session.py:629-636"
+      ],
+      "via": [
+        "_aelix/notification (authProgress)",
+        "dialog client action"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "select",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-select"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "options"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "select"
+              },
+              "title": {
+                "type": "string",
+                "const": "Pick one"
+              },
+              "options": {
+                "type": "array",
+                "const": [
+                  "alpha",
+                  "beta"
+                ]
+              }
+            }
+          },
+          "reply": {
+            "value": "beta"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "select: 'beta'"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-confirm"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "confirm"
+              },
+              "title": {
+                "type": "string",
+                "const": "Sure?"
+              },
+              "message": {
+                "type": "string",
+                "const": "Proceed with the fixture"
+              }
+            }
+          },
+          "reply": {
+            "confirmed": true
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "confirm: True"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a cancelled confirm",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-confirm"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "confirm"
+              },
+              "title": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "reply": {
+            "cancelled": true
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "confirm: False"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "input",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-input"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "placeholder"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "input"
+              },
+              "title": {
+                "type": "string",
+                "const": "Name"
+              },
+              "placeholder": {
+                "type": "string",
+                "const": "type a name"
+              }
+            }
+          },
+          "reply": {
+            "value": "Ada"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "input: 'Ada'"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "editor",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-editor"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "prefill"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "editor"
+              },
+              "title": {
+                "type": "string",
+                "const": "Edit"
+              },
+              "prefill": {
+                "type": "string",
+                "const": "prefilled text"
+              }
+            }
+          },
+          "reply": {
+            "value": "edited"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "editor: 'edited'"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "notify",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-notify"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "message",
+              "kind"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "notify"
+              },
+              "message": {
+                "type": "string",
+                "const": "fixture notice"
+              },
+              "kind": {
+                "type": "string",
+                "const": "warning"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "notified"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "setStatus",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-status"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "key",
+              "text"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "setStatus"
+              },
+              "key": {
+                "type": "string",
+                "const": "fixture"
+              },
+              "text": {
+                "type": "string",
+                "const": "fixture status"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "status set"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "setWidget",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-widget"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "key",
+              "lines",
+              "placement",
+              "text"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "setWidget"
+              },
+              "key": {
+                "type": "string",
+                "const": "fixture"
+              },
+              "lines": {
+                "type": "array",
+                "const": [
+                  "line one",
+                  "line two"
+                ]
+              },
+              "placement": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "const": "line one\nline two"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "widget set"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "setTitle",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-title"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "text"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "setTitle"
+              },
+              "title": {
+                "type": "string",
+                "const": "fixture title"
+              },
+              "text": {
+                "type": "string",
+                "const": "fixture title"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "title set"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "auth/login's dialogs",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "auth/login",
+        "params": {
+          "provider": "fixture-oauth"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "authProgress"
+              },
+              "message": {
+                "type": "string",
+                "const": "fixture login started"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "url",
+              "instructions"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "oauth"
+              },
+              "url": {
+                "type": "string",
+                "const": "https://auth.invalid/authorize"
+              },
+              "instructions": {
+                "type": "string",
+                "const": "Open the url"
+              }
+            }
+          },
+          "reply": {}
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "options"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "oauthSelect"
+              },
+              "title": {
+                "type": "string",
+                "const": "Pick an account"
+              },
+              "options": {
+                "type": "array",
+                "const": [
+                  {
+                    "id": "a1",
+                    "label": "Account one"
+                  }
+                ]
+              }
+            }
+          },
+          "reply": {
+            "value": "a1"
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "placeholder"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "input"
+              },
+              "title": {
+                "type": "string",
+                "const": "Paste the code"
+              },
+              "placeholder": {
+                "type": "string",
+                "const": "code"
+              }
+            }
+          },
+          "reply": {
+            "value": "code-1"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-oauth",
+                "configured": true,
+                "source": "stored"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm on the child",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "commands/run",
+        "params": {
+          "text": "/ui-confirm"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "message"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "confirm"
+              },
+              "title": {
+                "type": "string",
+                "const": "Sure?"
+              },
+              "message": {
+                "type": "string",
+                "const": "Proceed with the fixture"
+              }
+            }
+          },
+          "reply": {
+            "confirmed": true
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "handled"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "confirm: True"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

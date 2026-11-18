@@ -1,0 +1,165 @@
+{
+  "contract": "control-v1",
+  "method": "sessions/branch",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {
+    "kind": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "clone",
+        "fork"
+      ]
+    },
+    "entryId": {
+      "type": "string",
+      "required": false,
+      "absent": "clone: the leaf; fork: refused"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:119-126",
+        "src/aelix_acp/server.py:83-97"
+      ],
+      "sends": [
+        "kind",
+        "entryId"
+      ],
+      "reads": [
+        "cancelled",
+        "sessionFile",
+        "title"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "clone",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "clone"
+      },
+      "sensitive": {
+        "kind": "fork"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "sessionFile",
+          "title",
+          "restored"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": false
+          },
+          "sessionFile": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restored": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "check": "session_file_exists"
+    },
+    {
+      "name": "fork at an entry",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "fork",
+        "entryId": "$rig:entry_id"
+      },
+      "sensitive": {
+        "entryId": "no-such-entry"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "sessionFile",
+          "title",
+          "restored"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": false
+          },
+          "sessionFile": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restored": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "check": "session_file_exists"
+    },
+    {
+      "name": "an unknown kind is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "branch"
+      },
+      "error": {
+        "type": "string",
+        "const": "Branch kind must be fork or clone"
+      }
+    },
+    {
+      "name": "fork without an entry is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "kind": "fork"
+      },
+      "error": {
+        "type": "string",
+        "const": "A conversation entry is required to branch"
+      }
+    },
+    {
+      "name": "no persisted session",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "const": "No persisted session is available to branch"
+      }
+    }
+  ]
+}

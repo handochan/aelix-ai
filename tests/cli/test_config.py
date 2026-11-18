@@ -123,6 +123,9 @@ def test_module_exports() -> None:
         # skills, but the #115 knowledge channel is otherwise empty on a fresh
         # install, where neither user-facing tier exists yet.
         "packaged_skills_dir",
+        # #624 (ADR-0305 D13) — which file a launch reads, stat-only: /mcp
+        # resolves with it, and never opens an untrusted project's file.
+        "resolve_mcp_config",
     }
     assert set(config.__all__) == expected
 

@@ -1,0 +1,461 @@
+{
+  "contract": "control-v1",
+  "method": "commands/run",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {
+    "text": {
+      "type": "string",
+      "required": true,
+      "maxLength": 100000,
+      "note": "starts with /"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:199",
+        "src/aelix_acp/runtime/commands.py:201-208"
+      ],
+      "sends": [
+        "text"
+      ],
+      "reads": [
+        "outcome",
+        "prompt",
+        "messages[].text"
+      ]
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "a handled command",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "/fixture-ok hi"
+      },
+      "sensitive": {
+        "text": "/fixture-ok other"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "handled"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-ok"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "text"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "error"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "type": "text",
+                "text": "fixture-ok: hi"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a failing handler is an error, not a prompt",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "/fixture-fail"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "error"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-fail"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "text"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "error"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1,
+            "contains": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "error"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "an unknown command is not a command",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "/no-such-command"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "not_a_command"
+          },
+          "command": {
+            "type": "string",
+            "const": "no-such-command"
+          },
+          "messages": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a prompt template is a prompt",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "/fixture-prompt world"
+      },
+      "sensitive": {
+        "text": "/fixture-prompt moon"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "prompt"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "prompt"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-prompt"
+          },
+          "prompt": {
+            "type": "string",
+            "const": "Greet world"
+          }
+        }
+      }
+    },
+    {
+      "name": "a skill is a prompt",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "/skill:fixture-skill extra"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "prompt"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "prompt"
+          },
+          "command": {
+            "type": "string",
+            "const": "skill:fixture-skill"
+          },
+          "prompt": {
+            "type": "string",
+            "pattern": "Use the fixture"
+          }
+        }
+      }
+    },
+    {
+      "name": "100000 characters are accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": {
+          "$gen": "text",
+          "count": 100000,
+          "char": "x",
+          "prefix": "/fixture-ok "
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "handled"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-ok"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "text"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "error"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "100001 characters are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": {
+          "$gen": "text",
+          "count": 100001,
+          "char": "x",
+          "prefix": "/fixture-ok "
+        }
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "text that is not a command is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "text": "hello"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "the server-ws shape answers not_a_command",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "text": "/fixture-ok hi"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "not_a_command"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-ok"
+          },
+          "messages": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a handled command on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "text": "/fixture-ok child"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "command",
+          "messages"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "handled",
+              "not_a_command",
+              "error",
+              "prompt"
+            ],
+            "const": "handled"
+          },
+          "command": {
+            "type": "string",
+            "const": "fixture-ok"
+          },
+          "messages": {
+            "type": "array",
+            "const": [
+              {
+                "type": "text",
+                "text": "fixture-ok: child"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

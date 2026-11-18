@@ -187,7 +187,11 @@ class CommandContext:
     panel over the live ``McpClientManager``: servers, transport, state, tool
     counts). The ``/mcp`` handler awaits it; ``None`` in headless tests / when
     no MCP manager is attached, in which case ``/mcp`` degrades with a committed
-    message (Sprint 6h₂₇, ADR-0155)."""
+    message (Sprint 6h₂₇, ADR-0155). #624: ``/mcp list``'s table."""
+    mcp_panel: Callable[[], Awaitable[None]] | None = None
+    """#624 (ADR-0305 D16) — the bare ``/mcp``: the on/off panel over the
+    ``mcp.json`` a launch here reads (``tui/mcp_panel.py``). ``None`` where the
+    launch built no MCP control (headless tests): ``/mcp`` then shows the table."""
     cycle_permission_mode: Callable[[], None] | None = None
     """``run_tui`` wires this to its ``_cycle_permission`` flow (advance the held
     ``PermissionPosture`` + toast + footer repaint) so the ``/permissions``
@@ -995,7 +999,7 @@ def _delegates_to_cell(profile: AgentProfile) -> Text:
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5351-5365`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5358-5372`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1126,7 +1130,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:4097`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4104`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1963,14 +1967,25 @@ async def _hooks_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _mcp_handler(ctx: CommandContext, args: str) -> None:
-    """``/mcp`` — show MCP server status (servers, state, tool counts); ignores args.
+    """``/mcp [list]`` — turn MCP servers on or off; ``list`` shows their status.
 
-    Sprint 6h₂₇ (ADR-0155, WP-7). Delegates to the host-wired ``mcp_status`` flow
-    (a read-only panel over the live ``McpClientManager``). Degrades with a
-    committed message when no MCP manager is wired (headless / no servers) and on
-    any failure (never crashes the REPL).
+    #624 (ADR-0305 D16): a bare ``/mcp`` opens the on/off panel where one is
+    wired; ``/mcp list`` (and a bare ``/mcp`` without a panel) is the read-only
+    table of Sprint 6h₂₇ (ADR-0155, WP-7), over the live ``McpClientManager``.
+    Degrades with a committed message when neither is wired (headless / no
+    servers) and on any failure (never crashes the REPL).
     """
 
+    sub = args.strip()
+    if sub not in ("", "list"):
+        ctx.commit(Text("Usage: /mcp [list]", style="yellow"))
+        return
+    if not sub and ctx.mcp_panel is not None:
+        try:
+            await ctx.mcp_panel()
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ /mcp failed: {exc}", style="bold red"))
+        return
     if ctx.mcp_status is None:
         ctx.commit(Text("MCP is unavailable.", style="yellow"))
         return
@@ -2563,7 +2578,9 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
         _agents_handler,
     ),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
-    BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
+    BuiltinCommand(
+        "mcp", "Turn MCP servers on or off (/mcp list: status, tool counts)", _mcp_handler
+    ),
     BuiltinCommand("extension", "Manage installed extensions + MCP servers", _extension_handler),
     BuiltinCommand("context", "Show context-window usage + compaction thresholds", _context_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),

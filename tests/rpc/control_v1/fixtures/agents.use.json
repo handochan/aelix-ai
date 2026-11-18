@@ -1,0 +1,145 @@
+{
+  "contract": "control-v1",
+  "method": "agents/use",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "agents",
+  "params": {
+    "name": {
+      "type": "string",
+      "required": true,
+      "note": "--none clears the profile"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:257",
+        "src/aelix_acp/runtime/commands.py:175"
+      ],
+      "sends": [
+        "name"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:309",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "uses a profile",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "reviewer"
+      },
+      "sensitive": {
+        "name": "--none"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "pattern": "^Agent profile: reviewer"
+          }
+        }
+      }
+    },
+    {
+      "name": "--none clears it",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "agents/use",
+          "params": {
+            "name": "reviewer"
+          }
+        }
+      ],
+      "params": {
+        "name": "--none"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "pattern": "^Agent profile cleared"
+          }
+        }
+      }
+    },
+    {
+      "name": "an unknown profile is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "no-such-profile"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "refused during a turn",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "name": "reviewer"
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "uses a profile on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "name": "reviewer"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "pattern": "^Agent profile: reviewer"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,8 +2,9 @@
 
 Aelix connects to [Model Context Protocol](https://modelcontextprotocol.io)
 servers when it starts and gives their tools to the model, named
-`<server>__<tool>`. This guide covers the `mcp.json` file, turning one server
-off without deleting it, and how to see what each server is doing.
+`<server>__<tool>`. This guide covers the `mcp.json` file, turning a server
+off and on without deleting it (by hand or with `/mcp`), and how to see what
+each server is doing.
 
 ## Which file is read
 
@@ -86,17 +87,67 @@ starting it:
 
 A disabled server is not started and its tools are not given to the model, but
 `/mcp`, `/extension` and `aelix status` still list it, with the file to edit.
-To turn it back on, set `"enabled": true` or delete the key; `enabled` defaults
-to `true`.
+To turn it back on, set `"enabled": true` or delete the key, or use `/mcp`;
+`enabled` defaults to `true`.
 
 `enabled` must be JSON `true` or `false`. Anything else — `"false"` in quotes,
 `0`, `null` — is reported as a warning and that server is **not started**, the
-same as pi, so a typo can never start a server you meant to keep off.
+same as pi, so a typo can never start a server you meant to keep off. The
+warning names the value's type, never the value, which may be a pasted secret:
+`server 'x': "enabled" must be true or false, not a string; not started`.
+
+## Turning a server on and off with `/mcp`
+
+A bare `/mcp` in the TUI opens the **MCP servers** panel: one row per server of
+the file a launch in this directory reads. Space turns a row on or off, Enter
+saves, Esc discards. Enter writes `"enabled"` into that file and changes no
+other byte; turning a server back on writes `true`
+(`tests/core/test_mcp_config_edit_624.py`). `/mcp list` shows the status table.
+
+Nothing connects or disconnects now: a saved row says `off · restart` (or
+`on · restart`) and "the next aelix start applies it", and so does the save's
+summary. An Enter with no edit says "MCP servers: nothing to save"; an Enter
+whose edits the file already holds, because another program made them first,
+says "MCP servers: mcp.json already said this". Neither writes the file
+(`tests/tui/test_mcp_panel_624.py`).
+
+The file written is the one [above](#which-file-is-read), and only that one:
+
+- with no project file, your global file. A global server cannot be turned off
+  in one project: a `.aelix/mcp.json` there would replace the global file in
+  that folder and stop its other servers too. That waits for #644;
+- in a trusted project with its own `.aelix/mcp.json`, that file;
+- in an untrusted project with one, nothing: the file is not read, and one
+  locked row says why;
+- under `$AELIX_MCP_CONFIG`, nothing: its rows are locked; edit it by hand.
+
+←/→ to the other file says why it cannot be saved to. `/mcp` never creates an
+`mcp.json`, and refuses, writing nothing, a file it cannot replace without
+changing who may read it — a hard link, a read-only file, an owner, group, ACL
+or extended attribute it cannot keep, or on Windows a file with its own access
+rules or whose replacement would get another owner, group or access rules
+(tested only in Windows CI) — and a file that is not strict JSON (a comment, a
+trailing comma, a duplicate key). Each refusal says to edit the file by hand and
+quotes nothing from it. A change another program makes to the file while `/mcp`
+saves it, its contents or its permissions (a chmod, chown, ACL or extended
+attribute), is refused, not undone, and says to try again, when it is made
+before `/mcp`'s last check of the file (`tests/core/test_mcp_write_624.py`).
+One made between that check and the moment the new file replaces the old one
+is overwritten, and a permission change made there is undone (ADR-0305
+Limits).
+Servers an extension declares are listed as status rows; they go on and off
+with the extension.
+
+RPC clients do the same with `selections/list` and `selections/set`, kind
+`mcp`. A row's `key` is the server's name, or `file:<name>` when the name
+starts with `extension:`, `untrusted:` or `file:`; a server an extension
+declares is `extension:<name>`. Where the panel would say to reopen `/mcp`, an
+RPC error says to list again (`tests/rpc/test_selections_rpc_624.py`).
 
 ## When a change takes effect
 
-Servers connect once, when aelix starts. Edit `mcp.json`, then start aelix
-again: `/reload` does not reconnect MCP servers.
+Servers connect once, when aelix starts. Edit `mcp.json` (or use `/mcp`), then
+start aelix again: `/reload` does not reconnect MCP servers.
 
 A delegated agent is a new aelix process and reads its own `mcp.json`, which
 is usually not the one its parent read: it does not get `$AELIX_MCP_CONFIG`
@@ -114,10 +165,10 @@ launch how many were left out.
 
 ## Seeing what each server is doing
 
-`/mcp` shows each server with its transport and endpoint (a url as its scheme,
-host and port only — `https://example.test/…` — since a token can ride its
-query or its path; a stdio command as written, cut with `…` when it is longer
-than the column), its state and its tool count;
+`/mcp list` shows each server with its transport and endpoint (a url as its
+scheme, host and port only — `https://example.test/…` — since a token can ride
+its query or its path; a stdio command as written, cut with `…` when it is
+longer than the column), its state and its tool count;
 `/extension`'s **Installed** tab lists the same servers with the same words;
 `aelix status` lists the servers of the file a launch in this directory would
 read, without starting any of them (and without printing endpoints). It decides

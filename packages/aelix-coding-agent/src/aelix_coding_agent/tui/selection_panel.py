@@ -43,7 +43,16 @@ from prompt_toolkit.layout.dimension import Dimension
 from rich.text import Text
 
 from aelix_coding_agent.core.resource_filter import Scope
-from aelix_coding_agent.core.resource_selection import ApplyResult, SaveResult
+from aelix_coding_agent.core.resource_selection import (
+    CREATE_PROJECT_FILE_HINT,
+    CREATE_PROJECT_FILE_NOTE,
+    SCOPE_WORD,
+    ApplyResult,
+    SaveResult,
+    commit,
+    edit_refusal,
+    scope_refusal,
+)
 from aelix_coding_agent.tui.width import cluster_cells, graphemes, terminal_columns
 
 if TYPE_CHECKING:
@@ -66,7 +75,15 @@ _RULE = "─"
 _NAME_MIN = 12
 _NAME_MAX = 24
 _NARROW = 60  # below this the description column is dropped
-_SCOPE_WORD = {"global": "Global", "project": "This project"}
+_SCOPE_WORD = SCOPE_WORD
+#: A pending row's status word and state-line clause, by the kind's effect
+#: (ADR-0305 D15): ``reload`` (#25) and ``restart`` (``mcp.json``); else
+#: ``pending`` and "Enter applies the saved value".
+_PENDING_WORD = {"reload": "/reload", "restart": "restart"}
+_PENDING_CLAUSE = {
+    "reload": " · /reload applies it",
+    "restart": " · the next aelix start applies it",
+}
 
 
 # --- text -------------------------------------------------------------------
@@ -206,6 +223,10 @@ class SelectionModel:
     row "/reload applies it", and Enter saves without applying (#25)."""
     tabbed: bool = False
     """Embedded in ``tabbed`` (#25): the key hint names Tab."""
+    count_info: bool = False
+    """The ``info`` rows are of the panel's noun and are counted (``/mcp``: a server an
+    extension declares is a server, as ``/mcp list`` counts it; ADR-0305 D16). Off for
+    ``/extension``, whose ``info`` rows are MCP servers, not extensions."""
 
     # --- reading -----------------------------------------------------------
 
@@ -249,7 +270,11 @@ class SelectionModel:
         if lock is not None:
             if state.problem is not None:
                 # #683 — a locked row can fail to load too (an ``-e`` extension
-                # whose setup raised): the lock's tag hid it.
+                # whose setup raised): the lock's tag hid it. A placeholder never
+                # started, so it did not fail: its tag says why (``skipped``, an
+                # mcp.json entry the loader skips; ADR-0305 D16).
+                if state.item.role == "placeholder" and lock.tag:
+                    return lock.tag, _RED
                 return "failed", _RED
             if lock.tag:
                 return lock.tag, _DIM
@@ -261,7 +286,7 @@ class SelectionModel:
         if state.problem is not None:
             return "failed", _RED
         if state.pending:
-            after = "/reload" if self.effect == "reload" else "pending"
+            after = _PENDING_WORD.get(self.effect, "pending")
             return f"{'on' if state.saved else 'off'} · {after}", _YELLOW
         if state.live is False and state.live_note is not None and state.saved:
             # #795 (ADR-0304 D10): the kind's own "not in use now" word comes
@@ -283,7 +308,8 @@ class SelectionModel:
         items = [s for s in self.states if s.item.role == "item"]
         off = sum(1 for s in items if s.lock is None and not self.shown(s))
         locked = sum(1 for s in items if s.lock is not None)
-        return len(items), off, locked
+        info = sum(1 for s in self.states if s.item.role == "info") if self.count_info else 0
+        return len(items) + info, off, locked
 
     def scope_writable(self, scope: Scope) -> tuple[bool, str | None]:
         status = self.snapshot.scopes.get(scope)
@@ -329,22 +355,9 @@ class SelectionModel:
         if state is None:
             return None
         self.confirm_create = False
-        if state.item.role == "info":
-            refusal = (
-                (state.lock.refusal or state.lock.reason)
-                if state.lock is not None
-                else f"{state.item.label} is status only"
-            )
-            self.message = ("warn", refusal)
-            return refusal
-        if state.lock is not None:
-            if state.lock.kind == "unavailable":
-                name = f"{state.item.label} is unavailable"
-            elif state.item.identities:
-                name = f"{state.item.label} is locked"
-            else:
-                name = "Locked"
-            refusal = f"{name}: {state.lock.reason}"
+        # The words RPC's selections/set refuses with too (ADR-0305 D10).
+        refusal = edit_refusal(state)
+        if refusal is not None:
             self.message = ("warn", refusal)
             return refusal
         want = not self.shown(state)
@@ -356,10 +369,9 @@ class SelectionModel:
         return None
 
     def set_target(self, scope: Scope) -> str | None:
-        writable, reason = self.scope_writable(scope)
+        refusal = scope_refusal(self.snapshot, scope)
         self.confirm_create = False
-        if not writable:
-            refusal = f"Cannot save to {_SCOPE_WORD[scope]}: {reason}"
+        if refusal is not None:
             self.message = ("warn", refusal)
             return refusal
         # Unsaved edits follow the control: ONE file is written per Enter (C20).
@@ -436,15 +448,52 @@ def _banner_lines(model: SelectionModel, width: int) -> list[tuple[str, str]]:
     return out
 
 
+#: The list rows the detail area leaves when it grows for a long reason (below).
+_LIST_KEPT = 3
+
+
+def _detail_texts(model: SelectionModel, width: int) -> list[str]:
+    """What the detail rows may have to show whole, known when the panel opens.
+
+    The ←/→ refusals, each row's Space refusal and each locked row's state line.
+    A refused save's text is not known yet: it wraps into whatever rows there are.
+    """
+
+    texts = [r for scope in ("global", "project") if (r := scope_refusal(model.snapshot, scope))]
+    for state in model.states:
+        refusal = edit_refusal(state)
+        if refusal is not None:
+            texts.append(refusal)
+        stated = _state_text(model, state, width) if state.lock is not None else None
+        if stated is not None:
+            texts.append(stated[1])
+    return [_target_words(flat(text), width) for text in texts]
+
+
 def plan_layout(model: SelectionModel, width: int, rows_available: int) -> Layout:
-    """The panel's size when it opens: ``min(rows available, content)`` (ADR-0279 D11)."""
+    """The panel's size when it opens: ``min(rows available, content)`` (ADR-0279 D11).
+
+    The description rows, which a refusal or a long state line takes over, are
+    as many as the longest such text needs at this width (#624 fix round 1:
+    ``/mcp``'s ←/→ reason, "…waits for #644", and the ``$AELIX_MCP_CONFIG``
+    lock's path were cut at 80 and 120 columns), while the list keeps
+    :data:`_LIST_KEPT` rows of the space there is.
+    """
 
     description_rows = 2 if width >= 70 else 3
     banner_rows = len(_banner_lines(model, width))
     groups = {s.item.group for s in model.states}
     list_rows = len(model.states) + len(groups)
+    needed = max(
+        (len(wrap(text, max(1, width - 1), 1_000)) for text in _detail_texts(model, width)),
+        default=1,
+    )
     # Fixed while the panel is open (ADR-0194): searching or a refresh never
     # resizes it, so the content counted here is the whole list.
+    # The rows a description may have: all but the title, search, banners, the list
+    # rows kept, the rule, the item's name, the state line and the key hint.
+    spare = rows_available - (2 + banner_rows + min(max(1, list_rows), _LIST_KEPT) + 4)
+    description_rows = max(description_rows, min(needed - 1, spare))
     content = 2 + banner_rows + max(1, list_rows) + 1 + 1 + description_rows + 1 + 1
     return Layout(width, max(1, min(rows_available, content)), description_rows, banner_rows)
 
@@ -538,6 +587,17 @@ def _columns(model: SelectionModel, width: int) -> tuple[int, int, int]:
     return name_w, desc_w, status_w
 
 
+def _marked(model: SelectionModel, scope: Scope) -> bool:
+    """The "Save to" control's brackets: the target, when Enter can write it.
+
+    Where neither file can be written (``$AELIX_MCP_CONFIG``, an untrusted project's
+    ``mcp.json``) no scope is marked: ``[Global]`` beside "Cannot save to Global"
+    named a file Enter would not write (live check, verify r1).
+    """
+
+    return model.target == scope and model.scope_writable(scope)[0]
+
+
 def _title_row(model: SelectionModel, width: int) -> str:
     """``── Skills ──────── Save to [Global]  This project ──`` (narrow: ``[Global] Project``)."""
 
@@ -547,7 +607,7 @@ def _title_row(model: SelectionModel, width: int) -> str:
     styled: list[str] = []
     for scope in ("global", "project"):
         word = words[scope]
-        if model.target == scope:
+        if _marked(model, scope):
             plain.append(f"[{word}]")
             styled.append(f"{_BOLD}[{word}]{_RST}")
         elif not model.scope_writable(scope)[0]:
@@ -661,9 +721,12 @@ def _detail_rows(model: SelectionModel, layout: Layout) -> list[str]:
         refused = _refusal_rows(model, width, layout.description_rows + 1)
         if refused:
             return rows + refused
-        described = wrap(flat(item.description), width - 1, layout.description_rows)
+        stated = _state_rows(model, state, width, layout.description_rows + 1)
+        room = layout.description_rows + 1 - len(stated)
+        described = wrap(flat(item.description), width - 1, room)
         rows.extend(f" {line}" for line in described)
-        rows.extend([""] * (layout.description_rows - len(described)))
+        rows.extend([""] * (room - len(described)))
+        return rows + stated
     rows.append(_state_line(model, state, width))
     return rows
 
@@ -675,20 +738,40 @@ def _target_words(text: str, width: int) -> str:
 
 
 def _refusal_rows(model: SelectionModel, width: int, rows: int) -> list[str]:
-    """A refused save's reason over the description rows and the state line (#510 r2).
+    """A refusal's reason over the description rows and the state line (#510 r2).
 
-    Only when one row would cut it: the reason says what to do first and
-    then why, and the why was never on screen (verify r1 R1). Exactly *rows*
-    rows, so the panel's height does not change.
+    A refused save, and since #624 fix round 1 a refused Space or ←/→ too: the
+    ``/mcp`` arrow's reason ends "…waits for #644", and one row never showed it at
+    80 or 120 columns (impl F1). Only when one row would cut it: the reason says
+    what to do first and then why, and the why was never on screen (verify r1 R1).
+    Exactly *rows* rows, so the panel's height does not change.
     """
 
-    if model.message is None or model.message[0] != "error":
+    if model.message is None or model.message[0] not in ("error", "warn"):
         return []
-    text = flat(_target_words(model.message[1], width))
+    style, message = model.message
+    text = flat(_target_words(message, width))
     if cells(text) <= width - 1:
         return []
+    colour = _RED if style == "error" else _YELLOW
     lines = wrap(text, width - 1, rows)
-    return [f"{_RED} {line}{_RST}" for line in lines] + [""] * (rows - len(lines))
+    return [f"{colour} {line}{_RST}" for line in lines] + [""] * (rows - len(lines))
+
+
+def _state_rows(model: SelectionModel, state: ItemState | None, width: int, rows: int) -> list[str]:
+    """The state line; a locked row's wrapped onto as many of *rows* as it needs.
+
+    A lock's reason names a file — "Locked off: $AELIX_MCP_CONFIG chooses the
+    file this run; edit <path> by hand" — and one row cut the path at 120
+    columns (verify r1 V-N5). The rows it takes come from the description's,
+    which the list row shows too; the panel's height does not change. Any other
+    state line is the panel's own words and stays one row.
+    """
+
+    if model.message is not None or state is None or state.lock is None:
+        return [_state_line(model, state, width)]
+    colour, text = _state_text(model, state, width) or (_DIM, "")
+    return [f"{colour} {line}{_RST}" for line in wrap(text, width - 1, rows) or [""]]
 
 
 def _word(value: bool) -> str:
@@ -696,15 +779,30 @@ def _word(value: bool) -> str:
 
 
 def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> str:
+    """The state line in one row, cut with ``…`` at *width* (:func:`_state_rows` wraps it)."""
+
+    stated = _state_text(model, state, width)
+    if stated is None:
+        return ""
+    colour, text = stated
+    text = _target_words(text, width) if model.message is not None else text
+    return f"{colour} {fit(text, width - 1)}{_RST}"
+
+
+def _state_text(
+    model: SelectionModel, state: ItemState | None, width: int
+) -> tuple[str, str] | None:
+    """``(colour, text)`` of the state line, flattened and not cut; ``None`` for no line."""
+
     # Every piece here can carry a file's text — a lock reason names a path, a
     # save error quotes one — so the WHOLE line is flattened before it is
     # measured (Codex X7), as names and descriptions are.
     if model.message is not None:
         style, text = model.message
         colour = {"error": _RED, "warn": _YELLOW}.get(style, _DIM)
-        return f"{colour} {fit(flat(_target_words(text, width)), width - 1)}{_RST}"
+        return colour, flat(text)
     if state is None:
-        return ""
+        return None
     lock = state.lock
     if lock is not None:
         kind = lock.kind
@@ -735,13 +833,15 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
                 text += f" · off now ({clause})"
         if state.problem is not None:
             # #683 — the load error, after what locks the row (an ``-e`` row
-            # said only "Locked on: loaded by -e for this run").
-            text += f" · failed to load: {state.problem}"
-            return f"{_RED} {fit(flat(text), width - 1)}{_RST}"
-        return f"{_DIM} {fit(flat(text), width - 1)}{_RST}"
+            # said only "Locked on: loaded by -e for this run"). A placeholder
+            # never loaded: its problem is said as it is (ADR-0305 D16).
+            failed = "" if state.item.role == "placeholder" else "failed to load: "
+            text += f" · {failed}{state.problem}"
+            return _RED, flat(text)
+        return _DIM, flat(text)
     if state.problem is not None and state.item.key not in model.edits:
         text = f"Saved {_word(state.saved)} · failed to load: {state.problem}"
-        return f"{_RED} {fit(flat(text), width - 1)}{_RST}"
+        return _RED, flat(text)
     decided = " (this project's file)" if state.decided_by == "project" else ""
     now = state.live if state.live is not None else state.applied
     text = f"Saved {_word(state.saved)}{decided} · now {_word(now)}"
@@ -756,17 +856,13 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
         if model.target == "global" and state.decided_by == "project":
             text += " — this project's file still decides here"
     elif state.pending:
-        text += (
-            " · /reload applies it"
-            if model.effect == "reload"
-            else " · Enter applies the saved value"
-        )
-    return f"{_DIM} {fit(flat(text), width - 1)}{_RST}"
+        text += _PENDING_CLAUSE.get(model.effect, " · Enter applies the saved value")
+    return _DIM, flat(text)
 
 
 def _hint(model: SelectionModel, width: int) -> str:
     if model.confirm_create:
-        text = "Enter create and save · Esc back · next launch may ask; -p may need --approve"
+        text = f"Enter create and save · Esc back · {CREATE_PROJECT_FILE_HINT}"
     elif model.tabbed and width < _NARROW:
         text = "Tab ↑↓ Space ←→scope Enter save Esc"
     elif model.tabbed:
@@ -813,7 +909,7 @@ def tab_title_row(
         styled: list[str] = []
         for scope in ("global", "project"):
             word = "Global" if scope == "global" else project
-            if model.target == scope:
+            if _marked(model, scope):
                 plain.append(f"[{word}]")
                 styled.append(f"{_BOLD}[{word}]{_RST}")
             elif not model.scope_writable(scope)[0]:
@@ -984,8 +1080,12 @@ def summary(
     always_note: bool = False,
     held: Sequence[tuple[str, bool, str]] = (),
     lists_applied: bool = False,
+    files_word: str = "the settings files",
 ) -> Text:
     """The transcript lines Enter leaves behind (ADR-0279 D11), wrapped to *width* with their indent.
+
+    *files_word* names what was saved to when a save wrote nothing: the settings
+    files, or ``mcp.json`` (ADR-0305 D15).
 
     *lists_applied* (#795, ADR-0304 D10): the apply took saved LISTS that moved no
     row (``Snapshot.policy_pending``), which "nothing to save" alone would hide.
@@ -1015,7 +1115,7 @@ def summary(
         written = ", ".join(_home_short(path) for path in save.written)
         line(f"{title} saved to {written}", "green", first="✓ ")
     elif save is not None:
-        line(f"{title}: the settings files already said this", "green", first="✓ ")
+        line(f"{title}: {files_word} already said this", "green", first="✓ ")
     else:
         line(f"{title}: nothing to save", "green", first="✓ ")
     changed = list(save.changed) if save is not None else []
@@ -1113,6 +1213,7 @@ class SelectionPanelBody:
         commit: Callable[[object], None] = lambda _line: None,
         title_row: TitleRow | None = None,
         invalidate: Callable[[], None] = lambda: None,
+        count_info: bool = False,
     ) -> None:
         self.selection = selection
         self._invalidate = invalidate
@@ -1122,7 +1223,7 @@ class SelectionPanelBody:
         self._width = width
         self._commit = commit
         self.title_row = title_row
-        self.model = SelectionModel(selection.snapshot(kind), title, noun)
+        self.model = SelectionModel(selection.snapshot(kind), title, noun, count_info=count_info)
         self.model.effect = str(getattr(kind, "effect", "next_request"))
         if not self.model.scope_writable("global")[0] and self.model.scope_writable("project")[0]:
             self.model.target = "project"
@@ -1211,11 +1312,12 @@ class SelectionPanelBody:
         return [Text(f"{self.title}: closed, nothing changed.", style="dim")]
 
     async def save(self) -> list[object] | None:
-        """Save, apply (unless the effect is ``reload``) and return the summary.
+        """Save, apply (unless the effect is ``reload`` or ``restart``) and return the summary.
 
         ``None`` keeps the panel open: the create-the-project-file question,
         or a save that failed — its message is on the state line and the edits
-        are kept.
+        are kept. The save and the apply are :func:`commit`'s, which RPC's
+        ``selections/set`` calls too (ADR-0305 D10).
         """
 
         model = self.model
@@ -1233,46 +1335,43 @@ class SelectionPanelBody:
             # a saved decision, so the line says "may", and the guide says why.
             # The consequence is split over the state line and the hint so
             # both fit 80 columns (the hint gives way first when narrower).
-            model.message = (
-                "warn",
-                "This creates .aelix/settings.json: the folder falls under project trust.",
-            )
+            model.message = ("warn", CREATE_PROJECT_FILE_NOTE)
             self._invalidate()
             return None
+        # Only the Enter that answers the question may create the file, and the
+        # write checks it again after its lock (ADR-0305 D6): a file deleted
+        # since the check is refused, and the next Enter asks.
+        confirmed = model.confirm_create
         model.message = ("info", "Saving…")
         self._invalidate()
-        save: SaveResult | None = None
-        if model.edits:
-            try:
-                save = await selection.save(kind, model.target, model.edits)
-            except Exception as exc:  # noqa: BLE001 — never leave the panel stuck busy
-                save = SaveResult(False, f"{exc}")
-            if not save.ok:
-                model.busy = False
-                model.confirm_create = False
-                model.message = ("error", f"✖ Not saved: {save.error}")
-                self._invalidate()
-                return None
-        applied: ApplyResult | None = None
-        reload_bound = model.effect == "reload"
-        if not reload_bound:
-            try:
 
-                def _later(result: ApplyResult) -> None:
-                    # V10: the files said what was applied when the turn ended —
-                    # a bare "applied after the turn" would report nothing.
-                    if result.applied and not (
-                        result.turned_on or result.turned_off or result.warning
-                    ):
-                        return
-                    self._commit(deferred_note(title, result))
+        def _later(result: ApplyResult) -> None:
+            # V10: the files said what was applied when the turn ended —
+            # a bare "applied after the turn" would report nothing.
+            if result.applied and not (result.turned_on or result.turned_off or result.warning):
+                return
+            self._commit(deferred_note(title, result))
 
-                applied = await selection.apply(kind, on_deferred=_later)
-            except Exception as exc:  # noqa: BLE001 — saved, not applied: say so
-                applied = None
-                self._commit(
-                    Text(flat(f"⚠ {title}: saved, but not applied ({exc})."), style="yellow")
-                )
+        def _not_applied(exc: Exception) -> ApplyResult | None:
+            # Saved, not applied: said on its own line, and no apply to report.
+            self._commit(Text(flat(f"⚠ {title}: saved, but not applied ({exc})."), style="yellow"))
+            return None
+
+        save, applied = await commit(
+            selection,
+            kind,
+            model.target,
+            model.edits,
+            may_create_project_file=confirmed,
+            on_deferred=_later,
+            on_apply_error=_not_applied,
+        )
+        if save is not None and not save.ok:
+            model.busy = False
+            model.confirm_create = False
+            model.message = ("error", f"✖ Not saved: {save.error}")
+            self._invalidate()
+            return None
         model.closing = True
         return [
             summary(
@@ -1281,11 +1380,12 @@ class SelectionPanelBody:
                 applied,
                 effect_note=self._effect_note(),
                 width=self._width(),
-                always_note=reload_bound,
+                always_note=model.effect in ("reload", "restart"),
                 held=self._held(save, applied),
                 lists_applied=model.snapshot.policy_pending
                 and applied is not None
                 and applied.applied,
+                files_word=getattr(kind, "files_word", "the settings files"),
             )
         ]
 
@@ -1353,8 +1453,12 @@ async def run_selection_panel(
     noun: tuple[str, str] = ("item", "items"),
     effect_note: str | Callable[[], str] = "",
     render_width_cap: Callable[[], int | None] = lambda: None,
+    count_info: bool = False,
 ) -> None:
-    """Open the panel for *kind*; return when it has closed (ADR-0279 D11)."""
+    """Open the panel for *kind*; return when it has closed (ADR-0279 D11).
+
+    *count_info*: :attr:`SelectionModel.count_info` (``/mcp``).
+    """
 
     from aelix_coding_agent.tui.overlay import _modal_cap, show_modal  # noqa: PLC0415
 
@@ -1382,6 +1486,7 @@ async def run_selection_panel(
         width=_width,
         commit=ctx.commit,
         invalidate=_invalidate,
+        count_info=count_info,
     )
     model = body.model
     try:

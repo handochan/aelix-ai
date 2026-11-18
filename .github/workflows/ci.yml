@@ -157,6 +157,16 @@ jobs:
       - name: Complexity ratchet (ruff C901)
         run: uv run python scripts/check_complexity.py --check --require-base --github-event
 
+      # #623 (ADR-0302 D8, R3): tests/rpc/control_v1/floor_v1.json must hold
+      # the floor at the merge base (on a push to main, the floor of the commit
+      # the push replaced), so control-v1 version 1 only grows: a fixture
+      # deleted together with its floor entry fails here, where the tests
+      # without git (R1, R2) cannot see it. The base is chosen by the same
+      # github_base as the complexity step above, imported from its script.
+      # It reads git and JSON only; R1 and R2 run in the test gate.
+      - name: control-v1 floor ratchet
+        run: uv run python scripts/check_control_v1.py --check --require-base --github-event
+
       # Not a bare `uv run pyright`: this gate spent its whole life analysing 8
       # of 247 files because an include glob matched nothing, and a gate that
       # sees nothing reports zero errors and looks clean. check_types.py asserts

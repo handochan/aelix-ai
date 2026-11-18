@@ -23,6 +23,45 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **An RPC host can list and turn on and off skills, tools, extensions, agent profiles and
+  `mcp.json` servers, the way the TUI panels do (#624, ADR-0305).** `selections/list {kind}`
+  returns a panel's rows (saved, applied, pending, the lock and, for every row that cannot
+  change, its `refusal`), and `selections/set {kind, scope, changes: [{key, on}]}` saves one file
+  and applies as the panel's Enter does. `capabilities.selectionKinds` names the kinds served:
+  `skill`, `tool`, `extension`, `mcp`, and `agent` when the launch has a profile service. The
+  panel and RPC call the same functions, so they refuse with the same words and write the same
+  bytes with the same effects, to the global file or this project's, also when another writer
+  changed the file meanwhile (`tests/rpc/test_selections_same_bytes_624.py`: 40 cases, 5 kinds
+  × 4 scenarios × the two files, the panel's target moved with ←/→ where the kind allows it, in
+  process). It needs an idle session, as every control-v1 mutation but the turn-safe `ui/enable`
+  does. A save that would create
+  `.aelix/settings.json` asks through a `confirm` dialog (`ui/enable`; at most 45 s;
+  `commands/cancel` ends it) and never takes a parameter as consent
+  (`tests/rpc/test_selections_rpc_624.py`). In an untrusted folder no answer carries the TUI's
+  `/trust` pointer
+  (`test_an_untrusted_folder_lists_its_per_kind_rows_without_the_trust_pointer`), and a save
+  error says "list again" where the panel says "reopen /mcp".
+  Extensions apply at `resources/reload`, `mcp.json` servers at the next start.
+- **A bare `/mcp` turns `mcp.json` servers on and off (#624, ADR-0305).** The panel writes
+  `"enabled"` into the `mcp.json` a launch in this directory reads and changes no other byte. It
+  keeps the file's owner, group and mode bits and, on Linux and macOS, its ACL and extended
+  attributes, as they were when it read the file, or writes nothing and says to edit the file by
+  hand: a hard link, a read-only file, metadata it cannot keep, a file that is not strict JSON.
+  A change another program makes while it saves, to the bytes or to the permissions (a chmod,
+  chown, ACL or extended attribute), is refused instead of undone when it is made before the
+  writer's last check of the file, also before each Windows retry
+  (`tests/core/test_mcp_write_624.py`, macOS, and Linux docker for extended attributes); one
+  made between that check and the rename is overwritten, a permission change undone (ADR-0305
+  Limits).
+  Measured on the shipped writer (`.omc/probes/623-624/impl/writer/`): 64 edits of 32
+  hand-formatted files and 4,200 generated files with nothing unexpected, and 0 of 40 changes
+  lost between two processes with different agent dirs, on macOS and in Linux docker. On Windows
+  the lock (a named mutex), the refusal of a file with its own access rules and the check that
+  the replacement has the original's owner, group and access rules are designed and first
+  measured in Windows CI. `/mcp` never
+  creates an `mcp.json`, writes nothing under `$AELIX_MCP_CONFIG`, and cannot turn a global
+  server off in one project (#644 decides that). A change takes effect at the next start, and
+  the row says `off · restart` until then (`tests/tui/test_mcp_panel_624.py`).
 - **Agent profiles can be turned off, and the model is then neither offered nor allowed them
   (#795, ADR-0304).** A bare `/agents` in the TUI opens a panel like `/skill`'s (Space toggles,
   ←/→ picks the global or this project's file, Enter saves and applies from your next message,
@@ -916,6 +955,29 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **control-v1 version 1 only grows (#623, ADR-0302).** The `aelix_control` methods, the
+  `aelix_subagent` and `extension_ui` events and the session-lock text `already open in another
+  terminal` are version 1 from this change. An addition (a method, an optional param, a field,
+  an event type) stays version 1; a removal, a rename, a new meaning or a newly refused input
+  needs `version: 2`, agreed with aelix-acp first. `docs/contracts/control-v1.md` lists what
+  aelix-acp reads (derived from its source, confirmation pending). `tests/rpc/control_v1/` holds
+  a fixture for every method and both event families, run in process, and its 27 replay cases
+  also run on a real `--mode rpc` child (`agents/run`, `auth/login`, `mcp/configure`,
+  `sessions/branch` and the `aelix_subagent` event have none there); 428 passed on macOS, Python
+  3.12. A floor that CI keeps from shrinking against the merge base holds them: a `since: "v1"`
+  case is frozen as written (any edit fails R1 to R3 unless withdrawn), and a later method or
+  open-enum value leaves the v1 digest alone (`tests/rpc/control_v1/test_ratchet_rules.py`).
+  aelix-acp's native suite passes against the change (134 tests, 1 Windows-only skip).
+- **A bare `/mcp` opens the on/off panel, and `/mcp list` is the status table (#624, ADR-0305,
+  ADR-0155).** Anything else after `/mcp` says `Usage: /mcp [list]`
+  (`tests/tui/test_mcp_panel_624.py`).
+- **An `mcp.json` warning about an invalid `enabled` names its type, not its value (#624,
+  ADR-0282).** It reads `… "enabled" must be true or false, not a string; not started` instead of
+  quoting what was there, which may be a pasted secret. A file that cannot be parsed is
+  `<path>: not valid JSON (<the error's class>)`, and a JSON syntax error says
+  `<path>: not valid JSON at line N column M (JSONDecodeError)`: two numbers, nothing from the
+  file. Measured at launch, in `aelix status` and in its `--json`
+  (`tests/cli/test_mcp_loader_624.py`).
 - **The dim `✓ done · 4.2s · 14:05` line a turn leaves sits one blank row under the answer
   (#732, ADR-0153).** Flush under the answer's last line it read as one more line of the
   answer. One empty row now separates them, for `done`, for `stopped` under Esc's
@@ -1603,6 +1665,16 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An `mcp.json` that is not UTF-8, or is nested too deep to parse, no longer ends the launch
+  (#624).** The loader let `UnicodeDecodeError` and `RecursionError` out, and aelix exited; now
+  each is a warning and that file's servers are not started (`tests/cli/test_mcp_loader_624.py`;
+  which error deep nesting raises depends on the platform, so the test pins the warning's shape).
+- **A project `.aelix/settings.json` deleted under an open `/skill`, `/tool`, `/extension` or
+  `/agents` panel is no longer re-created without a question (#624, ADR-0305).** The save
+  checks again inside its lock: Enter then says "✖ Not saved: … does not exist now; creating it
+  puts this folder under project trust and needs a confirmation", and the next Enter asks
+  (`tests/tui/test_selection_panel_624.py`; `tests/core/test_resource_selection_624.py`, with a
+  barrier that deletes the file after the lock and before the read).
 - **On Windows, a delegated agent now runs only once it is in aelix's Job, so what its `bash` starts
   ends with aelix (#777).** The print-mode child was assigned to its Job a few event-loop turns after
   its spawn. The child is the venv's `python.exe`, a launcher that starts the interpreter at once in a

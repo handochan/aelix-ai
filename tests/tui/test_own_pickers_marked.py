@@ -59,6 +59,9 @@ _EXPECTED: dict[tuple[str, str, str], list[bool]] = {
     # ``ui`` is RpcCommandUI, not a TUI picker: ``select`` takes no ``own`` and the
     # host draws the dialog, so there is no picker layout to mark.
     ("rpc/control.py", "_consent_to_project_profile", "ui.select"): [False],
+    # rpc/control_selection.py: the panel's create-the-project-file question sent as
+    # an RPC dialog (#624, ADR-0305 D6); RpcCommandUI again, no picker to mark.
+    ("rpc/control_selection.py", "_consent_to_new_project_file", "ui.confirm"): [False],
     # The model's words: spawn consent and the permission gate's fallback. Not
     # own; they name their own cancel rows.
     ("aelix_agents/consent.py", "_ask", "select_with_cancel"): [False],

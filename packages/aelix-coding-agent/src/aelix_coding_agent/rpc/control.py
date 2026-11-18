@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -99,6 +99,7 @@ READ_ONLY_METHODS = frozenset(
         "auth/status",
         "agents/list",
         "agents/show",
+        "selections/list",
     }
 )
 MUTATING_METHODS = frozenset(
@@ -116,6 +117,7 @@ MUTATING_METHODS = frozenset(
         "agents/use",
         "agents/run",
         "sessions/branch",
+        "selections/set",
     }
 )
 # Running operations that undo themselves when cancelled: a command handler and a
@@ -161,6 +163,9 @@ class _Operation:
     request_id: object
     task: asyncio.Task[Any] | None
     active: bool = False
+    cancellable: bool = False
+    """Set by a method while it waits on something a cancel may end (#624: the
+    ``selections/set`` consent dialog, ADR-0305 D4), outside ``CANCELLABLE_METHODS``."""
 
 
 async def _finish_uncancelled(awaitable: Awaitable[_T]) -> _T:
@@ -232,12 +237,16 @@ class RpcControlPlane:
         agent_service: Any = None,
         extension_errors: Any = None,
         emit: Any = None,
+        selections: Mapping[str, Any] | None = None,
     ) -> None:
         self.runtime = runtime_host
         self.posture = permission_posture
         self.settings = settings_manager
         self.auth = auth_storage
         self.agents = agent_service
+        # #624 (ADR-0305 D1): ``kind -> control`` (``.selection``, ``.kind``),
+        # the same objects the TUI's panels use; empty where the host has none.
+        self.selections: dict[str, Any] = dict(selections or {})
         self.extension_errors = extension_errors if extension_errors is not None else []
         self.emit = emit or (lambda event: None)
         self.subscriptions: list[Any] = []
@@ -330,7 +339,11 @@ class RpcControlPlane:
         )
         if operation is None or operation.task is None or operation.task.done():
             return {"cancelled": False}
-        if operation.active and operation.method not in CANCELLABLE_METHODS:
+        if (
+            operation.active
+            and operation.method not in CANCELLABLE_METHODS
+            and not operation.cancellable
+        ):
             return {"cancelled": False, "method": operation.method, "reason": "not_cancellable"}
         operation.task.cancel()
         if operation.active and self.transitioning:
@@ -408,6 +421,8 @@ class RpcControlPlane:
         subagents = getattr(getattr(self.harness, "runtime", None), "subagents", None)
         if subagents is not None:
             methods.append("agents/run")
+        if self.selections:
+            methods += ["selections/list", "selections/set"]
         model = self.harness.current_model
         return {
             "version": 1,
@@ -416,15 +431,15 @@ class RpcControlPlane:
             "thinkingLevels": get_supported_thinking_levels(model) if model else ["off"],
             "activeAgent": self.agents.active.name if self.agents and self.agents.active else None,
             "subagentsEnabled": subagents is not None,
+            "selectionKinds": sorted(self.selections),
         }
 
     async def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "capabilities":
             return self.capabilities()
-        if method.startswith("auth/"):
-            return await self.auth_action(method, params)
-        if method.startswith("agents/"):
-            return await self.agent_action(method, params)
+        family = self._families().get(method.partition("/")[0])
+        if family is not None:
+            return await family(method, params)
         if method == "ui/enable":
             self.ui.enabled = params.get("enabled") is True and not self.closing
             return {"enabled": self.ui.enabled}
@@ -1012,6 +1027,39 @@ class RpcControlPlane:
                 await self.harness.set_active_tools(live)
             return
         await self.harness.set_active_tools([name for name in selection if name in live])
+
+    # === Method families (#624, ADR-0305 D10) ==================================
+
+    def _families(self) -> dict[str, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]]:
+        """A method's first segment -> its handler, called with ``(method, params)``.
+
+        Routing only: what is admitted, and under which lock, is decided before
+        this in :meth:`handle` by the method sets (``READ_ONLY_METHODS``,
+        ``MUTATING_METHODS``, ``CANCELLABLE_METHODS``, ``TURN_SAFE_METHODS``, ...).
+        Each handler refuses when its service is absent. A new family is one
+        entry here (ADR-0302 D9), at no cost to :meth:`_dispatch` (ADR-0300).
+        """
+
+        return {
+            "auth": self.auth_action,
+            "agents": self.agent_action,
+            "selections": self.selection_action,
+        }
+
+    async def selection_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """``selections/list`` and ``selections/set`` (ADR-0305), when this host serves a kind."""
+
+        if not self.selections:
+            raise ValueError("This RPC host serves no selections")
+        from aelix_coding_agent.rpc.control_selection import selection_call
+
+        return await selection_call(self, method, params)
+
+    def current_operation(self) -> _Operation | None:
+        """The running mutation of the calling task, if it is one."""
+
+        task = asyncio.current_task()
+        return next((op for op in self.operations if op.active and op.task is task), None)
 
 
 def control_error_message(error: BaseException) -> str:

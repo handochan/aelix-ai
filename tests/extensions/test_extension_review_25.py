@@ -377,10 +377,15 @@ async def test_one_of_two_same_name_rows_is_written_by_its_path(home: Path) -> N
     keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
     # The global row cannot be named by a path in the project's file, and
     # ``-weather`` would turn the project row off too: refused, nothing written.
-    refused = await selection.save(kind, "project", {keys["weather.py (global)"]: False})
+    # #624 (ADR-0305 D6): creating the project file is the caller's confirmed choice.
+    refused = await selection.save(
+        kind, "project", {keys["weather.py (global)"]: False}, may_create_project_file=True
+    )
     assert not refused.ok and "save it to Global" in (refused.error or "")
     assert storage.project_content is None
-    result = await selection.save(kind, "project", {keys["weather.py (project)"]: False})
+    result = await selection.save(
+        kind, "project", {keys["weather.py (project)"]: False}, may_create_project_file=True
+    )
     assert result.ok, result.error
     assert json.loads(storage.project_content or "{}")["extensions"] == ["-extensions/weather.py"]
     # Once per row: only the edited one changed.
@@ -541,7 +546,8 @@ async def test_both_same_name_rows_off_in_one_save_write_the_shared_name(
     keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
     second = "project" if first == "global" else "global"
     edits = {keys[f"weather.py ({first})"]: False, keys[f"weather.py ({second})"]: False}
-    result = await selection.save(kind, scope, edits)
+    # #624 (ADR-0305 D6): creating the project file is the caller's confirmed choice.
+    result = await selection.save(kind, scope, edits, may_create_project_file=True)
     assert result.ok, result.error
     path = agent / "settings.json" if scope == "global" else home / ".aelix" / "settings.json"
     assert json.loads(path.read_text())["extensions"] == ["-extensions/weather.py", "-weather"]
@@ -549,7 +555,9 @@ async def test_both_same_name_rows_off_in_one_save_write_the_shared_name(
     # The other file's row alone still moves this file's row: still refused.
     other: Scope = "project" if scope == "global" else "global"
     path.unlink()
-    alone = await selection.save(kind, scope, {keys[f"weather.py ({other})"]: False})
+    alone = await selection.save(
+        kind, scope, {keys[f"weather.py ({other})"]: False}, may_create_project_file=True
+    )
     assert not alone.ok and "shares its name with another extension" in (alone.error or "")
 
 
