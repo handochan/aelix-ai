@@ -607,7 +607,8 @@ async def test_a_project_save_overrides_the_global_file_and_says_which_decides()
     manager, storage = _manager({"defaultTools": ["-bash", "-weather"]})
     selection = ResourceSelection(manager, global_base="", project_base="", project_trusted=True)
     kind: Any = _Kind()
-    result = await selection.save(kind, "project", {"bash": True})
+    # #624 (ADR-0305 D6): creating the project file is the caller's confirmed choice.
+    result = await selection.save(kind, "project", {"bash": True}, may_create_project_file=True)
     assert result.ok, result.error
     project: list[Any] = [None]
 

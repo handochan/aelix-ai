@@ -80,13 +80,21 @@ def test_enabled_false_is_listed_and_not_connected(env: Path) -> None:
 
 @pytest.mark.parametrize(
     ("value", "shown"),
-    [("false", '"false"'), (0, "0"), (1, "1"), (None, "null"), ([], "[]"), ({}, "{}")],
+    [
+        ("false", "a string"),
+        (0, "a number"),
+        (1, "a number"),
+        (None, "null"),
+        ([], "a list"),
+        ({}, "an object"),
+    ],
 )
 def test_a_non_boolean_enabled_is_warned_and_skipped(env: Path, value, shown: str) -> None:
     """pi rejects the entry (``validateMcpServerConfig``: "enabled must be a
     boolean"); skipping is also the side that starts nothing. ``"false"`` is the
     case that matters: treated as truthy, it would START the server the user
-    meant to turn off."""
+    meant to turn off. #624 (ADR-0305 D14): the warning names the value's JSON
+    type, never the value."""
 
     _global(env, {"odd": {"command": "srv", "enabled": value}, "fine": {"command": "srv"}})
     cfg = config.load_mcp_config(str(env / "proj"))

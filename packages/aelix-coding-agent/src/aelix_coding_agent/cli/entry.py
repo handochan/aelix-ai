@@ -5138,102 +5138,34 @@ async def _async_main(argv: list[str]) -> int:
             await _record_tui_default_level(
                 runtime.harness, default_thinking_level, restored=thinking_level_restored
             )
-            # #511 (ADR-0279) — /skill's panel: the shared selection service over
-            # the held SettingsManager, and the skills kind over the holder the
-            # factory reads, reaching whichever harness is live.
-            global_base, project_base = _settings_bases(settings_manager, cwd)
-            skill_control = SkillControl(
-                selection=ResourceSelection(
-                    settings_manager,
-                    global_base=global_base,
-                    project_base=project_base,
-                    project_trusted=project_trusted,
-                ),
-                kind=SkillKind(
-                    holder=skills_holder,
-                    harness=lambda: runtime.harness,
-                    cwd=cwd,
-                    project_trusted=project_trusted,
-                    project_skills_dir=str(Path(cwd) / CONFIG_DIR_NAME / "skills"),
-                    no_skills=lambda: bool(parsed.no_skills),
-                    skill_commands_enabled=settings_manager.get_enable_skill_commands,
-                    gate=selection_apply_gate,
-                ),
-            )
-            # #510 (ADR-0283) — /tool's panel: the same service over the
-            # ``defaultTools`` lists, and the tools kind over the live harness
-            # (its registry, the tools its policy excluded and its locks), the
-            # MCP servers #512 names the state of, and the extensions that did
-            # not load.
-            from aelix_coding_agent.core.mcp_servers import runtime_statuses
-
-            tool_control = ToolControl(
-                selection=ResourceSelection(
-                    settings_manager,
-                    global_base=global_base,
-                    project_base=project_base,
-                    project_trusted=project_trusted,
-                ),
-                kind=ToolKind(
-                    harness=lambda: runtime.harness,
-                    gate=selection_apply_gate,
-                    mcp_statuses=lambda: runtime_statuses(mcp_manager),
-                    extension_errors=lambda: list(discovered_extension_errors),
-                    # #25 — an extension the settings turn off: one locked
-                    # placeholder in its own group, pointing at /extension; and
-                    # the tier of one whose name another shares, on its title.
-                    extra_rows=lambda: tool_rows(extension_holder.get("inventory")),
-                    extension_tiers=lambda: tool_group_tiers(extension_holder.get("inventory")),
-                ),
-            )
-            # #25 (ADR-0284) — /extension's Installed tab: the same service
-            # over the ``extensions`` lists, and the extensions kind over the
-            # latest committed build's inventory. Under ``--no-extensions``
-            # nothing was discovered; the carriers discovery would find are
-            # listed (locked off), read once here, before the TUI draws, so a
-            # manifest warning cannot land on its screen.
-            no_extensions_listing = (
-                listing_inventory(
-                    discover_extension_records(
-                        [],
-                        cwd=Path(cwd),
-                        agent_dir=Path(get_agent_dir()),
-                        no_project_local=not project_trusted,
-                        trusted_ep_dists=frozenset(parsed.trust_extension_paths),
-                    )
-                )
-                if parsed.no_extensions
-                else None
-            )
-            extension_control = ExtensionControl(
-                selection=ResourceSelection(
-                    settings_manager,
-                    global_base=global_base,
-                    project_base=project_base,
-                    project_trusted=project_trusted,
-                ),
-                kind=ExtensionKind(
-                    inventory=lambda: extension_holder.get("inventory"),
-                    harness=lambda: runtime.harness,
-                    gate=selection_apply_gate,
-                    mcp_statuses=lambda: runtime_statuses(mcp_manager),
-                    mcp_launch=lambda: mcp_launch_record,
-                    cwd=cwd,
-                    project_trusted=project_trusted,
-                    agent_dir=str(get_agent_dir()),
-                    listing=lambda: no_extensions_listing,
-                    last_reload_failure=lambda: extension_holder.get("reload_failure"),
-                ),
-                holder=extension_holder,
-                launch=mcp_launch_record,
+            # #624 (ADR-0305 D10) — the five selection controls, built by the
+            # helper the RPC branch calls too. The --no-extensions listing is
+            # read here, before the TUI draws, so a manifest warning cannot land
+            # on its screen.
+            controls = _selection_controls(
+                settings_manager=settings_manager,
+                cwd=cwd,
+                project_trusted=project_trusted,
+                runtime=runtime,
+                parsed=parsed,
+                skills_holder=skills_holder,
+                gate=selection_apply_gate,
+                mcp_manager=mcp_manager,
+                extension_errors=discovered_extension_errors,
+                extension_holder=extension_holder,
+                mcp_launch_record=mcp_launch_record,
+                mcp_inherited=mcp_inherited,
+                agent_control=agent_control,
+                eager_listing=True,
             )
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
-                skill_control=skill_control,
-                tool_control=tool_control,
-                extension_control=extension_control,
+                skill_control=controls.skill,
+                tool_control=controls.tool,
+                extension_control=controls.extension,
                 agent_control=agent_control,
+                mcp_control=controls.mcp,
                 prompt_file_paths=lambda: [
                     path
                     for path in (
@@ -5375,6 +5307,25 @@ async def _async_main(argv: list[str]) -> int:
             # providers replayed onto it), so ``set_model``, ``cycle_model``
             # and ``get_available_models`` answer as in pi's RPC mode, and a
             # session held by #367 can leave the hold.
+            # #624 (ADR-0305 D10) — the same five controls the TUI gets, served
+            # as ``selections/list`` / ``selections/set``. The --no-extensions
+            # listing is read at the first extension snapshot instead.
+            rpc_controls = _selection_controls(
+                settings_manager=settings_manager,
+                cwd=cwd,
+                project_trusted=project_trusted,
+                runtime=runtime,
+                parsed=parsed,
+                skills_holder=skills_holder,
+                gate=selection_apply_gate,
+                mcp_manager=mcp_manager,
+                extension_errors=discovered_extension_errors,
+                extension_holder=extension_holder,
+                mcp_launch_record=mcp_launch_record,
+                mcp_inherited=mcp_inherited,
+                agent_control=agent_control,
+                eager_listing=False,
+            )
             await run_rpc_mode(
                 harness,
                 model_registry=model_registry,
@@ -5385,6 +5336,7 @@ async def _async_main(argv: list[str]) -> int:
                 auth_storage=auth_storage,
                 agent_service=agent_service,
                 extension_errors=discovered_extension_errors,
+                selections=rpc_controls.by_kind(),
             )
             return 0
 
@@ -6100,6 +6052,169 @@ def _warning_kind(problem: str) -> str:
     """The word after ``Warning:`` for one launch problem: a profile's own, or ``settings:``."""
 
     return "" if isinstance(problem, _ProfileWarning) else "settings: "
+
+
+@dataclasses.dataclass(frozen=True)
+class SelectionControls:
+    """The selection controls one launch serves (#624, ADR-0305 D10).
+
+    The TUI's panels and RPC's ``selections/*`` take the SAME objects, built by
+    :func:`_selection_controls`; a process runs one of the two branches.
+    """
+
+    skill: SkillControl
+    tool: ToolControl
+    extension: ExtensionControl
+    agent: Any
+    """``build_agent_control``'s object, built before the branch for every mode
+    (ADR-0304 D14); ``None`` without an agent profile service."""
+    mcp: Any
+    """``core/mcp_selection.McpControl``: ``mcp.json``'s ``enabled`` (ADR-0305 D11)."""
+
+    def by_kind(self) -> dict[str, Any]:
+        """``kind -> control`` for ``RpcControlPlane(selections=...)``."""
+
+        controls: dict[str, Any] = {
+            "skill": self.skill,
+            "tool": self.tool,
+            "extension": self.extension,
+            "mcp": self.mcp,
+        }
+        if self.agent is not None:
+            controls["agent"] = self.agent
+        return controls
+
+
+def _selection_controls(
+    *,
+    settings_manager: SettingsManager,
+    cwd: str,
+    project_trusted: bool,
+    runtime: Any,
+    parsed: Args,
+    skills_holder: dict[str, Any],
+    gate: ApplyGate,
+    mcp_manager: Any,
+    extension_errors: list[Any],
+    extension_holder: dict[str, Any],
+    mcp_launch_record: McpLaunch,
+    mcp_inherited: Any,
+    agent_control: Any,
+    eager_listing: bool,
+) -> SelectionControls:
+    """Build the skill, tool, extension and mcp controls; take the agent one (#624).
+
+    What the TUI branch built inline before #624 (#511, #510, #25), moved here
+    word for word so the RPC branch builds the same objects. Under
+    ``--no-extensions`` the extension carriers discovery would find are listed
+    (locked off): *eager_listing* reads them now (the TUI, before it draws),
+    else at the first extension snapshot, once (RPC). Defined at the end of the
+    file, so no line the docs cite moves.
+    """
+
+    from aelix_coding_agent.core.mcp_selection import build_mcp_control  # noqa: PLC0415
+    from aelix_coding_agent.core.mcp_servers import runtime_statuses  # noqa: PLC0415
+
+    global_base, project_base = _settings_bases(settings_manager, cwd)
+
+    def _selection() -> ResourceSelection:
+        return ResourceSelection(
+            settings_manager,
+            global_base=global_base,
+            project_base=project_base,
+            project_trusted=project_trusted,
+        )
+
+    # #511 (ADR-0279) — /skill's panel: the shared selection service over the
+    # held SettingsManager, and the skills kind over the holder the factory
+    # reads, reaching whichever harness is live.
+    skill_control = SkillControl(
+        selection=_selection(),
+        kind=SkillKind(
+            holder=skills_holder,
+            harness=lambda: runtime.harness,
+            cwd=cwd,
+            project_trusted=project_trusted,
+            project_skills_dir=str(Path(cwd) / CONFIG_DIR_NAME / "skills"),
+            no_skills=lambda: bool(parsed.no_skills),
+            skill_commands_enabled=settings_manager.get_enable_skill_commands,
+            gate=gate,
+        ),
+    )
+    # #510 (ADR-0283) — /tool's panel: the same service over the
+    # ``defaultTools`` lists, and the tools kind over the live harness (its
+    # registry, the tools its policy excluded and its locks), the MCP servers
+    # #512 names the state of, and the extensions that did not load.
+    tool_control = ToolControl(
+        selection=_selection(),
+        kind=ToolKind(
+            harness=lambda: runtime.harness,
+            gate=gate,
+            mcp_statuses=lambda: runtime_statuses(mcp_manager),
+            extension_errors=lambda: list(extension_errors),
+            # #25 — an extension the settings turn off: one locked placeholder
+            # in its own group, pointing at /extension; and the tier of one
+            # whose name another shares, on its title.
+            extra_rows=lambda: tool_rows(extension_holder.get("inventory")),
+            extension_tiers=lambda: tool_group_tiers(extension_holder.get("inventory")),
+        ),
+    )
+    # #25 (ADR-0284) — /extension's Installed tab: the same service over the
+    # ``extensions`` lists, and the extensions kind over the latest committed
+    # build's inventory. Under ``--no-extensions`` nothing was discovered; the
+    # carriers discovery would find are listed (locked off).
+    listed: list[Any] = []
+
+    def _listing() -> Any:
+        if not parsed.no_extensions:
+            return None
+        if not listed:
+            listed.append(
+                listing_inventory(
+                    discover_extension_records(
+                        [],
+                        cwd=Path(cwd),
+                        agent_dir=Path(get_agent_dir()),
+                        no_project_local=not project_trusted,
+                        trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+                    )
+                )
+            )
+        return listed[0]
+
+    if eager_listing:
+        _listing()
+    extension_control = ExtensionControl(
+        selection=_selection(),
+        kind=ExtensionKind(
+            inventory=lambda: extension_holder.get("inventory"),
+            harness=lambda: runtime.harness,
+            gate=gate,
+            mcp_statuses=lambda: runtime_statuses(mcp_manager),
+            mcp_launch=lambda: mcp_launch_record,
+            cwd=cwd,
+            project_trusted=project_trusted,
+            agent_dir=str(get_agent_dir()),
+            listing=_listing,
+            last_reload_failure=lambda: extension_holder.get("reload_failure"),
+        ),
+        holder=extension_holder,
+        launch=mcp_launch_record,
+    )
+    # #624 (ADR-0305 D11-D16) — /mcp's panel and RPC kind ``mcp``: ``enabled``
+    # in the mcp.json a launch here reads, against what this launch started.
+    mcp_control = build_mcp_control(
+        cwd=cwd,
+        agent_dir=str(get_agent_dir()),
+        project_trusted=project_trusted,
+        settings_manager=settings_manager,
+        mcp_manager=mcp_manager,
+        launch_record=mcp_launch_record,
+        inherited=mcp_inherited,
+    )
+    return SelectionControls(
+        skill_control, tool_control, extension_control, agent_control, mcp_control
+    )
 
 
 __all__ = [

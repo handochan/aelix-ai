@@ -32,6 +32,7 @@ path entry in `extensions` is deferred — Codex F12; a path form compares
 case-insensitively on Windows), D8 (the `extensions` warning is the list's own)
 and D16 (the extension half is done).
 Amended 2026-11-17 by ADR-0304 (#795): a fourth kind, `agents`; D6's busy apply also compares a kind's applied lists (dated note at the end).
+Amended 2026-11-18 by ADR-0305 (#624): the contract is served over control-v1; MCP is a fifth kind through an adapter; `Effect` gains `restart`; the panel's refusals, its save-then-apply and a no-op drop move into `core/resource_selection.py`; a project file is created only with consent, checked inside the write (dated note at the end).
 Date: 2026-10-31
 Issue: #511 (absorbs #595). Design (owner-approved layout A and §7 decisions
 2–11 and 13) and its triage: `.omc/specs/511-design-2026-10-31.md`; the review
@@ -687,3 +688,37 @@ by a test named in ADR-0304 "How it is held":
 
 `ResourceSelection` gains `read_lists(key)` (both files' lists as on disk now, and the files
 that could not be read), `Snapshot.policy`, and an optional kind member `live_notes()`.
+
+## Note (2026-11-18, ADR-0305, #624)
+
+- **Served over control-v1.** `selections/list` and `selections/set` serve this contract with
+  the same service objects the panels use, built by one helper in `cli/entry.py`
+  (`_selection_controls`) for the TUI and RPC branches (ADR-0305 D1–D4, D10). `Effect` gains
+  `restart`, for MCP.
+- **MCP is a fifth kind on the wire, not a `ResourceKind`.** `core/mcp_selection.py`'s
+  `McpSelection` returns this ADR's `Snapshot`, `SaveResult` and `ApplyResult`, but its value is
+  a boolean in `mcp.json`, one file of which replaces the other (ADR-0305 D11).
+- **D11's panel pieces move into `core/resource_selection.py`**: the Space refusal
+  (`edit_refusal`, plus a rule that a placeholder or identity-less row with no lock is refused
+  instead of being dropped by `save`), the ←/→ refusal (`scope_refusal`), and the
+  save-then-apply (`commit`, with a third keyword `on_apply_error` for the panel's own "saved,
+  but not applied" line). The words are unchanged
+  (`tests/core/test_resource_selection_624.py`, against the panel's texts at `a1606f58`), but
+  for a row with no identity locked `always_on`, which no `a1606f58` row was: it is named
+  "<label> is locked: …", not "Locked: …" (ADR-0305 D3, fix round 2).
+- **D4: `save` drops an edit equal to the saved value** in the snapshot `save` itself takes,
+  for every caller, unless that snapshot has an unreadable file. The one panel-visible effect:
+  an edit another writer already made writes nothing, and the summary says the files already
+  said it (`tests/tui/test_selection_panel_624.py`
+  `test_an_edit_another_writer_made_a_no_op_writes_nothing`).
+- **D3: creating the project file is checked inside the write.** `SettingsManager.edit_list`
+  takes `may_create` (default true); `ResourceSelection.save` passes it true for the global file
+  and for the project file only when the caller says the creation was confirmed. A project file
+  deleted between the panel's check and the locked read is no longer re-created without a
+  question: the panel says "✖ Not saved: … does not exist now; creating it puts this folder
+  under project trust and needs a confirmation", and the next Enter asks
+  (`test_the_panel_says_not_saved_and_the_next_enter_asks`;
+  `test_a_project_file_deleted_before_the_locked_read_is_not_recreated`).
+- **The trust pointer.** RPC replaces "this folder is not trusted (/trust to decide)" and "this
+  folder is not trusted; /trust to decide" with "this folder is not trusted"; the TUI's words
+  do not change.

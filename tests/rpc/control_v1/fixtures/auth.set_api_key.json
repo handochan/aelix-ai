@@ -1,0 +1,294 @@
+{
+  "contract": "control-v1",
+  "method": "auth/set_api_key",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "auth",
+  "params": {
+    "provider": {
+      "type": "string",
+      "required": true,
+      "maxLength": 128
+    },
+    "key": {
+      "type": "string",
+      "required": true,
+      "maxLength": 16384,
+      "note": "no CR, LF or NUL"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "stores a key",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-key",
+        "key": "synthetic-key"
+      },
+      "sensitive": {
+        "provider": "fixture-other"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": true,
+                "source": "stored"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "16384 characters are accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-key",
+        "key": {
+          "$gen": "text",
+          "count": 16384,
+          "char": "k"
+        }
+      },
+      "sensitive": {
+        "key": ""
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": true,
+                "source": "stored"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "16385 characters are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-key",
+        "key": {
+          "$gen": "text",
+          "count": 16385,
+          "char": "k"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "A non-empty provider API key is required"
+      }
+    },
+    {
+      "name": "a 128-character provider is accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": {
+          "$gen": "text",
+          "count": 128,
+          "char": "p"
+        },
+        "key": "synthetic-key"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "a 129-character provider is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": {
+          "$gen": "text",
+          "count": 129,
+          "char": "p"
+        },
+        "key": "synthetic-key"
+      },
+      "error": {
+        "type": "string",
+        "const": "Provider id is required"
+      }
+    },
+    {
+      "name": "a key with a line break is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-key",
+        "key": "bad\nkey"
+      },
+      "error": {
+        "type": "string",
+        "const": "A non-empty provider API key is required"
+      }
+    },
+    {
+      "name": "stores a key on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {
+        "provider": "fixture-key",
+        "key": "synthetic-key"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": true,
+                "source": "stored"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

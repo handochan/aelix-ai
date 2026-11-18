@@ -607,6 +607,31 @@ def _hygiene(ctx: Context) -> list[Step] | str:
     return [_py(ctx, *PYTEST, *present)]
 
 
+CONTROL_V1_PRODUCT = "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/"
+CONTROL_V1_TEXT = (
+    "rpc/control*.py, rpc/rpc_mode.py, tests/rpc/control_v1/ or docs/contracts/control-v1.md"
+)
+
+
+def _control_v1(path: str, changes: ChangeSet) -> bool:
+    """#623 (ADR-0302 D8): a change that can alter what control-v1 version 1 serves or pins."""
+
+    if path.startswith(CONTROL_V1_PRODUCT):
+        name = path[len(CONTROL_V1_PRODUCT) :]
+        return name == "rpc_mode.py" or re.fullmatch(r"control[^/]*\.py", name) is not None
+    return path.startswith("tests/rpc/control_v1/") or path == "docs/contracts/control-v1.md"
+
+
+def _control_v1_steps(ctx: Context) -> list[Step] | str:
+    """R3 against this change's base, then the fixtures (R1, R2, the real child)."""
+
+    if not (ctx.repo / "scripts" / "check_control_v1.py").is_file():
+        return "scripts/check_control_v1.py is not in this tree"
+    steps = [_py(ctx, "scripts/check_control_v1.py", "--check", "--base", ctx.changes.base_sha)]
+    tests = _pytest(ctx, "tests/rpc/control_v1", flags=TOUCHED_FLAGS)
+    return steps + (tests if isinstance(tests, list) else [])
+
+
 #: The gates, in the order they run. A new gate is one row: a name, the changed
 #: paths that make it run (``None`` = always), a builder for its command, and a
 #: timeout in seconds. #293's complexity ratchet joins as one row once it merges.
@@ -631,6 +656,9 @@ GATES: tuple[Gate, ...] = (
          hint=".gitignore and every pyproject exclude list move together (CONTRIBUTING.md gate 3)."),
     Gate("pi-parity", _product, "a product .py (packages/*/src, src)",
          lambda c: _pytest(c, "tests/pi_parity"), 900),
+    Gate("control-v1", _control_v1, CONTROL_V1_TEXT, _control_v1_steps, 900,
+         hint="control-v1 only grows (ADR-0302): restore what the floor holds, or add the fixture or "
+              "case and run `uv run python scripts/check_control_v1.py --update`."),
     Gate("test-hygiene", _tests_or_product, "a path under tests/ or a product .py", _hygiene, 600,
          hint="Each of these reads every test file or every product source; its message names the file to fix, usually with the line."),
     Gate("touched-tests", _any_py, "a .py", _touched, 1800),

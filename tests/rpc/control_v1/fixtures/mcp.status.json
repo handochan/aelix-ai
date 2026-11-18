@@ -1,0 +1,150 @@
+{
+  "contract": "control-v1",
+  "method": "mcp/status",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {},
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:309"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "no lease",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "const": []
+          },
+          "skippedTools": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a lease",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "mcp/configure",
+          "params": {
+            "servers": [
+              {
+                "name": "fixture",
+                "command": "$rig:python",
+                "args": [
+                  "$rig:mcp_script"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "clientName",
+                "transport",
+                "connected"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "name": "acp_fixture",
+                "clientName": "fixture",
+                "transport": "stdio",
+                "connected": true
+              }
+            ]
+          },
+          "skippedTools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "no lease on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "servers",
+          "skippedTools"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "const": []
+          },
+          "skippedTools": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    }
+  ]
+}

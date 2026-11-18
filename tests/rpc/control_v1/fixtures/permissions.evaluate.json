@@ -1,0 +1,362 @@
+{
+  "contract": "control-v1",
+  "method": "permissions/evaluate",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "posture",
+  "params": {
+    "tool": {
+      "type": "string",
+      "required": false,
+      "absent": "the args are a call to aelix's own bash"
+    },
+    "args": {
+      "type": "object",
+      "required": true
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "a read inside the workspace",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "default"
+          }
+        }
+      ],
+      "params": {
+        "tool": "read",
+        "args": {
+          "path": "a.txt"
+        }
+      },
+      "sensitive": {
+        "tool": "write"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "allow"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "read_only"
+          },
+          "mode": {
+            "type": "string",
+            "const": "default"
+          }
+        }
+      }
+    },
+    {
+      "name": "a write under plan",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {
+        "tool": "write",
+        "args": {
+          "path": "a.txt",
+          "content": "x"
+        }
+      },
+      "sensitive": {
+        "tool": "read"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "deny"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "write"
+          },
+          "mode": {
+            "type": "string",
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "a write under auto-accept-edits",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "auto-accept-edits"
+          }
+        }
+      ],
+      "params": {
+        "tool": "write",
+        "args": {
+          "path": "a.txt",
+          "content": "x"
+        }
+      },
+      "sensitive": {
+        "args": {
+          "path": ".aelix/extensions/x.py",
+          "content": "x"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "allow"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "write"
+          },
+          "mode": {
+            "type": "string",
+            "const": "auto-accept-edits"
+          }
+        }
+      }
+    },
+    {
+      "name": "a write into a loader root under auto-accept-edits",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "auto-accept-edits"
+          }
+        }
+      ],
+      "params": {
+        "tool": "write",
+        "args": {
+          "path": ".aelix/extensions/x.py",
+          "content": "x"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "ask"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "write"
+          },
+          "mode": {
+            "type": "string",
+            "const": "auto-accept-edits"
+          }
+        }
+      }
+    },
+    {
+      "name": "no tool: the args are aelix's own bash",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {
+        "args": {
+          "command": "ls"
+        }
+      },
+      "sensitive": {
+        "tool": "read"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "deny"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "bash"
+          },
+          "mode": {
+            "type": "string",
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "a tool that is not loaded",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {
+        "tool": "no-such-tool",
+        "args": {}
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "deny"
+          },
+          "provenance": {
+            "type": "null",
+            "const": null
+          },
+          "mode": {
+            "type": "string",
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "args that are not an object are refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "tool": "read"
+      },
+      "error": {
+        "type": "string",
+        "const": "Tool arguments must be an object"
+      }
+    },
+    {
+      "name": "a tool that is not a name is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "tool": 1,
+        "args": {}
+      },
+      "error": {
+        "type": "string",
+        "const": "tool must be a tool name"
+      }
+    },
+    {
+      "name": "a read on the child",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "default"
+          }
+        }
+      ],
+      "params": {
+        "tool": "read",
+        "args": {
+          "path": "a.txt"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "decision",
+          "provenance",
+          "mode"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "const": "allow"
+          },
+          "provenance": {
+            "type": "string",
+            "const": "read_only"
+          },
+          "mode": {
+            "type": "string",
+            "const": "default"
+          }
+        }
+      }
+    },
+    {
+      "name": "the server-ws shape has no posture",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "args": {}
+      },
+      "error": {
+        "type": "string",
+        "const": "This RPC host has no permission posture"
+      }
+    }
+  ]
+}

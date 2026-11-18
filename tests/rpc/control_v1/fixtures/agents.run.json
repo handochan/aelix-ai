@@ -1,0 +1,324 @@
+{
+  "contract": "control-v1",
+  "method": "agents/run",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {
+    "name": {
+      "type": "string",
+      "required": true
+    },
+    "task": {
+      "type": "string",
+      "required": true,
+      "maxLength": 100000
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/commands.py:181-183"
+      ],
+      "sends": [
+        "name",
+        "task"
+      ],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325",
+        "src/aelix_acp/runtime/commands.py:77-79"
+      ],
+      "via": [
+        "_aelix/manage",
+        "slash command output"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "runs a profile",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "reviewer",
+        "task": "review it"
+      },
+      "sensitive": {
+        "task": "something else"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "id",
+              "profile",
+              "ok",
+              "status",
+              "summary",
+              "truncated",
+              "usage",
+              "error",
+              "exit_code",
+              "stop_reason",
+              "elapsed_ms",
+              "dropped_tools",
+              "details",
+              "dropped_lines",
+              "tool_trail"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string",
+                "const": "reviewer"
+              },
+              "ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "status": {
+                "type": "string",
+                "const": "ok"
+              },
+              "summary": {
+                "type": "string",
+                "const": "did: review it"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "usage": {
+                "type": "object",
+                "required": [
+                  "input",
+                  "output",
+                  "cache_read",
+                  "cache_write",
+                  "cost",
+                  "tokens",
+                  "turns"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "integer"
+                  },
+                  "output": {
+                    "type": "integer"
+                  },
+                  "cache_read": {
+                    "type": "integer"
+                  },
+                  "cache_write": {
+                    "type": "integer"
+                  },
+                  "cost": {
+                    "type": "number"
+                  },
+                  "tokens": {
+                    "type": "integer"
+                  },
+                  "turns": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stop_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "elapsed_ms": {
+                "type": "integer"
+              },
+              "dropped_tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "details": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dropped_lines": {
+                "type": "integer"
+              },
+              "tool_trail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a task of 100000 characters is accepted",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "explorer",
+        "task": {
+          "$gen": "text",
+          "count": 100000,
+          "char": "t"
+        }
+      },
+      "sensitive": {
+        "name": "reviewer"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "profile",
+              "ok"
+            ],
+            "properties": {
+              "profile": {
+                "type": "string",
+                "const": "explorer"
+              },
+              "ok": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a task of 100001 characters is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "reviewer",
+        "task": {
+          "$gen": "text",
+          "count": 100001,
+          "char": "t"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "Agent task must be a non-empty bounded string"
+      }
+    },
+    {
+      "name": "allowProject is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "reviewer",
+        "task": "t",
+        "allowProject": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^allowProject is not accepted"
+      }
+    },
+    {
+      "name": "a NUL in the task is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "name": "reviewer",
+        "task": "a\u0000b"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "NUL"
+      }
+    },
+    {
+      "name": "a stopped session refuses",
+      "rig": "full",
+      "replay": false,
+      "setup": "stopped_harness",
+      "params": {
+        "name": "reviewer",
+        "task": "t"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^The session stopped"
+      }
+    },
+    {
+      "name": "no delegation refuses",
+      "rig": "full",
+      "replay": false,
+      "setup": "no_subagents",
+      "params": {
+        "name": "reviewer",
+        "task": "t"
+      },
+      "error": {
+        "type": "string",
+        "const": "Subagents are disabled; explicitly enable agent delegation"
+      }
+    },
+    {
+      "name": "the server-ws shape refuses",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "name": "reviewer",
+        "task": "t"
+      },
+      "error": {
+        "type": "string",
+        "const": "Subagents are disabled; explicitly enable agent delegation"
+      }
+    }
+  ]
+}

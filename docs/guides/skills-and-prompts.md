@@ -243,7 +243,18 @@ never sees unsaved panel edits. A long-running RPC child keeps what it worked
 out until it restarts. `--no-skills` scans no skill directory, so only
 `--skill` skills load.
 
-RPC `settings/set` with `skill_paths` or `prompt_template_paths` replaces the
-GLOBAL file's list the same careful way the panel edits it, and fails — rather
-than reporting success — when that file cannot be read or written.
+RPC `selections/list` and `selections/set` with kind `skill` are the panel
+over RPC: the same rows, locks and refusals, single skills turned on or off in
+the global or this project's file, writing the bytes `/skill` would
+(`tests/rpc/test_selections_same_bytes_624.py`, which saves to both files, the
+panel's target moved with ←/→). A save that would create `.aelix/settings.json`
+asks first, through a `confirm` dialog (the consent tests in
+`tests/rpc/test_selections_rpc_624.py`). A change equal to the row's saved
+value is dropped, and that value is this project's file's when it names the
+skill: with `+x` there and `-x` in the global file, a `global` set of `x` on
+answers success with `written: []` and leaves the global `-x`
+(`tests/rpc/test_selections_rpc_624.py`). RPC `settings/set` with
+`skill_paths` or `prompt_template_paths` still replaces the GLOBAL file's
+whole list the same careful way the panel edits it, and fails — rather than
+reporting success — when that file cannot be read or written.
 `settings/get` reads the same list.

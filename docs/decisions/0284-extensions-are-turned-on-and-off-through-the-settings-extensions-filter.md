@@ -1,6 +1,7 @@
 # 0284. Extensions are turned on and off through the settings `extensions` filter, in `/extension`'s Installed tab
 
-Status: Accepted (2026-11-03, #25).
+Status: Accepted (2026-11-03, #25). Amended 2026-11-18 by ADR-0305 (#624): D8's MCP rows stay
+status-only, and their "/mcp" pointer is now a panel (note at the end).
 Date: 2026-11-03
 Issue: #25. Design, owner decisions (2026-10-31: 7, 8, 9, 10, 11 = layout A, 12)
 and the Codex design review's triage (F06, F08–F12 land here; F01 was #641):
@@ -524,3 +525,10 @@ parent's PROJECT file turned off (measured on both channels,
   *2026-11-03 note (#663, ADR-0289):* no longer — the line did not say so (it
   said "nothing applied"), and the torn-down harness ran tool calls with no
   gate. The runtime now rebuilds on the previous settings or stops.
+
+## Note (2026-11-18, ADR-0305, #624)
+
+D8: the Installed tab's MCP SERVERS rows stay status-only. Making them toggleable here would put
+two files behind one Enter, and one save writes one file (ADR-0279 C20). Their text, "MCP
+servers are turned on and off in mcp.json · /mcp" and "status only · /mcp manages them", is now
+true: a bare `/mcp` opens the panel that turns them on and off (ADR-0305 D16).

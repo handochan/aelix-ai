@@ -1,0 +1,219 @@
+{
+  "contract": "control-v1",
+  "envelope": "aelix_control",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "request": {
+    "type": "object",
+    "required": [
+      "id",
+      "type",
+      "method",
+      "params"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "type": {
+        "type": "string",
+        "const": "aelix_control"
+      },
+      "method": {
+        "type": "string"
+      },
+      "params": {
+        "type": "object"
+      }
+    }
+  },
+  "response": {
+    "success": {
+      "type": "object",
+      "required": [
+        "type",
+        "command",
+        "id",
+        "success",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "response"
+        },
+        "command": {
+          "type": "string",
+          "const": "aelix_control"
+        },
+        "id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean",
+          "const": true
+        },
+        "data": {
+          "type": "object"
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": [
+        "type",
+        "command",
+        "id",
+        "success",
+        "error"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "response"
+        },
+        "command": {
+          "type": "string",
+          "const": "aelix_control"
+        },
+        "id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean",
+          "const": false
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:396",
+        "src/aelix_acp/session.py:437-444",
+        "src/aelix_acp/wire/errors.py:25-27"
+      ],
+      "sends": [
+        "id",
+        "type",
+        "method",
+        "params"
+      ],
+      "reads": [
+        "type",
+        "id",
+        "success",
+        "data",
+        "error",
+        "command"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "a success answers its id with data",
+      "rig": "bare",
+      "replay": false,
+      "method": "capabilities",
+      "params": {},
+      "data": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "a success on the cli-rpc child",
+      "rig": "child",
+      "replay": true,
+      "method": "capabilities",
+      "params": {},
+      "data": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "an unknown method is an error, never a prompt",
+      "rig": "bare",
+      "replay": false,
+      "method": "no/such-method",
+      "params": {},
+      "error": {
+        "type": "string",
+        "const": "Unsupported runtime control method: no/such-method"
+      }
+    },
+    {
+      "name": "an unknown method on the cli-rpc child",
+      "rig": "child",
+      "replay": true,
+      "method": "no/such-method",
+      "params": {},
+      "error": {
+        "type": "string",
+        "const": "Unsupported runtime control method: no/such-method"
+      }
+    },
+    {
+      "name": "params that are not an object are refused",
+      "rig": "bare",
+      "replay": false,
+      "method": "capabilities",
+      "params": "not-an-object",
+      "error": {
+        "type": "string",
+        "const": "Control method and params must be a string and object"
+      }
+    },
+    {
+      "name": "a cancelled operation answers Command cancelled",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "during": {
+        "method": "commands/run",
+        "params": {
+          "text": "/fixture-wait"
+        },
+        "wait_for": {
+          "type": "extension_ui_request",
+          "method": "notify",
+          "message": "fixture-wait started"
+        },
+        "ended_by_case": true
+      },
+      "method": "commands/cancel",
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "check": "cancelled_the_during_command"
+    }
+  ]
+}

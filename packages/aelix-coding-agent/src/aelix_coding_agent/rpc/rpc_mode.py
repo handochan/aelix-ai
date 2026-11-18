@@ -2163,6 +2163,7 @@ async def run_rpc_mode(
     auth_storage: Any = None,
     agent_service: Any = None,
     extension_errors: Any = None,
+    selections: Any = None,
 ) -> None:
     """Pi parity: ``rpc-mode.ts:runRpcMode`` (lines 50-492).
 
@@ -2290,7 +2291,7 @@ async def run_rpc_mode(
     from aelix_coding_agent.rpc.control import RpcControlPlane, control_error_message
     control = RpcControlPlane(runtime_host, permission_posture=permission_posture,
                               settings_manager=settings_manager, auth_storage=auth_storage,
-                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output)
+                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output, selections=selections)
 
     # === Event pipe ===========================================================
     # Pi parity: session.subscribe((event) => output(event)). The Aelix

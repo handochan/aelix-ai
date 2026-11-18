@@ -60,6 +60,8 @@ async def test_the_json_lists_states_in_the_shared_words(
     ]
     (warning,) = mcp["warnings"]
     assert "'odd'" in warning and '"enabled" must be true or false' in warning
+    # #624 (ADR-0305 D14): the JSON type, not the value.
+    assert "not a string" in warning and '"no"' not in warning
 
 
 async def test_the_text_says_disabled_and_how_to_turn_it_on(

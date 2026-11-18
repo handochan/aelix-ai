@@ -61,6 +61,7 @@ from .resource_filter import (
     split_entry,
 )
 from .resource_selection import (
+    UNTRUSTED_LOCK_REASON,
     ApplyGate,
     ApplyResult,
     Effect,
@@ -88,6 +89,12 @@ BUILTINS: Mapping[str, tuple[str, str, str]] = {
     "AgentsExtension": ("agents", "Delegation to other agents (/agents)", "[features] agents"),
 }
 _ALWAYS_ON = ("GuardrailExtension", "PermissionExtension", "StatusExtension")
+#: A built-in with no settings identity, by class name: what decides it (ADR-0305 D3: no
+#: row without an identity goes without a lock). ``JobsExtension`` (#722) is prepended
+#: while background jobs are on, which ``backgroundJobs.enabled`` decides at launch (#778).
+_UNNAMED_BUILTINS: Mapping[str, tuple[str, str]] = {
+    "JobsExtension": ("follows backgroundJobs.enabled (/settings)", "/settings"),
+}
 
 _TIER_ORDER = {"builtin": 0, "project": 1, "global": 2, "installed": 3, "cli": 4}
 _SCOPE_OF_TIER = {"project": "project", "global": "global", "installed": "global", "cli": "cli"}
@@ -1155,6 +1162,11 @@ class ExtensionKind:
                     locks[row.key] = Lock(
                         True, f"always on ({why})", tag="always on", kind="always_on"
                     )
+            elif row.tier == "builtin":
+                # One with no identity a list could name (verify r1, live-RPC 3: it had
+                # no lock, which ADR-0305 D3 says no such row lacks).
+                why, tag = _UNNAMED_BUILTINS.get(info.label, ("built into aelix", "built-in"))
+                locks[row.key] = Lock(row.loaded, why, tag=tag, kind="always_on")
             elif row.tier == "cli" or row.explicit:
                 locks[row.key] = Lock(True, "loaded by -e for this run", tag="-e", kind="cli")
             elif inventory.no_extensions:
@@ -1169,7 +1181,7 @@ class ExtensionKind:
                 False, "follows [features] agents (/settings)", tag="/settings", kind="always_on"
             )
         locks["project-untrusted"] = Lock(
-            False, "this folder is not trusted; /trust to decide", tag="untrusted", kind="untrusted"
+            False, UNTRUSTED_LOCK_REASON, tag="untrusted", kind="untrusted"
         )
         for refused in inventory.refused:
             locks[refused.key] = Lock(
@@ -1180,7 +1192,25 @@ class ExtensionKind:
         return locks
 
     def applied(self) -> set[str]:
-        return {r.key for r in self._inventory().rows if r.loaded}
+        """The rows this build loaded, and the MCP status rows of servers this launch started.
+
+        A status row's ``applied`` (and ``saved``, ``ResourceSelection.snapshot``) says
+        whether the server was started, as the ``mcp`` kind's status rows do (ADR-0305
+        D16; verify r1 live-RPC 5): ``connected``, ``failed`` and ``disconnected`` were
+        started, ``disabled`` was not.
+        """
+
+        loaded = {r.key for r in self._inventory().rows if r.loaded}
+        try:
+            statuses = list(self.mcp_statuses() or ())
+        except Exception:  # noqa: BLE001 — a render path never raises
+            statuses = []
+        started = {
+            f"mcp:{getattr(s, 'name', '?')}"
+            for s in statuses
+            if str(getattr(s, "state", "") or "") not in ("", "disabled")
+        }
+        return loaded | started
 
     def item_problems(self) -> dict[str, str]:
         """Saved on, not loaded: the load error, or a deferred activation that failed (F09)."""
@@ -1347,7 +1377,9 @@ class ExtensionGrammar(PerItemGrammar):
             else f"the {there} settings"
         )
         # Short enough to wrap whole into the four rows a refusal gets at 50 columns.
-        return f'add "{entry}" to {where}, then save again — {turning}, which only that file can name'
+        return (
+            f'add "{entry}" to {where}, then save again — {turning}, which only that file can name'
+        )
 
 
 def _naming_target(

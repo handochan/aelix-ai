@@ -197,14 +197,29 @@ class McpConfig:
         return frozenset(self.declared) - {c.name for c in self.contribs}
 
 
-def _shown(value: object) -> str:
-    """A JSON value quoted for a warning: JSON spelling, ASCII, bounded."""
+_JSON_TYPES: tuple[tuple[type | tuple[type, ...], str], ...] = (
+    (str, "a string"),
+    ((int, float), "a number"),
+    (list, "a list"),
+    (dict, "an object"),
+)
 
-    try:
-        text = json.dumps(value, ensure_ascii=True)
-    except (TypeError, ValueError):  # pragma: no cover — json.loads output always dumps
-        text = type(value).__name__
-    return text if len(text) <= 40 else text[:39] + "…"
+
+def _json_type(value: object) -> str:
+    """The JSON type of a parsed value, for a warning that must not quote it.
+
+    #624 (ADR-0305 D14, Codex 1): the warning quoted the value, and an
+    ``enabled`` mistyped as a string or a list can hold whatever was pasted
+    there; ``aelix status`` prints these warnings, and its output is pasted
+    into bug reports.
+    """
+
+    if value is None:
+        return "null"
+    for types, word in _JSON_TYPES:
+        if isinstance(value, types):
+            return word
+    return type(value).__name__
 
 
 def _invalid_reason(exc: Exception) -> str:
@@ -280,21 +295,27 @@ def load_mcp_config(cwd: str) -> McpConfig:
     the env var behind it can carry nothing else.
     """
 
-    source: McpConfigSource
+    source, path = resolve_mcp_config(cwd)
+    return _read_mcp_config(path, source, cwd)
+
+
+def resolve_mcp_config(cwd: str) -> tuple[McpConfigSource, Path]:
+    """Which ``mcp.json`` a launch in *cwd* reads, and where it came from — without opening it.
+
+    :func:`load_mcp_config`'s precedence, and nothing else: the project file is
+    only ``stat``-ed (``is_file``), so an untrusted folder's file is never
+    opened (#624, ADR-0305 D13). ``/mcp`` resolves with this at every snapshot
+    and again inside its write's lock, so the panel and the launch cannot
+    disagree about the file.
+    """
+
     override = os.environ.get(ENV_MCP_CONFIG)
     if override:
-        path = Path(expand_tilde_path(override))
-        source = "env"
-    else:
-        local = Path(cwd) / CONFIG_DIR_NAME / "mcp.json"
-        if local.is_file():
-            path = local
-            source = "project"
-        else:
-            path = Path(get_agent_dir()) / "mcp.json"
-            source = "global"
-
-    return _read_mcp_config(path, source, cwd)
+        return "env", Path(expand_tilde_path(override))
+    local = Path(cwd) / CONFIG_DIR_NAME / "mcp.json"
+    if local.is_file():
+        return "project", local
+    return "global", Path(get_agent_dir()) / "mcp.json"
 
 
 def load_global_mcp_config(cwd: str) -> McpConfig:
@@ -318,8 +339,8 @@ def _read_mcp_config(path: Path, source: McpConfigSource, cwd: str) -> McpConfig
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return McpConfig(warnings=[f"{path}: {exc}"], source=source, path=path, cwd=cwd)
+    except (OSError, ValueError, RecursionError) as exc:
+        return McpConfig(warnings=[_unread(path, exc)], source=source, path=path, cwd=cwd)
 
     servers = raw.get("mcpServers") if isinstance(raw, dict) else None
     if not isinstance(servers, dict):
@@ -341,7 +362,7 @@ def _read_mcp_config(path: Path, source: McpConfigSource, cwd: str) -> McpConfig
         if not isinstance(enabled, bool):
             warnings.append(
                 f'{path}: server {name!r}: "enabled" must be true or false, not '
-                f"{_shown(enabled)}; not started"
+                f"{_json_type(enabled)}; not started"
             )
             continue
         transport = spec.get("transport") or ("stdio" if spec.get("command") else "http")
@@ -394,6 +415,22 @@ def _read_mcp_config(path: Path, source: McpConfigSource, cwd: str) -> McpConfig
     )
 
 
+def _unread(path: Path, exc: BaseException) -> str:
+    """Why *path* was not read, never quoting its bytes (#624, ADR-0305 D14, opus L4).
+
+    ``UnicodeDecodeError`` (not UTF-8) and ``RecursionError`` (nested too deep)
+    escaped the loader and ended the launch; a decode error names the byte. A
+    syntax error gives where it is, ``line N column M``: two numbers, no value
+    (#624 fix round 1, the lead's call).
+    """
+
+    if isinstance(exc, OSError):
+        return f"{path}: {exc}"
+    if isinstance(exc, json.JSONDecodeError):
+        return f"{path}: not valid JSON at line {exc.lineno} column {exc.colno} (JSONDecodeError)"
+    return f"{path}: not valid JSON ({type(exc).__name__})"
+
+
 def load_mcp_server_contribs(
     cwd: str,
 ) -> tuple[list[McpServerContrib], list[str], McpConfigSource | None]:
@@ -425,4 +462,5 @@ __all__ = [
     "load_mcp_config",
     "load_mcp_server_contribs",
     "packaged_skills_dir",
+    "resolve_mcp_config",
 ]

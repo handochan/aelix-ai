@@ -331,7 +331,7 @@ class _Selection:
     def needs_new_project_file(self, scope: str, edits: Any) -> bool:
         return False
 
-    async def save(self, kind: Any, scope: str, edits: Any) -> Any:
+    async def save(self, kind: Any, scope: str, edits: Any, **_kw: Any) -> Any:
         self.saved.append(dict(edits))
         return SimpleNamespace(ok=False, error="disk full", written=(), changed=(), mismatches=())
 

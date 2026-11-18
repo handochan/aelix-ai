@@ -83,7 +83,8 @@ the file to save to (global or this project), Enter saves and applies, Esc
 discards. `/agents list` still prints the table, now with an `ON` column. `-p`,
 `--mode json` and RPC have no panel and no slash command: in `-p`, `/agents` is
 sent to the model as a prompt, and RPC `commands/run` answers `not_a_command`
-(RPC reads the same state through `agents/list`).
+(RPC reads the same state through `agents/list`, and lists and changes it
+through `selections/list` and `selections/set` with kind `agent`).
 
 An **off** profile is hidden from the `agent` tool's list and refused when the
 model names it. It is not gone: you can still run it yourself with

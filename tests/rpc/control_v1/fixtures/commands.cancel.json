@@ -1,0 +1,214 @@
+{
+  "contract": "control-v1",
+  "method": "commands/cancel",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc",
+    "server-ws"
+  ],
+  "requires": null,
+  "params": {
+    "requestId": {
+      "type": "string|integer",
+      "required": false,
+      "absent": "the operation that is running"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:403-407",
+        "src/aelix_acp/session.py:813"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "cancels the running command",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "during": {
+        "method": "commands/run",
+        "params": {
+          "text": "/fixture-wait"
+        },
+        "wait_for": {
+          "type": "extension_ui_request",
+          "method": "notify",
+          "message": "fixture-wait started"
+        },
+        "ended_by_case": true
+      },
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "method"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": true
+          },
+          "method": {
+            "type": "string",
+            "const": "commands/run"
+          }
+        }
+      },
+      "check": "cancelled_the_during_command"
+    },
+    {
+      "name": "cancels by requestId",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "during": {
+        "method": "commands/run",
+        "params": {
+          "text": "/fixture-wait"
+        },
+        "wait_for": {
+          "type": "extension_ui_request",
+          "method": "notify",
+          "message": "fixture-wait started"
+        },
+        "ended_by_case": true
+      },
+      "params": {
+        "requestId": "$rig:during_id"
+      },
+      "sensitive": {
+        "requestId": "not-running"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "method"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": true
+          },
+          "method": {
+            "type": "string",
+            "const": "commands/run"
+          }
+        }
+      },
+      "check": "cancelled_the_during_command"
+    },
+    {
+      "name": "a running reload is not cancellable",
+      "rig": "full",
+      "replay": false,
+      "setup": "hold_the_rebuild",
+      "during": {
+        "method": "resources/reload",
+        "params": {},
+        "wait_for": {
+          "type": "rig",
+          "event": "build_entered"
+        },
+        "ended_by_case": true
+      },
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "method",
+          "reason"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": false
+          },
+          "method": {
+            "type": "string",
+            "const": "resources/reload"
+          },
+          "reason": {
+            "type": "string",
+            "const": "not_cancellable"
+          }
+        }
+      }
+    },
+    {
+      "name": "nothing running",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "name": "nothing running on the child",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "name": "a requestId that is not a string or an integer is refused",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "requestId": [
+          1
+        ]
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  ]
+}

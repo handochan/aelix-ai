@@ -19,6 +19,7 @@ do NOT hand-edit.
 | `descriptor-envelope.schema.json` | `DescriptorEnvelope` | TUI/Web descriptor host renderers, cross-repo validation |
 | `primitives.schema.json` | composite ($defs of 8 primitives + ActionDescriptor) | Tier 2 descriptor host renderers, Phase 6 Web slots |
 | `slot-taxonomy.schema.json` | `SLOT_MULTIPLICITY` + `SLOT_PAYLOAD_TIER` | Slot registry validators (host + Phase 6 aelix-web) |
+| `control-v1.md` | none: hand-written, not generated (`scripts/generate_contracts_schemas.py` writes only the four schemas above) | aelix-acp and Aelix Studio: who reads which part of the `aelix_control` runtime-control API, version 1 (ADR-0302). `tests/rpc/control_v1/test_consumer_list.py` fails while it and `tests/rpc/control_v1/fixtures` or `floor_v1.json` disagree |
 
 ## Regeneration
 

@@ -29,8 +29,9 @@ prints one. That is why every cross-directory link here is an absolute URL —
   flags as locks, the `/tool` panel, the `defaultTools` setting, and what a
   delegated agent gets.
 - [mcp-servers.md](mcp-servers.md) — `mcp.json`: which file is read, the
-  entry fields, `"enabled": false`, the server states `/mcp`, `/extension` and
-  `aelix status` show, and how an extension's servers relate.
+  entry fields, `"enabled": false` and the `/mcp` panel that writes it, the
+  server states `/mcp list`, `/extension` and `aelix status` show, and how an
+  extension's servers relate.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [background-jobs.md](background-jobs.md) — work the model did not wait for: a
   background agent or `bash` command, the footer and `/jobs`, how a result comes

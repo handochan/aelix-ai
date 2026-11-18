@@ -1,0 +1,75 @@
+{
+  "contract": "control-v1",
+  "error": "session_locked",
+  "text": "already open in another terminal",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": null,
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/wire/errors.py:12-14",
+        "src/aelix_acp/wire/errors.py:42-44",
+        "src/aelix_acp/session.py:441-442",
+        "src/aelix_acp/session.py:304"
+      ],
+      "sends": [],
+      "reads": [
+        "error"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "a branch back onto a session another holder owns",
+      "rig": "full",
+      "replay": false,
+      "setup": "hold_the_original_session",
+      "method": "sessions/branch",
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "already open in another terminal"
+      }
+    },
+    {
+      "name": "a launch onto a session another process owns",
+      "rig": "child",
+      "replay": true,
+      "launch": {
+        "args": [
+          "--session",
+          "$rig:locked_session"
+        ]
+      },
+      "stderr": {
+        "type": "string",
+        "pattern": "already open in another terminal"
+      }
+    },
+    {
+      "name": "the two producers keep the text",
+      "rig": null,
+      "replay": false,
+      "source": [
+        {
+          "path": "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py",
+          "contains": "session is already open in another terminal: "
+        },
+        {
+          "path": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py",
+          "contains": "Error: this session is already open in another terminal."
+        }
+      ]
+    }
+  ]
+}

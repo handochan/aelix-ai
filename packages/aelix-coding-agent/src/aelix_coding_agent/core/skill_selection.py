@@ -42,6 +42,7 @@ from .resource_filter import (
     split_entry,
 )
 from .resource_selection import (
+    UNTRUSTED_LOCK_REASON,
     ApplyGate,
     ApplyResult,
     Effect,
@@ -473,7 +474,7 @@ class SkillKind:
                 tag="shadowed",
                 kind="shadowed",
             )
-        locks[_UNTRUSTED_KEY] = Lock(False, "this folder is not trusted; /trust to decide")
+        locks[_UNTRUSTED_KEY] = Lock(False, UNTRUSTED_LOCK_REASON)
         for key, _directory, _agents in self._untrusted_dirs():
             locks[key] = locks[_UNTRUSTED_KEY]
         return locks

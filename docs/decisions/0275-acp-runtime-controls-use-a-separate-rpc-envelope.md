@@ -4,7 +4,10 @@ Status: Accepted (2026-10-23); review remediation (2026-10-23, #594: cancellatio
 EOF, classic/control exclusion, branching, permission evaluation, project-profile
 consent, capabilities, dialogs, settings persistence and MCP selection made
 exact); review round 1 (2026-10-23: an extension command's own session
-replacement is a protected transition too)
+replacement is a protected transition too). Amended 2026-11-18 by ADR-0302
+(#623: version 1 only grows; the compatibility rule is stated in the note at
+the end) and ADR-0305 (#624: `selections/list`, `selections/set`,
+`capabilities.selectionKinds`; `selections/set` opens a dialog).
 Date: 2026-10-23
 Issue: #593 (the envelope), #594 (review remediation)
 
@@ -217,3 +220,40 @@ Real-provider evidence and remaining acceptance gaps are recorded in
 `docs/reviews/pr593-runtime-control-remediation.md`. None of the above
 establishes Studio UI behaviour, real-provider OAuth, a Windows packaged
 installation or field acceptance. Keep those levels separate.
+
+## Note (2026-11-18, ADR-0302 and ADR-0305, #623, #624)
+
+control-v1 version 1 only grows. The rule, decided in ADR-0302:
+
+- An **addition** stays version 1: a new method (listed only where served), a new optional
+  param, a new result, event or `capabilities` field, a new event type or dialog method, a new
+  value in an enum marked open, or accepting an input that was refused.
+- A **change** needs `version: 2`, agreed with aelix-acp first and shipped by it before
+  aelix-ai lands it:
+  - a removed or renamed method, param or field;
+  - a changed type or meaning;
+  - an optional param made required;
+  - an input that succeeded and is now refused or answered differently;
+  - a new value in a closed enum;
+  - a changed envelope or session-lock text (`already open in another terminal`).
+- An accepted input may be refused inside version 1 for safety only with all of: a per-case
+  owner decision, a dated ADR-0302 note, aelix-acp's native suite green, and the consumer list
+  updated (the lead's call, ADR-0302 D4).
+- What consumers read is listed in `docs/contracts/control-v1.md`, derived from aelix-acp
+  `16d6555b` and marked "confirmation pending". `tests/rpc/control_v1/` holds a fixture for
+  every method and both event families, replayed in process; its 27 replay cases also run on a
+  real `--mode rpc` child, and `agents/run`, `auth/login`, `mcp/configure`, `sessions/branch`
+  and the `aelix_subagent` event have none there (ADR-0302 Limits). `floor_v1.json` with its CI
+  ratchet (`scripts/check_control_v1.py --check --require-base --github-event`) keeps every
+  entry from being removed or loosened, and every `since: "v1"` case exactly as written
+  (ADR-0302 D8, "How it is held").
+
+ADR-0305 adds `selections/list`, `selections/set` and `capabilities.selectionKinds`, version 1
+from this change. `selections/set` joins §4's methods that may open a dialog, for the one
+confirmation that creates `.aelix/settings.json` (a `confirm`, at most 45 s; ADR-0305 D6).
+§1's "lists only the methods this host can serve" now also covers the selection methods: they
+are listed when the host was given at least one kind, and `aelix-server`'s WebSocket host is
+given none. §2: `selections/list` bypasses the mutation lock; `selections/set` is a mutation, not
+cancellable once its save starts, and cancellable while its dialog waits (ADR-0305 D4).
+Validation gains `tests/rpc/control_v1/`, `tests/rpc/test_selections_rpc_624.py`,
+`tests/rpc/test_selections_same_bytes_624.py` and `scripts/check_control_v1.py`.

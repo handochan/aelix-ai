@@ -906,6 +906,7 @@ async def run_tui(
     extension_control: ExtensionControl | None = None,
     jobs: Any = None,
     agent_control: AgentControl | None = None,
+    mcp_control: Any = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -2763,6 +2764,9 @@ async def run_tui(
                 out_chrome.on_interrupt = prior_interrupt
             out_chrome.set_running(prior_running)
 
+    # #624 (ADR-0305 D16): the bare /mcp panel; ``mcp_control`` is entry.py's.
+    from aelix_coding_agent.tui.mcp_panel import mcp_panel_opener  # noqa: PLC0415
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -2778,6 +2782,9 @@ async def run_tui(
         model_registry=model_registry,
         thinking_picker=_open_thinking_picker,
         mcp_status=_open_mcp_status,
+        mcp_panel=mcp_panel_opener(
+            lambda: command_ctx, mcp_control, lambda: render_width_cap["value"]
+        ),
         expand_lookup=renderer.get_expanded,
         resume_session=_resume_session,
         new_session=_new_session,

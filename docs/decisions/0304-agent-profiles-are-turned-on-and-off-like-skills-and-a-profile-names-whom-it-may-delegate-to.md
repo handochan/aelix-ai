@@ -5,7 +5,7 @@ Status: Accepted (2026-11-17, #795, #796). Implemented on `69e43857` (after #775
 tests, the mutants and the live runs, each with the condition it was measured under. Where the
 implementation differs from the design draft (`.omc/specs/795-796-adr-0304-draft.md`, revision
 1), the decision below says what was built and "Where the build differs" lists each change with
-its reason.
+its reason. Amended 2026-11-18 by ADR-0305 (#624): D14 is done (note at the end).
 Date: 2026-11-16 (design revision 1: 2026-11-17; implemented 2026-11-17)
 Issue: #795 (the agents panel), #796 (the `agents:` frontmatter key). One lane, one PR, one
 commit (the contract's §7 says why).
@@ -1139,3 +1139,15 @@ From fix round 2 (the round-2 verifier's review of `f08cf72a`):
   done (D4).
 - **A18. Keep the untrusted peek at the model door, or move it to a stat of the folder.** Not done
   (D7): the advice it produced cannot help the model, and the human doors keep it.
+
+## Note (2026-11-18, ADR-0305, #624)
+
+D14 is done. The `agent_control` built for every mode is served to RPC as kind `agent`, the same
+object the TUI's `/agents` panel gets: `cli/entry.py`'s `_selection_controls` takes it and
+`SelectionControls.by_kind()` lists it when it is not `None` (ADR-0305 D1, D10). Its rows carry
+`live` and `liveNote` on the wire (ADR-0305 D3; the serializer's `liveNote` is pinned since
+ADR-0305's fix round 1 by `test_a_started_server_that_is_not_connected_carries_its_live_note`,
+`tests/rpc/test_selections_rows_624.py`, on `mcp` rows). `tests/rpc/test_selections_same_bytes_624.py`
+holds that the panel and `selections/set` kind `agent` write the same bytes with the same
+effects, and `test_capabilities_lists_no_agent_kind_without_an_agent_service` that a host with
+no agent profile service lists no `agent` kind.

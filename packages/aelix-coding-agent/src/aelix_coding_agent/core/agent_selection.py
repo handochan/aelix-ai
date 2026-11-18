@@ -38,6 +38,7 @@ from .resource_filter import (
     split_entry,
 )
 from .resource_selection import (
+    UNTRUSTED_LOCK_REASON,
     ApplyGate,
     ApplyResult,
     Effect,
@@ -437,7 +438,7 @@ class AgentKind:
                 # (ADR-0283 D6), as ADR-0304 D10 words it.
                 kind="status",
             )
-        locks[_UNTRUSTED_KEY] = Lock(False, "this folder is not trusted; /trust to decide")
+        locks[_UNTRUSTED_KEY] = Lock(False, UNTRUSTED_LOCK_REASON)
         return locks
 
     def applied(self) -> set[str]:

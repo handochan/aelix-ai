@@ -253,7 +253,7 @@ class _HeldSelection:
     def needs_new_project_file(self, _scope: Any, _edits: Any) -> bool:
         return False
 
-    async def save(self, _kind: Any, _scope: Any, _edits: Any) -> SaveResult:
+    async def save(self, _kind: Any, _scope: Any, _edits: Any, **_kw: Any) -> SaveResult:
         self.saved = True
         return SaveResult(True, None, FILE, (("grep", True),))
 

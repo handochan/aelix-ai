@@ -1,0 +1,202 @@
+{
+  "contract": "control-v1",
+  "method": "auth/status",
+  "since": "v1",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "auth",
+  "params": {
+    "provider": {
+      "type": "string",
+      "required": false,
+      "absent": "every stored provider, and every provider of the model registry"
+    }
+  },
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "16d6555b",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:275-325"
+      ],
+      "via": [
+        "_aelix/manage"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
+  "cases": [
+    {
+      "name": "one provider",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "provider": "fixture-oauth"
+      },
+      "sensitive": {
+        "provider": "fixture-other"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-oauth",
+                "configured": false,
+                "source": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "every provider",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "auth/set_api_key",
+          "params": {
+            "provider": "fixture-key",
+            "key": "synthetic-key"
+          }
+        }
+      ],
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "one provider on the child",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "auth/logout",
+          "params": {
+            "provider": "fixture-key"
+          }
+        }
+      ],
+      "params": {
+        "provider": "fixture-key"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "configured",
+                "source"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "const": [
+              {
+                "provider": "fixture-key",
+                "configured": false,
+                "source": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the server-ws shape has no auth storage",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "const": "This RPC host has no authentication storage"
+      }
+    }
+  ]
+}
