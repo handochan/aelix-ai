@@ -363,7 +363,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:694-711``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:748-765``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -420,7 +420,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1506-1549``) resolves
+    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1539-1582``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -509,6 +509,58 @@ class Args:
     Each entry is ``{"type": "error" | "warning", "message": "..."}``.
     """
 
+    command_inbox: str | None = None
+    """Aelix-original (#123, ADR-0306): the version of the command inbox a
+    delegation parent asked this process to serve on its stdin, from the hidden
+    ``--command-inbox=<version>`` flag (:data:`COMMAND_INBOX_FLAG`); :data:`None`
+    for every launch that did not carry it. Not in ``--help``: the flag is a
+    private parent-to-child request, as ``AELIX_JOBS_PROTOCOL`` is, never a
+    user's. With it, ``cli/entry.py`` reads no prompt from stdin at all and
+    print mode serves JSONL commands there instead (``modes/print_inbox.py``).
+    A version this build does not serve is an error diagnostic, so the child
+    ends at launch with it on stderr, which the parent's fallback chain reads."""
+
+
+COMMAND_INBOX_FLAG = "--command-inbox"
+"""The hidden flag a delegation parent passes (#123, ADR-0306); ``=<version>``."""
+
+COMMAND_INBOX_VERSION = "1"
+"""The one inbox version this build serves. The parent renders it into the flag
+(``aelix_agents.print_channel.build_child_argv``) and the child refuses any other."""
+
+
+def _take_command_inbox(argv: list[str], parsed: Args) -> list[str]:
+    """Lift ``--command-inbox=<version>`` out of ``argv`` before the main loop (#123).
+
+    A pre-pass rather than one more ``elif`` in :func:`parse_args`, which is
+    listed in ``complexity-baseline.json`` and may not rise. The last spelling
+    wins; a bare ``--command-inbox`` or an unknown version is refused as an
+    error diagnostic. Every other token is returned as it was, in order.
+    """
+
+    kept: list[str] = []
+    for index, arg in enumerate(argv):
+        if arg == "--":
+            kept.extend(argv[index:])
+            break
+        name, sep, value = arg.partition("=")
+        if name != COMMAND_INBOX_FLAG:
+            kept.append(arg)
+            continue
+        if not sep or value != COMMAND_INBOX_VERSION:
+            parsed.diagnostics.append(
+                {
+                    "type": "error",
+                    "message": (
+                        f"{COMMAND_INBOX_FLAG}={value or ''} names a command inbox "
+                        f"version this aelix does not serve; it serves {COMMAND_INBOX_VERSION}"
+                    ),
+                }
+            )
+            continue
+        parsed.command_inbox = value
+    return kept
+
 
 def parse_args(argv: list[str]) -> Args:
     """Pi parity: ``parseArgs`` (``cli/args.ts``).
@@ -521,6 +573,8 @@ def parse_args(argv: list[str]) -> Args:
     """
 
     parsed = Args()
+    # #123 — the hidden inbox flag, lifted out before the loop (no new branch here).
+    argv = _take_command_inbox(argv, parsed)
     i = 0
     n = len(argv)
     while i < n:
@@ -720,7 +774,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:694-710): warn + drop, never
+                    # Mirrors --thinking (args.py:748-764): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -998,6 +1052,8 @@ File arguments:
 
 
 __all__ = [
+    "COMMAND_INBOX_FLAG",
+    "COMMAND_INBOX_VERSION",
     "Args",
     "ModeLiteral",
     "VALID_MODES",

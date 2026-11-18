@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2261-2263`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2294-2296`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -258,7 +259,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3456-3472`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3491-3507`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -270,6 +271,8 @@ class AgentsExtension:
     """The SAME :class:`PermissionPosture` instance ``cli/entry.py`` threads
     into :class:`PermissionExtension`. It must be shared, not copied: shift+tab
     mutates that one object, and the clamp has to see the change (ADR-0157)."""
+    _posture_hooked: bool = field(default=False, init=False)
+    """Whether :meth:`_hook_posture` already subscribed to :attr:`posture` (#123)."""
 
     agent_dir: str | None = None
     """The agent ROOT (``~/.aelix/agent``), not the agents dir — the same
@@ -402,7 +405,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:5291-5293``
+    smuggled through ``event.args`` even though ``harness/core.py:5350-5352``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     background_host: Callable[[], bool] | None = None
@@ -502,6 +505,11 @@ class AgentsExtension:
             return
 
         self._degraded = False
+        # #123 (ADR-0306 §6.2) — W5: every posture mutation reaches this one
+        # listener, which tightens the live delegations of every runtime this
+        # extension holds. Subscribed once: one instance is threaded through
+        # every build, and the posture holder outlives them all.
+        self._hook_posture()
         # Reclaim prompt directories orphaned by a PREVIOUS aelix that died hard
         # (MEDIUM #5). Done here, after the bind succeeded, because that is the
         # one place we know this process is a delegation PARENT: a child never
@@ -544,6 +552,38 @@ class AgentsExtension:
             return self._release(aelix, own_runtime)
 
         aelix.add_cleanup(_cleanup)
+
+    def _hook_posture(self) -> None:
+        posture = self.posture
+        if posture is None or self._posture_hooked:
+            return
+        listeners = getattr(posture, "listeners", None)
+        if listeners is None:
+            return  # a stand-in holder (a test's) with no listeners
+        listeners.append(self._on_posture_change)
+        self._posture_hooked = True
+
+    def _on_posture_change(self, previous: PermissionMode, current: PermissionMode) -> None:
+        """A posture write landed (shift+tab is the one that finds a running child, ADR-0306 D8): tighten (#123, ADR-0306 §6)."""
+
+        if current == previous:
+            return
+        for runtime in self._live_runtimes():
+            with contextlib.suppress(Exception):
+                runtime.tighten_all(current)
+
+    def _live_runtimes(self) -> list[Any]:
+        """This build's runtime and every background job's own (``DelegationRunner``'s), moved runs included."""
+
+        runtimes: list[Any] = [self._runtime] if self._runtime is not None else []
+        jobs = self._delegation_jobs
+        if jobs is not None:
+            for entry in list(jobs.info.values()):
+                runner = entry.runner() if entry.runner is not None else None
+                runtime = getattr(runner, "_runtime", None)
+                if runtime is not None and all(runtime is not r for r in runtimes):
+                    runtimes.append(runtime)
+        return runtimes
 
     def _register_kind(self, aelix: ExtensionAPI) -> bool:
         """Register the ``agent`` job kind for this build; whether it is registered (#611 S1c).
@@ -726,7 +766,7 @@ class AgentsExtension:
         member (``batch._live_floor``); ``_grant_for`` keeps its own read because
         it is handed the ``ctx`` explicitly and decides only whether to ask.
         Errs toward FALSE, which clamps ``approval_mode: "ask"`` to ``PLAN``
-        (``posture.py:201-204``) — the read-only direction.
+        (``posture.py:198-201``) — the read-only direction.
 
         READS THROUGH :meth:`_live_ctx`, and before #304 it did not — it was a
         bare ``getattr(self._ctx, "has_ui", False)``, whose default catches
@@ -921,7 +961,7 @@ class AgentsExtension:
         the value was "re-read every time a context is built … the model the
         parent's own next turn would use". Only the first half holds:
         ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
-        (``core.py:4797``) and ``ExtensionContext.model`` hands back
+        (``core.py:4856``) and ``ExtensionContext.model`` hands back
         ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
         hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
         are slash commands that fire none, so the parent's next turn could
@@ -1073,7 +1113,7 @@ class AgentsExtension:
         """Refresh the roster, reset the delegation budget, drop stale grants,
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
-        ``before_agent_start`` (``harness/core.py:1701``) runs BEFORE the
+        ``before_agent_start`` (``harness/core.py:1713``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:5759-5763``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
@@ -1085,7 +1125,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1108-1174``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1117-1183``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -1172,10 +1212,11 @@ class AgentsExtension:
         except AgentCallError as exc:
             return ToolCallResult(block=True, reason=str(exc))
 
-        if call.action in ("wait", "status", "stop", "result"):
+        if call.action in ("wait", "status", "stop", "result", "send", "wrap_up"):
             # #611 S1c — about an agent already spawned: nothing starts, so no
             # dialog and no budget. Filed like a grant so ``execute()`` runs
-            # only what this hook saw.
+            # only what this hook saw. ``send`` and ``wrap_up`` (#123) write one
+            # line into an agent already consented to and running: the same.
             self._controls[event.tool_call_id] = call
             return None
 
@@ -1208,7 +1249,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1789-1799``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1872-1882``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1250,7 +1291,7 @@ class AgentsExtension:
             return ToolCallResult(block=True, reason=refusal)
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:473-475``), so the single and batch doors are
+        # always non-empty (``tool.py:494-496``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         try:
@@ -1538,7 +1579,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1577-1586``).
+        seam is released on teardown, ``extension.py:1618-1627``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1712,7 +1753,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:5291-5293``
+        security property rather than a style rule. ``harness/core.py:5350-5352``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``
@@ -1720,7 +1761,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:523-540``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:547-564``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1821,7 +1862,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1800``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1883``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1843,7 +1884,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2336-2340``) with no ``await`` between them, so THIS
+            # (``runtime.py:2427-2431``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a
@@ -1976,7 +2017,7 @@ class AgentsExtension:
                 # member. A ``bool(...)`` here read the UI live exactly once and
                 # then froze it for as long as the batch ran, and the stale
                 # value is the LOOSE one: ``has_ui`` is the only input deciding
-                # what ``approval_mode: "ask"`` clamps to (``posture.py:201-204``),
+                # what ``approval_mode: "ask"`` clamps to (``posture.py:198-201``),
                 # so a batch that outlived its UI kept write authority a live read
                 # would have revoked.
                 has_ui=self._host_has_ui,
@@ -2198,11 +2239,20 @@ class AgentsExtension:
         )
 
         def route(progress: SubagentProgress) -> None:
-            _job_progress(job.ctx, progress)
+            _job_progress(job.ctx, progress, entry)
 
         def rescue() -> None:
             runner.cancel_first()
             facade.rescue_adopted(job, "it was stopped before its run moved to the background")
+
+        def announce() -> None:
+            facade.announce_adopted(job)
+            # #123 fix r2 (C-R2, V-F3): the snapshot the panel shows goes through
+            # the job's route once, so a row marked stuck at the move asks now,
+            # not at its next publish (a silent child's next is its last).
+            latest = None if self._progress is None else self._progress.latest(row.id)
+            if latest is not None:
+                route(latest)
 
         return dt.Plan(
             start=lambda: facade.run_adopted(job),
@@ -2219,7 +2269,7 @@ class AgentsExtension:
             ],
             take_slot=lambda: facade.give_slot(job, pending.reservation),
             result=result,
-            announce=lambda: facade.announce_adopted(job),
+            announce=announce,
         )
 
     # ── the background actions (#611 S1c, ADR-0295) ───────────────
@@ -2348,6 +2398,11 @@ class AgentsExtension:
                     f"No background agent with id {call_literal(call.id)} in this "
                     "session. agent(action=\"status\") lists them."
                 )
+        if call.action in ("send", "wrap_up"):
+            # #123 (ADR-0306 §3.2) — one line into the agent's inbox; the words
+            # are the model's: the outcome, the phase, and what to do instead.
+            assert job_id is not None  # the parser requires one for both
+            return await self._send(call, jobs, job_id)
         if call.action == "status":
             ids = [job_id] if job_id is not None else session_agents(facade)
             return ToolResult(content=[TextContent(text=status_text(facade, jobs, ids))])
@@ -2386,6 +2441,68 @@ class AgentsExtension:
             facade, jobs, job_id, offset=call.offset or 0, session=session
         )
         return ToolResult(content=[TextContent(text=text)], is_error=failed)
+
+    async def _send(self, call: AgentCall, jobs: Any, job_id: str) -> ToolResult:
+        """``send`` / ``wrap_up`` (#123, ADR-0306 §3): through the kind's delivery, worded for the model."""
+
+        from aelix_agents.jobs_client import deliver
+
+        verb = "wrap_up" if call.action == "wrap_up" else "steer"
+        payload = {"origin": "model"}
+        if verb == "steer":
+            payload.update({"text": call.task, "mode": call.delivery or "steer"})
+        delivered = await deliver(jobs, job_id, verb, payload)
+        if isinstance(delivered, str):
+            return _error(f"The {'wrap-up' if verb == 'wrap_up' else 'note'} was refused: {delivered}.")
+        text, failed = _send_text(
+            delivered, agent_id=call.id or job_id, verb=call.delivery or verb
+        )
+        return ToolResult(content=[TextContent(text=text)], is_error=failed)
+
+
+def _send_text(delivery: Any, *, agent_id: str, verb: str) -> tuple[str, bool]:
+    """What the model reads back from ``send`` / ``wrap_up`` (ADR-0306 §3.2), and whether it is an error."""
+
+    outcome = getattr(delivery, "outcome", "unknown")
+    noun = "wrap-up" if verb == "wrap_up" else "note"
+    if outcome == "queued":
+        phase = getattr(delivery, "phase", None) or "streaming"
+        if verb == "wrap_up":
+            note = (
+                "queued; the agent gets one more reply with no tools, then its result comes "
+                "back as a notice, stopped, with what it said"
+            )
+        elif verb == "follow_up":
+            note = "queued; the agent reads it after its current answer, as a new turn"
+        else:
+            note = "queued; the agent reads it after the tool calls it is already running, never in the middle of one"
+        if phase == "idle":
+            note += ". It is between turns now, so it reads the line at its next turn, if one comes"
+        body = {"delivered_to": agent_id, "outcome": "queued", "phase": phase, "note": note}
+        return json.dumps(body), False
+    reason = getattr(delivery, "reason", None) or outcome
+    if outcome == "unknown" and getattr(delivery, "ended", False):
+        # Fix round 1 F3: the child ended with the request open. It most likely
+        # never read the line (print mode stops reading its inbox once the prompt
+        # returned), and ``send`` cannot reach the row again: the way on is a resume.
+        way = "." if verb == "wrap_up" else " and put the note in its task."
+        body = {
+            "delivered_to": agent_id,
+            "outcome": "unknown",
+            "note": f"the agent ended before it answered, so it most likely never read the {noun}. "
+            f'To continue the agent, use action="resume"{way}',
+        }
+        return json.dumps(body), False
+    if outcome == "unknown":
+        body = {
+            "delivered_to": agent_id,
+            "outcome": "unknown",
+            "note": f"the {noun} may or may not have reached the agent: {reason}. Do not resend it; "
+            'check with action="status", or wait for its notice.',
+        }
+        return json.dumps(body), False
+    word = "not sent" if outcome == "not_sent" else "refused"
+    return f"The {noun} was {word}: {reason}.", True
 
 
 def _guarded(call: CallDetach | None, fn: Callable[[Any], None]) -> Callable[[Any], None]:

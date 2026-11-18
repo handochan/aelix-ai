@@ -496,3 +496,32 @@ What stays, as #758 states it:
   the walk would close it, at the R1 cost measured above.
 - **R3.** A walked parent whose number is reused between the read of the parent and the reads of its
   children makes a stranger's children look walked.
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*Stop is unchanged by #123.* `stop`, `stop_all`, Esc and Esc Esc still reach the kill legs this ADR
+describes, with no grace; the command inbox #123 adds to every child (ADR-0306) has no `abort`
+line and no stop verb of its own. #123 adds two ways a child ends early, and they differ in kind
+(fix round 1, V2; the first wording of this note named only the wrap-up):
+
+- **The wrap-up, which is not a kill.** Condition: `agent(action="wrap_up")`, `/jobs wrap <id>`
+  or the panel's `w` `w` reached a running child's inbox. It is a final steer the kernel
+  enforces with a tool-less model call (ADR-0306 D6–D7): the child's own turn ends, no kill leg
+  of this ADR runs, and its session is left as any finished turn leaves it. Reason string:
+  "wrapped up at the user's request" (or "… the model's request"), status `aborted`.
+- **The floor kill, which is one.** Condition: the parent's posture tightened (ADR-0306 D8) and
+  a running child above the new rank did not answer that it holds the tighter mode — no reply
+  within 30 s, `success: false`, another mode echoed, or, since fix round 1's F1, a line that
+  could not be written at all (an inbox broken by a write that timed out or failed, or a row with
+  a process and no inbox). F1 also sends, once the inbox is attached, a tighten that landed while
+  the spawn was awaited, under the same check. `print_channel.tighten_child` then sets the
+  reason and calls `abort_child`, the call `stop` makes, so this ADR's kill legs and limits apply
+  to it as to any stop. Reason string: "permission floor could not be applied" (`FLOOR_REASON`),
+  status `aborted`.
+
+*Limit 3 on macOS, fix round 1 (F2).* A SIGKILLed parent still walks nothing, and macOS still has
+no `pdeathsig`; but the child's inbox is a pipe from that parent, so the child reads EOF, ends its
+run and its own cleanup ends its commands. The #777 recordings, local macOS, 10 of 10 runs each
+(`tests/cli/test_parent_death_611.py -k l3`): the delegated child, its shell and its sleeper were
+gone within 0.4 s of the kill, in `-p`, moved by Ctrl+B and left in the turn. "The child and its
+commands run on" in limit 3 is what #777 recorded before the inbox existed.

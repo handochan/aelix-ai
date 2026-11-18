@@ -9,6 +9,10 @@ the owner's OQ-S3-2 (2026-11-12: "↑↓·Enter·r·s s·Esc/q (권장)"):
 * ``r`` closes the panel and pages the result into the transcript, as
   ``/jobs result <id>`` does;
 * ``s`` ``s`` stops the selected job (below);
+* ``m`` closes the panel with ``/jobs steer <id> `` in the input, for the human
+  to finish the note (#123, ADR-0306 §3.1); ``w`` ``w`` asks the selected job
+  to wrap up, armed exactly as ``s`` ``s`` is; on a job whose kind takes
+  neither, both leave the kind's refusal on the hint row;
 * ``Esc``/``q`` close it. Neither ends a running turn: the panel has the focus.
 
 Nothing here names a kind: every row is the service's snapshot and its kind's
@@ -38,12 +42,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from rich.cells import cell_len
+
 from aelix_coding_agent.jobs import commands
 from aelix_coding_agent.jobs.contract import TERMINAL_STATES, JobSnapshot
 from aelix_coding_agent.jobs.indicator import indicator_text
 from aelix_coding_agent.jobs.notice import format_elapsed
-from aelix_coding_agent.jobs.service import JobNotFound
+from aelix_coding_agent.jobs.service import JobNotFound, control_refusal
 from aelix_coding_agent.tui.list_panel import Column, ListPanel, PanelLayout, PanelRow
+from aelix_coding_agent.tui.selection_panel import fit, flat
 
 if TYPE_CHECKING:
     from aelix_coding_agent.jobs.service import JobService
@@ -53,6 +60,13 @@ TALL = 40
 """From this many terminal rows the panel has its detail area."""
 
 WAITING = "◆ waiting results go when this closes"
+
+KEY_ROWS = (
+    "↑↓ select · enter detail · r result · m note · s s stop · w w wrap · esc close",
+    "↑↓ select · enter · r · m note · s s stop · w w wrap · esc",
+    "↑↓ · enter · r · m · s s · w w · esc",
+)
+"""The key row, fullest first — 78, 58 and 36 cells; :meth:`JobsPanel.hint` shows the first that fits."""
 
 class _NoTimer:
     def cancel(self) -> None:
@@ -133,6 +147,13 @@ class Arm:
     job_id: str
     at: float
     harness: Any
+    verb: str = "stop"
+    """``stop`` (``s s``) or ``wrap`` (``w w``, #123): a second key of the OTHER
+    letter arms afresh, never acts on the first's arm."""
+
+
+class Prefill(str):
+    """What ``m`` closes the panel with: text for the input box, not for the transcript (#123)."""
 
 
 class JobsPanel:
@@ -163,7 +184,13 @@ class JobsPanel:
             title=self.title,
             right=self.counts,
             hint=self.hint,
-            keys={"enter": self.on_enter, "r": self.on_result, "s": self.on_stop},
+            keys={
+                "enter": self.on_enter,
+                "r": self.on_result,
+                "s": self.on_stop,
+                "m": self.on_message,
+                "w": self.on_wrap,
+            },
             on_move=self.disarm,
             on_lost=self.disarm,
             interval=interval,
@@ -187,15 +214,20 @@ class JobsPanel:
 
     def hint(self, width: int) -> str:
         if self.arm is not None:
-            return f"press s again to stop {self.arm.job_id[:6]}"
+            word = "wrap up" if self.arm.verb == "wrap" else "stop"
+            return f"press {self.arm.verb[0]} again to {word} {self.arm.job_id[:6]}"
         # A note (``stopping <id>``) takes the keys' place, not the waiting text's: that
         # one says what Esc is about to send (#776 fix round 1, verify F6).
-        keys = self.note or (
-            "↑↓ select · enter detail · r result · s s stop · esc close"
-            if width >= 100
-            else "↑↓ · enter · r · s s stop · esc"
-        )
-        return f"{keys}   {WAITING}" if self._waiting() else keys
+        tail = f"   {WAITING}" if self._waiting() else ""
+        if self.note:
+            # V5 — every note is fitted here, to the cells the waiting text leaves it,
+            # ending in ``…`` when it is cut; no writer slices one by length.
+            room = width - cell_len(tail)
+            return f"{fit(flat(self.note), room) if room > 0 else self.note}{tail}"
+        # F11 — the fullest key row that fits, the waiting text counted in (cells).
+        room = width - cell_len(tail)
+        keys = next((row for row in KEY_ROWS if cell_len(row) <= room), KEY_ROWS[-1])
+        return f"{keys}{tail}"
 
     def _waiting(self) -> bool:
         return self.service.extension_waiting() > 0 or any(
@@ -235,19 +267,66 @@ class JobsPanel:
     # --- keys --------------------------------------------------------------------
 
     def on_stop(self, row: PanelRow | None) -> None:
+        self._armed_key("stop", row)
+
+    def on_wrap(self, row: PanelRow | None) -> None:
+        """``w`` ``w``: the wrap-up, armed as the stop is (#123, ADR-0306 §3.1)."""
+
+        self._armed_key("wrap", row)
+
+    def _armed_key(self, verb: str, row: PanelRow | None) -> None:
         self.note = ""
         self._check_arm({s.job_id: s for s in self.service.snapshots()})
         arm = self.arm
-        if arm is not None and row is not None and row.key == arm.job_id:
+        if arm is not None and arm.verb == verb and row is not None and row.key == arm.job_id:
             self.disarm()
-            self._stop(arm.job_id)
+            if verb == "wrap":
+                self._wrap(arm.job_id)
+            else:
+                self._stop(arm.job_id)
             return
         snap = self.service.snapshot(row.key) if row is not None else None
         if snap is None or snap.state in TERMINAL_STATES:
-            self.note = "nothing to stop" if snap is None else f"{snap.job_id[:6]} has ended"
+            self.note = f"nothing to {verb}" if snap is None else f"{snap.job_id[:6]} has ended"
             return
-        self.arm = Arm(self.service.owner, snap.job_id, self.clock(), self.service.harness)
+        self.arm = Arm(self.service.owner, snap.job_id, self.clock(), self.service.harness, verb)
         self._redraw_at_expiry()
+
+    def _wrap(self, job_id: str) -> None:
+        """Ask the job to wrap up through the service's control; the answer is the note."""
+
+        async def go() -> None:
+            try:
+                answer = await self.service.control(job_id, "wrap_up", {"origin": "user"})
+            except JobNotFound:
+                answer = f"{job_id[:6]} has ended"
+            except Exception as exc:  # noqa: BLE001 — one line on the panel, never a traceback
+                answer = f"wrap-up failed: {type(exc).__name__}"
+            self.note = answer
+            self.list.refresh()
+
+        self.note = f"wrapping up {job_id[:6]}"
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(go())
+        self.list.refresh()
+
+    def on_message(self, row: PanelRow | None) -> None:
+        """``m``: close with ``/jobs steer <id> `` for the input box (#123).
+
+        A job whose kind declares no ``steer`` keeps the panel open, and the
+        note is the sentence ``/jobs steer`` would answer (fix round 1, V7).
+        """
+
+        snap = self.service.snapshot(row.key) if row is not None else None
+        if snap is None or snap.state in TERMINAL_STATES:
+            self.note = "nothing to message" if snap is None else f"{snap.job_id[:6]} has ended"
+            return
+        registration = self.service.registry.get(snap.kind)
+        caps = registration.adapter.capabilities if registration is not None else None
+        if caps is not None and "steer" not in caps.controls:
+            self.note = control_refusal(caps, "steer")
+            return
+        self.list.close(Prefill(f"/jobs steer {snap.job_id[:6]} "))
 
     def _redraw_at_expiry(self) -> None:
         """Read the jobs again when the arm runs out, so "press s again" does not outlive it."""
@@ -293,4 +372,4 @@ def _terminal_rows(chrome: Any) -> int:
         return 24
 
 
-__all__ = ["ARM_SECONDS", "COLUMNS", "TALL", "WAITING", "JobsPanel", "layout_for", "panel_row"]
+__all__ = ["ARM_SECONDS", "COLUMNS", "TALL", "WAITING", "Arm", "JobsPanel", "Prefill", "layout_for", "panel_row"]

@@ -30,9 +30,9 @@ from aelix_coding_agent.jobs.contract import TERMINAL_STATES, JobSnapshot, Outpu
 from aelix_coding_agent.jobs.notice import format_elapsed
 
 if TYPE_CHECKING:
-    from aelix_coding_agent.jobs.service import JobService
+    from aelix_coding_agent.jobs.service import JobNotFound, JobService
 
-FOOTER = "/jobs <id> · /jobs result <id> · /jobs stop <id> · /jobs send"
+FOOTER = "/jobs <id> · /jobs result <id> · /jobs steer <id> <text> · /jobs wrap <id> · /jobs stop <id> · /jobs send"
 _PAGE = 8 * 1024
 
 
@@ -190,6 +190,8 @@ class JobsCommand:
             return await self._send()
         if head in ("result", "stop"):
             return await self._act(head, rest)
+        if head in ("steer", "wrap"):
+            return await self._control(head, rest)
         found = find(service, head)
         if isinstance(found, str):
             return found
@@ -222,6 +224,41 @@ class JobsCommand:
         snap = await service.stop(found.job_id, reason="user")
         state = snap.state if snap is not None else "unknown"
         return f"Stopped {short_id(found.job_id)}: {state}"
+
+    async def _control(self, head: str, rest: list[str]) -> str:
+        """``/jobs steer [--after] <id> <text>`` and ``/jobs wrap <id>`` (#123, ADR-0306 §3.1).
+
+        Through the service's ``control``, so the kind's adapter resolves the row:
+        a spawned agent's or a Ctrl+B'd one's (owner Q2, 2026-11-18). ``--after``
+        makes the note a follow-up, read after the agent's current answer. Allowed
+        mid-turn: every extension command is (``tui/shell.py``, ADR-0292).
+        """
+
+        service = self._service
+        words = list(rest)
+        follow_up = head == "steer" and bool(words) and words[0] == "--after"
+        if follow_up:
+            words = words[1:]
+        if not words:
+            return f"usage: /jobs {head} {'[--after] <id> <text>' if head == 'steer' else '<id>'}"
+        found = find(service, words[0])
+        if isinstance(found, str):
+            return found
+        if head == "wrap":
+            if words[1:]:
+                return "usage: /jobs wrap <id> (to tell it something first, /jobs steer <id> <text>)"
+            try:
+                return await service.control(found.job_id, "wrap_up", {"origin": "user"})
+            except JobNotFound:
+                return f"no job {words[0]}"
+        text = " ".join(words[1:]).strip()
+        if not text:
+            return "usage: /jobs steer [--after] <id> <text>"
+        payload = {"text": text, "mode": "follow_up" if follow_up else "steer", "origin": "user"}
+        try:
+            return await service.control(found.job_id, "steer", payload)
+        except JobNotFound:
+            return f"no job {words[0]}"
 
     async def _send(self) -> str:
         waiting = sum(1 for s in self._service.snapshots() if s.result_waiting)

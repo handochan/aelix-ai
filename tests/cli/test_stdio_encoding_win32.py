@@ -474,7 +474,7 @@ def test_real_cli_help_survives_a_legacy_codepage(
 
     # cwd is pinned to a scratch dir so the child finds no project ``.env``:
     # the assertion must not depend on which credentials a developer happens
-    # to have (house pattern: tests/cli/test_pipe_robustness.py:500).
+    # to have (house pattern: tests/cli/test_pipe_robustness.py:502).
     env = {**os.environ, "PYTHONIOENCODING": codepage}
     proc = subprocess.run(
         [sys.executable, "-m", "aelix_coding_agent", "--help"],
@@ -496,9 +496,9 @@ def test_read_piped_stdin_decodes_through_read_all_text(
     """Wiring guard for the stdin half.
 
     There is deliberately NO end-to-end subprocess test for this. Measured:
-    reaching ``_read_piped_stdin`` (entry.py:3088) with a hermetic child is
+    reaching ``_read_piped_stdin`` (entry.py:3121) with a hermetic child is
     easy, but every hermetic child then dies at model selection
-    (entry.py:5354) with output identical for an empty and a populated stdin —
+    (entry.py:5389) with output identical for an empty and a populated stdin —
     and the crash it would otherwise show is already prevented by the error
     handler alone, so "no traceback" passes even with the decode reverted.
     That is precisely the vacuous-pass shape issue #203 exists about, so the

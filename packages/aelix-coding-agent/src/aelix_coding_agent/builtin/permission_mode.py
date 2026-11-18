@@ -23,7 +23,9 @@ records the *intent*; the gate in ``permission.py`` enforces it (and the regex
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import contextlib
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -79,6 +81,25 @@ CYCLE_ORDER: tuple[PermissionMode, ...] = (
     PermissionMode.YOLO,
     PermissionMode.AUTO,
 )
+
+# The AUTHORITY order, PLAN (tightest) → YOLO (loosest) — NOT the cycle above,
+# which is a UX rotation and ranks PLAN above AUTO_ACCEPT. Declared here, beside
+# the enum, as the one source: ``aelix_agents.posture`` (the delegation clamp,
+# ADR-0199 §3.9) reads it, and a delegated child's own inbox refuses a widen by
+# it (#123, ADR-0306 §6.3) without reaching into the extension.
+AUTHORITY_RANK: dict[PermissionMode, int] = {
+    PermissionMode.PLAN: 0,
+    PermissionMode.DEFAULT: 1,
+    PermissionMode.AUTO_ACCEPT: 2,
+    PermissionMode.AUTO: 3,
+    PermissionMode.YOLO: 4,
+}
+
+
+def authority_rank(mode: PermissionMode) -> int:
+    """Authority rank of ``mode`` — 0 (PLAN) to 4 (YOLO) — by :data:`AUTHORITY_RANK`."""
+
+    return AUTHORITY_RANK[mode]
 
 
 @dataclass(frozen=True)
@@ -159,26 +180,37 @@ class PermissionPosture:
     """
 
     mode: PermissionMode = PermissionMode.DEFAULT
+    listeners: list[Callable[[PermissionMode, PermissionMode], None]] = field(default_factory=list)
+    """Called ``(previous, current)`` after EVERY mutation (#123, ADR-0306 §6.2;
+    Codex H6): :meth:`set` and :meth:`cycle` alike, so shift+tab and an RPC
+    ``permissions/set`` that is accepted both reach a listener. The
+    agents extension subscribes once and tightens its live delegations. A
+    listener that raises is dropped for that call, never the mutation."""
 
     def get(self) -> PermissionMode:
         return self.mode
 
     def set(self, mode: PermissionMode) -> None:
-        self.mode = mode
+        previous, self.mode = self.mode, mode
+        for listener in list(self.listeners):
+            with contextlib.suppress(Exception):
+                listener(previous, mode)
 
     def cycle(self) -> PermissionMode:
         """Advance to the next mode in :data:`CYCLE_ORDER` (wrapping) and return it.
 
         An off-cycle current value (should never happen) restarts at the first
-        cycle entry — fail-safe toward DEFAULT rather than raising.
+        cycle entry — fail-safe toward DEFAULT rather than raising. Through
+        :meth:`set` (#123): until then this assigned ``mode`` directly and no
+        listener heard a shift+tab (Codex-measured: zero setter calls).
         """
 
         try:
             idx = CYCLE_ORDER.index(self.mode)
         except ValueError:
-            self.mode = CYCLE_ORDER[0]
+            self.set(CYCLE_ORDER[0])
             return self.mode
-        self.mode = CYCLE_ORDER[(idx + 1) % len(CYCLE_ORDER)]
+        self.set(CYCLE_ORDER[(idx + 1) % len(CYCLE_ORDER)])
         return self.mode
 
     def badge(self) -> str | None:
@@ -189,10 +221,12 @@ class PermissionPosture:
 
 
 __all__ = [
+    "AUTHORITY_RANK",
     "CYCLE_ORDER",
     "DEFAULT_BADGE",
     "MODE_META",
     "ModeMeta",
     "PermissionMode",
     "PermissionPosture",
+    "authority_rank",
 ]

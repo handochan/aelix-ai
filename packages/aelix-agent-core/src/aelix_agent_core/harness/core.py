@@ -897,6 +897,15 @@ class AgentHarness:
 
         self._steering_queue = _MessageQueue(options.steering_mode)
         self._follow_up_queue = _MessageQueue(options.follow_up_mode)
+        # ADR-0306 — the final-steer latch. ``steer(final=True)`` remembers its
+        # message; the drain that returns it marks it consumed, and the next
+        # model call then runs with no tools and ends the run
+        # (``_without_tools_after_final``, ``_request_response_is_terminal``).
+        # Read at EVERY drain the loop performs, so a final queued behind an
+        # error, abort or stop-after-turn ending stays unconsumed and the run
+        # ends as it does today.
+        self._final_message: AgentMessage | None = None
+        self._final_consumed = False
         # Sprint 6h₂ (P-248): keep ``state.steering_mode`` /
         # ``state.follow_up_mode`` aligned with the constructed queue modes
         # so the public properties and the new sync setters share the
@@ -1573,6 +1582,9 @@ class AgentHarness:
         # ``input`` or ``before_agent_start`` handler still runs ends the turn as
         # it starts (:meth:`_run`) instead of being cleared there (#336).
         self._abort_requested = self._withdraw_requested = False
+        # ADR-0306 — a consumed final belongs to the prompt that consumed it;
+        # the runs of THIS prompt (its retries included) read the flag afresh.
+        self._final_consumed = False
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
@@ -1998,6 +2010,7 @@ class AgentHarness:
         text: str,
         *,
         images: list[ImageContent] | None = None,
+        final: bool = False,
     ) -> None:
         """Pi parity: ``session.steer(message, images)``
         (``rpc-mode.ts:483-486`` + ``agent-session.ts:1181-1192``).
@@ -2013,6 +2026,16 @@ class AgentHarness:
         and has no positional callers to migrate. Forcing the keyword
         avoids silent typo bugs (e.g. ``steer(images_list)`` mistakenly
         coerced into ``text``).
+
+        ``final`` (ADR-0306; pi's ``steer`` has no such flag) marks this message
+        as the LAST input of the run: once a drain hands it to the loop, the next
+        model call is made with no tools and ends the run, whatever the model
+        answers (the flag is the contract; the text is a courtesy to the model).
+        The latch lives here, not in the loop, and is read at every drain
+        (``_note_final``): a final still queued when the run ends on an error,
+        an abort or a stop-after-turn is withdrawn with the queue or stays for
+        the next turn, and the run ends as it does today. A second final
+        replaces the first.
         """
 
         # D.1.10: enqueue regardless of phase — Pi parity.
@@ -2020,10 +2043,44 @@ class AgentHarness:
         content: list[Any] = [TextContent(text=text)]
         if images:
             content.extend(images)
-        self._steering_queue.enqueue(UserMessage(content=content))
+        message = UserMessage(content=content)
+        if final:
+            self._final_message = message
+        self._steering_queue.enqueue(message)
         # Sprint 3b — enqueue paths emit ``queue_update`` (P-4: setters do
         # NOT, only enqueue paths do). Pi: ``agent-harness.ts`` steer path.
         await self._emit_queue_update()
+
+    def _note_final(self, drained: list[AgentMessage]) -> None:
+        """Mark the final steer consumed once a drain returns it (ADR-0306)."""
+
+        final = self._final_message
+        if final is not None and any(message is final for message in drained):
+            self._final_consumed = True
+            self._final_message = None
+
+    def _without_tools_after_final(self, fn: StreamFn | None) -> StreamFn | None:
+        """``fn`` with an empty tool list for every call after the final steer was consumed (ADR-0306).
+
+        Applied to whichever stream function ``_run`` chose, unconditionally, so ``_run``
+        (baseline-listed) gains no branch. Empty tools, not ``tool_choice`` (a provider-dependent
+        optimisation). What the wire then carries is each adapter's: chat-completions sends
+        ``tools: []`` beside tool history, the others leave the key out (ADR-0306 D6 lists them
+        and says what was measured). ``None`` stays ``None`` (the loop resolves its default).
+        """
+
+        if fn is None:
+            return None
+
+        async def stream_fn(
+            model: Model, context: LlmContext, options: SimpleStreamOptions
+        ) -> AsyncIterator[AssistantMessageEvent]:
+            if self._final_consumed:
+                context = replace(context, tools=[])
+            async for event in fn(model, context, options):
+                yield event
+
+        return stream_fn
 
     async def follow_up(
         self,
@@ -2113,6 +2170,8 @@ class AgentHarness:
         cleared_follow_up = list(self._follow_up_queue._messages)
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        # ADR-0306 — a final steer still queued goes with the queue: never consumed.
+        self._final_message = None
         if withdraw_unanswered:
             self._withdrawn_queued.extend([*cleared_steer, *cleared_follow_up])
         # Sprint 3c §C.2 — cancel in-flight turn task if any.
@@ -5728,7 +5787,8 @@ class AgentHarness:
         for a later user prompt rather than reopening this request's dispatch.
         """
         failure = self._setup_failure
-        return failure is not None and message is failure.message
+        # ADR-0306 — the tool-less call after a consumed final steer ends the run (a retry of it: tool-less, ends it too).
+        return self._final_consumed or (failure is not None and message is failure.message)
 
     # === Run loop ===
 
@@ -6057,6 +6117,9 @@ class AgentHarness:
                             model=self._state.model,
                         )
                     )
+                # ADR-0306 — whichever was chosen, with no tools once the final
+                # steer was consumed (one call, no branch: this method is listed).
+                effective_stream_fn = self._without_tools_after_final(effective_stream_fn)
                 # #684 — an abort made since the prompt began and before this
                 # task exists (an ``input`` or ``before_agent_start`` handler, the
                 # context read above: #336's window) has no task to cancel. The
@@ -6376,6 +6439,7 @@ class AgentHarness:
         # the file and the model see them in the same order. With the inbox off
         # (``notice_inbox``) this is the drain it was before #722.
         steering = self._steering_queue.drain()
+        self._note_final(steering)  # ADR-0306 — at every drain, notices or not
         if not self._notices_enabled:
             return steering
         return [*await self._place_notices(), *steering]
@@ -6483,6 +6547,20 @@ class AgentHarness:
                 return False
         return False
 
+    @property
+    def final_consumed(self) -> bool:
+        """Whether the run that started last read a final steer (ADR-0306; #123 fix round 1, F5).
+
+        Raised by the drain that returns a ``steer(final=True)`` message and
+        lowered when the next run starts (:meth:`prompt`, :meth:`prompt_notices`),
+        so between two runs it says whether the earlier one was told to finish.
+        A host that must start no further run after that reads it there (print
+        mode: ``modes/print_mode._wrapped_up``). Read-only; who asked and why
+        stay outside the kernel.
+        """
+
+        return self._final_consumed
+
     async def prompt_notices(self, *, source: Literal["notice"] = "notice") -> PromptNoticesResult:
         """Run a turn for what the inbox holds: pending notices, or one unanswered at the leaf.
 
@@ -6509,6 +6587,10 @@ class AgentHarness:
         claim = self._claim = object()
         self._turn_refusal = None
         self._abort_requested = self._withdraw_requested = False
+        # ADR-0306 (#123 fix round 1, F5) — as in :meth:`prompt`: a consumed
+        # final belongs to the run that read it. Left up, this turn's call had
+        # no tools and ended the run whatever it asked for.
+        self._final_consumed = False
         self._overflow_recovery_attempted = False
         try:
             await self._drain_pending_session_writes()

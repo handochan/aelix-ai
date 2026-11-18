@@ -46,7 +46,8 @@ THE ACTIONS (owner, 2026-11-07, and #604's one tool with an ``action``):
   :data:`~aelix_agents.tool.WAIT_MAX_SECONDS`, default
   :data:`~aelix_agents.tool.WAIT_DEFAULT_SECONDS`; never stops anything, never
   returns the result (the notice is the one delivery); the third empty wait in
-  a row in one prompt is refused;
+  a row in one prompt is refused; it ends early, once per notice, when a
+  waited agent marked stuck has its attention notice posted (#123 D1);
 * ``status`` / ``stop`` — through the service, for this session's agents only;
 * ``result`` — the whole result again, paged; after a restart, from the
   parent's settle and the child's own file under the recovery rules below.
@@ -116,6 +117,7 @@ from aelix_agents.child_session import (
     resume_lineage_refusal,
 )
 from aelix_agents.envelope import REASON_STOPPED, child_line
+from aelix_agents.panel import _call_text, _flat
 from aelix_agents.print_channel import _parent_stopped, sweep_helpers
 from aelix_agents.result_file import (
     RESULT_RECORD_TYPE,
@@ -127,11 +129,13 @@ from aelix_agents.result_file import (
 from aelix_agents.runtime import (
     MAX_LIVE_CHILDREN,
     CallEnvelopes,
+    Delivery,
     SpawnRecordMeta,
     SubagentHost,
     _lock_refusal,
     _SubagentRuntimeImpl,
 )
+from aelix_agents.stream import STUCK_MEANING
 from aelix_agents.tool import (
     WAIT_DEFAULT_SECONDS,
     WAIT_MAX_SECONDS,
@@ -235,6 +239,9 @@ CAPABILITIES = KindCapabilities(
     # An ended agent reads from its result file (#769); one whose run wrote none
     # reads otherwise once read back, and the job service keeps it whole.
     reads_persisted=True,
+    # ``/jobs steer`` and ``/jobs wrap`` reach a running agent through this
+    # kind's control adapter (#123, ADR-0306 §3.1); a bash job declares none.
+    controls=("steer", "wrap_up"),
 )
 
 
@@ -454,6 +461,8 @@ class AgentJob:
     session_path: str | None = None
     status: str | None = None
     runner: weakref.ref[DelegationRunner] | None = None
+    #: Its job's attention door was asked, once, for a stuck mark (#123 D1).
+    attention_asked: bool = False
 
     @property
     def text(self) -> str | None:
@@ -532,7 +541,7 @@ class DelegationRunner:
         )
 
     def _on_progress(self, entry: AgentJob, progress: SubagentProgress) -> None:
-        _job_progress(self._ctx, progress)
+        _job_progress(self._ctx, progress, entry)
 
     def request_stop(self, reason: str) -> None:
         if self._stopped_by is None:
@@ -733,8 +742,16 @@ async def _outcome_of(
     )
 
 
-def _job_progress(ctx: Any, progress: SubagentProgress) -> None:
-    """One progress snapshot as a job's ``ctx.progress`` (a spawned or a moved run)."""
+def _job_progress(ctx: Any, progress: SubagentProgress, entry: AgentJob | None = None) -> None:
+    """One progress snapshot as a job's ``ctx.progress`` (a spawned or a moved run).
+
+    #123 D1: the first snapshot of ``entry``'s run that carries a pattern
+    :data:`~aelix_agents.stream.STUCK_MEANING` knows and no wrap-up asks the
+    job's door (``ctx.attention``) once, so the parent model hears of it while
+    the agent still runs; a later one keeps the mark only, as the nudge does.
+    Only a ``running`` snapshot asks: a terminal one still carries the mark its
+    last calls left (fix round 2, C-R2).
+    """
 
     if ctx is None:
         return
@@ -745,8 +762,71 @@ def _job_progress(ctx: Any, progress: SubagentProgress) -> None:
                 "tokens": progress.tokens,
                 "last_text": None if progress.last_text is None else _utf8_safe(progress.last_text),
                 "state": progress.state,
+                # #123 (ADR-0306 §4, §5): what the rows and the status line say.
+                "stuck": progress.stuck,
+                "wrapping_up": progress.wrapping_up,
             }
         )
+    if entry is None or entry.attention_asked or progress.wrapping_up or progress.stuck not in STUCK_MEANING:
+        return
+    if progress.state != "running":
+        return
+    entry.attention_asked = True
+    with contextlib.suppress(Exception):
+        ctx.attention(_stuck_notice(progress, entry), brief=f"looks stuck ({progress.stuck})")
+
+
+_STUCK_CALL_CELLS = 200
+"""How much of each call the stuck notice quotes, in cells (as the panel prints it)."""
+
+_STUCK_STATUS = {"running": "running", "ok": "ok", "failed": "failed", "no_result": "no result"}
+"""Each quoted call's status, in words (``SubagentToolStatus``)."""
+
+_STUCK_TEXT_CELLS = 1024
+"""How much of the agent's last text it quotes: the whole of ``SubagentProgress.last_text`` (512 characters)."""
+
+
+def _stuck_notice(progress: SubagentProgress, entry: AgentJob) -> NoticeBody:
+    """The attention notice of an agent marked stuck (#123 D1).
+
+    Inside the fence only what the child did: its latest calls — the whole of
+    ``activity``, at most four, oldest first, each with its status, as the
+    panel prints them — and its last text, flattened. ``activity`` is ordered
+    by start and keeps open calls, the fingerprints ``stuck_of`` reads by
+    completion, so no one of them is named as the repeated call (fix round 2,
+    C-R4). Outside it aelix's own words: the pattern, that a task may ask for
+    the repetition (fix round 2, L1), that it was not stopped, and the three
+    doors with the agent's id.
+    It does not mention the nudge (``runtime._nudge_once``), which is
+    fire-and-forget and skipped when the agent's inbox refuses, so whether it
+    went is not known here. Still true read late: a notice that waits until
+    the agent ended is placed before its result's.
+    """
+
+    lines = []
+    calls = list(progress.activity or ())
+    if calls:
+        lines.append("its latest calls, oldest first:")
+    for call in calls:
+        status = _STUCK_STATUS.get(call.status, child_line(str(call.status)))
+        lines.append(f"- {_call_text(call, _STUCK_CALL_CELLS)} ({status})")
+    said = _flat(progress.last_text, _STUCK_TEXT_CELLS)
+    if said:
+        lines.append(f"last text: {said}")
+    agent_id = child_line(entry.agent_id or entry.job_id)
+    return NoticeBody(
+        body="\n".join(lines),
+        next_action=(
+            f"aelix marked this agent stuck ({STUCK_MEANING.get(progress.stuck or '', '')}). "
+            "That can be intended when its task asks for the same call again; if so, leave it running. "
+            "It was not stopped. "
+            f'To redirect it: agent(action="send", id="{agent_id}", task="<what to do instead>"). '
+            f'To make it finish now with what it has: agent(action="wrap_up", id="{agent_id}"). '
+            f'To stop it: agent(action="stop", id="{agent_id}"). '
+            "Or leave it running: its result arrives as a notice when it ends. "
+            "If it has already ended, its result notice follows this one."
+        ),
+    )
 
 
 def _doing_row(snapshot: JobSnapshot, progress: Mapping[str, Any]) -> str | None:
@@ -756,6 +836,11 @@ def _doing_row(snapshot: JobSnapshot, progress: Mapping[str, Any]) -> str | None
         return None
     tool = progress.get("tool")
     doing = f"running {tool}" if isinstance(tool, str) and tool else "thinking"
+    if progress.get("wrapping_up"):
+        doing = f"wrapping up · {doing}"
+    stuck = progress.get("stuck")
+    if isinstance(stuck, str) and stuck:
+        doing = f"{doing} · stuck: {stuck}"
     tokens = progress.get("tokens")
     return f"{doing} · {_tokens(tokens)} tok" if isinstance(tokens, int) and tokens > 0 else doing
 
@@ -825,6 +910,71 @@ async def _posix_helpers(own: _Ownership) -> HelperCleanup:
 
 
 # === The kind's adapter ===========================================================
+
+
+def live_row(jobs: DelegationJobs, job_id: str) -> tuple[Any, RunningChild] | None:
+    """The runtime and the live row behind a running agent job, or ``None`` (Codex H9).
+
+    Found through the job's runner: a :class:`DelegationRunner` holds its own
+    runtime and row (``_own.row``), an :class:`AdoptedRunner` the call's runtime
+    and the moved row (``_row``). A job whose runner is gone — ended, or never
+    this process's — has no row to reach.
+    """
+
+    entry = jobs.info.get(job_id)
+    runner = entry.runner() if entry is not None and entry.runner is not None else None
+    if runner is None:
+        return None
+    if isinstance(runner, AdoptedRunner):
+        return runner._runtime, runner._row
+    if isinstance(runner, DelegationRunner):
+        own, runtime = runner._own, runner._runtime
+        if own is None or own.row is None or runtime is None:
+            return None
+        return runtime, own.row
+    return None
+
+
+async def deliver(jobs: DelegationJobs, job_id: str, verb: str, payload: Mapping[str, Any]) -> Delivery | str:
+    """Write ``verb``'s line into a running agent job's inbox (#123, ADR-0306 §3).
+
+    ``steer`` takes ``text`` and ``mode`` (``steer`` or ``follow_up``), ``wrap_up``
+    nothing; ``origin`` names who asked. The runtime's doors answer per state;
+    a string is a refusal this function made before any door was reached.
+    """
+
+    found = live_row(jobs, job_id)
+    if found is None:
+        return f"{job_id[:6]} is not an agent this process is running"
+    runtime, row = found
+    origin = str(payload.get("origin") or "user")
+    if verb == "wrap_up":
+        return await runtime.wrap_up(row.id, origin=origin)
+    if verb != "steer":
+        return f"the agent kind takes no {verb}"
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return "steer needs a message"
+    mode = "follow_up" if payload.get("mode") == "follow_up" else "steer"
+    return await runtime.steer(row.id, text, mode=mode, origin=origin)
+
+
+def describe_delivery(delivery: Any, *, what: str) -> str:
+    """One sentence for the human about a steer or wrap-up's outcome (ADR-0306 §3.3)."""
+
+    outcome = getattr(delivery, "outcome", "unknown")
+    reason = getattr(delivery, "reason", None)
+    phase = getattr(delivery, "phase", None)
+    if outcome == "queued":
+        read = "the agent reads it after the tool calls it is already running"
+        if phase == "idle":
+            read = "the agent is between turns and reads it at its next one, if one comes"
+        return f"Queued {what}: {read}."
+    if outcome == "refused":
+        return f"Not taken: {reason or 'refused'}."
+    if outcome == "not_sent":
+        return f"Not sent: {reason or 'the agent took nothing'}."
+    return f"Unknown whether {what} arrived: {reason or 'no answer'}."
 
 
 class DelegationKindAdapter:
@@ -924,6 +1074,20 @@ class DelegationKindAdapter:
             'To continue this agent: agent(action="resume", '
             f'id="{child_line(session_id)}", profile="{name}", task=<its next instruction>).'
         )
+
+    async def control(self, job_id: str, verb: str, payload: Mapping[str, Any]) -> str:
+        """``steer`` / ``wrap_up`` on a running agent job, spawned or Ctrl+B'd (#123, ADR-0306 §3.1; Codex H9).
+
+        :func:`deliver` finds the row and writes the line; the sentence is for
+        the human who typed ``/jobs``. The model's door (``agent(action="send")``)
+        calls :func:`deliver` itself and words the outcome for the model.
+        """
+
+        delivered = await deliver(self._jobs, job_id, verb, payload)
+        if isinstance(delivered, str):
+            return delivered
+        what = {"wrap_up": "the wrap-up", "follow_up": "the follow-up"}.get(delivered.verb, "the note")
+        return describe_delivery(delivered, what=what)
 
     def render_rows(self, snapshot: JobSnapshot, width: int) -> list[str]:
         """``<profile>: <task>``; while it runs ``running <tool>`` or ``thinking``, with
@@ -1059,6 +1223,9 @@ class DelegationJobs:
         self._by_agent: dict[str, str] = {}
         #: Consecutive waits that ended with nothing settled, this prompt (D1).
         self.empty_waits = 0
+        #: The jobs whose attention notice already ended a wait (#123 D1): a
+        #: notice that stays unplaced ends no second wait at once.
+        self.attention_waited: set[str] = set()
 
     def track(self, job_id: str, launch: _Launch) -> AgentJob:
         entry = self.info.get(job_id)
@@ -1191,7 +1358,7 @@ async def wait_for_agents(
 
     while True:
         current = snaps()
-        if not current or any(_settled(s) for s in current):
+        if not current or any(_settled(s) for s in current) or _attention_due(jobs, current):
             break
         left = deadline - loop.time()
         if left <= 0:
@@ -1215,6 +1382,9 @@ async def wait_for_agents(
             changed.cancel()
         current = snaps()
         finished = [s for s in current if _settled(s)]
+    # After the settle loop: an agent that ended meanwhile is not "still running".
+    due = _attention_due(jobs, current)
+    jobs.attention_waited.update(due)
     lines = [_status_line(jobs, s) for s in current]
     if clamped:
         lines.insert(0, f"Waited {int(seconds)} s {clamped}.")
@@ -1224,7 +1394,7 @@ async def wait_for_agents(
             "Still running. Its result arrives as a notice when it finishes; you do "
             "not need to wait again."
         )
-    elif ended and all(s.notice_state == "delivered" for s in ended):
+    if ended and all(s.notice_state == "delivered" for s in ended):
         lines.append(
             'Its result was already given to you as a notice; agent(action="result", '
             "id=…) reads it again."
@@ -1241,7 +1411,32 @@ async def wait_for_agents(
             "An unresolved agent is not waited on: aelix cannot confirm how it ended, "
             "and waiting does not change that. status shows what aelix knows of it."
         )
-    return "\n".join(lines), not finished
+    if due:
+        lines.append(_STUCK_WAIT_LINE)  # added after the result sentences, never instead of one
+    return "\n".join(lines), not finished and not due
+
+
+_STUCK_WAIT_LINE = (
+    "An agent marked stuck is still running; the notice right after this call "
+    "says what you can do about it."
+)
+"""What a ``wait`` that ended for an attention notice adds (#123 D1)."""
+
+
+def _attention_due(jobs: DelegationJobs, snaps: list[JobSnapshot]) -> list[str]:
+    """The waited jobs, still ``running``, whose attention notice is posted and unplaced and has ended no wait yet (#123 D1).
+
+    Once per notice: one the harness holds out of every drain would
+    otherwise end every later wait at once. Only a ``running`` job: an
+    ``unresolved`` one's snapshot may still carry the notice, and the line it
+    adds says the agent is still running (#123 fix r2).
+    """
+
+    return [
+        s.job_id
+        for s in snaps
+        if s.state == "running" and s.attention_waiting and s.job_id not in jobs.attention_waited
+    ]
 
 
 def _status_line(jobs: DelegationJobs, snap: JobSnapshot) -> str:
@@ -1254,6 +1449,9 @@ def _status_line(jobs: DelegationJobs, snap: JobSnapshot) -> str:
         tool = (snap.progress or {}).get("tool")
         if isinstance(tool, str) and tool:
             parts.append(f"running {child_line(tool)}")
+        stuck = (snap.progress or {}).get("stuck")
+        if snap.state == "running" and isinstance(stuck, str) and stuck in STUCK_MEANING:
+            parts.append(f"stuck: {stuck}")  # #123 D1; not of an unresolved one (fix r2)
         if snap.quiet:
             parts.append("quiet")
     elif snap.state in TERMINAL_STATES:

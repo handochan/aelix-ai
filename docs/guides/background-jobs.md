@@ -47,14 +47,35 @@ built-in names there leaves them on.
   without interrupting a running turn (owner OQ-S3-2, 2026-11-12: "↑↓·Enter·r·s s·Esc/q (권장)";
   [ADR-0299](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0299-jobs-opens-a-background-jobs-panel.md)).
   The second `s` stops only the job the first one armed, within 3 s. While the panel is open a
-  finished job's result waits for it to close.
+  finished job's result waits for it to close. Two more keys reach a running delegated agent
+  (#123, [ADR-0306](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0306-a-running-delegated-child-is-steered-through-a-command-inbox-on-its-stdin.md)):
+  `m` closes the panel with `/jobs steer <id> ` in the input for you to finish the note, and
+  `w` `w` asks the agent to wrap up, armed exactly as `s` `s` is (`press w again to wrap up
+  <id>`). A background command takes neither: `m` and `w` `w` leave the panel open and its
+  last row reads
+  `this kind of job does not take a message; /jobs stop <id> stops it (panel: s s)`
+  (`… a wrap-up; …` after `w` `w`), which is also what `/jobs steer` and `/jobs wrap` answer
+  for it (`tests/tui/test_jobs_steer_123.py`).
 - **`/jobs list`** prints the table; `/jobs <id>`, `/jobs result <id>` and `/jobs stop <id>`
-  show one job, page its result and stop it.
+  show one job, page its result and stop it. **`/jobs steer <id> <text>`** sends a running
+  delegated agent a note it reads before its next model call, after the tool calls it is
+  already running; `/jobs steer --after <id> <text>` lands it after its current answer instead;
+  **`/jobs wrap <id>`** asks it to finish now — one more reply with no tools, then its result
+  comes back `stopped`, with what it said (#123). All three run mid-turn, as every extension
+  command does, and all three reach a run moved with Ctrl+B as well as one started with
+  `agent(action="spawn")` (owner, 2026-11-18: "Ctrl+B 후 /jobs steer·wrap (권장)";
+  `tests/agents_ext/test_intervention_doors_123.py`). The answer is one line — `Queued the
+  note: …`, `Not taken: …`, `Not sent: …` or `Unknown whether the note arrived: …` — and never
+  "not delivered": a note the agent acknowledged may still die with it if it ends before its
+  next turn.
 - **The model** reads the same table with `job(action="list")`, a job with
   `job(action="status", id=…)`, and pages a finished job's output with
   `job(action="result", id=…, offset=…)`; `job_stop(id=…)` stops a background command or an
   extension's job. A delegated agent is stopped with `agent(action="stop", id=…)`:
-  `job_stop` refuses one and says so, and `/jobs stop` stops either.
+  `job_stop` refuses one and says so, and `/jobs stop` stops either. A running delegated agent
+  takes a note with `agent(action="send", id=…, task=…)` and a wrap-up with
+  `agent(action="wrap_up", id=…)` (#123; `docs/guides/agent-profiles.md`, "Steering a running
+  agent").
 
 ## How a result comes back
 
@@ -74,6 +95,25 @@ the model is writing, never inside it — and is placed once, even across a rest
   `Ctrl+C` while it waits stops every job and writes out each result the model was not given —
   on stderr in text mode, one `background_notice_undelivered` event each in JSON mode — and
   starts no turn for them (ADR-0293 §11).
+- **A delegated agent that looks stuck** — running in the background, spawned or moved with
+  Ctrl+B, and marked `stuck: repeat` (the same tool call with the same result four times in a
+  row) or `stuck: error loop` (the same failing call three times in a row) — leaves the model
+  one notice while it still runs (#123): its header says the agent "is still running"; inside the
+  data fence are its latest calls (up to four, oldest first, each with its status) and its last
+  text; after it come what the pattern means, that this can be intended when its task asks for
+  the same call again (then leave it running), that it was not stopped, and
+  `agent(action="send"|"wrap_up"|"stop", id=…)` with its id
+  (`tests/agents_ext/test_stuck_notice_123.py`). A run moved with Ctrl+B asks at the move when
+  its panel row shows the mark then, and otherwise at the first snapshot marked after the move; a
+  mark that cleared before the move asks nothing. It is not the agent's result, which still comes
+  back once, after it, when the agent ends: the footer and `/jobs` do not count it (`/jobs send`
+  names it a notice beside the results it sends), `-p` gives it a notice turn and goes on waiting for the agent until its
+  result is posted, and `Ctrl+C` in that wait does not write it out. The TUI starts a turn for it
+  when idle and its line reads `◆ background notice: …`; `agent(action="wait")` returns as soon
+  as it is posted, once, while the agent runs, and adds its line after the result sentences, and
+  `agent(action="status")` says `stuck: <pattern>` of a running agent
+  (`tests/jobs/test_attention_123.py`). A foreground agent gets none: its panel row shows the
+  mark.
 - **A session you open again** that has results nobody gave the model starts no turn for them.
   The TUI says `◆ 1 background result is waiting. It goes to the model with your next message,
   or run /jobs send to send it now.` (`tests/tui/test_restore_611.py`); `-p --continue` delivers
@@ -135,10 +175,12 @@ by Ctrl+B or left in the turn, each killed.
 | --- | --- | --- | --- |
 | Linux (SIGKILL) | The delegated child and the background shell are gone within 5 s (`pdeathsig`; Linux docker, 20 of 20 runs). Recorded only: the shell's own command was alive 5 s after the kill, in 20 of 20 runs; only the shell is signalled (owner OQ-C/D, 2026-11-10: "둘 다 권고대로 (권장)"). | The child is gone within 5 s (20 of 20 runs). | The child is gone within 5 s (10 of 10 runs). |
 | Windows (`TerminateProcess`) | Every process the case watched ends within 10 s (CI run 44023793108, all four Python versions). That is the processes it watched, not a proof that nothing else is left. | The same. | The same. |
-| macOS (SIGKILL) | Recorded only: the child, both shells and both sleepers were alive 5 s after the kill (local, 20 of 20 runs), and the case then killed them. | Recorded only: alive 5 s after the kill (20 of 20). | Recorded only: alive 5 s after the kill (10 of 10). |
+| macOS (SIGKILL) | Recorded only (local, 10 of 10 runs, 2026-11-18): the delegated child, its shell and its sleeper were gone within 0.4 s of the kill; the background `bash` shell and its sleeper were alive 5 s after it, and the case then killed them. Before #123 all five were alive (20 of 20). | Recorded only: the child, its shell and its sleeper gone within 0.4 s (10 of 10). Before #123: alive 5 s after the kill (20 of 20). | Recorded only: the same, gone within 0.4 s (10 of 10). Before #123: alive (10 of 10). |
 
-On macOS, nothing stops them when aelix is killed (there is no `pdeathsig`): stop what is
-left yourself, or quit aelix instead of killing it: a normal quit stops every job first.
+On macOS there is no `pdeathsig`. A delegated child ends because its command inbox, a pipe
+from aelix, closes when aelix dies (#123, ADR-0306); nothing stops a background `bash` and what
+it runs. Stop what is left yourself, or quit aelix instead of killing it: a normal quit stops
+every job first.
 
 ## For extensions
 
@@ -158,6 +200,17 @@ already posted or there is no session to post to. It is delivered the way a job'
 at the next boundary, never inside an answer and never while a dialog is open; in the TUI an
 idle session starts a turn for it (`tests/tui/test_wake_611.py::test_an_extension_notice_wakes_counts_and_is_sent`).
 Its id is your extension's name and `notice_id`, so another extension cannot collide with it.
+
+**A running job of your kind can ask for attention once:** its runner's context has
+`attention(body, *, brief="")` (`JobContext` in `aelix_coding_agent/jobs/contract.py`; #123).
+It posts one notice framed as the job's, saying the job "is still running", with the id
+`<job id>:attention` and `details.status == "running"` — the line a host reading
+`aelix.job_notice` entries will see. It answers `False` and posts nothing a second time, for a
+job that does not notify, and for a job that is starting, asked to stop or whose `run`
+returned. It is not the job's result: `JobSnapshot.result_waiting` and `notice_state` do not
+count it, `JobSnapshot.attention_waiting` does, and nothing of it is restored after a restart
+(`tests/jobs/test_attention_123.py`). Over RPC it is placed ahead of the host's next prompt as a
+`user` message, as a result's notice is, and no event announces it (ADR-0306, "Consequences").
 
 **`jobs`** lets you run your own kind of job, which the footer, `/jobs` and the `job` tool
 then show beside the built-in ones:

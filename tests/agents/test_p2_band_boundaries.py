@@ -374,6 +374,18 @@ def test_kernel_has_no_subagent_surface() -> None:
 # no spawn site, no cap, no consent path and no registry, and changes no byte that
 # Python parses. Delegation did not create the requirement — PyPI name reservation
 # did. ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
+#
+# ``harness/core.py``, THIRD hunk — ADR-0306, #123. The final-steer latch:
+# ``steer(final=True)`` remembers its message, ``_drain_steering`` marks it
+# consumed when a drain returns it, ``_without_tools_after_final`` wraps the
+# chosen stream function so the next model call carries no tools, and
+# ``_request_response_is_terminal`` ends the run after it; ``abort`` clears the
+# latch with the queue, every run start (``prompt``, ``prompt_notices``) lowers the consumed flag and the read-only ``final_consumed`` says it (F5). The kernel
+# knows the word "final" and nothing of who asked or why: the wording, the
+# child identity and the result policy stay in ``aelix_agents``
+# (``command_wire.WRAP_UP_TEXT``, ``envelope._wrap_up_verdict``). No
+# ``aelix_agents`` import, no spawn site, no cap, no consent path, no registry —
+# ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",

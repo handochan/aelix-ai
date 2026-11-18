@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Any
 
 from aelix_ai.utils.terminal_text import safe_for_terminal
 from aelix_coding_agent.subagent_contract import (
@@ -860,6 +861,39 @@ def _reason_for(
     return REASON_UNSPECIFIED
 
 
+WRAP_UP_REASON = "wrapped up at the {origin}'s request"
+"""The reason of a run whose model read the final steer (#123, ADR-0306 §4.3;
+owner Q3 2026-11-18: "aborted + 이유 + ok=False"). ``origin`` names who asked:
+the user (``/jobs wrap``, the panel), the model (``agent(action="wrap_up")``)."""
+
+WRAP_UP_NOT_DELIVERED = "a wrap-up was requested by the {origin} but never reached the model"
+"""The note on a run that ended — on its own, on an error or on a kill — before
+the child's model read the final steer: the envelope is the run's own, and this
+says the wrap-up was not what ended it (ADR-0306 §4.2 precedence)."""
+
+
+def _wrap_up_verdict(
+    outcome: SubagentOutcome, reason: str | None, wrap_up: Any, *, consumed: bool
+) -> tuple[SubagentOutcome, str | None, str | None]:
+    """``(outcome, reason, note)`` once the wrap-up is weighed (#123, ADR-0306 §4.3).
+
+    Pure, and total: no wrap-up leaves all three as they came. A consumed one
+    on a run that ended ``ok`` becomes ``aborted`` with :data:`WRAP_UP_REASON`
+    — the caller's own reason, when it gave one, is kept. A consumed one on any
+    other outcome (a kill, a cancel) keeps that outcome: the run's own end wins.
+    One never consumed adds :data:`WRAP_UP_NOT_DELIVERED` as the note.
+    """
+
+    if wrap_up is None:
+        return outcome, reason, None
+    origin = str(getattr(wrap_up, "origin", "user"))
+    if not consumed:
+        return outcome, reason, WRAP_UP_NOT_DELIVERED.format(origin=origin)
+    if outcome != "ok":
+        return outcome, reason, None
+    return "aborted", reason or WRAP_UP_REASON.format(origin=origin), None
+
+
 def build_result(
     *,
     id: str,
@@ -877,6 +911,8 @@ def build_result(
     lingered: bool = False,
     reason: str | None = None,
     print_done_required: bool = False,
+    wrap_up: Any = None,
+    wrap_up_consumed: bool = False,
 ) -> SubagentResult:
     """Fold a finished (or abandoned) child run into its envelope.
 
@@ -929,7 +965,7 @@ def build_result(
     129, ``SIGKILL`` -9.)
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:306-310``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:308-312``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -938,7 +974,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:1062-1068``), so a child that read a large file emits a
+    # line (``stream.py:1164-1170``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare
@@ -953,10 +989,15 @@ def build_result(
     # A child can make several runs (an auto-retry is a second one), and one
     # whose last run was cut off is not finished because an earlier run was.
     # Only as far as the channel folds: the print channel folds every line, and
-    # ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:432``),
+    # ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:440``),
     # so for it the latest run is the first one.
     closed = latest_run_closed(state)
     no_terminator = not closed and state.dropped_lines == 0
+    # THE WRAP-UP (#123, ADR-0306 §4.3; owner Q3, 2026-11-18): a run that ended
+    # on its own after the child's model read the final steer is ``aborted`` with
+    # the wrap-up reason, never ``ok`` (gemini-cli#22323); one that ended before
+    # the model read it keeps its own verdict and says so in a note.
+    outcome, reason, wrap_note = _wrap_up_verdict(outcome, reason, wrap_up, consumed=wrap_up_consumed)
     # THE LINGERING SPLIT (#604, ADR-0276 D4). Both halves need the TERMINATOR
     # itself, not merely "nothing was missing": a terminator dropped as an
     # oversize line (``dropped_lines``) proves nothing about a child that then
@@ -1075,7 +1116,7 @@ def build_result(
         model=state.model,
         provider=state.provider,
         output_recorded=recorded,
-        note=LINGERED_NOTE if finished_then_lingered else None,
+        note=wrap_note or (LINGERED_NOTE if finished_then_lingered else None),
         # ``started``, the session and the files are ``_run``'s to fill: this
         # module is pure and knows neither whether a process existed nor the
         # directories a path is relative to.
@@ -1117,6 +1158,8 @@ def declined_result(
 __all__ = [
     "LINGERED_NOTE",
     "LINGERED_REASON",
+    "WRAP_UP_NOT_DELIVERED",
+    "WRAP_UP_REASON",
     "MAX_ERROR_NOTE_BYTES",
     "MAX_REASON_CHARS",
     "MAX_TRAIL_BYTES",

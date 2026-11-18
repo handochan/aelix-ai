@@ -61,6 +61,40 @@ unwritten. Add them with the next release.
   creates an `mcp.json`, writes nothing under `$AELIX_MCP_CONFIG`, and cannot turn a global
   server off in one project (#644 decides that). A change takes effect at the next start, and
   the row says `off · restart` until then (`tests/tui/test_mcp_panel_624.py`).
+- **A running delegated agent can be steered, asked to wrap up, tightened and noticed stuck
+  (#123, ADR-0306).** Every delegated child keeps a command inbox on its stdin while it runs —
+  it is still the `--mode json -p` process it was, launched with the hidden `--command-inbox=1`
+  flag, and nothing about its result changes. The model sends a running agent a note with
+  `agent(action="send", id=…, task=…)` (`mode="follow_up"` lands it after the agent's current
+  answer) and asks it to finish with `agent(action="wrap_up", id=…)`; you type `/jobs steer <id>
+  <text>`, `/jobs steer --after <id> <text>` and `/jobs wrap <id>`, or press `m` (the steer line
+  in the input) and `w` `w` (wrap up, armed as `s` `s` is) in the `/jobs` panel, on a spawned
+  agent or one moved with Ctrl+B. A note is read at the child's next turn boundary, after the
+  tool calls it is already running, and its outcome is `queued`, `unknown`, `not_sent` (the line could not be written) or a refusal naming
+  the state — never "not delivered". A wrapped-up agent's next model call has no tools (nor has an automatic retry of that call)
+  and its run ends `aborted` after it with the reason "wrapped up at the user's request" (`/jobs wrap`, `w` `w`) or "… the model's request" (`agent(action="wrap_up")`), `ok=False` and its own
+  text as the summary; it prompts nothing after that call and background jobs of its own are stopped, not waited for. A shift+tab in the parent now reaches every running child above the new
+  rank (an RPC `permissions/set` does not: it is refused during a turn and answered only after
+  an `agents/run` returns); a child that does not apply it within 30 s
+  is stopped with "permission floor could not be applied", and a tightened agent's result names the mode it ended at. Four identical calls with identical
+  results, or three identical errors, mark the agent `stuck: repeat` / `stuck: error loop` on
+  the panel and send it one note; it is never stopped for that. `stop` is unchanged. Over RPC
+  and ACP no method and no event shape is added (#612 is that work); what a host can see is text: `get_commands` lists `steer <id> <text>, wrap <id>` in `/jobs`'s description, and `/jobs steer` or `/jobs wrap` run through `commands/run` answers "no job <id> in this session" — an RPC session held no agent job in the three states measured (ADR-0306, Consequences); sent as a `prompt` the text goes to the model, as before.
+- **A background agent marked stuck tells the model once, while it still runs (#123, ADR-0306
+  D9).** A spawned agent marked `stuck: repeat` or `stuck: error loop` while it runs, or one moved with Ctrl+B whose panel row shows the mark at the move or that is marked after it,
+  leaves the parent model one notice: its latest calls (up to four, oldest first, each with its status) and last text inside the data fence, then what
+  the pattern means, that this can be intended when its task asks for the same call again (then leave it running), that it was not stopped, and `agent(action="send"|"wrap_up"|"stop", id=…)`
+  with its id. It is not its result, which still comes back once when it ends: `-p` gives it a
+  notice turn and goes on waiting until the job's result is posted (also while an ended job's records are still being written), the footer and `/jobs` do not count it (`/jobs send` names it a notice beside the results it sends), Ctrl+C in `-p`'s wait
+  does not write it out, `agent(action="wait")` returns once for it while the agent runs and adds its line after the result sentences, `agent(action="status")` says
+  `stuck: <pattern>` of a running agent, and the TUI's line for it is `◆ background notice: …`. A foreground agent
+  gets none. For hosts and extensions: `aelix.job_notice` entries may now carry
+  `details.status == "running"` (id `<job>:attention`); a job kind's runner has
+  `JobContext.attention(body, *, brief="")`, once per job (ADR-0293's note of 2026-11-18), and
+  `JobSnapshot` gains `attention_waiting`. Over RPC no event announces it: the host's next
+  `prompt` places it first, as a `user` message (`tests/jobs/test_attention_123.py`,
+  `tests/agents_ext/test_stuck_notice_123.py`).
+
 - **Agent profiles can be turned off, and the model is then neither offered nor allowed them
   (#795, ADR-0304).** A bare `/agents` in the TUI opens a panel like `/skill`'s (Space toggles,
   ←/→ picks the global or this project's file, Enter saves and applies from your next message,

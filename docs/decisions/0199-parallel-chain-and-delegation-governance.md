@@ -1517,3 +1517,42 @@ implemented: `MAX_SUBAGENT_DEPTH` stays 1, and a delegated child reads no `agent
 `test_no_launch_warnings_in_a_delegated_child`). An approved batch or chain runs every member
 as approved, queued ones included, after its profile is turned off
 (`test_an_approved_batch_runs_every_member_after_the_profile_is_turned_off`).
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*The tighten window narrows.* §3.9's floor reached only a batch's later waves and a resume
+(``:931-933``: "a shift+tab in the hook→execute gap is missed"). Since #123 every posture mutation
+— `set()` and `cycle()` alike — notifies, and the agents extension tightens every LIVE child
+through its inbox (ADR-0306 D8). The rank ladder is now declared beside the enum
+(`builtin/permission_mode.AUTHORITY_RANK`) and `aelix_agents.posture` reads it.
+
+What a tighten does, by the state of the row it finds
+(`tests/agents_ext/test_intervention_doors_123.py`, each row against a stub child that writes
+down the mode it was launched with and each mode it applied):
+
+- **a process and a working inbox** — `set_permission_mode` is sent; the child applies it, or is
+  killed with "permission floor could not be applied" (a refusal, another mode echoed, no answer
+  in the bound);
+- **a process whose inbox is broken** (measured with a write that timed out) — no line can
+  reach it, so it is killed with the same reason;
+- **registered, no process yet** — nothing is sent. The row's posture is lowered; a tighten
+  that lands before the argv is built is in the argv, and one that lands while the spawn is
+  awaited is sent once the inbox is attached;
+- **stopping** — skipped: it is being killed.
+
+The mode is the one a child spawned under the new posture would start at (`default` is `plan`
+for a child, `auto` is `auto-accept-edits`), and never looser than the row holds.
+
+What stays open:
+
+- **a call that has its grant and no row yet** — the hook→execute gap named above, and a
+  background spawn until its runner registers the row. `_run` reads the grant and
+  `permission_floor` and nothing else, and neither a single call nor a background spawn passes a
+  floor, so a tighten that finds no row changes nothing and the child starts at the grant
+  (measured for a single call: `.omc/probes/123/fix-r1/F1-grant-no-row.txt`; the background
+  spawn by reading `jobs_client.py`, not run). A batch's later waves and a resume re-read the
+  posture as before (§3.9, #610 D10);
+- **inside the child, one batch's preparation** — a tool call the child approved under the old
+  posture may still start under it, since there is no await between the last approval and the
+  starts (`aelix_agent_core/loop.py`); the promise is that the tighter posture governs every
+  approval the child makes after it applied.

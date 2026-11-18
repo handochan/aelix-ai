@@ -399,3 +399,11 @@ notice is not counted among the turn's inputs (`message_end` skips it), so a wit
 removes it nor gives its text back to the user
 (`::test_a_notice_placed_after_an_answer_is_never_withdrawn_or_given_back`); and a notice turn has
 no typed input, so an Esc there withdraws nothing.
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*Limit 6 is chosen: the cooperative `abort` is not sent to a child.* #123's inbox carries `steer`,
+`follow_up` and `set_permission_mode` and no `abort` (ADR-0306 D5): an rpc `abort` would pass
+`withdraw_unanswered=True` and remove the child's original task from its reopened context, the
+transcript change ADR-0291 §2 rejected. A delegation stop stays today's kill, and a resume after
+it still shows the model `No result provided` for the cut call (`tests/agents_ext/test_agent_resume_real_child_610.py`).

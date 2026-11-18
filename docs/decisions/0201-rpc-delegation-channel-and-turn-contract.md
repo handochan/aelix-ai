@@ -1066,3 +1066,13 @@ client-side "fix" that only appears to work.**
 - **`steer` / `follow_up` for chain mode.** `prompt` rejects on busy; `steer` and
   `follow_up` enqueue. That is the turn-boundary design for `{previous}`
   substitution and it wants its own decision.
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*#123 did not put `RpcChannel` into production.* Where this ADR says "no setting selects this
+channel, #123" (the ``:292`` and ``:608`` passages) the answer is now settled the other way: every
+delegated child stays the print channel's `--mode json -p` process and gains a private command
+inbox on its stdin (ADR-0306 D1–D3). `steer` and `follow_up` (the ``:1066-1068`` deferral) reach a
+print child as inbox lines, `steer` with a `final` flag the kernel enforces (ADR-0306 D6); the rpc
+classic commands are unchanged. `RpcChannel` stays the reference implementation its docstring
+describes, with the gaps ADR-0276's Limits list.

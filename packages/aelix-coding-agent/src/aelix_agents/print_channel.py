@@ -26,7 +26,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:518-519`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:532-533`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -102,6 +102,7 @@ from aelix_coding_agent.agents.resolver import (
 )
 from aelix_coding_agent.agents.sendable import unencodable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.cli.args import COMMAND_INBOX_FLAG, COMMAND_INBOX_VERSION
 from aelix_coding_agent.jobs.contract import JOB_INTERNAL_ENV
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
@@ -112,10 +113,11 @@ from aelix_coding_agent.subagent_contract import (
 from aelix_coding_agent.tools import ALL_TOOL_NAMES, launch_ledger
 
 from aelix_agents.child_session import RESUME_CWD_GONE, ChildLimits, ResumeRefused
+from aelix_agents.command_wire import CommandWire, close_wire, wrap_up_consumed
 from aelix_agents.consent import contains_control_chars
 from aelix_agents.detach import migrate_point
 from aelix_agents.envelope import DEFAULT_OUTPUT_CAP, build_result
-from aelix_agents.posture import resume_clamp
+from aelix_agents.posture import posture_rank, resume_clamp
 from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
@@ -356,6 +358,35 @@ class RunningChild:
     adopted: Any = field(default=None, repr=False, compare=False)
     """Set by the commit once the run moved (``detach.AdoptedLink``): ``_run``
     hands its closing records to the job instead of appending them."""
+    wire: Any = field(default=None, repr=False, compare=False)
+    """The child's command inbox, the parent's end (#123, ADR-0306):
+    :class:`~aelix_agents.command_wire.CommandWire`. Built before the spawn is
+    awaited, like the cleanup duty, and attached to the process's stdin right
+    after it; closed by :func:`_end_of_run`, every request still unanswered
+    then failed ``unknown``. The row's, not the channel's: a Ctrl+B'd run
+    carries it into its job (``detach.py``)."""
+    abort_reason: str | None = None
+    """Why the parent killed this child, when it was not a plain stop (#123):
+    the envelope's reason, set beside :func:`abort_child` by the caller that
+    knows it (``runtime.tighten_all``: "permission floor could not be applied")."""
+    wrap_up: Any = None
+    """The wrap-up request this row received (#123, ADR-0306 §4):
+    :class:`~aelix_agents.command_wire.WrapUp`, with its origin, its text and
+    when it was asked for. The envelope reads it: ``aborted`` with the wrap-up
+    reason once the child consumed the final message, a note when it never did."""
+    nudged: bool = False
+    """Whether the one stuck nudge was sent (#123, ADR-0306 §5): a second
+    trigger keeps the mark and sends nothing."""
+    granted_mode: PermissionMode | None = None
+    """The posture the row may hold: the plan's at registration, then the tighter
+    one each ``runtime.tighten_all`` lowered it to (#123, ADR-0306 §6) — what the
+    next tighten compares against and the launch reads. ``None`` on a row built without a plan."""
+    applied_mode: PermissionMode | None = None
+    """The posture the child is known to hold (#123, ADR-0306 §6.2): the one its
+    argv carried, then each tighter one it echoed. A row whose
+    :attr:`granted_mode` ranks below this once its inbox is attached was
+    tightened while it had no process, and is sent that mode then
+    (:func:`tighten_late`)."""
 
 
 @dataclass(frozen=True)
@@ -958,6 +989,7 @@ def build_child_argv(
     session_path: str | None = None,
     model_registry: Any | None = None,
     model_pin: ModelPin | None = None,
+    inbox: bool = False,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -1037,6 +1069,11 @@ def build_child_argv(
         permission_mode.value,
         *child_trust_argv(Path(child_cwd), Path(parent_cwd)),
         "--no-agents",
+        # #123 (ADR-0306): the command inbox on the child's stdin, versioned. A
+        # flag and not an env var: an env var is inherited by the child's own
+        # ``bash`` and helpers and would have to be popped as ``JOB_INTERNAL_ENV``
+        # is (the lead's call). ``PrintChannel`` passes it for every row.
+        *([f"{COMMAND_INBOX_FLAG}={COMMAND_INBOX_VERSION}"] if inbox else []),
     ]
 
 
@@ -1066,7 +1103,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:374-383``), and a child that waits forever on a
+    # forever" (``cli/entry.py:385-394``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that never ends on its
     # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -1163,6 +1200,7 @@ async def _pump_stdout(
     assembler: LineAssembler,
     state: _StreamState,
     on_line: Callable[[_StreamState], None] | None,
+    wire: Any = None,
 ) -> None:
     """Chunk → lines → reduced state, for the child's whole lifetime.
 
@@ -1186,9 +1224,18 @@ async def _pump_stdout(
     session leader holding the parent's API keys. The reducer is fixed AND the
     pump refuses to die for a line, because "a malformed line kills the process
     tree" must not be one refactor away from being true again.
+
+    ``wire`` (#123, ADR-0306) is the row's command wire: a line whose ``type``
+    is ``response`` is the child's answer to a request the wire sent, and goes
+    to its correlator instead of the reducer (``CommandWire.take`` reads only
+    such lines). Everything else is folded as before, the ``user`` message a
+    consumed steer makes included, which the reducer keeps for the wire to
+    read (``_StreamState.user_texts``; the wrap-up's reading is latched, ``wrap_up_read``).
     """
 
     def _reduce(line: str) -> None:
+        if wire is not None and wire.take(line):
+            return
         # Contract violation, not flow control — hence swallow-and-continue
         # rather than a counter: a line the reducer cannot fold is worth exactly
         # as much as a line it silently skips, and the run's other lines are
@@ -1348,6 +1395,65 @@ def pipe_holders(links: set[str]) -> list[WalkEntry]:
                 holders.append(WalkEntry(pid, stamp, None))
                 break
     return holders
+
+
+FLOOR_REASON = "permission floor could not be applied"
+"""The envelope's reason when a tighten failed closed (ADR-0306 §6.4)."""
+
+_LATE_TIGHTENS: set[asyncio.Task[None]] = set()
+"""The tightens :func:`tighten_late` started, held until each ends: the loop
+keeps only a weak reference to a task."""
+
+
+async def tighten_child(child: RunningChild, mode: PermissionMode) -> None:
+    """One row's tighten, failing closed (ADR-0306 §6.3–§6.4).
+
+    The child is killed with :data:`FLOOR_REASON` unless it answers that it
+    holds ``mode``: a refusal, another mode echoed, no answer within the
+    bound, and a line that cannot be written at all — a broken inbox, or a row
+    with a process and no inbox — all end there, since nothing else can reach
+    it.
+    """
+
+    wire = child.wire
+    reply = None if wire is None else await wire.request("set_permission_mode", {"mode": mode.value})
+    echoed = reply.data.get("mode") if reply is not None and reply.data is not None else None
+    if reply is not None and reply.outcome == "queued" and echoed == mode.value:
+        held = child.applied_mode
+        if held is None or posture_rank(mode) < posture_rank(held):
+            child.applied_mode = mode
+        return
+    if child.abort_reason is None:
+        child.abort_reason = FLOOR_REASON
+    await abort_child(child)
+
+
+def _launch_mode(plan: SpawnPlan, row: RunningChild) -> PermissionMode:
+    """The posture the argv carries: the tighter of the plan's and the row's, by rank."""
+
+    granted = row.granted_mode
+    if granted is None or posture_rank(granted) >= posture_rank(plan.permission_mode):
+        return plan.permission_mode
+    return granted
+
+
+def tighten_late(child: RunningChild) -> None:
+    """Send a tighten that landed while the row had no process (ADR-0306 §6.2).
+
+    ``runtime.tighten_all`` lowers :attr:`RunningChild.granted_mode` on such a
+    row and sends nothing. A tighten before the argv was built is in the argv;
+    one that landed while the spawn was awaited is sent here, by
+    :meth:`PrintChannel.run` right after the inbox is attached.
+    """
+
+    granted, held = child.granted_mode, child.applied_mode
+    if granted is None or held is None or posture_rank(granted) >= posture_rank(held):
+        return
+    if child.stopped or child.eager_kill:
+        return  # it is being killed: the caller's own re-read of ``stopped`` does it
+    task = asyncio.ensure_future(tighten_child(child, granted))
+    _LATE_TIGHTENS.add(task)
+    task.add_done_callback(_LATE_TIGHTENS.discard)
 
 
 async def abort_child(
@@ -1920,6 +2026,10 @@ def _end_of_run(row: RunningChild, grace: float) -> None:
     removes the directory once it has read what may be kept there.
     """
 
+    # #123 — the parent's end of the inbox, every row: a request still open is
+    # failed ``unknown`` ("the agent ended before answering"), never "not
+    # delivered", and the write end closes after the reap (ADR-0306 §3.3).
+    close_wire(row.wire)
     if row.owner is not None:
         return
     if row.proc is None:
@@ -2149,13 +2259,19 @@ class PrintChannel:
                 stderr_tail=ring.text(),
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 output_cap=output_cap if output_cap is not None else DEFAULT_OUTPUT_CAP,
-                permission_mode=plan.permission_mode.value,
+                permission_mode=(row.applied_mode or plan.permission_mode).value,  # F10: what it ended at
                 dropped_tools=dropped,
                 error=error,
                 session_recorded=plan.session_path is not None,
                 lingered=lingered,
                 # Only a service-owned run asked for the versioned line.
                 print_done_required=row.owner is not None,
+                # #123 — why the parent killed it, when a caller said (the
+                # permission floor); and the wrap-up it was asked for, consumed
+                # or not, which the envelope judges (ADR-0306 §4.3).
+                reason=row.abort_reason,
+                wrap_up=row.wrap_up,
+                wrap_up_consumed=wrap_up_consumed(row.wrap_up, state),
             )
 
         if plan.resumes is not None and plan.limits is None:
@@ -2180,17 +2296,24 @@ class PrintChannel:
                 # and "stopped, and also ran to completion".
                 row.state = "stopped"
                 return _envelope(outcome="aborted", exit_code=None)
+            # #123 — rank-MIN of the plan's posture and the row's: a tighten that
+            # landed after the plan froze and before this line lowered
+            # ``row.granted_mode`` and sent nothing (ADR-0306 §6.2).
+            row.applied_mode = _launch_mode(plan, row)
             argv = self._argv_builder(
                 child_profile,
                 prompt_path=str(row.prompt.path),
                 task=plan.task,
-                permission_mode=plan.permission_mode,
+                permission_mode=row.applied_mode,
                 child_cwd=plan.cwd,
                 parent_cwd=plan.parent_cwd,
                 # The model flags as ``limits`` holds them — the parent's model
                 # and registry are not read again at launch (#610 D8).
                 model_pin=limits.model,
                 session_path=plan.session_path,
+                # #123 — every row gets the inbox: all of ADR-0296's doors
+                # reach this method, and the wire is the row's (ADR-0306 §2.3).
+                inbox=True,
             )
             from aelix_coding_agent.builtin.permission import pass_loader_roots_to_child
             env = pass_loader_roots_to_child(self._env_builder(profile), plan.parent_cwd)
@@ -2209,6 +2332,10 @@ class PrintChannel:
             # starts the OS child inside that await, while ``row.proc`` is
             # still None (Codex 3 on #719).
             open_cleanup(row, grace=self._grace)
+            # #123 — the command wire, before the spawn is awaited for the same
+            # reason: a ``send`` that lands inside that await is refused "not
+            # started yet", never lost on a row with no wire.
+            row.wire = CommandWire(row.id)
             # #777: CREATE_SUSPENDED on win32, so the child runs only once its
             # attach has put it in its Job (``_take_tree``); 0 elsewhere.
             suspend = ProcessTree.suspend_flags()
@@ -2217,10 +2344,15 @@ class PrintChannel:
                     *argv,
                     cwd=plan.cwd,
                     env=env,
-                    # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:372-427``) and any
-                    # bytes that do arrive are PREPENDED to the task message.
-                    stdin=asyncio.subprocess.DEVNULL,
+                    # A PIPE, the child's command inbox (#123, ADR-0306). It
+                    # used to be DEVNULL, and the reason stands for a child
+                    # launched without ``--command-inbox``: an inherited stdin
+                    # cost +30 s per delegation (``_read_piped_stdin``,
+                    # ``cli/entry.py:320-444``) and any bytes that arrived were
+                    # PREPENDED to the task. With the flag the child reads no
+                    # prompt from it at all (and ``AELIX_STDIN_TIMEOUT=1`` in the
+                    # env stays, belt-and-braces for a child without the flag).
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     # Explicit, and load-bearing — see the module docstring (B3).
@@ -2229,7 +2361,7 @@ class PrintChannel:
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
                     # neither parent (``tui/shell.py:2608-2625``) nor child
-                    # (``modes/print_mode.py:253-312``) installs a SIGINT
+                    # (``modes/print_mode.py:263-322``) installs a SIGINT
                     # handler to convert that into a result.
                     #
                     # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,
@@ -2260,6 +2392,11 @@ class PrintChannel:
                 return _envelope(outcome="error", exit_code=None, error=str(exc))
 
             row.proc = proc
+            # #123 — the wire's writer is the child's stdin, from this step on
+            # (``getattr``: a recording double of the process may have none).
+            row.wire.attach(getattr(proc, "stdin", None))
+            # A tighten that landed inside the spawn's await, after the argv.
+            tighten_late(row)
             # This run owes the process one cleanup task now (#750), and the
             # sweep reads the agent's start time against its marker hits.
             row.channel_cleans = True
@@ -2351,7 +2488,7 @@ class PrintChannel:
 
         pumps = asyncio.gather(
             asyncio.ensure_future(
-                _pump_stdout(proc.stdout, assembler, state, on_stream)
+                _pump_stdout(proc.stdout, assembler, state, on_stream, row.wire)
             ),
             asyncio.ensure_future(_pump_stderr(proc.stderr, ring)),
         )
@@ -2659,6 +2796,7 @@ class PrintChannel:
 __all__ = [
     "AGENT_TOOL_NAME",
     "EXIT_POLL_SECONDS",
+    "FLOOR_REASON",
     "POST_EOF_EXIT_BOUND_SECONDS",
     "POST_EXIT_DRAIN_SECONDS",
     "READ_CHUNK_BYTES",
@@ -2685,4 +2823,6 @@ __all__ = [
     "resolve_child_cwd",
     "resume_cwd",
     "resume_limits",
+    "tighten_child",
+    "tighten_late",
 ]

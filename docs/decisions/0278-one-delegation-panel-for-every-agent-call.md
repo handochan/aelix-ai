@@ -439,3 +439,11 @@ call returns its detach text and `_execute_pending`'s `finally` ends its panel g
 call that returned; the moved run's progress goes to its job from then on, never to the bridge, so
 it writes no statusline row either
 (`tests/agents_ext/test_detach_611.py::test_progress_after_the_move_goes_to_the_job_not_the_call`).
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*Two additive fields on `SubagentProgress`.* `stuck` (`"repeat"`, `"error loop"` or `None`) and
+`wrapping_up` ride every snapshot, defaulted, with no contract bump; the panel shows them as
+`stuck: repeat` and `wrapping up` beside the idle term of a live member (ADR-0306 D9–D10). D3's
+`activity` window is untouched and is not what decides `stuck`: the fingerprints are built from
+the raw tool events.

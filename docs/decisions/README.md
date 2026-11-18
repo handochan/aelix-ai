@@ -58,6 +58,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   invalid `enabled` warning names its JSON type, not the value. Owner: "쓰기까지 지금 구현" (2026-11-17). Supersedes ADR-0282 D8's
   second bullet; amends ADR-0275, ADR-0279, ADR-0282, ADR-0304 D14, ADR-0155, ADR-0284 D8.
 - [0304 — Agent profiles are turned on and off like skills, and a profile names whom it may delegate to](0304-agent-profiles-are-turned-on-and-off-like-skills-and-a-profile-names-whom-it-may-delegate-to.md)
+- [0306 — A running delegated child is steered through a command inbox on its stdin](0306-a-running-delegated-child-is-steered-through-a-command-inbox-on-its-stdin.md)
   (Accepted 2026-11-17; #795, #796). A top-level `agents` settings list (ADR-0279 D1's per-item
   grammar; a plain entry is warned about and ignored) in the global and the trusted project
   file, edited by the `/agents` panel, turns single profiles off; a profile's `agents:`

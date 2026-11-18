@@ -317,7 +317,7 @@ def should_offer_first_run_login(
         return False
 
 
-async def _read_piped_stdin(*, required: bool = True) -> str | None:
+async def _read_piped_stdin(*, required: bool = True, inbox: bool = False) -> str | None:
     """Pi parity: ``readPipedStdin`` — plus an aelix-original hang guard.
 
     Returns :data:`None` when stdin is a TTY (interactive shell). When
@@ -367,8 +367,19 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
 
     An explicit ``AELIX_STDIN_TIMEOUT`` always wins over both defaults, so a
     deliberate ``0`` (wait forever) is honoured either way.
+
+    ``inbox`` (#123, ADR-0306) says the process was launched with
+    ``--command-inbox``: its stdin is a delegation parent's command inbox, not a
+    prompt, and it is answered :data:`None` before ``isatty``, on every platform,
+    with no readiness wait and no read — the win32 blocking read below would
+    otherwise park on a pipe the parent keeps open for the whole run, and the
+    POSIX arm would prepend a command line to the task (measured on a real
+    child, contract r2 §14.1: ``{"type":"steer",…}Task: say PONG``). The task is
+    on argv (``agents/resolver.py``), so stdin carries nothing such a child needs.
     """
 
+    if inbox:
+        return None
     if sys.stdin.isatty():
         return None
     if sys.platform != "win32":
@@ -431,6 +442,28 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
     data = await asyncio.to_thread(read_all_text, sys.stdin)
     stripped = data.strip()
     return stripped or None
+
+
+async def _command_inbox(parsed: Args, posture: PermissionPosture) -> Any:
+    """The command inbox a delegation parent asked this process to serve, or :data:`None` (#123, ADR-0306).
+
+    One call from ``_async_main`` for every print/json launch, so that function
+    (baseline-listed) gains no branch: without ``--command-inbox`` nothing is
+    opened and print mode gets ``None``. With it, stdin is attached the way
+    ``--mode rpc`` attaches its own (``rpc_mode._open_stdin_reader``: asyncio's
+    read pipe on POSIX, the ``os.read`` thread pump on win32, #107/#202), and
+    :class:`~aelix_coding_agent.modes.print_inbox.CommandInbox` carries the
+    reader and the ONE ``PermissionPosture`` the gate reads, so the child's
+    ``set_permission_mode`` tightens what its own approvals consult.
+    """
+
+    if parsed.command_inbox is None:
+        return None
+    from aelix_coding_agent.modes.print_inbox import CommandInbox
+    from aelix_coding_agent.rpc.rpc_mode import _open_stdin_reader
+
+    reader, pump_thread = await _open_stdin_reader()
+    return CommandInbox(reader=reader, posture=posture, pump_thread=pump_thread)
 
 
 async def _resolve_session_metadata(
@@ -3086,7 +3119,9 @@ async def _async_main(argv: list[str]) -> int:
         # aelix -p "summarise"` keeps concatenating both (pi parity), and an
         # expiry always prints a note rather than losing input in silence.
         stdin_content = await _read_piped_stdin(
-            required=not parsed.messages and not parsed.file_args
+            required=not parsed.messages and not parsed.file_args,
+            # #123 — a delegated child's stdin is its command inbox, not a prompt.
+            inbox=parsed.command_inbox is not None,
         )
         if parsed.file_args:
             processed = await process_file_arguments(parsed.file_args)
@@ -5394,6 +5429,9 @@ async def _async_main(argv: list[str]) -> int:
             model_registry=model_registry,
             # #722 — only while background jobs are active; absent otherwise.
             **({"jobs": jobs_service} if jobs_service is not None else {}),
+            # #123 — the parent's command inbox on stdin, or ``None`` (one call,
+            # no branch: ``_async_main`` is baseline-listed).
+            inbox=await _command_inbox(parsed, permission_posture),
         )
     finally:
         # run_print_mode already disposes the runtime, but we also dispose

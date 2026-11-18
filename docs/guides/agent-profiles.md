@@ -676,7 +676,7 @@ The agent is a background job of your session; what all jobs share — the foote
 `/jobs`, the settings, what is left when aelix is killed — is in
 [background-jobs.md](background-jobs.md).
 
-`agent` then takes five more actions:
+`agent` then takes seven more actions:
 
 | Action | What it does |
 | --- | --- |
@@ -685,6 +685,8 @@ The agent is a background job of your session; what all jobs share — the foote
 | `status` | One agent, by `id`, or every agent of this session. |
 | `stop` | Stops one agent, by `id`; it ends `stopped` once its process is confirmed gone, and its notice carries what it had said. |
 | `result` | Reads a finished agent's whole result again, 16 KiB a page, from `offset`. |
+| `send` | A note to a running agent, by `id`, in `task`; `mode="follow_up"` lands it after its current answer (#123, below). |
+| `wrap_up` | Asks a running agent, by `id`, to finish now: one more reply with no tools (#123, below). |
 
 When a background agent ends, the model gets one notice with its answer, cut to
 16 KiB; a longer one says to read the rest with `agent(action="result", id=…)`
@@ -708,6 +710,29 @@ does nothing (`tests/tui/test_detach_key_611.py`).
 only the second time (owner OQ-S3-3, 2026-11-12: "Ctrl+B만 + 가이드에 '두 번' (권장)").
 An extension's own `ctrl+b` shortcut is skipped while background jobs are on, as any
 shortcut that collides with a built-in key is; `/hotkeys` lists Ctrl+B.
+
+### Steering a running agent
+
+Every delegated child keeps a command inbox on its stdin while it runs (#123, ADR-0306);
+it is still the `--mode json -p` process it was, with the same result.
+
+- **A note** — `agent(action="send", id=…, task=…)`, `/jobs steer <id> <text>` or the panel's
+  `m` key: read at the child's next turn boundary, after the tool calls it is already
+  running (`mode="follow_up"` / `--after`: after its current answer). The answer is `queued`,
+  `unknown` (no answer in 30 s: do not resend; the child ended: resume it), `not_sent` or a refusal naming
+  the state, never "not delivered" (`tests/agents_ext/test_agent_send_123.py`).
+- **A wrap-up** — `agent(action="wrap_up", id=…)`, `/jobs wrap <id>` or the panel's `w` `w`:
+  its next model call has no tools (nor an automatic retry of it), then the run ends `aborted`, reason "wrapped up at the
+  user's request" (`agent`: model's), `ok=False`, its own text as the summary, "all done" or
+  not (`tests/agents_ext/test_command_wire_123.py`).
+- **A tighter posture** — shift+tab reaches every running child above the new rank, governs its
+  approvals from then on, and stops one that does not apply it within 30 s
+  (`tests/agents_ext/test_permission_floor_123.py`); RPC `permissions/set` reaches none (ADR-0306 D8).
+- **A stuck mark** — four identical calls and results, or three identical errors: `stuck:
+  repeat` / `stuck: error loop` on the panel, one note, never a stop
+  (`tests/agents_ext/test_stuck_123.py`); in the background the parent model is told once.
+
+`stop` is unchanged (ADR-0291). RPC and ACP gain no method or event until #612 (ADR-0306).
 
 ### How many run at once
 

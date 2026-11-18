@@ -11,7 +11,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``), or it is a chain step
 waiting for the one before it, and has no spawn id at all, because
 ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:1800``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:1883``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -69,7 +69,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:1819-1820``), which for a chatty child is hundreds per
+stdout line (``runtime.py:1902-1903``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 1
@@ -86,7 +86,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 """The ``set_widget`` slot the batch panel owns.
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
-declares ``execution_mode="sequential"`` (``tool.py:1306``), which makes the
+declares ``execution_mode="sequential"`` (``tool.py:1384``), which makes the
 kernel run the whole tool batch sequentially (``loop.py:848-858``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
@@ -138,7 +138,7 @@ PANEL_MAX_ROWS = 9
 """Hard ceiling on the panel's HEIGHT, in rows (finding F2, HIGH).
 
 One header plus ``tool.MAX_PARALLEL_TASKS`` (= 8) one-row members, which is every
-legal batch — the parser refuses a ninth task outright (``tool.py:807-813``), so
+legal batch — the parser refuses a ninth task outright (``tool.py:831-837``), so
 this never fires on input a model can actually get past the door. Two rows per
 member (ADR-0278 D4) fit under it up to four members; past that the panel draws
 one row each (:func:`panel_height`). Spelled here
@@ -252,7 +252,7 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:1272-1274``) — and the kernel emits that event with the raw
+    (``stream.py:1380-1382``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
     (``loop.py:889-897``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
@@ -635,7 +635,7 @@ def format_aggregate_status(
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:98-99``, and ``stream.py:289-292``
+    message wins" (``subagent_contract.py:98-99``, and ``stream.py:291-294``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
@@ -1379,6 +1379,23 @@ def _idle_term(idle_ms: int | None, phase: str) -> str:
     return f"idle {_format_elapsed(idle_ms)}"
 
 
+def _intervention_term(snapshot: SubagentProgress | None) -> str:
+    """``wrapping up``, ``stuck: <pattern>``, both, or ``""`` (#123, ADR-0306 §4, §5).
+
+    Read defensively, as every snapshot field is: another runtime's progress may
+    carry neither. ``stuck`` is the producer's word, bounded as a child-authored
+    string would be although it is not one.
+    """
+
+    parts: list[str] = []
+    if getattr(snapshot, "wrapping_up", False):
+        parts.append("wrapping up")
+    stuck = getattr(snapshot, "stuck", None)
+    if isinstance(stuck, str) and stuck:
+        parts.append(f"stuck: {_flatten(stuck, limit=16)}")
+    return " · ".join(parts)
+
+
 def _label(task: object, mode: str) -> str:
     """A member's submitted task as its label. In a chain, ``{previous}`` reads
     ``‹previous›`` (it is a placeholder, not text the child saw) and the escape
@@ -1561,6 +1578,11 @@ def _now(
         return room - (line.cells() - used)
 
     idle = _idle_term(idle_ms, phase)
+    # #123 — ``wrapping up`` / ``stuck: …`` ride the idle slot of a live member
+    # (ADR-0306 §4, §5): the one term a human must see, ahead of how long idle.
+    mark = _intervention_term(snapshot) if _live(phase) else ""
+    if mark:
+        idle = f"{mark} · {idle}" if idle else mark
     reply = getattr(snapshot, "last_text", None) if snapshot is not None else None
     if phase == "queued":
         line.add("not started" if cancelled else waiting, _DIM)
@@ -1692,6 +1714,9 @@ def _single_block(
             ),
             _Term(f"{_compact_tokens(tokens)} tok" if tokens else "", 3, _TOKENS_RESERVE),
             _Term(f"${cost:.4f}" if cost else "", 1),
+            # #123 (ADR-0306 §4, §5): what the parent asked or noticed, before
+            # the numbers — a mark that comes and goes is one the human should see.
+            _Term(_intervention_term(snapshot), 4),
         ]
     # PRIORITY (#132 review rounds 1 and 2): the elapsed time first — it is
     # what the 1 s tick moves, so a header without it says nothing about
@@ -2290,7 +2315,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:1800``).
+        (``runtime.py:1883``).
         """
 
         if index < 0:

@@ -354,6 +354,19 @@ class SubagentProgress:
     AUTHORED, therefore untrusted: a renderer flattens and bounds it. Additive +
     defaulted: does NOT bump :data:`CONTRACT_VERSION`; not on the RPC wire."""
 
+    stuck: str | None = None
+    """The stuck pattern the child's recent calls match (#123, ADR-0306 §5):
+    ``"repeat"`` (four identical calls with identical results) or ``"error
+    loop"`` (three identical errors), else :data:`None`. Decided by the sole
+    producer from the raw tool events, never from :attr:`activity`; the panel
+    shows ``stuck: repeat``, the parent nudges the child once and never kills it
+    for this. Additive + defaulted: does NOT bump :data:`CONTRACT_VERSION`."""
+
+    wrapping_up: bool = False
+    """Whether the child was asked to wrap up (#123, ADR-0306 §4): a final steer
+    is queued or consumed, and the run ends after one more model call. Additive
+    + defaulted: does NOT bump :data:`CONTRACT_VERSION`."""
+
 
 @dataclass(frozen=True)
 class ResolvedProfile:
