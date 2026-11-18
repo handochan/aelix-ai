@@ -1302,6 +1302,18 @@ unwritten. Add them with the next release.
   tree, which put it just over its 6 MB cap; the cap is unchanged. The per-package sdists and all five
   wheels never carried `docs/assets/`.
 
+- **Packaging: the `aelix` sdist no longer carries the design records under
+  `docs/decisions/` (#816).** The sdist had reached its 6 MB size cap again
+  through the growth of its code and its docs, and the 294 files under
+  `docs/decisions/` (293 ADRs and their index) were 2,182,953 B of its
+  5,942,894 B at `a1606f58` (macOS, LF); without them that tree builds 3,759,941 B. Nothing
+  that installs or releases aelix unpacks an sdist, and the five wheels and the
+  four package sdists `uv build --all-packages` makes are byte-identical with
+  and without the change. The ADRs stay in the repository, and the guides
+  already link them by absolute URL. The relative `docs/decisions/` links in
+  `README.md`, `README.ko.md`, `SECURITY.md` and five files under `docs/`
+  resolve on GitHub but not inside an unpacked sdist. The cap is unchanged.
+
 - **A repository's `.aelix/settings.json` now asks for trust (#369,
   ADR-0252).** It is the project scope of your settings — it can choose the
   default model and provider your prompts go to — and it is now read only in a

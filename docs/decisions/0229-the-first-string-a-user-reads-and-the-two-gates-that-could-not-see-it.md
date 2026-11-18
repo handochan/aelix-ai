@@ -234,3 +234,45 @@ Python 3.13's `X509_V_FLAG_X509_STRICT`.
 - `docs/assets/demo.gif` (2.0 MB of the remaining 4.76 MB sdist) — a real trim
   candidate, but a separate decision from #190's. Taken in #387: the GIF and its tooling are
   excluded from the root sdist, and the READMEs load it by absolute URL.
+
+## Note (2026-11-18, #816): the ADRs leave the root sdist
+
+The root sdist's 6,000,000 B size cap (`MAX_SDIST_BYTES` in
+`tests/packaging_gate/test_build_hygiene.py`) was reached a second time. Every
+size in this note is the root sdist built from the tracked files the way
+`release_sdist` builds them, on macOS with LF endings unless it says CRLF.
+Main `a1606f58` made 5,942,894 B, and the #623/#624 branch `e2922307` made
+6,059,123 B, over the cap. `docs/decisions/` was 2,182,953 B of `a1606f58`'s
+tarball (its size with and without the exclude). Since #387's merge `9084699d`
+(3,666,910 B) the tarball had grown by 2,275,984 B; the ADRs' share of the
+tarball grew by 940,322 B of that, and a per-file gzip estimate puts the code's
+growth at about as much.
+
+The owner's decision (2026-11-18): "ADR을 sdist에서 제외 (권장)". The cap stays at
+6,000,000 B, and `/docs/decisions` joins the root sdist's `exclude`, as #387
+did for the demo GIF. This applies the rule of the #190 section (bulk that no
+consumer of the sdist reads leaves it) to one more path; the cap and the
+allow-list stand as decided.
+
+What was measured for it:
+
+- With only that exclude, `a1606f58` builds 3,759,941 B (3,784,399 B with every
+  UTF-8 text file converted to CRLF, #387's simulation), and `e2922307` builds
+  3,815,018 B (3,839,299 B). The only members that left are the 294 under
+  `docs/decisions/` at `a1606f58`.
+- `uv build --all-packages` with and without the exclude: the five wheels and
+  the four package sdists are byte-identical (sha256), the root wheel built from
+  the new sdist among them, so its `METADATA` long description did not change.
+  None of the nine carried `docs/decisions/` before.
+- Nothing reads an unpacked sdist: the installers download wheels only, and
+  `release.yml` and `scripts/release_candidate_smoke.py` hash the sdists
+  without unpacking them. The bundled guides link ADRs by absolute URL, which
+  `tests/test_docs_bundle_sync.py` already requires.
+- What no longer resolves inside an unpacked sdist: 24 relative links into
+  `docs/decisions/`, in `README.md` (4), `README.ko.md` (4), `SECURITY.md` (3)
+  and five files under `docs/` (13). No test or gate reads them there; they
+  resolve in a checkout and on GitHub.
+
+The ADRs stay tracked in git. `test_the_release_sdist_leaves_the_adrs_behind`
+fails if a member under `docs/decisions/` ships again or if a tracked guide or
+brand asset stops shipping. This record itself is no longer in the sdist.

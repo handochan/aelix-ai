@@ -88,6 +88,7 @@ import shutil
 import subprocess
 import tarfile
 import tomllib
+import unicodedata
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -811,6 +812,18 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
 # `docs/assets/demo.gif` and its tooling from the sdist: 3,666,895 B LF and
 # 3,690,549 B with every text file converted to CRLF. The cap stays where it is
 # because its reasons above still hold.
+#
+# #816 — reached again six weeks later, by ADRs and code about equally (a per-file
+# gzip estimate of the growth since #387): main
+# a1606f58 built 5,942,894 B LF and 5,982,322 B CRLF (#387's conversion of
+# every UTF-8 text file, guides included, which a real Windows checkout keeps
+# LF through .gitattributes), and the #623/#624 branch e2922307 built
+# 6,059,123 B LF / 6,098,770 B CRLF, over the cap.
+# `docs/decisions/` was 2,182,953 B of a1606f58's tarball. Rather than raise
+# the cap, #816 dropped the ADRs from the sdist (they stay in git): with only
+# that exclude, a1606f58 builds 3,759,941 B LF / 3,784,399 B CRLF and e2922307
+# 3,815,018 B / 3,839,299 B, and the only members that left are the ones under
+# `docs/decisions/` (294 at a1606f58). The cap stays, for the same reasons.
 MAX_SDIST_BYTES = 6_000_000
 
 
@@ -979,6 +992,48 @@ def test_the_release_sdist_leaves_the_demo_recording_behind(
         check=True,
     ).stdout.split()
     assert sorted(tracked) == sorted(DEMO_ONLY_PATHS)
+
+
+def _tracked(*pathspecs: str) -> list[str]:
+    return subprocess.run(
+        ["git", "ls-files", "-z", "--", *pathspecs],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.split("\0")[:-1]
+
+
+def test_the_release_sdist_leaves_the_adrs_behind(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """#816: the ADRs were 2.2 MB of the 5.9 MB sdist and nothing reads them there.
+
+    `docs/` still ships, so `docs` stays in ALLOWED_SDIST_TOP_LEVEL for a
+    reason: every tracked guide and brand asset is asserted here, so a
+    broadened exclude (`/docs`) reads as a regression rather than as a size win.
+    """
+    _, members = release_sdist
+    inner = {n.split("/", 1)[1] for n in members if "/" in n}
+    adrs_shipped = sorted(
+        n for n in inner if n == "docs/decisions" or n.startswith("docs/decisions/")
+    )
+    assert adrs_shipped == [], (
+        f"{len(adrs_shipped)} ADR members are back in the published sdist: {adrs_shipped[:3]}"
+    )
+    kept = _tracked("docs/guides", "docs/assets/brand")
+    assert any(p.startswith("docs/guides/") for p in kept), kept
+    assert any(p.startswith("docs/assets/brand/") for p in kept), kept
+    # Compared in NFC: macOS bsdtar writes a seeded name to disk as NFD.
+    shipped = {unicodedata.normalize("NFC", n) for n in inner}
+    lost = [p for p in kept if unicodedata.normalize("NFC", p) not in shipped]
+    assert lost == [], f"the release sdist lost {lost}"
+    # Excluded from the BUILD, not from git: the guides link the ADRs by an
+    # absolute URL on `main`.
+    adrs = _tracked("docs/decisions")
+    assert "docs/decisions/README.md" in adrs
+    assert any(re.fullmatch(r"docs/decisions/\d{4}-[^/]+\.md", p) for p in adrs), adrs[:5]
 
 
 @pytest.mark.parametrize("readme", ["README.md", "README.ko.md"])

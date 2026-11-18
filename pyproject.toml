@@ -214,18 +214,34 @@ exclude = [
   "/docs/assets/demo.tape",
   "/docs/assets/dedup_frames.py",
   "/docs/assets/make_demo_fixture.py",
+  # #816 — the ADRs, every file under `docs/decisions/` (294 files, 6,114,580 B
+  # uncompressed at a1606f58). They were 2,182,953 B (macOS, LF) of that commit's
+  # 5,942,894 B tarball, and the #623/#624 branch had taken the tarball over
+  # the cap at 6,059,123 B. Nothing that unpacks the sdist reads them: the
+  # installers and `release.yml` are as described for #190 above; no wheel
+  # and no package sdist carries `docs/decisions/` (measured: with this line
+  # the other nine artifacts of `uv build --all-packages`, the root wheel built
+  # from this sdist among them, are byte-identical); and the bundled guides
+  # link ADRs by absolute URL, as tests/test_docs_bundle_sync.py requires. The
+  # relative `docs/decisions/` links in README.md, README.ko.md, SECURITY.md
+  # and five files under docs/ resolve on GitHub and no longer inside an
+  # unpacked sdist (README.md's never resolved on PyPI). The ADRs stay tracked
+  # in git (the guides' absolute ADR links resolve only while `main` has
+  # them), so `.gitignore` gets no matching line, as for #387.
+  "/docs/decisions",
 ]
 
 # DELIBERATELY NOT EXCLUDED, so the next reader does not have to re-derive it:
 #   `.env.example`   — 7 KB, zero values on any line. It is the only place the
 #                      supported environment variables are enumerated for a
 #                      human, so it earns its passage.
-#   `docs/`          — the ADRs, guides and brand assets. Its one bulk item,
-#                      `docs/assets/demo.gif`, IS excluded above since #387
-#                      (the READMEs now load it by absolute URL); the rest is
-#                      text that grows with every batch and is what the size
-#                      cap in tests/packaging_gate/test_build_hygiene.py
-#                      watches.
+#   `docs/`          — the guides, the brand assets, the contracts and the
+#                      numbered docs. Its two bulk items ARE excluded above:
+#                      `docs/assets/demo.gif` since #387 (the READMEs load it
+#                      by absolute URL) and the ADRs under `docs/decisions/`
+#                      since #816. The rest is text that grows with every
+#                      batch and is what the size cap in
+#                      tests/packaging_gate/test_build_hygiene.py watches.
 
 [tool.uv.workspace]
 members = ["packages/*"]
