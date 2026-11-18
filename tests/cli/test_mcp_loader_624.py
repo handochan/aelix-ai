@@ -155,16 +155,21 @@ def test_a_file_that_is_not_utf8_is_a_warning(env: Path) -> None:
 
 
 def test_a_file_nested_too_deep_is_a_warning(env: Path) -> None:
-    """Real 100,000-deep input; the class depends on the platform (RecursionError on
-    macOS, JSONDecodeError on Linux 3.14), so only the shape is pinned here."""
+    """Real 100,000-deep input is one warning, never a crash. What the parser does with it
+    depends on the platform: RecursionError on macOS, a JSONDecodeError on some Linux 3.14
+    builds, and on others (ubuntu-latest 3.14 in CI) it parses, and the list where the
+    servers belong is reported. The RecursionError branch itself is forced in the next test."""
 
     path = env / "agent" / "mcp.json"
     path.write_text('{"mcpServers": ' + "[" * 100_000 + "]" * 100_000 + "}", encoding="utf-8")
     (warning,) = config.load_mcp_config(str(env / "proj")).warnings
-    assert warning.startswith(f"{path}: not valid JSON ")
-    assert warning == f"{path}: not valid JSON (RecursionError)" or re.fullmatch(
-        rf"{re.escape(str(path))}: not valid JSON at line 1 column \d+ \(JSONDecodeError\)",
-        warning,
+    assert (
+        warning == f"{path}: not valid JSON (RecursionError)"
+        or warning == f"{path}: missing or invalid 'mcpServers' object"
+        or re.fullmatch(
+            rf"{re.escape(str(path))}: not valid JSON at line 1 column \d+ \(JSONDecodeError\)",
+            warning,
+        )
     ), warning
 
 

@@ -124,9 +124,9 @@ The file written is the one [above](#which-file-is-read), and only that one:
 ←/→ to the other file says why it cannot be saved to. `/mcp` never creates an
 `mcp.json`, and refuses, writing nothing, a file it cannot replace without
 changing who may read it — a hard link, a read-only file, an owner, group, ACL
-or extended attribute it cannot keep, or on Windows a file with its own access
-rules or whose replacement would get another owner, group or access rules
-(tested only in Windows CI) — and a file that is not strict JSON (a comment, a
+or extended attribute it cannot keep, or on Windows a file whose replacement
+would get another owner, group or access rules than it has (tested only in
+Windows CI) — and a file that is not strict JSON (a comment, a
 trailing comma, a duplicate key). Each refusal says to edit the file by hand and
 quotes nothing from it. A change another program makes to the file while `/mcp`
 saves it, its contents or its permissions (a chmod, chown, ACL or extended

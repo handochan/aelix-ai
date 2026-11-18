@@ -897,12 +897,18 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     three macOS cases passed on macOS with Python 3.12 at `16c0e779`, and the writer's two test
     files on 3.11, 3.12 and 3.14 (`writer/macos_pythons.out`: 204 passed, 8 skipped each).
   - **Windows:** the temp, created in the same directory, inherits that directory's inheritable
-    ACEs and gets this process's owner, as a file created there by any editor does. Up front, the
-    writer refuses a file whose DACL is protected (inheritance off) or holds an explicit ACE:
-    "mcp.json has its own access rules; edit it by hand". It checks with ctypes
-    `GetFileSecurityW`: `SE_DACL_PROTECTED`, and each ACE's `INHERITED_ACE` flag. As built it
-    also refuses a DACL that is absent or empty (with the same words), and one it cannot read
-    ("mcp.json's access rules cannot be read; edit it by hand").
+    ACEs and gets this process's owner, as a file created there by any editor does. Nothing is
+    refused up front for its access rules; the comparison below decides. Until the first
+    `windows-latest` run the writer also refused, up front, a file whose DACL was protected,
+    absent or empty or held an explicit ACE (ctypes `GetFileSecurityW`, `SE_DACL_PROTECTED`
+    and each ACE's `INHERITED_ACE` flag). In PR #818's CI (run 44219585507) that check refused
+    every ordinary `mcp.json` in the runner's `tmp_path`, 50 failures on each of Python 3.11 to
+    3.14, so it was removed (owner, 2026-11-18: "검사를 SDDL 비교로 단일화 (권장)"). What the
+    comparison refuses is an original whose owner, group or DACL differs from what a new file
+    in that folder gets: a protected DACL always (a new file's never is), and explicit ACEs
+    unless a new file there gets the same ones. That run suggests a new file in the runner's
+    `tmp_path` gets ACEs that are not marked inherited, so this ADR does not claim that every
+    explicit ACE is refused.
   - **Windows, the replacement compared (fix round 1, Codex CX-2).** "Inherited only" does not
     prove the temp inherits the SAME ACEs (a restored file, or ACEs changed through an API, can
     differ from what the parent gives now), nor that it gets the same owner. So before each
@@ -916,11 +922,19 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     (`test_a_replacement_with_another_owner_group_or_dacl_is_refused`,
     `test_a_replacement_with_the_same_owner_group_and_dacl_is_written`,
     `test_a_descriptor_that_cannot_be_read_is_refused`). The real reader and the rest of the
-    Windows rules are designed and first measured in CI: `test_windows_the_replacement_keeps_owner_group_and_dacl`,
-    `test_windows_explicit_ace_is_refused` and
-    `test_windows_inherited_only_file_is_written_with_the_same_acl` (with `icacls`) are skipped
-    off Windows, so `windows-latest` is their first real run, and no Windows run is recorded
-    in this ADR.
+    Windows rules are measured only in CI: `test_windows_the_replacement_keeps_owner_group_and_dacl`,
+    `test_windows_explicit_ace_is_refused`,
+    `test_windows_inherited_only_file_is_written_with_the_same_acl` (with `icacls`) and
+    `test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor` (which prints the
+    folder's, the file's and a sibling temp's SDDL into the CI log) are skipped off Windows.
+    In run 44219585507 the two that save failed on the up-front check above, and
+    `test_windows_explicit_ace_is_refused` passed because that check refused its file; the
+    diagnostic is newer than that run. The comparison is made on the still-empty temp, before
+    the new content is written, and again before each replace attempt, so a refused file's
+    content never reaches a temp beside it
+    (`test_access_is_compared_on_the_empty_temp_before_the_content_is_written`,
+    `test_access_is_compared_again_before_each_replace_retry`,
+    `test_an_original_whose_descriptor_cannot_be_read_is_refused`, all with the reader stubbed).
 - **Refused up front, nothing written (opus L4):**
   - not a regular file;
   - another hard link (`st_nlink > 1`; a replacement would split them);
@@ -1152,15 +1166,17 @@ The `mcp` selection kind is the `mcp.json` view; the two are different lists by 
 - A project `mcp.json` created after this launch is the one the next start reads. The panel and
   `selections/list` show it, but `applied` is still this launch's.
 - **Windows:**
-  - the DACL rule (refuse a protected, absent, empty or explicit DACL), the owner, group and
-    DACL comparison of the replacement (fix round 1), the read-only attribute, the named-mutex
+  - the owner, group and DACL comparison of the replacement (fix round 1; since PR #818's first
+    CI run, the only Windows access rule), the read-only attribute, the named-mutex
     lock and the checks before each replace retry are designed, and first measured in CI: their
     tests run only on Windows, or with the Windows path forced on or stubbed elsewhere (the
-    two-process lock test runs everywhere), and no Windows run is recorded in this ADR;
+    two-process lock test runs everywhere). The one Windows run recorded here, PR #818's run
+    44219585507, stopped every save at the removed up-front check, so the comparison has not
+    yet run on Windows;
   - Windows' `st_ctime` is the creation time, so there the identity sees a permission change
     only through the descriptor comparison; `st_uid` and `st_gid` are 0;
-  - an `mcp.json` with explicit access rules, or whose replacement would get another owner,
-    group or DACL, cannot be toggled; it is refused.
+  - an `mcp.json` whose replacement would get another owner, group or DACL (a protected DACL
+    among them) cannot be toggled; it is refused.
 - **The check-to-rename window (fix round 1, Codex CX-4).** The bytes and identity are checked
   before every replace attempt, but a program that does not take aelix's lock (an editor) and
   writes between that check and the rename is overwritten, and a permission change made there
@@ -1369,7 +1385,10 @@ Each follows the code; none changes a decision above.
   (D3, D16).
 - **"The file is still the one that was read"** compares the bytes too, read again, not only the
   identity (D14).
-- **The Windows DACL rule** also refuses an absent or empty DACL and one it cannot read (D14).
+- **The Windows access rule** is the descriptor comparison alone (D14): the up-front
+  "inherited ACEs only" check the contract described refused every ordinary file in the
+  runner's `tmp_path` on `windows-latest` and was removed. The comparison also refuses an absent or empty DACL and a
+  descriptor it cannot read.
 - **A JSON syntax error's warning** was "<path>: not valid JSON (JSONDecodeError)", without the
   decoder's line and column; fix round 1 put the two numbers back (D14).
 - **No helper in `aelix_ai/settings/storage.py`**: the write-all loop lives in
@@ -1386,6 +1405,11 @@ verify pass (`.omc/specs/623-624-verify-r1-report.md` and its live helpers) or o
 Fix round 2 (2026-11-18) changed two refusal texts, not a decision: the `JobsExtension` row's
 (D3) and a retarget's after the writer resolved the path (D13). Each was a finding of the
 second verify pass (`.omc/specs/623-624-verify-r2-report.md`).
+
+PR #818's first CI run (2026-11-18, run 44219585507) changed one Windows rule: the up-front
+"inherited ACEs only" check refused every ordinary `mcp.json` in the runner's `tmp_path` on
+`windows-latest` and was removed, leaving the descriptor comparison (D14). The owner chose it: "검사를 SDDL 비교로
+단일화 (권장)".
 
 ## Alternatives considered
 

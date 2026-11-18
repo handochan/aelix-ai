@@ -56,9 +56,8 @@ unwritten. Add them with the next release.
   Measured on the shipped writer (`.omc/probes/623-624/impl/writer/`): 64 edits of 32
   hand-formatted files and 4,200 generated files with nothing unexpected, and 0 of 40 changes
   lost between two processes with different agent dirs, on macOS and in Linux docker. On Windows
-  the lock (a named mutex), the refusal of a file with its own access rules and the check that
-  the replacement has the original's owner, group and access rules are designed and first
-  measured in Windows CI. `/mcp` never
+  the lock (a named mutex) and the check that the replacement gets the original's owner, group
+  and access rules are tested only in Windows CI. `/mcp` never
   creates an `mcp.json`, writes nothing under `$AELIX_MCP_CONFIG`, and cannot turn a global
   server off in one project (#644 decides that). A change takes effect at the next start, and
   the row says `off · restart` until then (`tests/tui/test_mcp_panel_624.py`).

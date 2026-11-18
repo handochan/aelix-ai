@@ -30,8 +30,10 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -1178,7 +1180,8 @@ def test_a_replacement_with_the_same_owner_group_and_dacl_is_written(
     same = "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)"
     read = _descriptors(monkeypatch, same, same)
     assert _write(p, [("a", False)]) == McpWriteOutcome("written")
-    assert len(read) == 2
+    # Compared twice, each time original then temp: on the empty temp, then before the replace.
+    assert len(read) == 4 and read[0::2] == ["mcp.json", "mcp.json"], read
     assert p.read_bytes() == A_OFF.encode()
 
 
@@ -1191,6 +1194,96 @@ def test_a_descriptor_that_cannot_be_read_is_refused(
     assert out == McpWriteOutcome(
         "refused", "mcp.json's access rules cannot be read; edit it by hand"
     )
+    assert p.read_bytes() == DEFAULT.encode()
+    assert _no_temp_left(tmp_path)
+
+
+@windows_only
+def test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor(tmp_path: Path) -> None:
+    """The premise of the Windows rule, on the runner's own folders.
+
+    The descriptors are printed as a warning (they name only SIDs) so that the CI log
+    shows them whether or not the comparison holds.
+    """
+
+    p = _mcp(tmp_path)
+    fd, tmp = tempfile.mkstemp(dir=tmp_path, prefix=".mcp.json.", suffix=".tmp")
+    os.close(fd)
+    seen = {
+        "folder": m._descriptor(str(tmp_path)),
+        "file": m._descriptor(str(p)),
+        "temp": m._descriptor(tmp),
+    }
+    warnings.warn(f"windows descriptors: {seen}", stacklevel=1)
+    with contextlib.suppress(OSError):
+        os.unlink(tmp)
+    assert seen["file"] is not None and seen["file"] == seen["temp"], seen
+
+
+def test_access_is_compared_on_the_empty_temp_before_the_content_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file whose access a replacement would change never gets the new content (its
+    credentials included) written into a temp beside it (verify of the CI fix, F1)."""
+
+    secret = DEFAULT.replace('"y"}', '"y", "env": {"T": "SECRET-624"}}')
+    p = _mcp(tmp_path, secret)
+    sizes: list[int] = []
+
+    def reader(path: str) -> str | None:
+        if os.path.basename(path) == "mcp.json":
+            return "O:S-1-5-21-1G:S-1-5-21-513D:P(A;;FA;;;SY)"
+        sizes.append(os.path.getsize(path))
+        return "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)"
+
+    monkeypatch.setattr(m, "_COMPARE_DESCRIPTORS", True)
+    monkeypatch.setattr(m, "_descriptor", reader)
+    out = _write(p, [("a", False)])
+    assert out == McpWriteOutcome("refused", "mcp.json has its own access rules; edit it by hand")
+    assert sizes == [0], "the temp held content when its access was first compared"
+    assert p.read_bytes() == secret.encode()
+    assert _no_temp_left(tmp_path)
+
+
+def test_an_original_whose_descriptor_cannot_be_read_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _mcp(tmp_path)
+    _descriptors(monkeypatch, None, "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)")
+    out = _write(p, [("a", False)])
+    assert out == McpWriteOutcome(
+        "refused", "mcp.json's access rules cannot be read; edit it by hand"
+    )
+    assert p.read_bytes() == DEFAULT.encode()
+    assert _no_temp_left(tmp_path)
+
+
+def test_access_is_compared_again_before_each_replace_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows retry path, switched on here: a sharing violation, then the original's
+    access changes (its bytes do not), then the retry. The retry refuses and writes nothing."""
+
+    p = _mcp(tmp_path)
+    same = "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)"
+    original = [same]
+    attempts: list[str] = []
+
+    def reader(path: str) -> str | None:
+        return original[0] if os.path.basename(path) == "mcp.json" else same
+
+    def sharing_violation_then_a_new_acl(src: object, dst: object) -> None:
+        attempts.append(str(dst))
+        original[0] = "O:S-1-5-21-1G:S-1-5-21-513D:P(A;;FA;;;SY)"
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(m, "_COMPARE_DESCRIPTORS", True)
+    monkeypatch.setattr(m, "_descriptor", reader)
+    monkeypatch.setattr(m, "_RETRY_REPLACE", True)
+    monkeypatch.setattr(m.os, "replace", sharing_violation_then_a_new_acl)
+    out = _write(p, [("a", False)])
+    assert out == McpWriteOutcome("refused", "mcp.json has its own access rules; edit it by hand")
+    assert len(attempts) == 1, "the retry replaced before comparing the access again"
     assert p.read_bytes() == DEFAULT.encode()
     assert _no_temp_left(tmp_path)
 

@@ -492,24 +492,6 @@ if sys.platform == "win32":
     _WAIT_ABANDONED = 0x80
     _WAIT_TIMEOUT = 0x102
     _DACL_SECURITY_INFORMATION = 0x4
-    _SE_DACL_PROTECTED = 0x1000
-    _INHERITED_ACE = 0x10
-
-    class _AclHeader(ctypes.Structure):
-        _fields_ = [
-            ("AclRevision", ctypes.c_ubyte),
-            ("Sbz1", ctypes.c_ubyte),
-            ("AclSize", ctypes.c_ushort),
-            ("AceCount", ctypes.c_ushort),
-            ("Sbz2", ctypes.c_ushort),
-        ]
-
-    class _AceHeader(ctypes.Structure):
-        _fields_ = [
-            ("AceType", ctypes.c_ubyte),
-            ("AceFlags", ctypes.c_ubyte),
-            ("AceSize", ctypes.c_ushort),
-        ]
 
     @functools.cache
     def _kernel32() -> ctypes.WinDLL:
@@ -526,31 +508,7 @@ if sys.platform == "win32":
 
     @functools.cache
     def _advapi32() -> ctypes.WinDLL:
-        lib = ctypes.WinDLL("advapi32", use_last_error=True)
-        lib.GetFileSecurityW.argtypes = [
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        lib.GetFileSecurityW.restype = wintypes.BOOL
-        lib.GetSecurityDescriptorControl.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(wintypes.WORD),
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        lib.GetSecurityDescriptorControl.restype = wintypes.BOOL
-        lib.GetSecurityDescriptorDacl.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(wintypes.BOOL),
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(wintypes.BOOL),
-        ]
-        lib.GetSecurityDescriptorDacl.restype = wintypes.BOOL
-        lib.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-        lib.GetAce.restype = wintypes.BOOL
-        return lib
+        return ctypes.WinDLL("advapi32", use_last_error=True)
 
     def _try_mutex(handle: int) -> bool:
         result = _kernel32().WaitForSingleObject(handle, 0)
@@ -579,46 +537,19 @@ if sys.platform == "win32":
         finally:
             kernel32.CloseHandle(handle)
 
-    def _all_inherited(api: ctypes.WinDLL, dacl: int) -> bool:
-        count = _AclHeader.from_address(dacl).AceCount
-        if count == 0:
-            return False
-        for index in range(count):
-            ace = ctypes.c_void_p()
-            if not api.GetAce(ctypes.c_void_p(dacl), index, ctypes.byref(ace)) or not ace.value:
-                return False
-            if not _AceHeader.from_address(ace.value).AceFlags & _INHERITED_ACE:
-                return False
-        return True
-
     def _access_refusal(real: str, label: str) -> str | None:
-        """A DACL that is protected, absent, empty or holds an explicit ACE is the file's own.
+        """Windows: nothing is refused here; :func:`_check_access_kept` decides.
 
-        A replacement created in the same directory inherits that directory's
-        ACEs and nothing else, so only an inherited-only DACL survives the save.
+        The replacement's owner, group and DACL must equal the original's, compared on
+        the still-empty temp and again before each replace attempt. A temp gets what any
+        new file in that folder gets, so an original with a protected DACL (a new file's
+        never is), or with ACEs other than a new file's there, is refused. An earlier
+        "inherited ACEs only" pre-check refused every ordinary file in the runner's
+        ``tmp_path`` on windows-latest (CI run 44219585507, 50 failures on each Python).
         """
 
-        api = _advapi32()
-        unreadable = f"{label}'s access rules cannot be read; {_BY_HAND}"
-        needed = wintypes.DWORD(0)
-        api.GetFileSecurityW(real, _DACL_SECURITY_INFORMATION, None, 0, ctypes.byref(needed))
-        buffer = ctypes.create_string_buffer(max(needed.value, 1))
-        if not api.GetFileSecurityW(
-            real, _DACL_SECURITY_INFORMATION, buffer, needed.value, ctypes.byref(needed)
-        ):
-            return unreadable
-        control, revision = wintypes.WORD(0), wintypes.DWORD(0)
-        present, dacl, defaulted = wintypes.BOOL(0), ctypes.c_void_p(), wintypes.BOOL(0)
-        if not api.GetSecurityDescriptorControl(
-            buffer, ctypes.byref(control), ctypes.byref(revision)
-        ) or not api.GetSecurityDescriptorDacl(
-            buffer, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
-        ):
-            return unreadable
-        own = f"{label} has its own access rules; {_BY_HAND}"
-        if control.value & _SE_DACL_PROTECTED or not present.value or not dacl.value:
-            return own
-        return None if _all_inherited(api, dacl.value) else own
+        del real, label
+        return None
 
     _OWNER_GROUP_DACL = 0x1 | 0x2 | _DACL_SECURITY_INFORMATION
     _SE_FILE_OBJECT = 1
@@ -688,8 +619,8 @@ if sys.platform == "win32":
             kernel32.LocalFree(descriptor)
 
     def _carry_metadata(src_fd: int, tmp_fd: int, st: os.stat_result, label: str) -> None:
-        """Windows: the temp inherits the directory's ACEs; _access_refusal allowed only those,
-        and :func:`_check_access_kept` compares the result before the replace."""
+        """Windows: the temp inherits the directory's ACEs and gets this process's owner;
+        :func:`_check_access_kept` compares them with the original's before the replace."""
 
     def _clear_acl(fd: int) -> None:
         """Windows: nothing was carried onto the temp file."""
@@ -1019,6 +950,10 @@ def _replace_file(
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{base}.", suffix=".tmp")
     open_fd: int | None = fd
     try:
+        if _COMPARE_DESCRIPTORS:
+            # While the temp is still empty: a file whose access a replacement would
+            # change never gets its new content written beside it.
+            _check_access_kept(real, tmp, label)
         _write_all(fd, new)
         _carry_from(real, fd, st, label)
         os.fsync(fd)
