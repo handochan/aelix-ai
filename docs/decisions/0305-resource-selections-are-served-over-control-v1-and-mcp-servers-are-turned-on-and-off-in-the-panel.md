@@ -840,9 +840,10 @@ descriptors); `edit_enabled` and its four checks are as measured here.
   - **Windows:** a named mutex, `Local\aelix-mcp-<sha256 of the normcased real path, 32 hex>`
     (ctypes `CreateMutexW`, polled `WaitForSingleObject` to the same deadline, released in the
     same worker thread). It is shared by every process in the logon session and creates no
-    file. Designed, first measured in CI: `test_two_processes_with_two_agent_dirs_lose_no_update`
-    is not skipped on Windows, so `windows-latest` is its first real run there; no Windows run
-    is recorded here.
+    file. Measured only in CI: in PR #818's run 44219585507 the lock's deadline, cancel and
+    trust-wait tests passed on Windows, and `test_two_processes_with_two_agent_dirs_lose_no_update`
+    and `test_a_held_lock_keeps_the_event_loop_ticking`, which also save, failed on the access
+    check D14 then had.
 - **Identity.** The target is resolved once, and the directory locked is the real target's.
   After the lock, the target must still resolve to that real path, and D13's `authorize`
   passes. The read is BYTES (`os.read`, never `read_text`, whose universal newlines would turn
@@ -904,11 +905,12 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     and each ACE's `INHERITED_ACE` flag). In PR #818's CI (run 44219585507) that check refused
     every ordinary `mcp.json` in the runner's `tmp_path`, 50 failures on each of Python 3.11 to
     3.14, so it was removed (owner, 2026-11-18: "검사를 SDDL 비교로 단일화 (권장)"). What the
-    comparison refuses is an original whose owner, group or DACL differs from what a new file
-    in that folder gets: a protected DACL always (a new file's never is), and explicit ACEs
-    unless a new file there gets the same ones. That run suggests a new file in the runner's
-    `tmp_path` gets ACEs that are not marked inherited, so this ADR does not claim that every
-    explicit ACE is refused.
+    comparison refuses is an original whose owner, group or DACL differs from the temp's, and
+    the temp gets what a new file in that folder gets; explicit ACEs are refused only when a new
+    file there gets other ones. That run does not say which part of the removed check refused
+    the runner's files (a protected, absent or empty DACL, or an ACE not marked inherited);
+    `test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor` prints the
+    folder's, the file's and a sibling temp's descriptor in the next run.
   - **Windows, the replacement compared (fix round 1, Codex CX-2).** "Inherited only" does not
     prove the temp inherits the SAME ACEs (a restored file, or ACEs changed through an API, can
     differ from what the parent gives now), nor that it gets the same owner. So before each
@@ -930,11 +932,15 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     In run 44219585507 the two that save failed on the up-front check above, and
     `test_windows_explicit_ace_is_refused` passed because that check refused its file; the
     diagnostic is newer than that run. The comparison is made on the still-empty temp, before
-    the new content is written, and again before each replace attempt, so a refused file's
-    content never reaches a temp beside it
-    (`test_access_is_compared_on_the_empty_temp_before_the_content_is_written`,
+    the new content is written, and again before each replace attempt. So a file whose access
+    already differs when the save starts never has its new content written beside it; one
+    whose access changes during the save is refused before the replace, and its temp, which
+    holds the new content with the access the file had when the save began, is closed and
+    deleted (`test_access_is_compared_on_the_empty_temp_before_the_content_is_written`,
     `test_access_is_compared_again_before_each_replace_retry`,
-    `test_an_original_whose_descriptor_cannot_be_read_is_refused`, all with the reader stubbed).
+    `test_an_original_whose_descriptor_cannot_be_read_is_refused`, all with the reader stubbed;
+    `test_a_refused_temp_is_closed_before_it_is_deleted` emulates Windows' rule that an open
+    file cannot be deleted).
 - **Refused up front, nothing written (opus L4):**
   - not a regular file;
   - another hard link (`st_nlink > 1`; a replacement would split them);
@@ -1171,8 +1177,8 @@ The `mcp` selection kind is the `mcp.json` view; the two are different lists by 
     lock and the checks before each replace retry are designed, and first measured in CI: their
     tests run only on Windows, or with the Windows path forced on or stubbed elsewhere (the
     two-process lock test runs everywhere). The one Windows run recorded here, PR #818's run
-    44219585507, stopped every save at the removed up-front check, so the comparison has not
-    yet run on Windows;
+    44219585507, stopped every save that reached the removed up-front check, so the
+    comparison has not yet run on Windows;
   - Windows' `st_ctime` is the creation time, so there the identity sees a permission change
     only through the descriptor comparison; `st_uid` and `st_gid` are 0;
   - an `mcp.json` whose replacement would get another owner, group or DACL (a protected DACL
@@ -1214,8 +1220,8 @@ The `mcp` selection kind is the `mcp.json` view; the two are different lists by 
 
 ## How it is held
 
-Each item names what was run and the condition it held under. Windows: nothing is measured
-here; the Windows-only cases' first real run is `windows-latest` CI.
+Each item names what was run and the condition it held under. Windows: only PR #818's CI runs,
+recorded in D14 and Limits.
 
 - **RPC, in process** (`tests/rpc/test_selections_rpc_624.py`, 29 test functions, 45 cases
   since fix round 1, on the control-v1 rigs): refusals write nothing (`test_a_refused_set_writes_nothing`); every locked or

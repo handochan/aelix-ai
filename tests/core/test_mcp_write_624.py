@@ -1223,8 +1223,9 @@ def test_windows_an_ordinary_file_and_a_temp_beside_it_have_one_descriptor(tmp_p
 def test_access_is_compared_on_the_empty_temp_before_the_content_is_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A file whose access a replacement would change never gets the new content (its
-    credentials included) written into a temp beside it (verify of the CI fix, F1)."""
+    """A file whose access already differs from what a replacement would get never has
+    the new content (its credentials included) written into a temp beside it (verify of
+    the CI fix, F1)."""
 
     secret = DEFAULT.replace('"y"}', '"y", "env": {"T": "SECRET-624"}}')
     p = _mcp(tmp_path, secret)
@@ -1285,6 +1286,47 @@ def test_access_is_compared_again_before_each_replace_retry(
     assert out == McpWriteOutcome("refused", "mcp.json has its own access rules; edit it by hand")
     assert len(attempts) == 1, "the retry replaced before comparing the access again"
     assert p.read_bytes() == DEFAULT.encode()
+    assert _no_temp_left(tmp_path)
+
+
+def test_a_refused_temp_is_closed_before_it_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows' sharing rule, emulated everywhere: deleting the temp while the mkstemp
+    handle is open fails, so a refusal must close the handle first (CI-fix verify, F8)."""
+
+    p = _mcp(tmp_path)
+    opened: dict[str, int] = {}
+    closed: set[int] = set()
+    real_mkstemp, real_close, real_unlink = tempfile.mkstemp, os.close, os.unlink
+
+    def mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, name = real_mkstemp(*args, **kwargs)  # type: ignore[call-overload]
+        opened[name] = fd
+        closed.discard(fd)  # descriptor numbers are reused
+        return fd, name
+
+    def close(fd: int) -> None:
+        closed.add(fd)
+        real_close(fd)
+
+    def unlink(path: object, *args: object, **kwargs: object) -> None:
+        fd = opened.get(os.fspath(path))  # type: ignore[arg-type]
+        if fd is not None and fd not in closed:
+            raise PermissionError(32, "The process cannot access the file")
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    _descriptors(
+        monkeypatch,
+        "O:S-1-5-21-1G:S-1-5-21-513D:P(A;;FA;;;SY)",
+        "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)",
+    )
+    monkeypatch.setattr(m.tempfile, "mkstemp", mkstemp)
+    monkeypatch.setattr(m.os, "close", close)
+    monkeypatch.setattr(m.os, "unlink", unlink)
+    out = _write(p, [("a", False)])
+    assert out == McpWriteOutcome("refused", "mcp.json has its own access rules; edit it by hand")
+    assert opened, "the writer made no temp"
     assert _no_temp_left(tmp_path)
 
 

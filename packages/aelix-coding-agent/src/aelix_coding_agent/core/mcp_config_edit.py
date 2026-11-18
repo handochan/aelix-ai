@@ -931,9 +931,14 @@ def _replace(tmp: str, real: str, label: str, st: os.stat_result, data: bytes) -
 
 
 def _discard(fd: int | None, tmp: str) -> None:
+    """Remove the temp, closing *fd* first: Windows cannot delete a file this process
+    holds open (``tempfile.mkstemp`` does not open it for delete sharing)."""
+
     if fd is not None:
         # The temp carries the original's ACL; one that denies delete would keep it.
         _clear_acl(fd)
+        with contextlib.suppress(OSError):
+            os.close(fd)
     with contextlib.suppress(OSError):
         os.unlink(tmp)
 
@@ -951,8 +956,8 @@ def _replace_file(
     open_fd: int | None = fd
     try:
         if _COMPARE_DESCRIPTORS:
-            # While the temp is still empty: a file whose access a replacement would
-            # change never gets its new content written beside it.
+            # While the temp is still empty: a file whose access already differs from
+            # what a replacement would get never has its new content written beside it.
             _check_access_kept(real, tmp, label)
         _write_all(fd, new)
         _carry_from(real, fd, st, label)
@@ -964,7 +969,8 @@ def _replace_file(
             raise _Abandoned
         _replace(tmp, real, label, st, data)
     except BaseException:
-        _discard(open_fd, tmp)
+        discard_fd, open_fd = open_fd, None
+        _discard(discard_fd, tmp)
         raise
     finally:
         if open_fd is not None:
