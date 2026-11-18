@@ -775,9 +775,9 @@ def build_params(
         params["tools"] = convert_tools(tools, compat)
         if compat.zai_tool_stream:
             params["tool_stream"] = True
-    elif _has_tool_history(list(context.messages)):
-        # Pi parity: Anthropic-via-proxy requires the field when history
-        # contains tool calls / results.
+    elif compat.requires_tools_with_tool_history and _has_tool_history(list(context.messages)):
+        # Pi parity (pi #11891): a request with no tools carries no ``tools`` key;
+        # only a model whose compat asks for it gets ``[]`` beside tool history.
         params["tools"] = []
 
     if cache_control:

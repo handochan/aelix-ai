@@ -134,6 +134,11 @@ authenticate a request but never address one; export it in your shell to use it.
 `reasoning` (boolean), `thinkingLevelMap`, `input`, `cost`, `contextWindow`,
 `maxTokens`, `headers`, `compat`.
 
+`compat` switches are per protocol. One a chat-completions (`openai-completions`) model behind a
+proxy may need: `requiresToolsWithToolHistory: true` (also read as
+`requires_tools_with_tool_history`) sends `"tools": []` on a request that has no tools but whose
+history holds tool calls. It is off by default: such a request carries no `tools` key.
+
 **`cost` is all-or-nothing.** You may omit it entirely, but if you include it,
 all four of `input`, `output`, `cacheRead` and `cacheWrite` are required — a
 `cost` with only `input` and `output` is a schema error, and a schema error

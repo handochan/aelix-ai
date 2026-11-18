@@ -189,13 +189,13 @@ wire is each adapter's business (fix round 1, V9; read from the adapters, one ro
 Responses, Codex, Google and Anthropic adapters set `tools` only under `if tools:`
 (`openai_responses.py`, `openai_codex_responses.py`, `_google_shared.py`,
 `_anthropic_transforms.py`), so their request has no `tools` key; the chat-completions adapter
-(`openai_completions.build_params`) sends `"tools": []`, because the history holds tool calls
-(pinned by `tests/providers/test_openai_completions_unit.py`). Measured through OpenRouter only
-(`.omc/probes/123/lead-live/provider-tools-empty/README.md`): 39 non-streaming requests on 13
-(model, upstream) pairs of 6 models answered HTTP 200 with the key filled, empty or left out. No
-direct upstream was run: pi issue 11843 reports a vLLM behind LiteLLM answering `"tools": []`
-with HTTP 400, pi PR 11891 (merged 2026-11-06) leaves the key out, and aelix's port of it is
-#815, not part of this change. The kernel knows the word "final"
+(`openai_completions.build_params`) leaves it out too since #815 (the port of pi PR 11891), and
+sends `"tools": []` only for a model whose `compat` sets `requires_tools_with_tool_history`
+(pinned from the kernel down by `tests/providers/test_openai_completions_unit.py`). Measured
+through OpenRouter only (`.omc/probes/123/lead-live/provider-tools-empty/README.md`): 39
+non-streaming requests on 13 (model, upstream) pairs of 6 models answered HTTP 200 with the key
+filled, empty or left out. No direct upstream was run: pi issue 11843 reports a vLLM behind
+LiteLLM answering `"tools": []` with HTTP 400. The kernel knows the word "final"
 and nothing of who asked: the text (`command_wire.WRAP_UP_TEXT`, Gemini CLI's final warning as the
 reference; since fix round 1 it names nobody — "You have been asked to stop here" — where the
 parent model's wrap-up used to tell the child "The user has asked you to stop"), the origin and
