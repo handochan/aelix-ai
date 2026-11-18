@@ -840,10 +840,13 @@ descriptors); `edit_enabled` and its four checks are as measured here.
   - **Windows:** a named mutex, `Local\aelix-mcp-<sha256 of the normcased real path, 32 hex>`
     (ctypes `CreateMutexW`, polled `WaitForSingleObject` to the same deadline, released in the
     same worker thread). It is shared by every process in the logon session and creates no
-    file. Measured only in CI: in PR #818's run 44219585507 the lock's deadline, cancel and
-    trust-wait tests passed on Windows, and `test_two_processes_with_two_agent_dirs_lose_no_update`
-    and `test_a_held_lock_keeps_the_event_loop_ticking`, which also save, failed on the access
-    check D14 then had.
+    file. Measured only in CI: in PR #818's run 44219585507 `test_the_lock_deadline_refuses`,
+    `test_a_cancel_during_the_wait_abandons_without_waiting`,
+    `test_a_cancel_set_before_the_lock_is_honoured_after_it` and
+    `test_trust_revoked_during_the_lock_wait_is_refused` passed on Windows, and
+    `test_two_processes_with_two_agent_dirs_lose_no_update` and
+    `test_a_held_lock_keeps_the_event_loop_ticking`, which also save, failed on the access check
+    D14 then had; in run 44232091409 those two passed too.
 - **Identity.** The target is resolved once, and the directory locked is the real target's.
   After the lock, the target must still resolve to that real path, and D13's `authorize`
   passes. The read is BYTES (`os.read`, never `read_text`, whose universal newlines would turn
@@ -912,10 +915,12 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     on all four legs the file and a temp beside it had the same owner, group and DACL, an
     unprotected DACL of three inherited ACEs (`D:(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;OW)`
     under the protected `tmp_path` folder Python 3.12 to 3.14 create, `…;;;LA)` on 3.11). The
-    removed check should have accepted that DACL, so it misread it; that code is gone. In that
+    removed check should have accepted that DACL, so, judging by these descriptors, it misread it;
+    that code is gone. In that
     run every ordinary save on Windows was written, and its 6 failures on each leg were all
-    temps a refusal left behind: the temp was deleted while its handle was open, which Windows
-    refuses. A refusal now closes the temp before deleting it
+    temps a refusal left behind: the temp was deleted while its handle, opened without delete
+    sharing, was still open, which Windows refuses. A refusal now closes the temp before
+    deleting it
     (`test_a_refused_temp_is_closed_before_it_is_deleted` emulates that rule everywhere).
   - **Windows, the replacement compared (fix round 1, Codex CX-2).** "Inherited only" does not
     prove the temp inherits the SAME ACEs (a restored file, or ACEs changed through an API, can
@@ -940,7 +945,8 @@ descriptors); `edit_enabled` and its four checks are as measured here.
     diagnostic is newer than that run. The comparison is made on the still-empty temp, before
     the new content is written, and again before each replace attempt. So a file whose access
     already differs when the save starts never has its new content written beside it; one
-    whose access changes during the save is refused before the replace, and its temp, which
+    whose access changes during the save, before its last comparison, is refused before the
+    replace, and its temp, which
     holds the new content with the access the file had when the save began, is closed and
     deleted (`test_access_is_compared_on_the_empty_temp_before_the_content_is_written`,
     `test_access_is_compared_again_before_each_replace_retry`,

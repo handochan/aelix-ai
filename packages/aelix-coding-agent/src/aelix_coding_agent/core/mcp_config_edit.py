@@ -935,10 +935,12 @@ def _discard(fd: int | None, tmp: str) -> None:
     holds open (``tempfile.mkstemp`` does not open it for delete sharing)."""
 
     if fd is not None:
-        # The temp carries the original's ACL; one that denies delete would keep it.
-        _clear_acl(fd)
-        with contextlib.suppress(OSError):
-            os.close(fd)
+        try:
+            # The temp carries the original's ACL; one that denies delete would keep it.
+            _clear_acl(fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
     with contextlib.suppress(OSError):
         os.unlink(tmp)
 
@@ -963,8 +965,8 @@ def _replace_file(
         _carry_from(real, fd, st, label)
         os.fsync(fd)
         if sys.platform == "win32":
+            open_fd = None  # closed once, here, whatever the close does
             os.close(fd)  # Windows cannot rename a file this process holds open
-            open_fd = None
         if abandoned.is_set():
             raise _Abandoned
         _replace(tmp, real, label, st, data)

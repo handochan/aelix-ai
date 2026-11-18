@@ -1330,6 +1330,39 @@ def test_a_refused_temp_is_closed_before_it_is_deleted(
     assert _no_temp_left(tmp_path)
 
 
+def test_a_temp_whose_close_fails_is_still_deleted_and_the_refusal_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the refused temp fails: the refusal is still what the save says, and the
+    temp is still deleted (CI-fix verify r3, F15)."""
+
+    p = _mcp(tmp_path)
+    temps: set[int] = set()
+    real_mkstemp, real_close = tempfile.mkstemp, os.close
+
+    def mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, name = real_mkstemp(*args, **kwargs)  # type: ignore[call-overload]
+        temps.add(fd)
+        return fd, name
+
+    def close(fd: int) -> None:
+        real_close(fd)
+        if fd in temps:
+            temps.discard(fd)
+            raise OSError(errno.EIO, "close failed")
+
+    _descriptors(
+        monkeypatch,
+        "O:S-1-5-21-1G:S-1-5-21-513D:P(A;;FA;;;SY)",
+        "O:S-1-5-21-1G:S-1-5-21-513D:AI(A;ID;FA;;;SY)",
+    )
+    monkeypatch.setattr(m.tempfile, "mkstemp", mkstemp)
+    monkeypatch.setattr(m.os, "close", close)
+    out = _write(p, [("a", False)])
+    assert out == McpWriteOutcome("refused", "mcp.json has its own access rules; edit it by hand")
+    assert _no_temp_left(tmp_path)
+
+
 @windows_only
 def test_windows_the_replacement_keeps_owner_group_and_dacl(tmp_path: Path) -> None:
     """Windows-only, real descriptors: the plain inherited case compares equal and is written."""
