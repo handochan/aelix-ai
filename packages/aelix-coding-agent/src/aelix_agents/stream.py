@@ -27,7 +27,7 @@ implementable at all.
 
 WHY THE FIELD MAP IS SNAKE_CASE (ADR-0198). ``--mode json`` emits raw kernel
 :class:`~aelix_agent_core.types.AgentEvent` dataclasses through
-``dataclasses.asdict`` (``modes/print_mode.py:110-119`` → ``rpc/rpc_mode.py``),
+``dataclasses.asdict`` (``modes/print_mode.py:111-120`` → ``rpc/rpc_mode.py``),
 so the wire names are the Python attribute names: ``stop_reason``,
 ``error_message``, ``tool_name``, ``total_tokens``. A line-for-line port of
 pi's camelCase parser reads ``None`` for every field, and every failure then
@@ -43,9 +43,11 @@ guarantee and every read here dual-spells, exactly as the kernel itself does at
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -243,7 +245,7 @@ class _StreamState:
     ``turn_end`` for a turn that printed none or when it says ``aborted``
     (:func:`_reduce_turn_end`): the harness's abort close-out ends its run with
     a ``turn_end`` holding an ``aborted`` message of its own, then ``agent_end``
-    (``harness/core.py:6163-6165``). Before this, a run 2 cut that way read as
+    (``harness/core.py:6226-6228``). Before this, a run 2 cut that way read as
     run 1's ``end_turn``, and a run 2 answer that reported no stop reason read
     as run 1's ``error`` (Codex review of #721, finding 3)."""
 
@@ -441,6 +443,69 @@ class _StreamState:
     :data:`MAX_OVERFLOW_TRACKED`; beyond it every overflowing call counts, which
     can only overstate the "+N more" — never hide a file."""
 
+    user_texts: deque[str] = field(default_factory=lambda: deque(maxlen=USER_TEXTS_KEPT), repr=False)
+    """The heads of the latest ``user`` messages the child's loop emitted (#123, ADR-0306 §3.3): one per drained
+    steer or follow-up, each cut to :data:`USER_TEXT_HEAD_CHARS`, the latest :data:`USER_TEXTS_KEPT` of them. How the
+    parent tells a line the child CONSUMED from one it only queued. The wrap-up's reading is NOT read off this window:"""
+    wrap_up_head: str | None = field(default=None, repr=False)  # F4 — ``runtime.wrap_up`` sets it before it writes the line; None: none asked
+    wrap_up_read: bool = field(default=False, repr=False)  # F4 — latched by the first ``user`` message with that head reduced after; never lowered
+
+    fingerprints: deque[Fingerprint] = field(default_factory=lambda: deque(maxlen=FINGERPRINTS_KEPT), repr=False)
+    """One :class:`Fingerprint` per COMPLETED tool call, latest last (#123,
+    ADR-0306 §5.1), kept apart from :attr:`recent`: the display window clips
+    arguments and never sees a result, so four identical errors and four
+    different ones project the same there (Codex M12). :func:`stuck_of` reads
+    this and nothing else."""
+
+
+USER_TEXT_HEAD_CHARS = 200
+"""How much of a ``user`` message :attr:`_StreamState.user_texts` keeps (#123)."""
+
+USER_TEXTS_KEPT = 8
+"""How many such heads: enough for the steers one row can have in flight."""
+
+FINGERPRINTS_KEPT = 8
+"""How many completed calls :attr:`_StreamState.fingerprints` holds: the
+longer of the two stuck patterns needs four (ADR-0306 §5.2)."""
+
+RESULT_HEAD_BYTES = 1024
+"""How much of a tool result a :class:`Fingerprint` hashes (ADR-0306 §5.1)."""
+
+
+@dataclass(frozen=True)
+class Fingerprint:
+    """What one completed call was, for :func:`stuck_of` (#123, ADR-0306 §5.1).
+
+    The tool's name, the sha256 of its arguments (``json.dumps`` sorted) and of
+    the first :data:`RESULT_HEAD_BYTES` of its result's text, and whether it
+    errored — built from the raw ``tool_execution_start`` / ``_end`` events, so
+    two calls that differ past the display clip are two fingerprints.
+    """
+
+    name: str
+    args: str
+    result: str
+    is_error: bool
+
+
+def stuck_of(fingerprints: Sequence[Fingerprint]) -> str | None:
+    """``"repeat"``, ``"error loop"`` or :data:`None` — pure, over the fingerprints (ADR-0306 §5.2).
+
+    *repeat*: the last four are equal in all four parts (OpenHands'
+    "repeating action-observation", threshold 4). *error loop*: the last three
+    errored and are equal in name, arguments and result (its "repeating
+    action-error", threshold 3). Monologue and alternation are deferred: they
+    need message-level state the reducer ignores on purpose.
+    """
+
+    tail = list(fingerprints)
+    if len(tail) >= 4 and all(entry == tail[-1] for entry in tail[-4:]):
+        return "repeat"
+    last3 = tail[-3:]
+    if len(last3) == 3 and all(entry.is_error for entry in last3) and all(entry == last3[-1] for entry in last3):
+        return "error loop"
+    return None
+
 
 MAX_FILE_PATHS = 64
 """How many DISTINCT written paths one child's result may list (ADR-0276 D8).
@@ -553,6 +618,9 @@ class ToolCall:
     call_id: str = ""
     turn: int = 0
     """:attr:`_StreamState.turn_starts` when the call opened (#132, D3)."""
+    args_hash: str = ""
+    """sha256 of the call's whole arguments, for its :class:`Fingerprint` (#123):
+    :attr:`args` is the clipped rendering and cannot tell two long calls apart."""
 
 
 ACTIVITY_MAX = 4
@@ -758,6 +826,7 @@ def _open_trail_entry(state: _StreamState, tool_name: str, event: dict[str, Any]
         args=_render_args(event.get("args")),
         call_id=call_id if isinstance(call_id, str) else "",
         turn=state.turn_starts,
+        args_hash=_sha256(event.get("args")),
     )
     if len(state.recent) < _RECENT_MAX:
         state.recent.append(entry)
@@ -786,15 +855,48 @@ def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
     if not isinstance(call_id, str) or not call_id:
         return
     failed = bool(event.get("is_error"))
+    matched: ToolCall | None = None
     for entry in reversed(state.recent):
         if entry.call_id == call_id:
             entry.failed = failed
+            matched = entry
             _trim_recent(state)
             break
     for entry in reversed(state.tool_trail):
         if entry.call_id == call_id:
             entry.failed = failed
-            return
+            matched = entry
+            break
+    if matched is not None:
+        # #123 (ADR-0306 §5.1) — the call's fingerprint, from the raw events.
+        state.fingerprints.append(
+            Fingerprint(
+                name=matched.name,
+                args=matched.args_hash,
+                result=_sha256(_result_head(event.get("result"))),
+                is_error=failed,
+            )
+        )
+
+
+def _sha256(value: Any) -> str:
+    """A stable digest of ``value`` (``json.dumps`` sorted; anything else by ``str``). Never raises."""
+
+    try:
+        text = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(value)
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _result_head(result: Any) -> str:
+    """The first :data:`RESULT_HEAD_BYTES` of a tool result's text, or its repr."""
+
+    content = result.get("content") if isinstance(result, dict) else None
+    text = _extract_text(content) if content is not None else ""
+    if not text and result is not None:
+        text = str(result)
+    return text.encode("utf-8", errors="replace")[:RESULT_HEAD_BYTES].decode("utf-8", errors="replace")
 
 
 def _written_path(args: Any) -> str | None:
@@ -1069,6 +1171,12 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
 
     if not isinstance(message, dict):
         return
+    if message.get("role") == "user":
+        # #123 (ADR-0306 §3.3) — a drained steer or follow-up, as the child's loop emitted it: the head of its
+        # text is how the parent knows the line was CONSUMED, not only queued; the wrap-up's is latched (F4).
+        state.user_texts.append(head := _extract_text(message.get("content"))[:USER_TEXT_HEAD_CHARS])
+        state.wrap_up_read |= head == state.wrap_up_head
+        return
     if message.get("role") != "assistant":
         return
     state.turns += 1
@@ -1137,7 +1245,7 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
 
     1. The FIRST line is the session-metadata header — a bare
        ``{"id": ..., "created_at": ...}`` object with **no** ``type`` key
-       (``modes/print_mode.py:367-379``). It is emitted best-effort inside its
+       (``modes/print_mode.py:381-393``). It is emitted best-effort inside its
        own ``try/except``, so neither its presence nor its absence may be
        relied on. Hence ``event.get("type")``, never ``event["type"]``.
     2. Anything in the child can ``print()`` straight into the same stdout —
@@ -1182,7 +1290,7 @@ def _reduce_turn_end(state: _StreamState, message: Any) -> None:
 
     - A turn that printed no ASSISTANT ``message_end``. The harness's abort
       close-out emits ``turn_end`` with an ``aborted`` message of its own and
-      then ``agent_end`` (``harness/core.py:6163-6165``); a real print-mode
+      then ``agent_end`` (``harness/core.py:6226-6228``); a real print-mode
       child aborted mid-stream prints ``agent_start, turn_start,
       message_end(user), turn_end(aborted), agent_end``, so without this the
       run's verdict would be whatever an earlier one left.
@@ -1312,20 +1420,37 @@ def latest_run_closed(state: _StreamState) -> bool:
     sends one) still closes, as it always did.
 
     It sees only what the channel folded: the print channel folds every line,
-    ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:432``).
+    ``RpcChannel`` stops at its first ``agent_end`` (``rpc_channel.py:440``).
     """
 
     return state.saw_agent_end and not state.run_open
 
 
+STUCK_MEANING: dict[str, str] = {
+    "repeat": "the same tool call with the same result four times in a row",
+    "error loop": "the same failing tool call three times in a row",
+}
+"""What each pattern :func:`stuck_of` returns means, in the words the parent model
+and ``agent(action="status")`` read (#123 D1). Its keys are the only values
+``stuck_of`` returns; the numbers are its thresholds, which
+``tests/agents_ext/test_stuck_notice_123.py::test_the_pattern_words_say_what_stuck_of_counts``
+holds against it. Kept here, at the module's end, so no line above moves."""
+
+
 __all__ = [
     "ACTIVITY_MAX",
+    "FINGERPRINTS_KEPT",
     "LAST_TEXT_MAX_CHARS",
     "MAX_FILE_PATHS",
     "MAX_FILE_PATH_CHARS",
     "MAX_FILE_PATH_KEY_CHARS",
+    "RESULT_HEAD_BYTES",
+    "STUCK_MEANING",
+    "USER_TEXTS_KEPT",
+    "USER_TEXT_HEAD_CHARS",
     "WRITER_TOOLS",
     "FileWrite",
+    "Fingerprint",
     "LineAssembler",
     "MAX_LINE_BYTES",
     "MAX_TRAIL_ARG_CHARS",
@@ -1337,5 +1462,6 @@ __all__ = [
     "path_for_display",
     "reduce_event",
     "reduce_line",
+    "stuck_of",
     "written_paths",
 ]

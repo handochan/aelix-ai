@@ -278,10 +278,13 @@ _HAPPY = _stub(
     """
 )
 
-_STDIN_ECHO = _stub(
+_STDIN_PROBE = _stub(
     """
+    import select, stat
     start()
-    say("stdin=%r" % sys.stdin.read())
+    kind = "pipe" if stat.S_ISFIFO(os.fstat(0).st_mode) else "other"
+    ready, _, _ = select.select([0], [], [], 0.2)
+    say("stdin=%s ready=%s" % (kind, bool(ready)))
     done()
     """
 )
@@ -766,26 +769,29 @@ async def test_happy_path_envelope(tmp_path: Path) -> None:
     assert result.dropped_lines == 0
 
 
-async def test_stdin_is_devnull(tmp_path: Path) -> None:
-    """Pins the +30 s landmine.
+@pytest.mark.skipif(sys.platform == "win32", reason="select on fd 0 and S_ISFIFO are POSIX")
+async def test_stdin_is_the_parents_pipe_with_nothing_on_it(tmp_path: Path) -> None:
+    """The child's stdin is the command inbox (#123, ADR-0306): a pipe the parent
+    holds open and writes nothing to unless asked.
 
-    An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:320-430``), which blocks for the whole
-    ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
-    DO arrive are prepended to the task message.
+    It used to be ``DEVNULL`` to pin the +30 s landmine — an INHERITED stdin sent
+    the child into ``_read_piped_stdin`` (``cli/entry.py:320-444``), which waited
+    the whole ``AELIX_STDIN_TIMEOUT`` and prepended any bytes to the task. That
+    guard moved to the flag: a child launched with ``--command-inbox`` reads no
+    prompt from stdin at all (``tests/cli/test_command_inbox_123.py``). This
+    stub reads nothing either; it only reports what fd 0 is.
     """
 
     # ``within``: an ANTI-HANG bound, not a gate (#330 — this was an unmessaged
     # ``elapsed < 10`` checked only AFTER the run returned, so a child blocked
-    # on an inherited terminal would have hung the case instead of failing
-    # it). The verdict is the summary: a DEVNULL stdin reads as ``''``.
+    # on an inherited terminal would have hung the case instead of failing it).
     result = await within(
-        _stub_channel(_STDIN_ECHO).run(_plan(tmp_path)),
+        _stub_channel(_STDIN_PROBE).run(_plan(tmp_path)),
         bound=30.0,
-        what="a child that reads its stdin to EOF",
+        what="a child that probes its stdin",
     )
     assert result.ok is True
-    assert result.summary == "stdin=''"
+    assert result.summary == "stdin=pipe ready=False"
 
 
 @linux_only
@@ -793,7 +799,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2608-2625``) nor child (``modes/print_mode.py:253-312``)
+    (``tui/shell.py:2608-2625``) nor child (``modes/print_mode.py:263-322``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -941,7 +947,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:1062-1068``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:1164-1170``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -2190,7 +2196,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:343-350``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:353-360``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
@@ -2432,7 +2438,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1413-1417``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1519-1523``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2484,11 +2490,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:2169``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:2285``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:281``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:283``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2700,7 +2706,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1463`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1541`` and
     ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
@@ -3047,7 +3053,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:375-383``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:386-394``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"
@@ -3830,6 +3836,42 @@ async def test_the_spawn_asks_for_containment_kwargs_per_platform(
         "the stdlib's retained handle must be forwarded: deriving one with "
         "OpenProcess can be refused for a process we are entitled to contain"
     )
+
+
+@pytest.mark.parametrize(
+    ("platform", "suspend"),
+    [("win32", CREATE_SUSPENDED), ("win32", 0), ("linux", 0)],
+    ids=["win32", "win32-no-resume", "linux"],
+)
+async def test_the_spawn_hands_the_child_a_stdin_pipe_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str, suspend: int
+) -> None:
+    """A guard (#123, fix round 1 V4): the command inbox is a PIPE in the spawn's
+    kwargs, whatever the platform and whether or not the launch is suspended.
+
+    ``test_stdin_is_devnull`` ran a stub child on every platform; its #123
+    replacement, ``test_stdin_is_the_parents_pipe_with_nothing_on_it``, probes fd 0
+    with ``select`` and ``S_ISFIFO`` and is POSIX-only, so nothing on
+    ``windows-latest`` read what stdin the child is given. This reads the kwargs
+    with the per-platform case's three fakes (the ``CREATE_SUSPENDED`` + Job leg,
+    the leg with no resume, the POSIX leg), and runs everywhere.
+    """
+
+    seen: dict[str, Any] = {}
+
+    async def _fake_exec(*_argv: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return _RecordingProc()
+
+    monkeypatch.setattr(pc.sys, "platform", platform)
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(pc.ProcessTree, "attach", _fake_attach([], _StubTree()))
+    monkeypatch.setattr(pc.ProcessTree, "suspend_flags", staticmethod(lambda **_: suspend))
+
+    await _stub_channel(_HAPPY).run(_plan(tmp_path))
+
+    pipe = asyncio.subprocess.PIPE
+    assert (seen["stdin"], seen["stdout"], seen["stderr"]) == (pipe, pipe, pipe)
 
 
 async def test_a_stop_that_lands_in_the_suspended_spawn_ends_the_child_unrun(

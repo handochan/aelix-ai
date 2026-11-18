@@ -375,14 +375,16 @@ async def test_entry_marks_stdin_required_only_without_an_argv_prompt(
     class _Stop(Exception):
         pass
 
-    async def _spy(*, required: bool = True) -> str | None:
+    async def _spy(*, required: bool = True, inbox: bool = False) -> str | None:
         seen["required"] = required
+        seen["inbox"] = inbox  # #123: no --command-inbox here, so never an inbox
         raise _Stop  # short-circuit: nothing past the stdin read is under test
 
     monkeypatch.setattr(entry_mod, "_read_piped_stdin", _spy)
     with pytest.raises(_Stop):
         await entry_mod._async_main(argv)
     assert seen["required"] is expected_required
+    assert seen["inbox"] is False
 
 
 # === stdout EPIPE propagation (print/JSON modes) ==============================

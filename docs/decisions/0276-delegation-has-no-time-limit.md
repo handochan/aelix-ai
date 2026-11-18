@@ -1021,3 +1021,13 @@ every step and cancel to the run as `await` does; a cancelled call is still repo
 (`tests/agents_ext/test_detach_driver_611.py`). A call that was moved returns its detach text in
 the step it was moved in and is never cancelled, so it writes no D14 report; its result comes back
 as the job's notice.
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*The Limits' RPC items are moot for the product.* #123 chose the print child's stdin inbox over
+`RpcChannel` (ADR-0306 D1), so items 1, 2 and 4 of "The RPC channel has gaps of its own" stand for
+`RpcChannel` only, which no product door builds. Item 3 — a blocked stdin write outside every
+bound — is closed on the product's path: an inbox write and its drain are bounded at 5 s, and a
+write that cannot drain fails its request `unknown` and marks the wire broken
+(`aelix_agents/command_wire.py`, `tests/agents_ext/test_command_wire_123.py`). D4's post-EOF exit
+bound and the kill legs are unchanged: the inbox never gates the child's exit.

@@ -462,7 +462,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2533``) and render it
+    the harness's own auto-compaction guard at ``core.py:2592``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
 
     #347 — through ``run_cancellable``, so Esc and Ctrl+C reach it and the row's
@@ -547,7 +547,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5834-5840`` intersects ``_state.tools`` with
+    (``harness/core.py:5894-5900`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -721,7 +721,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1161-1183``).
+    made ``--tools ''`` enable everything (``entry.py:1194-1216``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -1216,7 +1216,7 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
     ``model``/``provider`` are read off the child's own ``message_end`` verbatim
-    (``stream.py:1095-1099`` → ``envelope.py:1075-1076``), so they are attacker
+    (``stream.py:1203-1207`` → ``envelope.py:1116-1117``), so they are attacker
     controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
     parsing but writes raw content ESC / C1 straight to the terminal — a
     ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its
@@ -2291,11 +2291,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:2064-2067``
+    # The double count was the same text twice over: ``cli/entry.py:2097-2100``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:781-787``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:2064``.
+    # level up, at ``cli/entry.py:2097``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

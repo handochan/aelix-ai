@@ -34,7 +34,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode, Permissio
 from tests.builtin.gate_tools import BUILTIN_CONTEXT
 
 # Every posture, tightest first. Written out rather than derived from
-# ``CYCLE_ORDER`` (``builtin/permission_mode.py:75-81``) on purpose: the cycle
+# ``CYCLE_ORDER`` (``builtin/permission_mode.py:77-83``) on purpose: the cycle
 # is a shift+tab UX rotation and carries NO authority ordering — it would rank
 # PLAN above AUTO_ACCEPT.
 _PARENTS = [

@@ -90,6 +90,7 @@ from aelix_agents.child_session import (
 )
 from aelix_agents.child_session import find_resume_target as _find_resume_target
 from aelix_agents.child_session import resumable_agents as _resumable_agents
+from aelix_agents.command_wire import ENDED_UNANSWERED, NUDGE_TEXT, Reply, WrapUp, new_wrap_up
 from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
@@ -97,8 +98,9 @@ from aelix_agents.envelope import (
     build_result,
     declined_result,
 )
-from aelix_agents.posture import posture_rank
+from aelix_agents.posture import child_permission_mode, posture_rank
 from aelix_agents.print_channel import (
+    FLOOR_REASON,
     CleanupDuty,
     PrintChannel,
     RunningChild,
@@ -112,9 +114,10 @@ from aelix_agents.print_channel import (
     resolve_child_cwd,
     resume_cwd,
     resume_limits,
+    tighten_child,
 )
 from aelix_agents.prompt_file import remove_prompt_dir
-from aelix_agents.stream import activity_of, path_for_display, written_paths
+from aelix_agents.stream import activity_of, path_for_display, stuck_of, written_paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
@@ -769,7 +772,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1136``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1173``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -780,7 +783,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:568``/``tool.py:1463`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:568``/``tool.py:1541`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -1550,6 +1553,86 @@ class _SubagentRuntimeImpl:
         finally:
             self._draining = False
 
+    # ── the intervention doors (#123, ADR-0306 §3) ──────────────────
+
+    async def steer(self, id: str, text: str, *, mode: str = "steer", origin: str = "user") -> Delivery:  # noqa: A002
+        """Write one ``steer`` or ``follow_up`` line to a live row's inbox.
+
+        Per-state behaviour is ADR-0306 §3.2 (:func:`_door_refusal`): a row not in this
+        registry has finished or was stopped — the refusal carries the resume hint; one with
+        no process yet is "not started"; a stopping one "stopping"; a broken inbox "stop or
+        resume it". The outcome words are the wire's: ``queued`` with the child's ``phase``,
+        ``refused`` with the child's reason, ``unknown``, ``not_sent`` (§3.3); ``verb`` is ``mode``.
+        """
+
+        if mode not in ("steer", "follow_up"):
+            raise ValueError(f"mode must be 'steer' or 'follow_up', not {mode!r}")
+        child = self._children.get(id)
+        refusal = _door_refusal(child)
+        if refusal is not None or child is None:
+            return Delivery("refused", reason=refusal or RESUME_HINT, verb=mode)
+        reply = await child.wire.request(mode, {"message": text})
+        return Delivery.of(reply, origin=origin, verb=mode)
+
+    async def wrap_up(self, id: str, *, origin: str = "user") -> Delivery:  # noqa: A002
+        """Ask a live row to finish now: the final steer (ADR-0306 §4).
+
+        Recorded on the row, its head on the row's stream state (F4), before the write, so the
+        envelope judges it however the child answers; taken back when nothing was written (a
+        ``not_sent``). ``final`` ends the run after the next model call, made with no tools (a retry
+        of it too), the text a courtesy. A second request on the same row is refused: one per run.
+        """
+
+        child = self._children.get(id)
+        refusal = _door_refusal(child)
+        if refusal is not None or child is None:
+            return Delivery("refused", reason=refusal or RESUME_HINT, verb="wrap_up")
+        if child.wrap_up is not None:
+            return Delivery("refused", reason="a wrap-up was already requested for this agent", verb="wrap_up")
+        request = new_wrap_up(origin)
+        _record_wrap_up(self, child, request)
+        reply = await child.wire.request("steer", {"message": request.text, "final": True})
+        if reply.outcome == "not_sent":
+            _record_wrap_up(self, child, None)
+        return Delivery.of(reply, origin=origin, verb="wrap_up")
+
+    def tighten_all(self, mode: PermissionMode) -> list[asyncio.Task[None]]:
+        """Tighten every live row whose granted posture ranks above ``mode``'s child clamp (W5, ADR-0306 §6).
+
+        ``mode`` is the parent's new posture. A row is compared against what a
+        child spawned under it would start at (``child_permission_mode``'s
+        ``inherit`` baseline: ``default`` is ``plan`` for a child, ``auto`` is
+        ``auto-accept-edits``), rank-MIN as ``_tighten`` clamps a batch's later
+        waves (ADR-0199 §3.9): a loosening tightens nothing. By row state (§6.2):
+
+        * a row with a process: one task, returned so a caller may join them,
+          that sends ``set_permission_mode`` and, failing closed — no reply
+          within the bound, ``success: false``, an echo that is not the mode
+          asked for, an inbox that is broken or absent — kills the child with
+          the floor reason in its envelope (§6.4);
+        * a row with no process yet: its ``granted_mode`` is lowered and nothing
+          is sent. The launch reads the row — the argv carries the tighter
+          mode, and a tighten that landed while the spawn was awaited is sent
+          once the inbox is attached (``print_channel.tighten_late``);
+        * a row that is stopping: skipped, it is being killed.
+
+        The promise is the one §6.5 states: the tighter posture governs every
+        approval the child makes after it applied.
+        """
+
+        floor = child_permission_mode("inherit", mode, "user")
+        tasks: list[asyncio.Task[None]] = []
+        for child in list(self._children.values()):
+            granted = child.granted_mode
+            if granted is None or posture_rank(floor) >= posture_rank(granted):
+                continue
+            if child.stopped or child.eager_kill:
+                continue
+            child.granted_mode = floor
+            if child.proc is not None:
+                tasks.append(asyncio.ensure_future(tighten_child(child, floor)))
+        return tasks
+
     def drain_cleanups(self) -> asyncio.Future[None]:
         """Join every run's cleanup task to quiescence, within :data:`CLEANUP_BOUND` (r3 §3.4).
 
@@ -1847,6 +1930,8 @@ class _SubagentRuntimeImpl:
             dropped_tools=computed.dropped,
             resumes=resume.target.first_key if resume is not None else None,
         )
+        # #123 — what a later tighten compares against (ADR-0306 §6.2).
+        child.granted_mode = plan.permission_mode
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)
         # THE RECEIPT (#199). Built here, with no ``await``, so it exists on every
         # path a registry row exists on and on no other — refusals above spent
@@ -1956,9 +2041,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:281``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:283``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:2169-2175``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:2285-2291``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2210,7 +2295,7 @@ class _SubagentRuntimeImpl:
                 exit_code=None,
                 elapsed_ms=int((_now() - child.started_at) * 1000),
                 output_cap=cap if cap is not None else DEFAULT_OUTPUT_CAP,
-                permission_mode=plan.permission_mode.value,
+                permission_mode=(child.applied_mode or plan.permission_mode).value,  # F10: what it ended at
                 # The run's own, decided with its limits (#610 D8) — for a
                 # resume the recorded tools it lost, not a new narrowing.
                 dropped_tools=plan.dropped_tools,
@@ -2296,6 +2381,7 @@ class _SubagentRuntimeImpl:
         containment ``EventBus`` itself applies (``extensions/api.py:332-338``).
         """
 
+        stuck = stuck_of(state.fingerprints)
         progress = SubagentProgress(
             id=child.id,
             profile=child.profile,
@@ -2306,13 +2392,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:1075-1076``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:1116-1117``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:1097-1099``) — authoritative, because it
+            # ``message_end`` (``stream.py:1205-1207``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -2332,7 +2418,12 @@ class _SubagentRuntimeImpl:
             # collapsed once by the reducer, when its message ended.
             activity=activity_of(state, live=child.state not in _TERMINAL_STATES),
             last_text=state.last_text,
+            # #123 (ADR-0306 §5, §4): decided here, from the raw-event
+            # fingerprints, never from ``activity``; and whether a wrap-up is in.
+            stuck=stuck,
+            wrapping_up=child.wrap_up is not None,
         )
+        _nudge_once(child, stuck)
         for tap in (on_event, self.host.on_progress):
             if tap is None:
                 continue
@@ -2396,18 +2487,125 @@ async def _join_settles(owner: set[asyncio.Task[None]]) -> None:
         await asyncio.wait(pending, timeout=SETTLE_JOIN_SECONDS)
 
 
+RESUME_HINT = (
+    "the agent has finished or was stopped; to go on, use action=\"resume\" with "
+    "this text as its next instruction"
+)
+"""The refusal for a row no longer in the registry (ADR-0306 §3.2): a finished,
+stopped or failed agent continues only as a new process on its own file (#610)."""
+
+_PHASES = {"streaming": "streaming", "idle": "idle"}
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """What an intervention door reports (ADR-0306 §3.2–§3.3).
+
+    ``outcome`` is the wire's word: ``queued`` (``phase`` says whether a turn is
+    open to read the line), ``refused`` (``reason`` is the child's or this
+    module's), ``unknown``, ``not_sent``. ``origin`` names who asked.
+    """
+
+    outcome: str
+    phase: str | None = None
+    reason: str | None = None
+    origin: str = "user"
+    verb: str = "steer"
+    """What was sent: ``steer``, ``follow_up`` or ``wrap_up`` (the door that sent it sets it)."""
+    ended: bool = False
+    """The child ended with the request open, or just before it (``Reply.ended``):
+    ``send`` can no longer reach the row and ``reason`` names ``action="resume"``."""
+
+    @classmethod
+    def of(cls, reply: Reply, *, origin: str, verb: str = "steer") -> Delivery:
+        """``reply`` as the ``verb`` door reports it. A wrap-up carries no text of the
+        caller's into a resume, so its ended reason names none."""
+
+        ended = reply.ended
+        reason = _ended_reason(reply.outcome, note=verb != "wrap_up") if ended else reply.error
+        phase = _PHASES.get(reply.phase or "")
+        return cls(reply.outcome, phase=phase, reason=reason, origin=origin, verb=verb, ended=ended)
+
+
+def _ended_reason(outcome: str, *, note: bool) -> str:
+    """The words for a request the child's END answered (fix round 1 F3, ADR-0306 D4).
+
+    The prompt returned and print mode ended its pump before the dispose, so a
+    line written in that window — about 0.3 s, the child's teardown — is never
+    read and gets no answer; the parent learns of it when the process exits.
+    ``unknown`` stays the word, since a line dispatched and not acknowledged
+    before a kill is possible too, but the way on is the one a finished row has:
+    ``action="resume"``. A request made after the wire closed wrote nothing and
+    is refused with :data:`RESUME_HINT`, as a row already out of the registry is.
+    """
+
+    if outcome != "unknown":
+        return RESUME_HINT
+    way = f'{ENDED_UNANSWERED}; to go on, use action="resume"'
+    return f"{way} with this text as its next instruction" if note else way
+
+
+def _door_refusal(child: RunningChild | None) -> str | None:
+    """Why a row cannot take a line now, or ``None`` (ADR-0306 §3.2's state table)."""
+
+    if child is None:
+        return RESUME_HINT
+    if child.stopped or child.eager_kill:
+        return "the agent is stopping"
+    wire = child.wire
+    if wire is None or child.proc is None or not wire.attached:
+        return "the agent has not started yet; retry"
+    if wire.broken:
+        return "the agent's inbox is broken; stop or resume it"
+    return None
+
+
+def _nudge_once(child: RunningChild, stuck: str | None) -> None:
+    """The one stuck nudge through the inbox (ADR-0306 §5.3): once per row, never a kill.
+
+    Scheduled, not awaited: ``_publish`` runs inside the stdout pump. The reply
+    is read for nothing — a nudge that was not taken changes nothing, and a
+    second trigger keeps the mark only.
+    """
+
+    if stuck is None or child.nudged or _door_refusal(child) is not None:
+        return
+    child.nudged = True
+
+    async def nudge() -> None:
+        with contextlib.suppress(Exception):
+            await child.wire.request("steer", {"message": NUDGE_TEXT})
+
+    asyncio.ensure_future(nudge())
+
+
 def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMode:
     """Rank-MIN of a consented mode and an optional live floor. Only tightens.
 
     The rank comes from :mod:`aelix_agents.posture`, which is the module that
     owns the authority ordering — NOT ``CYCLE_ORDER``
-    (``builtin/permission_mode.py:75-81``), which is a UX rotation and would
+    (``builtin/permission_mode.py:77-83``), which is a UX rotation and would
     silently rank ``PLAN`` above ``AUTO_ACCEPT``.
     """
 
     if floor is None:
         return mode
     return min(mode, floor, key=posture_rank)
+
+
+def _record_wrap_up(runtime: _SubagentRuntimeImpl, child: RunningChild, request: WrapUp | None) -> None:
+    """Record a wrap-up on the row and on its stream state, and publish the mark; ``None`` takes both back.
+
+    Taken back only for a request that was ``not_sent`` (fix round 1, N1): the
+    wire answers that before it writes or suspends, so the child read nothing,
+    no message was reduced in between and ``wrap_up_read`` is still down. A row
+    left recorded refused the next request "already requested", kept the
+    panel's "wrapping up", and had its envelope say a wrap-up "never reached
+    the model" about a line that was never sent.
+    """
+
+    child.wrap_up, child.stream.wrap_up_head = request, None if request is None else request.head
+    runtime._publish(child, child.stream, None)
 
 
 def _same_identity(resolved: ResolvedProfile, target: ResumeTarget) -> bool:
@@ -2697,6 +2895,7 @@ def _now() -> float:
 
 
 __all__ = [
+    "FLOOR_REASON",
     "MAX_DELEGATIONS_PER_PROMPT",
     "MAX_LIVE_CHILDREN",
     "RESUME_PREAMBLE",

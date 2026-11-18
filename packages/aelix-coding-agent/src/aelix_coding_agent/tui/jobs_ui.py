@@ -23,7 +23,8 @@ takes it:
   reload stopped at — for the rest of the session (verify B1);
 * G5 — no Esc withdrawal is still unwinding;
 * G7 — a notice of THIS session is pending, and it is live — a result of a job
-  this process ran, or one an extension posted (``ExtensionAPI.post_notice``):
+  this process ran, a running job's one attention notice (#123 D1:
+  ``JobContext.attention``), or one an extension posted (``ExtensionAPI.post_notice``):
   a restored one never starts a turn on its own (owner OQ7) — it goes with the
   user's next message, or now with ``/jobs send`` (which forces G7).
 
@@ -34,12 +35,13 @@ message, or run /jobs send to send them now.``
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.jobs.indicator import indicator_text
 from aelix_coding_agent.tui.chrome import NoticeWake
-from aelix_coding_agent.tui.jobs_panel import JobsPanel
+from aelix_coding_agent.tui.jobs_panel import JobsPanel, Prefill
 
 if TYPE_CHECKING:
     from aelix_coding_agent.jobs.service import JobService
@@ -58,6 +60,12 @@ def restored_line(count: int) -> str:
         "message, or run /jobs send to send them now."
     )
 
+
+
+def _attention(notice: Any) -> bool:
+    """A running job's attention notice (#123 D1): not a result."""
+
+    return dict(getattr(notice, "details", None) or {}).get("status") == "running"
 
 class JobsUi:
     """One per TUI. ``chrome`` and ``runtime_host`` are read live; the harness changes on every rebuild."""
@@ -208,17 +216,25 @@ class JobsUi:
         return allowed
 
     def send_now(self) -> str:
-        """``/jobs send``: wake for what waits, restored results included."""
+        """``/jobs send``: wake for what waits, restored results included.
 
-        waiting = self.runtime_host.harness.pending_notices
+        A running job's attention notice (``details.status == "running"``,
+        #123 D1) is counted apart: it is not a result (fix round 2, L2).
+        """
+
+        harness = self.runtime_host.harness
+        waiting = harness.pending_notices
         if not waiting:
             return "No results are waiting."
         self.force = True
         if not self.queued:
             self.queued = True
             self.chrome.queue_wake(WAKE)
-        noun = "result" if waiting == 1 else "results"
-        return f"Sending {waiting} waiting {noun} to the model."
+        held = harness.held_notices()
+        notices = min(waiting, sum(1 for n in harness.undelivered_notices() if _attention(n) and n.notice_id not in held))
+        said = [f"{waiting - notices} waiting result{'s' if waiting - notices != 1 else ''}"] if waiting > notices else []
+        said += [f"{notices} notice{'s' if notices != 1 else ''}"] if notices else []
+        return f"Sending {' and '.join(said)} to the model."
 
     async def open_panel(self) -> str | None:
         """Bare ``/jobs`` (#776, ADR-0299): the panel until it closes; what ``r`` paged, else ``None``."""
@@ -227,9 +243,17 @@ class JobsUi:
             return None
         self.panel = JobsPanel(self.service, self.chrome, emit=self.emit)
         try:
-            return await self.panel.run()
+            closed = await self.panel.run()
         finally:
             self.panel = None
+        if isinstance(closed, Prefill):
+            # #123 — ``m``: the note's head in the input box, nothing in the transcript.
+            setter = getattr(self.chrome, "set_editor_text", None)
+            if setter is not None:
+                with contextlib.suppress(Exception):
+                    setter(str(closed))
+            return None
+        return closed
 
     # --- Ctrl+B (#775, ADR-0298) ------------------------------------------------------
 
@@ -290,8 +314,13 @@ class JobsUi:
         return restored_line(count)
 
     def _placed(self, notice: Any) -> None:
+        """One transcript line per placed notice: ``◆ background notice:`` for a running
+        job's attention notice (``details.status == "running"``, #123 D1), else
+        ``◆ background result:``."""
+
         if self.commit is not None and getattr(notice, "brief", ""):
-            self.commit(f"◆ background result: {notice.brief}")
+            what = "notice" if dict(getattr(notice, "details", None) or {}).get("status") == "running" else "result"
+            self.commit(f"◆ background {what}: {notice.brief}")
 
 
 __all__ = ["WAKE", "JobsUi", "restored_line"]

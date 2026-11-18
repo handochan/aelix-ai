@@ -31,10 +31,10 @@ or a human ends it, and cancellation (below) is how a human does.
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:6092-6098``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:6155-6161``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:117``) and is threaded unchanged into
 ``ToolExecutionContext(signal=signal)`` (``loop.py:726-728``). Abort is
-``turn_task.cancel()`` (``core.py:2119-2122``). So ``CancelledError`` is the ONLY
+``turn_task.cancel()`` (``core.py:2178-2181``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.
 """
@@ -163,7 +163,7 @@ class _Batch:
     ``harness.bootstrap()``, re-pointed on every ``/new`` / ``/fork`` /
     ``/resume``, ``False`` again on TUI exit), and it is the ONLY input that
     decides what ``approval_mode: "ask"`` clamps to — ``PLAN`` with no UI, the
-    full inherit baseline with one (``posture.py:201-204``). A value captured at
+    full inherit baseline with one (``posture.py:198-201``). A value captured at
     ``_execute`` would therefore keep the LOOSE clamp for a batch that outlives
     its UI, for as long as the batch runs — which no clock bounds (#604)."""
     posture: Callable[[], PermissionMode]
@@ -181,8 +181,8 @@ class _Batch:
     Kept BESIDE :attr:`clamp_at_start` rather than derived from it because the
     clamp is lossy in exactly the direction that matters. ``child_permission_mode``
     reaches only three of the five ranks (``PLAN`` / ``AUTO_ACCEPT`` / ``YOLO``;
-    ``DEFAULT`` is folded into ``PLAN`` at ``posture.py:231`` and ``AUTO`` into
-    ``AUTO_ACCEPT`` at ``posture.py:54-60``), and in the WIDENED case it is
+    ``DEFAULT`` is folded into ``PLAN`` at ``posture.py:228`` and ``AUTO`` into
+    ``AUTO_ACCEPT`` at ``posture.py:51-57``), and in the WIDENED case it is
     always ``PLAN`` — the bottom of the lattice — so no comparison against it can
     ever detect a tightening. The raw posture does not saturate: widening is only
     ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:560``
@@ -232,7 +232,7 @@ async def run_batch(
     (``SubagentProgress`` carries no batch id — §3.6 explains why it stays that
     way). The index is available before the child's id exists, which is the
     property that makes the whole grouping design work: ``spawn_id = _new_id()``
-    is minted INSIDE ``_run`` (``runtime.py:1800``), and for members 5-8 not until
+    is minted INSIDE ``_run`` (``runtime.py:1883``), and for members 5-8 not until
     wave 2.
     """
 
@@ -301,12 +301,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:2571-2573`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:2708-2710`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:2083-2091``,
+      it kills the child eagerly before re-raising (``print_channel.py:2193-2201``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -317,7 +317,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:2169`` vs ``:2175``) and
+    OUTSIDE its own ``try`` (``print_channel.py:2285`` vs ``:2291``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -343,7 +343,7 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     STOPS AT THE FIRST ``ok=False`` AND RETURNS THE PARTIAL CHAIN (§3.3).
     ``{previous}`` makes step *k+1* depend on step *k*'s summary, so continuing
-    would feed a failure message — or ``"(no output)"`` (``envelope.py:34``) —
+    would feed a failure message — or ``"(no output)"`` (``envelope.py:35``) —
     into the next child AS IF IT WERE A RESULT. A ``status="declined"`` member
     stops it too: consent covers the whole batch (S4), so a decline is a decline
     of the batch.
@@ -415,7 +415,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
     THE ACQUIRE IS THE ONLY ``await`` BEFORE ``spawn_granted``, AND IT IS OUTSIDE
     BOTH TOCTOU WINDOWS (S5 / dossier H12). ``_run``'s admission block —
     ``_admit_live()`` → budget check → ``+= 1`` → ``_new_id()`` → registry insert
-    (``runtime.py:1786-1800``) — contains no ``await``, so asyncio cannot interleave
+    (``runtime.py:1869-1883``) — contains no ``await``, so asyncio cannot interleave
     two members inside it. Putting the acquire anywhere inside that block would
     split it and let two members both pass ``_admit_live`` before either
     registered. It is here, one frame above, where the only thing it orders is how
@@ -431,10 +431,10 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     # WHETHER A CHILD ROW EVER EXISTED, observed rather than inferred. ``_run``
     # publishes a first snapshot IMMEDIATELY after the registry insert
-    # (``runtime.py:1850``) and every refusal that precedes the insert —
+    # (``runtime.py:1935``) and every refusal that precedes the insert —
     # ``_admit_live``, the per-prompt budget, a resume refused at its limits
     # (#610), a non-consented grant — returns BEFORE it
-    # (``runtime.py:1716-1773``). So "this tap fired at least once" is
+    # (``runtime.py:1799-1856``). So "this tap fired at least once" is
     # exactly "a delegation was admitted", which is the fact
     # ``aggregate.MemberOutcome`` needs.
     #
@@ -445,7 +445,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2339-2340``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2430-2431``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -505,10 +505,10 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:706-712``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1470``), and baked into ``grant.mode``, which
+    (``extension.py:746-752``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:1511``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
-    (``runtime.py:1850``). Meanwhile shift+tab stays live during a running
+    (``runtime.py:1935``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
     (``chrome.py:1648-1651``), and the input window holds focus while a turn runs;
@@ -537,7 +537,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     True, is provably ``PLAN``: the rung requires ``AUTO_ACCEPT`` strictly looser
     than the clamp (``consent.py:560``) and the clamp's reachable set is
     ``{PLAN, AUTO_ACCEPT, YOLO}`` (``DEFAULT`` is folded into ``PLAN`` at
-    ``posture.py:231``), so the only value strictly below ``AUTO_ACCEPT`` is
+    ``posture.py:228``), so the only value strictly below ``AUTO_ACCEPT`` is
     ``PLAN``. ``PLAN`` is rank 0. Nothing is strictly below rank 0, so
     ``rank(live) < rank(clamp_at_start)`` could never fire for a widened batch —
     measured as 0 hits over the whole (approval_mode × posture_at_start ×
@@ -554,7 +554,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     * ``clamp_tightened`` — the original signal. It is the one that carries the
       ``has_ui`` half: ``has_ui`` is the only input deciding what
-      ``approval_mode: "ask"`` clamps to (``posture.py:201-204``), and a batch
+      ``approval_mode: "ask"`` clamps to (``posture.py:198-201``), and a batch
       that outlives its UI changes the CLAMP with the posture untouched.
     * ``parent_tightened`` — the new one, and the only one that can fire against
       a saturated clamp. shift+tab is the user saying "less authority now"; a
@@ -562,7 +562,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:2399-2410``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:2582-2593``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 
@@ -592,7 +592,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
         batch.resolved.scope,
         # LIVE, exactly like the posture beside it. ``has_ui`` is the only input
         # that decides what ``approval_mode: "ask"`` clamps to
-        # (``posture.py:201-204``), so freezing it would let a batch that
+        # (``posture.py:198-201``), so freezing it would let a batch that
         # outlives its UI keep the LOOSER of the two clamps — the same
         # stale-value defect §3.9 exists to close, for the other argument.
         has_ui=batch.has_ui(),
@@ -604,7 +604,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
         # CHILD clamp, never the parent's raw posture — returning the latter
         # would hand a ``yolo`` parent's raw ``yolo`` to a child that
         # ``child_permission_mode`` had deliberately capped. It is also already
-        # <= the live parent by construction (``posture.py:227``).
+        # <= the live parent by construction (``posture.py:224``).
         return live
     return None
 

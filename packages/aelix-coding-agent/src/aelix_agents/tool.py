@@ -119,7 +119,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:1170-1173``), and NO process is
+into a blocked call the model reads (``extension.py:1210-1213``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -131,14 +131,15 @@ advertising a mode the parser refuses. Mirrors ``SubagentMode``
 evaluating it at runtime would pull a product-core symbol into this module's
 import graph to save one tuple."""
 
-AgentAction = Literal["run", "resume", "spawn", "wait", "status", "stop", "result"]
+AgentAction = Literal["run", "resume", "spawn", "wait", "status", "stop", "result", "send", "wrap_up"]
 """What one ``agent`` call does (#610 D1, ADR-0277; #611 S1c, ADR-0295).
 
 ``run`` is everything this tool did before #610 — delegate new work, in one of
 :data:`_MODES`. ``resume`` continues ONE agent this conversation delegated
-earlier, on its own session file, inside the limits it ran with. The other five
+earlier, on its own session file, inside the limits it ran with. The other seven
 are the BACKGROUND actions (:data:`_BACKGROUND_ACTIONS`), which exist only where
-background jobs do."""
+background jobs do — ``send`` and ``wrap_up`` (#123, ADR-0306) among them, since
+the only agents a model can reach mid-run are the ones running beside its turn."""
 
 _ACTIONS: tuple[AgentAction, ...] = ("run", "resume")
 """The one spelling of the action set — :data:`_MODES`' rule, for :data:`_MODES`'
@@ -150,7 +151,7 @@ resume got a fresh delegation and believed it had resumed (#610 design D1) — a
 #611's background actions, sent to a build that does not know them, must not
 start the foreground run they were not."""
 
-_BACKGROUND_ACTIONS: tuple[AgentAction, ...] = ("spawn", "wait", "status", "stop", "result")
+_BACKGROUND_ACTIONS: tuple[AgentAction, ...] = ("spawn", "wait", "status", "stop", "result", "send", "wrap_up")
 """The background actions (#611 S1c, ADR-0295), offered ONLY where background
 jobs are on and the host can carry them (``jobs/activation.py``, and not an
 RPC/ACP host until #612). Elsewhere the schema does not list them and
@@ -165,6 +166,11 @@ RPC/ACP host until #612). Elsewhere the schema does not list them and
 * ``status`` — how one agent, or each, is doing.
 * ``stop`` — stop one agent; its partial result still comes back as its notice.
 * ``result`` — read a finished agent's whole result again, paged by ``offset``.
+* ``send`` — a note to ONE running agent (``id``, ``task``; ``mode="steer"``, the
+  default, is read before its next model call, ``mode="follow_up"`` after its
+  current answer), through its command inbox (#123, ADR-0306 §3).
+* ``wrap_up`` — ask ONE running agent to finish now: its next model call has no
+  tools (nor has a retry of it), then its result comes back ``aborted`` with its text (ADR-0306 §4).
 """
 
 RESUME_TASK_MAX_BYTES = MAX_TASK_BYTES - RESUME_PREAMBLE_RESERVE
@@ -272,7 +278,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:1170-1173``) with no process created.
+    # (``extension.py:1210-1213``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -327,16 +333,27 @@ def agent_tool_parameters(*, background: bool) -> dict[str, Any]:
             "'profile' it ran as, and its next instruction in 'task'. "
             "spawn: start ONE agent in the background ('profile', 'task', "
             "optional 'cwd'); its result arrives later as a notice. "
-            "wait / status / stop / result: about a spawned agent, by 'id'."
+            "wait / status / stop / result: about a spawned agent, by 'id'. "
+            "send: a note to a running agent ('id', 'task'; mode steer or "
+            "follow_up). wrap_up: ask a running agent to finish now ('id')."
         ),
     }
     properties["id"] = {
         "type": "string",
         "description": (
             "resume: the agent's Session id, from its result. wait, status, "
-            "stop, result: the id spawn returned (or the job id its notice "
-            "shows); wait and status without one cover every agent you "
-            "spawned. Not a file path."
+            "stop, result, send, wrap_up: the id spawn returned (or the job id "
+            "its notice shows); wait and status without one cover every agent "
+            "you spawned. Not a file path."
+        ),
+    }
+    properties["mode"] = {
+        **AGENT_TOOL_PARAMETERS["properties"]["mode"],
+        "enum": [*_MODES, *_SEND_MODES],
+        "description": (
+            AGENT_TOOL_PARAMETERS["properties"]["mode"]["description"]
+            + " With action=send: steer (default) — the agent reads the note "
+            "before its next model call; follow_up — after its current answer."
         ),
     }
     properties["timeout"] = {
@@ -361,8 +378,7 @@ _DESCRIPTION_HEAD = (
     "context window.\n"
     "\n"
     "Each one runs to completion and returns ONE summary. A child cannot ask you "
-    "a question and you cannot steer it mid-run, so every task must be complete "
-    "on its own. A delegated agent is "
+    "a question, so every task must be complete on its own. A delegated agent is "
     "READ-ONLY unless the user's own permission posture already grants more, or "
     "they approve more at a prompt, and it can never hold a tool you do not "
     "hold, delegate further, or run outside your working directory.\n"
@@ -413,7 +429,12 @@ _BACKGROUND_HEAD = (
     'action="stop" stops it, and its partial result still comes back; '
     'action="result" reads a finished agent\'s whole result again '
     "(\'offset\' pages it). Spawned agents count against the same limit "
-    "as the ones you wait for."
+    "as the ones you wait for. "
+    'You can send a running agent a note with action="send" (\'id\', \'task\'); '
+    "it reads the note after the tool calls it is already running, never in the "
+    "middle of one (mode=follow_up: after its current answer instead). "
+    'action="wrap_up" asks it to finish now: one more reply with no tools, and '
+    "its result comes back as stopped, with what it said. If it looks stuck, a notice says so while it runs."
 )
 """What the model reads about the background actions, appended to
 :data:`_DESCRIPTION_HEAD` only where they exist (#611 S1c, ADR-0295)."""
@@ -493,6 +514,9 @@ class AgentCall:
     (``jobs_client.wait_bounds``). ``None`` is the default wait."""
     offset: int | None = None
     """``action="result"`` only: where the page starts, in bytes."""
+    delivery: str | None = None
+    """``action="send"`` only (#123): ``"steer"`` or ``"follow_up"``, the inbox line
+    the note goes as. ``None`` for every other action."""
 
     @property
     def task(self) -> str:
@@ -532,7 +556,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:5291-5293`` explicitly permits a later handler to mutate
+    ``harness/core.py:5350-5352`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -942,6 +966,8 @@ def _parse_control(action: AgentAction, args: Mapping[str, Any]) -> AgentCall:
     clamped where the wait runs, so the result can say it was.
     """
 
+    if action in ("send", "wrap_up"):
+        return _parse_send(action, args)
     for key in ("task", "tasks", "cwd"):
         if not _absent(args.get(key)):
             raise AgentCallError(_CONTROL_TAKES_NO_TASK.format(action=action, key=key))
@@ -978,6 +1004,58 @@ def _parse_control(action: AgentAction, args: Mapping[str, Any]) -> AgentCall:
     )
 
 
+_SEND_NEEDS_TASK = (
+    "action='send' needs 'task': the note for that agent. It reads the note after "
+    "the tool calls it is already running, never in the middle of one."
+)
+_SEND_MODES = ("steer", "follow_up")
+
+
+def _parse_send(action: AgentAction, args: Mapping[str, Any]) -> AgentCall:
+    """``send`` / ``wrap_up`` — a line into ONE running agent's inbox (#123, ADR-0306 §3).
+
+    Beside :func:`_parse_resume` in shape: ``id`` is required (the agent ``spawn``
+    returned, or its job id), ``send`` takes its note in ``task`` and the inbox
+    line in ``mode`` — ``steer`` (default) or ``follow_up`` — and what would
+    start or page work (``tasks``, ``cwd``, ``timeout``, ``offset``, a
+    ``profile``) is refused rather than ignored. ``wrap_up`` takes the ``id``
+    and nothing else: its text is the parent's (``command_wire.WRAP_UP_TEXT``),
+    so the model cannot send a final warning the kernel does not enforce.
+    """
+
+    for key in ("tasks", "cwd", "timeout", "offset", "background"):
+        if not _absent(args.get(key)):
+            raise AgentCallError(_CONTROL_TAKES_NO_TASK.format(action=action, key=key))
+    agent_id = _parse_agent_id(args.get("id"))
+    if agent_id is None:
+        raise AgentCallError(_NEEDS_AN_ID.format(action=action))
+    if action == "wrap_up":
+        for key in ("task", "mode"):
+            if not _absent(args.get(key)):
+                raise AgentCallError(
+                    f"action='wrap_up' takes no {key!r}: it asks the agent to finish with its "
+                    "own words; to tell it something first, use action='send'."
+                )
+        return AgentCall(profile="", tasks=("",), mode="single", action="wrap_up", id=agent_id)
+    task = args.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise AgentCallError(_SEND_NEEDS_TASK)
+    _refuse_unsendable(task, where="'task'", resend="the note")
+    try:
+        check_task_size(task)
+    except TaskTooLarge as exc:
+        raise AgentCallError(f"'task': {exc}") from exc
+    mode = args.get("mode")
+    if mode is None:
+        mode = "steer"
+    if mode not in _SEND_MODES:
+        raise AgentCallError(
+            f"action='send' takes mode='steer' (read before the agent's next model call, the "
+            f"default) or mode='follow_up' (read after its current answer), not mode={mode!r}."
+        )
+    return AgentCall(profile="", tasks=(task,), mode="single", action="send", id=agent_id, delivery=mode)
+
+
 def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> AgentCall:
     """Validate one ``agent`` call. Raises :class:`AgentCallError`.
 
@@ -992,7 +1070,7 @@ def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> Ag
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:1170-1173``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:1210-1213``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:604-617``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -1318,7 +1396,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1701``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1713``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:5750-5754``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """
@@ -1374,7 +1452,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:1097-1099`` → ``envelope.py:1075``), which makes it attacker-supplied
+(``stream.py:1205-1207`` → ``envelope.py:1116``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""

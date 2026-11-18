@@ -543,14 +543,14 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:2272`` passes
+    exists to kill. ``cli/entry.py:2305`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:1184-1186``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:2279``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:2312``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
@@ -825,7 +825,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:516-532``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:4432-4439``) and never re-scans the extension dirs.
+    # (``harness/core.py:4491-4498``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

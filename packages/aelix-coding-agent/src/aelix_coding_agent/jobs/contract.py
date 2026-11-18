@@ -112,6 +112,13 @@ class KindCapabilities:
     on_reload: Literal["stop"] = "stop"
     noun: tuple[str, str] | None = None
     reads_persisted: bool = False
+    controls: tuple[str, ...] = ()
+    """The control verbs the kind's adapter takes through ``JobService.control``
+    (#123, ADR-0306 §3.1): opaque strings the kind supplies, such as ``steer``
+    and ``wrap_up``. A verb not listed is refused with ``control_hint`` when
+    the kind has one (``service.control_refusal``), so ``/jobs steer`` on a
+    background command says what stops it. ``()``, the default, declares none
+    (ADR-0293's control-adapter clause)."""
 
 
 @dataclass(frozen=True)
@@ -222,6 +229,24 @@ class JobSnapshot:
     #: Opaque here: a kind reads back its own launch data, such as the absolute
     #: path of an output file, without deriving it again after a restart.
     client_start: Mapping[str, Any] = field(default_factory=dict)
+    #: Whether the job, not ended, has its one attention notice
+    #: (:meth:`JobContext.attention`) posted and not yet placed (#123 D1). Never
+    #: a result: ``result_waiting`` and ``notice_state`` do not count it.
+    attention_waiting: bool = False
+
+
+@runtime_checkable
+class JobControlAdapter(Protocol):
+    """The control half a kind adds when its ``capabilities.controls`` names a verb (#123, ADR-0306 §3.1).
+
+    A separate protocol so a kind that declares no controls (``bash``) needs no
+    method; the service checks ``isinstance`` against it only after the verb was
+    declared. ``control`` takes a running job of the kind, one declared verb and
+    the verb's own payload (``text``, ``mode``, ``origin``), and answers one
+    sentence the surface prints.
+    """
+
+    async def control(self, job_id: str, verb: str, payload: Mapping[str, Any]) -> str: ...
 
 
 @runtime_checkable
@@ -295,6 +320,19 @@ class JobContext(Protocol):
 
     def progress(self, snapshot: Mapping[str, Any] | None = None) -> None: ...
 
+    def attention(self, body: NoticeBody, *, brief: str = "") -> bool:
+        """Tell this job's session, once, that the running job may need it; whether it was taken (#123 D1).
+
+        One framed notice per job, ``details.status == "running"``, its id
+        ``<job>:attention``: refused (``False``, nothing posted) once one was
+        taken, for a job that does not notify, and unless the job is running —
+        not starting, not asked to stop, its ``run`` not returned. ``brief`` is
+        the kind's short reason for the one-line summary. It is not the job's
+        result and nothing that counts results counts it; no fact is written,
+        so a restart restores nothing of it.
+        """
+        ...
+
     def env_marker(self) -> dict[str, str]: ...
 
     def protocol_env(self) -> dict[str, str]: ...
@@ -328,6 +366,7 @@ __all__ = [
     "ClientOutcome",
     "HelperCleanup",
     "JobContext",
+    "JobControlAdapter",
     "JobKindAdapter",
     "JobRunner",
     "JobSnapshot",

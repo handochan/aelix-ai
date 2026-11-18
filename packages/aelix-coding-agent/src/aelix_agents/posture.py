@@ -31,21 +31,18 @@ therefore the real guarantee, and it is computed here, in the parent.
 
 from __future__ import annotations
 
-from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.builtin.permission_mode import AUTHORITY_RANK, PermissionMode
 
 # The total order the clamp is taken over: PLAN (tightest) → YOLO (loosest).
 # It is a rank map rather than the shipped ``CYCLE_ORDER``
-# (``builtin/permission_mode.py:75-81``) on purpose — the cycle is a UX
+# (``builtin/permission_mode.py:77-83``) on purpose — the cycle is a UX
 # rotation (DEFAULT → AUTO_ACCEPT → PLAN → YOLO → AUTO) and carries no
 # authority ordering at all. Reusing it here would silently rank PLAN above
-# AUTO_ACCEPT.
-_RANK: dict[PermissionMode, int] = {
-    PermissionMode.PLAN: 0,
-    PermissionMode.DEFAULT: 1,
-    PermissionMode.AUTO_ACCEPT: 2,
-    PermissionMode.AUTO: 3,
-    PermissionMode.YOLO: 4,
-}
+# AUTO_ACCEPT. Since #123 the table itself is declared beside the enum
+# (``AUTHORITY_RANK``), so a delegated child can refuse a widen by the same
+# order without importing this extension (ADR-0306 §6.3); this module keeps
+# the clamp and stays the reader the parent's decisions go through.
+_RANK: dict[PermissionMode, int] = dict(AUTHORITY_RANK)
 
 # ``inherit`` (and ``ask`` WITH a live parent UI) baseline. DEFAULT collapses to
 # PLAN because "prompt" is meaningless in a process with no prompt channel; AUTO

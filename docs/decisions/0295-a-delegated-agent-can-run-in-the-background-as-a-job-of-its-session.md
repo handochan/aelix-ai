@@ -673,3 +673,12 @@ there rather than reading the shipped value, so a rollback does not fail them):
 
 **Hosts.** RPC and ACP still refuse the background actions and keep `MAX_LIVE_CHILDREN = 4` through
 `_admit_live` (§1, #612); `docs/guides/agent-profiles.md`, "Background delegation", says so.
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*`send` now exists.* Where this ADR says aelix "has no `send` (#123)" (``:32``) and lists `send`
+among what is not here (``:391``): `agent(action="send", id=…, task=…, mode="steer" | "follow_up")`
+and `agent(action="wrap_up", id=…)` are offered beside the background actions and reach a spawned
+agent, or one Ctrl+B moved, through the kind's control adapter (ADR-0306 D4). The notice, the job
+states and the result file are unchanged; a wrapped-up agent's job ends `stopped` with an
+`aborted` envelope (ADR-0306 D7).

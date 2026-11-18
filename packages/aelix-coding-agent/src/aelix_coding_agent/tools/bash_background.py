@@ -130,7 +130,9 @@ CAPABILITIES = KindCapabilities(
     output=True,
     # ``job_stop`` stops it, with ``bash``'s permission (owner, 2026-11-08).
     job_tool_control=True,
-    control_hint=None,
+    # What ``/jobs steer``, ``/jobs wrap`` and the panel's ``m`` and ``w w`` end their refusal
+    # with (#123 fix round 1, V7); ``job_stop`` never reads it while ``job_tool_control`` is set.
+    control_hint="/jobs stop <id> stops it (panel: s s)",
     counts_foreground=False,
     default_bound=4,
     # ``-p``/json "waits for tracked jobs only" (owner, 2026-11-07): this is one.

@@ -65,6 +65,8 @@ _STATUS_PHRASES = {
     "lost": "was lost: its process is gone and no result was recorded",
     "unresolved": "could not be confirmed stopped",
     "recovered": "ended while aelix was not running; this is its last answer as recorded",
+    # A running job's one attention notice (#123 D1, ``JobContext.attention``).
+    "running": "is still running",
 }
 
 # C0 controls other than tab and newline, DEL, and the C1 range: an escape
@@ -80,6 +82,12 @@ def final_notice_id(job_id: str) -> str:
 
 def unresolved_notice_id(job_id: str) -> str:
     return f"{job_id}:unresolved"
+
+
+def attention_notice_id(job_id: str) -> str:
+    """The id of a running job's one attention notice (#123 D1); never its result's."""
+
+    return f"{job_id}:attention"
 
 
 def extension_notice_key(source: str, notice_id: str) -> str:
@@ -184,6 +192,7 @@ def frame(
 __all__ = [
     "NOTICE_MAX_BYTES",
     "PLACEMENT_LINE_RESERVE",
+    "attention_notice_id",
     "cut_brief",
     "cut_placement_line",
     "extension_notice_key",

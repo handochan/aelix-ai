@@ -915,3 +915,58 @@ r4 errata E1; the #779 verify's probe: the turn task cancelled, `abort()` not ca
 false). The kernel itself reads nothing from it;
 the TUI's Ctrl+B reads it to refuse a move while an abort is pending (ADR-0298, "Two checks stay as
 conservative refusals").
+
+## Amendment (2026-11-18, ADR-0306, #123)
+
+*The control adapter named in the quoted gate exists.* `KindCapabilities.controls` declares the
+verbs a kind takes, `JobService.control(job_id, verb, payload)` checks the declaration and calls
+the adapter's `control`, and a kind that declares none is refused with its `control_hint`. The
+agent kind declares `steer` and `wrap_up` and resolves the row of a spawned job and of a Ctrl+B'd
+one (ADR-0306 D4). The service still names no kind and reads no payload. Fix round 1 (V7): the
+refusal names the verb in a human's words for the two the `/jobs` surfaces send (`steer` is "a
+message", `wrap_up` "a wrap-up") and writes any other as the kind supplied it; the bash kind's
+hint is "/jobs stop <id> stops it (panel: s s)", read by this refusal only (`job_stop` reads a
+hint only where `job_tool_control` is off).
+
+*The macOS row of the 2026-11-17 parent-death table, re-recorded (fix round 1, F2).* Local macOS,
+Python 3.12, 10 of 10 runs of each `test_l3…` recording: the delegated child, its shell and its
+sleeper were gone within 0.4 s of the SIGKILL in all three columns — the child's command inbox is
+a pipe from the killed aelix and reaches EOF (ADR-0306). The background `bash` shell and its
+sleeper of the `-p` column were alive 5 s after the kill in 10 of 10, as before. Nothing is
+asserted there still; `tests/cli/test_inbox_eof_123.py` asserts the child's end on POSIX.
+
+*§11's drain has two more ends (fix round 1, F2 and F5).* `_drain_background` also leaves, between
+passes and once more right before a notice turn, when the command inbox reached EOF (the run
+exits 1) and when the run that just ended read a final steer — a wrap-up (the exit code is the
+last answer's). In both it waits for no job and starts no notice turn, and the dispose stops the
+session's jobs. Each is measured in ADR-0306, "Consequences", with its condition; a `-p` run with
+no command inbox takes neither.
+
+*A running job may ask for attention once (#123 D1; the owner, 2026-11-18, on the round-1 report:
+"2. 이번에 넣기" — built in this change; the shape is the lead's call,
+`.omc/specs/123-d1-stuck-notice-design-2026-11-18.md`).* `JobContext.attention(body, *, brief="")`
+is a kind-agnostic door, and the service still names no kind and reads no payload. It frames one
+notice per job with §8's frame — the status phrase "is still running", the job's running time, no
+`job(action="result")` hint when the body is cut — under the id `<job>:attention`, with
+`details.status == "running"` and the brief `<label> "<title>" still running: <brief>`. It answers
+`False` and posts nothing once the job raised one, whatever became of it; for a job that does not
+notify (`notify` off on the job or its kind); unless the job is `running` with no stop latched
+and its `run` not returned — a stop the liveness loop latches and a run in its barrier both still
+read `running`; and, its record `dropped`, when the current session's inbox refuses the id (one it
+already knows; fix round 2, C-N: at `1991e445` the record stayed `pending` and the door answered
+`True`). It is not the job's result: it never changes the job's `notice`, `notice_state`,
+`owed` or `placed`. Routed through them, its placement would mark a running job `delivered`, and
+in `_complete`'s window before the outcome fact `unsettled()` would read false, so a `-p` drain
+could leave before the result was posted. So `result_waiting`, `notice_state`, `unsettled()`,
+`extension_waiting()`, the footer and `/jobs` read the same with and without it, and
+`JobSnapshot.attention_waiting` (additive, defaulted) says it waits. §11's wake counts it (G7,
+`has_live_pending`) and the TUI's line for it is `◆ background notice: <brief>`; §11's drain gives
+it a notice turn and goes on waiting for the job — and `unsettled()` now holds from the job's
+terminal (or `unresolved`) state until its notice is posted (`_Job.completing`, set with the state
+and cleared in a `finally`; fix round 2, C-R1: at `1991e445` a drain that read it while `_complete`
+wrote the job's records and cleanup fact, or `_become_unresolved` its supervision fact, left before
+the notice was posted; a job with no notice still settles once those writes end); §11's SIGINT flush leaves it out (it is not a
+result, and the job was just stopped). `bind` posts a pending one again only while its job runs
+and drops it otherwise. No fact is written, so a restart restores nothing of it, and a job #769
+lets go owes nothing for one still waiting. §10's `quiet` still never notifies. Each clause:
+`tests/jobs/test_attention_123.py`; the delegation kind's use: ADR-0306 D9.

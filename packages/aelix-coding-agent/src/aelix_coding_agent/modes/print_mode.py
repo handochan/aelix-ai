@@ -88,6 +88,7 @@ from aelix_coding_agent.jobs.contract import (
     PRINT_DONE_EVENT,
 )
 from aelix_coding_agent.model_registry import clear_command_value_cache
+from aelix_coding_agent.modes.print_inbox import end_inbox, serve_inbox
 from aelix_coding_agent.tools import launch_ledger
 
 if TYPE_CHECKING:
@@ -205,6 +206,7 @@ async def run_print_mode(
     initial_images: list[Any] | None = None,
     model_registry: Any = None,
     jobs: Any = None,
+    inbox: Any = None,
 ) -> int:
     """Pi parity: ``runPrintMode`` (``modes/print-mode.ts``).
 
@@ -227,6 +229,14 @@ async def run_print_mode(
     before its verdict (:func:`_drain_background`) and the verdict latches the
     first failed answer among one user prompt and the notice turns after it
     (:class:`_FirstFailure`); without it nothing here differs from #410.
+
+    ``inbox`` (#123, ADR-0306) is the delegation parent's command inbox on this
+    process's stdin (:class:`~aelix_coding_agent.modes.print_inbox.CommandInbox`),
+    passed only by a launch that carried ``--command-inbox``. Its pump runs beside
+    the prompt from before the header to this function's ``finally``, where it is
+    ended before the dispose (a finished run never aborts itself on the parent's
+    close). An EOF before that ends the run: :func:`_inbox_ended`. ``None`` starts
+    a no-op task; the calls are unconditional (this function is listed, C901 58).
     """
 
     loop = asyncio.get_running_loop()
@@ -362,6 +372,10 @@ async def run_print_mode(
 
     runtime_host.set_rebind_session(_rebind)
 
+    # #123 (ADR-0306) — the parent's command inbox, read beside the prompt; a
+    # no-op task without one. Answered through the same writer the events use.
+    pump = serve_inbox(runtime_host, inbox, write=_write_raw_stdout)
+
     exit_code = 0
     try:
         # === Pi step 4 — JSON-mode header emit ================================
@@ -397,8 +411,8 @@ async def run_print_mode(
         if initial_message is not None:
             if latch is not None:
                 latch.user_prompt()
-            await runtime_host.harness.prompt(
-                initial_message,
+            await _prompt_unless_ended(
+                runtime_host, inbox, initial_message,
                 images=initial_images,
             )
             if latch is not None:
@@ -425,7 +439,7 @@ async def run_print_mode(
                 break
             if latch is not None:
                 latch.user_prompt()
-            await runtime_host.harness.prompt(message)
+            await _prompt_unless_ended(runtime_host, inbox, message)
             if latch is not None:
                 latch.note(runtime_host.harness)
             # #240 — same recovery per residual message, so a run of several
@@ -438,7 +452,7 @@ async def run_print_mode(
         if jobs is not None and latch is not None:
             try:
                 await _drain_background(
-                    runtime_host, jobs, latch, stop=lambda: stdout_dead["v"] or signal_exit["code"] is not None
+                    runtime_host, jobs, latch, stop=lambda: stdout_dead["v"] or signal_exit["code"] is not None or _inbox_ended(inbox) or _wrapped_up(runtime_host)
                 )
             except asyncio.CancelledError:
                 # A Ctrl+C (``asyncio.run`` cancels the main task on SIGINT): stop
@@ -475,7 +489,7 @@ async def run_print_mode(
         # stdout is the event stream, which already carried the failed
         # message, and its stderr stays as it was (see the module docstring).
         state_messages = list(runtime_host.harness.state.messages)
-        failure = _final_failure(state_messages, before=messages_before)
+        failure = _final_failure(state_messages, before=messages_before) or _inbox_end_failure(inbox)
         if latch is not None and latch.failure is not None:
             # #722 — the first failure of the last user prompt and its notice
             # turns stands, whatever answered after it (owner, 2026-11-07).
@@ -521,6 +535,9 @@ async def run_print_mode(
 
     finally:
         # === Pi step 9 — cleanup =============================================
+        # #123 — the inbox first: the run is over, so an EOF the parent sends
+        # from here on must not abort a turn that already ended.
+        await end_inbox(pump)
         unsub = unsubscribe_holder["u"]
         if unsub is not None:
             with contextlib.suppress(Exception):
@@ -614,6 +631,10 @@ async def _drain_background(
     (``blocks_print_exit``); what a top-level session released is not tracked
     (#232). A notice turn that leaves the same notice unanswered (an abort) or
     that the harness refuses ends the drain rather than spinning.
+
+    ``stop`` ends it between passes and once more right before a notice turn
+    (#123): the leaf read above it awaits, and a stop that came true meanwhile —
+    stdout gone, a signal, the command inbox at EOF, a wrap-up the run read (:func:`_wrapped_up`) — gets no model call.
     """
 
     async def either(*waits: Any, timeout: float) -> None:
@@ -628,6 +649,8 @@ async def _drain_background(
         harness = runtime_host.harness
         if harness.pending_notices or await harness.unanswered_notice_at_leaf():
             unanswered_before = harness.pending_notices == 0
+            if stop():
+                return
             result = await harness.prompt_notices()
             if result.started:
                 latch.note(harness)
@@ -668,13 +691,17 @@ async def _interrupt_flush(
     header line and then one line per notice to stderr (stdout is the
     answer's); JSON mode writes one
     ``background_notice_undelivered`` event per notice to stdout, with its body.
-    The caller re-raises the interrupt, so the exit is the interrupt's.
+    The caller re-raises the interrupt, so the exit is the interrupt's. A
+    running job's attention notice (``details.status == "running"``, #123 D1)
+    is left out: it is not a result, and the job it names was just stopped.
     """
 
     with contextlib.suppress(Exception):
         await jobs.owner_ended(jobs.owner, "signal")
     try:
-        notices = list(runtime_host.harness.undelivered_notices())
+        notices = [
+            n for n in runtime_host.harness.undelivered_notices() if n.details.get("status") != "running"
+        ]
     except Exception:  # noqa: BLE001 — a torn-down harness has nothing left to say
         notices = []
     if not notices:
@@ -791,3 +818,64 @@ def _compaction_failure(event: Any) -> str | None:
 
 
 __all__ = ["run_print_mode"]
+
+
+INBOX_ENDED_FAILURE = "the command inbox closed before the run ended"
+"""Text mode's stderr line for a run whose inbox reached EOF first (#123)."""
+
+
+def _inbox_ended(inbox: Any) -> bool:
+    """Whether the command inbox reached EOF while the run was going (#123, ADR-0306).
+
+    The parent is gone, or closed its end. The pump records it before it aborts
+    the turn (``modes/print_inbox.py``), because the abort ends only a turn that
+    is running: the kernel erases one that lands before a prompt claims its turn,
+    and in the drain there is no turn to abort. So the flag is read where the
+    abort does not reach — before each prompt, the residual messages' included
+    (:func:`_prompt_unless_ended`), in the drain's ``stop`` and with the verdict
+    (:func:`_inbox_end_failure`). ``None``, a run with no inbox, never ended.
+    """
+
+    return bool(getattr(inbox, "ended", False))
+
+
+async def _prompt_unless_ended(runtime_host: AgentSessionRuntime, inbox: Any, text: str, **kwargs: Any) -> None:
+    """``harness.prompt``, or nothing when the inbox already ended or the last run read a wrap-up (:func:`_wrapped_up`).
+
+    One call per prompt site, so :func:`run_print_mode` (baseline-listed) gains
+    no branch. Nothing awaits between this check and the kernel's claim of the
+    turn (``prompt`` claims before its first ``await``), so an EOF lands either
+    before the check — no prompt — or after the claim, where the pump's abort
+    ends the turn.
+    """
+
+    if _inbox_ended(inbox) or _wrapped_up(runtime_host):
+        return
+    await runtime_host.harness.prompt(text, **kwargs)
+
+
+def _wrapped_up(runtime_host: AgentSessionRuntime) -> bool:
+    """Whether the run that just ended read a final steer: the parent's wrap-up (#123 fix round 1, F5).
+
+    Such a run is over (ADR-0306 D6): no residual message is prompted
+    (:func:`_prompt_unless_ended`), and the drain neither waits for this
+    session's own jobs nor starts a notice turn (its ``stop``) — the dispose
+    stops those jobs, as it does after an inbox EOF or a signal. The verdict is
+    untouched: the exit code is the last answer's. Read off the kernel's flag,
+    which stays up until the next run starts and none does. ``is True``: a stub
+    harness with no such attribute, or a mock's, is not a wrapped-up one.
+    """
+
+    return getattr(runtime_host.harness, "final_consumed", False) is True
+
+
+def _inbox_end_failure(inbox: Any) -> str | None:
+    """The failure of a run whose inbox ended before it did, else :data:`None` (#123).
+
+    Read with the verdict. A run whose prompt was skipped, or whose drain was cut
+    after an answer that did not fail, has no failed message for
+    :func:`_final_failure` to read, and it did not finish: it exits 1, as the run
+    whose turn the EOF aborted does.
+    """
+
+    return INBOX_ENDED_FAILURE if _inbox_ended(inbox) else None

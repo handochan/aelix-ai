@@ -57,6 +57,15 @@ and — when OS evidence decided it — is classified again by the liveness loop
 **Ownership** (Codex #5). Every reading and control path answers only for the
 current session's jobs: an id of another session's job is not found.
 
+**Attention** (#123 D1, the lead's design). A running job may post ONE notice
+through :meth:`JobContext.attention` — a kind's "this job may need you" — with
+id ``<job>:attention`` and ``details.status == "running"``. It is kept in a
+record of its own (:class:`_Attention`), never in the job's ``notice``,
+``notice_state``, ``owed`` or ``placed``: it is not a result, so nothing that
+counts results or delivery counts it. The TUI's wake does
+(:meth:`JobService.has_live_pending`). A rebind posts it again only while the
+job still runs, and drops it otherwise. No fact is written for it.
+
 **Retention** (#769, the lead's policy). A session's ended jobs are kept whole
 up to :data:`SETTLED_KEPT`; past it the oldest that owes nothing — ended, its
 outcome written, every notice of it placed or never owed — of a kind that
@@ -92,6 +101,7 @@ from aelix_coding_agent.jobs.contract import (
     TERMINAL_STATES,
     ClientOutcome,
     HelperCleanup,
+    JobControlAdapter,
     JobKindAdapter,
     JobRunner,
     JobSnapshot,
@@ -145,6 +155,24 @@ class JobStartRefused(Exception):
 
 class JobLaunchFailed(Exception):
     """The runner reported that its launch failed. Nothing is notified for it."""
+
+
+CONTROL_WORDS: Mapping[str, str] = {"steer": "a message", "wrap_up": "a wrap-up"}
+"""What a refusal calls the two control verbs the ``/jobs`` surfaces send (#123 fix
+round 1, V7): a human reads "a wrap-up", never ``wrap_up``. A verb with no entry is
+shown as the kind wrote it."""
+
+
+def control_refusal(caps: KindCapabilities, verb: str) -> str:
+    """The sentence for ``verb`` on a kind that does not declare it, then the kind's ``control_hint``.
+
+    One place for it: :meth:`JobService.control` answers with it, and the
+    ``/jobs`` panel's ``m`` shows it as its note in place of a ``/jobs steer``
+    line the job could not take.
+    """
+
+    hint = caps.control_hint
+    return f"this kind of job does not take {CONTROL_WORDS.get(verb, verb)}" + (f"; {hint}" if hint else "")
 
 
 class JobNotFound(Exception):
@@ -220,6 +248,13 @@ class _Job:
     # Every notice of it placed, by id: its current one is delivered once it is
     # among them and nothing it owes waits, in whatever order they were placed.
     placed: set[str] = field(default_factory=set)
+    # Its one attention notice (#123 D1), apart from ``notice``, ``owed`` and
+    # ``placed``: never its result.
+    attention: _Attention | None = None
+    # ``_complete`` made it terminal, or ``_become_unresolved`` unresolved, and
+    # has not returned: its records and facts are still being written, its
+    # notice not yet posted (``unsettled`` holds ``-p`` through it; #123 fix r2).
+    completing: bool = False
 
     @property
     def adapter(self) -> JobKindAdapter:
@@ -308,6 +343,20 @@ class _ExtensionNotice:
     notice_state: Literal["pending", "delivered"] = "pending"
 
 
+@dataclass
+class _Attention:
+    """A running job's one attention notice (#123 D1), kept apart from its final one.
+
+    ``pending`` while posted (or waiting for its session's :meth:`JobService.bind`)
+    and not placed; ``delivered`` once placed; ``dropped`` when a rebind found
+    its job no longer running, so it was posted nowhere again.
+    """
+
+    owner: str
+    notice: Notice
+    state: Literal["pending", "delivered", "dropped"] = "pending"
+
+
 class _Context:
     """The :class:`~aelix_coding_agent.jobs.contract.JobContext` a runner is handed."""
 
@@ -365,6 +414,11 @@ class _Context:
 
     def progress(self, snapshot: Mapping[str, Any] | None = None) -> None:
         self._service._activity(self._job, snapshot)
+
+    def attention(self, body: NoticeBody, *, brief: str = "") -> bool:
+        """:meth:`JobContext.attention`: once per job, only while it runs (#123 D1)."""
+
+        return self._service._attention(self._job, body, brief)
 
     def env_marker(self) -> dict[str, str]:
         return {JOB_MARKER_ENV: f"{self.job_id}:{self._nonce}"}
@@ -463,6 +517,7 @@ class JobService:
                 and job.notice_state == "pending"
             ):
                 self._post(job.notice, job_ref=job)
+            self._repost_attention(job)
         for restored in self._restored.values():
             if (
                 restored.owner == self._owner
@@ -1016,40 +1071,44 @@ class JobService:
     async def _become_unresolved(
         self, job: _Job, reason: str, helpers: HelperCleanup | None
     ) -> None:
+        job.completing = True  # its notice is not posted yet (#123 fix r2)
         job.state = "unresolved"
-        job.unresolved_reason = reason
-        if reason == "cleanup_error" and helpers is not None:
+        try:
+            job.unresolved_reason = reason
+            if reason == "cleanup_error" and helpers is not None:
+                await self._write_quietly(
+                    job.session,
+                    make_fact(
+                        "cleanup",
+                        job.job_id,
+                        helpers=helpers.state,
+                        **({"reason": helpers.reason} if helpers.reason else {}),
+                    ),
+                )
+                job.cleanup_due = self._clock() + _OUTBOX_BACKOFF[0]
+            notice = None
+            if job.notify and job.caps.notify:
+                notice = self._frame_notice(
+                    job, "unresolved", f"{reason}", body=_unresolved_body(job, reason)
+                )
             await self._write_quietly(
                 job.session,
                 make_fact(
-                    "cleanup",
+                    "supervision",
                     job.job_id,
-                    helpers=helpers.state,
-                    **({"reason": helpers.reason} if helpers.reason else {}),
+                    state="unresolved",
+                    reason=reason,
+                    **({"notice": _notice_record(notice)} if notice is not None else {}),
                 ),
             )
-            job.cleanup_due = self._clock() + _OUTBOX_BACKOFF[0]
-        notice = None
-        if job.notify and job.caps.notify:
-            notice = self._frame_notice(
-                job, "unresolved", f"{reason}", body=_unresolved_body(job, reason)
-            )
-        await self._write_quietly(
-            job.session,
-            make_fact(
-                "supervision",
-                job.job_id,
-                state="unresolved",
-                reason=reason,
-                **({"notice": _notice_record(notice)} if notice is not None else {}),
-            ),
-        )
-        if notice is not None and job.notice is None:
-            job.notice = notice
-            job.notice_state = "pending"
-            self._post(notice, job_ref=job)
-        self._ensure_liveness()
-        self._touch()
+            if notice is not None and job.notice is None:
+                job.notice = notice
+                job.notice_state = "pending"
+                self._post(notice, job_ref=job)
+            self._ensure_liveness()
+        finally:
+            job.completing = False
+            self._touch()
 
     async def _complete(
         self,
@@ -1072,7 +1131,28 @@ class JobService:
         job.status = status
         job.brief = brief
         job.outcome = outcome
+        job.completing = True
         job.state = status  # type: ignore[assignment]
+        try:
+            await self._complete_terminal(
+                job, status, brief, outcome, client_error, helpers, launch_failed
+            )
+        finally:
+            job.completing = False
+            self._touch()
+
+    async def _complete_terminal(
+        self,
+        job: _Job,
+        status: str,
+        brief: str,
+        outcome: ClientOutcome | None,
+        client_error: str | None,
+        helpers: HelperCleanup,
+        launch_failed: bool,
+    ) -> None:
+        """The rest of :meth:`_complete` once the job reads terminal: its records, its facts, its notice."""
+
         job.unresolved_reason = None
         # Cleanup is confirmed: the slot goes back now, whatever the records do.
         job.reservation.release()
@@ -1134,6 +1214,41 @@ class JobService:
         else:
             self._trim_later()
         self._touch()
+
+    # === control (#123, ADR-0306 §3.1) ===========================================
+
+    async def control(self, job_id: str, verb: str, payload: Mapping[str, Any]) -> str:
+        """Hand ``verb`` to the kind's control adapter for a running job of this session.
+
+        Generic: the service names no kind and reads no payload — it checks the
+        job is this session's and still running, that the kind declares ``verb``
+        in ``KindCapabilities.controls``, and calls the adapter's ``control``.
+        The answer is the adapter's sentence, which the surfaces print. A kind
+        that declares nothing is refused with its ``control_hint``
+        (ADR-0293's control-adapter clause), in :func:`control_refusal`'s
+        words. :class:`JobNotFound` for another session's id, as ``stop``
+        raises it.
+        """
+
+        job = self._jobs.get(job_id)
+        if job is None or job.owner != self._owner:
+            if job is None and self.snapshot(job_id) is not None:
+                return f"{job_id[:6]} has ended: nothing runs to take {CONTROL_WORDS.get(verb, verb)}"
+            raise JobNotFound(job_id)
+        if job.state in TERMINAL_STATES:
+            return f"{job_id[:6]} already ended: {job.state}"
+        caps = job.caps
+        if verb not in caps.controls:
+            return control_refusal(caps, verb)
+        adapter = job.adapter
+        if not isinstance(adapter, JobControlAdapter):
+            return f"the {adapter.name} kind declares {verb} but has no control adapter"
+        try:
+            answer = await adapter.control(job_id, verb, payload)
+        except Exception as exc:  # noqa: BLE001 — one sentence, never a traceback on a surface
+            _log.debug("control %s on job %s raised", verb, job_id, exc_info=True)
+            return f"{verb} failed: {type(exc).__name__}"
+        return str(answer)
 
     # === stopping ==============================================================
 
@@ -1489,15 +1604,18 @@ class JobService:
         job_ref: _Job | None = None,
         restored_ref: _Restored | None = None,
         extension_ref: _ExtensionNotice | None = None,
+        attention_ref: _Attention | None = None,
     ) -> bool:
         """Post ``notice`` to the current harness when its owner is the current one; whether it went.
 
         A notice of another session waits for its own (:meth:`bind` posts it
         again when that session is current), so a result never reaches a
-        session that did not start its job (verify V15).
+        session that did not start its job (verify V15). An attention notice
+        (``attention_ref``) marks only its own record placed: the job owes
+        nothing for it (#123 D1, I1).
         """
 
-        ref = job_ref or restored_ref or extension_ref
+        ref = job_ref or restored_ref or extension_ref or attention_ref
         owner = ref.owner if ref is not None else None
         harness = self._harness
         if harness is None or owner != self._owner or getattr(harness, "disposed", False):
@@ -1510,6 +1628,8 @@ class JobService:
                 restored_ref.notice_state = "delivered"
             if extension_ref is not None:
                 extension_ref.notice_state = "delivered"
+            if attention_ref is not None:
+                attention_ref.state = "delivered"
             for listener in list(self._placed_listeners):
                 try:
                     listener(placed_notice)
@@ -1518,6 +1638,64 @@ class JobService:
             self._touch()
 
         return _owing(job_ref, notice, harness.post_notice(notice, on_placed=placed))
+
+    def _attention(self, job: _Job, body: NoticeBody, brief: str) -> bool:
+        """:meth:`JobContext.attention`: frame, record and post the job's one attention notice (#123 D1).
+
+        ``False`` and nothing posted once the job raised one (whatever became
+        of it, I5), for a job that does not notify (``job.notify`` already
+        holds its kind's ``notify``: :meth:`start` and :meth:`prepare_adopted`
+        fold it in), and unless :func:`_may_attend`. ``True`` also when its
+        session is not the current one: the record waits for :meth:`bind`.
+        ``False``, the record ``dropped``, when the current session's inbox
+        refused it (an id it already knows; fix round 2, C-N).
+        """
+
+        if job.attention is not None or not job.notify or not _may_attend(job):
+            return False
+        adapter = self._adapter_now(job.registration)
+        notice = Notice(
+            notice_id=nt.attention_notice_id(job.job_id),
+            custom_type=NOTICE_CUSTOM_TYPE,
+            body=nt.frame(
+                job_id=job.job_id,
+                kind=adapter.name,
+                label=adapter.label,
+                title=job.title,
+                status="running",
+                elapsed=self._clock() - job.started_at,
+                body=body.body,
+                next_action=body.next_action,
+                result_hint=False,
+            ),
+            details={"v": 1, "job_id": job.job_id, "status": "running"},
+            brief=nt.cut_brief(
+                f'{adapter.label} "{job.title}" still running' + (f": {brief}" if brief else "")
+            ),
+        )
+        # The record first: the inbox's listeners (the TUI's wake) run inside the post.
+        job.attention = _Attention(owner=job.owner, notice=notice)
+        posted = self._post(notice, attention_ref=job.attention)
+        harness = self._harness
+        refused = not posted and job.owner == self._owner and harness is not None
+        if refused and not getattr(harness, "disposed", False):
+            job.attention.state = "dropped"
+        self._touch()
+        return job.attention.state != "dropped"
+
+    def _repost_attention(self, job: _Job) -> None:
+        """:meth:`bind`: a pending attention notice goes again while its job runs; else it is dropped (I4).
+
+        :meth:`_post` keeps one of another session's job waiting for its own.
+        """
+
+        attention = job.attention
+        if attention is None or attention.state != "pending":
+            return
+        if _may_attend(job):
+            self._post(attention.notice, attention_ref=attention)
+        else:
+            attention.state = "dropped"
 
     def _job_notice_placed(self, job: _Job, placed: Notice) -> None:
         """A notice of ``job`` was placed: it owes it no more (#769).
@@ -1608,13 +1786,15 @@ class JobService:
     def has_live_pending(self) -> bool:
         """Whether a live notice is posted and not yet placed (the TUI's wake).
 
-        Live: a job this process ran, or an extension's ``post_notice`` (verify
-        S3). A restored result is not live: it waits for ``/jobs send`` or the
-        user's next message (owner OQ7).
+        Live: a job this process ran — its result, or its attention notice
+        (#123 D1, I3) — or an extension's ``post_notice`` (verify S3). A
+        restored result is not live: it waits for ``/jobs send`` or the user's
+        next message (owner OQ7).
         """
 
         return self.extension_waiting() > 0 or any(
-            j.owner == self._owner and j.notice_state == "pending" and j.notice is not None
+            j.owner == self._owner
+            and ((j.notice_state == "pending" and j.notice is not None) or _attention_waits(j))
             for j in self._jobs.values()
         )
 
@@ -2192,6 +2372,7 @@ class JobService:
             rechecking=job.state == "unresolved" and job.unresolved_reason != "settle_error",
             processes_gone=job.confirmed,
             client_start=dict(job.client_start),
+            attention_waiting=not terminal and _attention_waits(job),
         )
 
     def _snap_restored(self, restored: _Restored) -> JobSnapshot:
@@ -2221,6 +2402,9 @@ class JobService:
 
         A job leaves this only once its notice is posted (or it has none), so a
         drain that checks jobs before the inbox cannot miss a result (ADR-0293).
+        That includes the writes between the terminal (or ``unresolved``) state
+        and the notice, in ``_complete`` and ``_become_unresolved``
+        (``completing``, #123 fix r2).
         """
 
         who = self._owner if owner is None else owner
@@ -2229,7 +2413,7 @@ class JobService:
                 continue
             if job.state not in TERMINAL_STATES and job.state != "unresolved":
                 return True
-            if job.outbox is not None:
+            if job.outbox is not None or job.completing:
                 return True
             if (
                 job.state in TERMINAL_STATES
@@ -2315,6 +2499,27 @@ class JobService:
             await append_fact(session, fact)
         except RecordWriteFailed:
             _log.warning("job fact %s not written", fact.get("fact"))
+
+
+def _may_attend(job: _Job) -> bool:
+    """Whether ``job`` may still say it needs its session (#123 D1): running, no stop latched, its ``run`` not returned.
+
+    The state alone does not say it: a stop the liveness loop latches leaves
+    ``running`` as it was, and a job whose run returned reads ``running``
+    through its barrier.
+    """
+
+    return (
+        job.state == "running"
+        and not job.stop_latched
+        and not (job.ctx is not None and job.ctx._sealed)
+    )
+
+
+def _attention_waits(job: _Job) -> bool:
+    """Its attention notice is posted (or waits for its session's bind) and not placed."""
+
+    return job.attention is not None and job.attention.state == "pending"
 
 
 def _delivered(job: _Job) -> bool:
