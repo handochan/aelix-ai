@@ -220,6 +220,13 @@ class JobsUi:
 
         A running job's attention notice (``details.status == "running"``,
         #123 D1) is counted apart: it is not a result (fix round 2, L2).
+
+        Both counts are of the PENDING notices, read in one go (#820): the
+        attention notices used to be counted among every undelivered one, so an
+        attention notice a boundary had claimed, while a result waited, made the
+        result read "1 notice". The pending ones are the run of
+        ``undelivered_notices()`` between the claimed and the held ones
+        (``NoticeInbox.undelivered`` lists claimed, pending, held).
         """
 
         harness = self.runtime_host.harness
@@ -230,9 +237,11 @@ class JobsUi:
         if not self.queued:
             self.queued = True
             self.chrome.queue_wake(WAKE)
-        held = harness.held_notices()
-        notices = min(waiting, sum(1 for n in harness.undelivered_notices() if _attention(n) and n.notice_id not in held))
-        said = [f"{waiting - notices} waiting result{'s' if waiting - notices != 1 else ''}"] if waiting > notices else []
+        undelivered = harness.undelivered_notices()
+        claimed = max(0, len(undelivered) - waiting - len(harness.held_notices()))
+        notices = sum(1 for n in undelivered[claimed : claimed + waiting] if _attention(n))
+        results = waiting - notices
+        said = [f"{results} waiting result{'s' if results != 1 else ''}"] if results else []
         said += [f"{notices} notice{'s' if notices != 1 else ''}"] if notices else []
         return f"Sending {' and '.join(said)} to the model."
 

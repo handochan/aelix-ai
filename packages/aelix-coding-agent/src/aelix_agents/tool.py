@@ -48,8 +48,8 @@ from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
 from aelix_coding_agent.agents.sendable import unsendable_refusal
 from aelix_coding_agent.tools.provenance import builtin_provenance, mark_builtin
-from rich.cells import cell_len, set_cell_size
 
+from aelix_agents._cells import cell_len, set_cell_size
 from aelix_agents.chain import MAX_TASK_BYTES, TaskTooLarge, check_task_size, uses_previous
 from aelix_agents.envelope import (
     MAX_ERROR_NOTE_BYTES,

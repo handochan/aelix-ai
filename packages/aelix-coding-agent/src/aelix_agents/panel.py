@@ -46,8 +46,9 @@ from itertools import accumulate
 from typing import TYPE_CHECKING, NamedTuple
 
 from aelix_ai.utils.terminal_text import safe_for_terminal
-from rich.cells import cell_len
-from wcwidth import wcwidth as _wcwidth
+
+from aelix_agents._cells import cell_len
+from aelix_agents._cells import wcwidth as _wcwidth
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -2238,7 +2239,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:858-860``): a
+    That final dedup mirrors the statusline half (``progress.py:863-865``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """

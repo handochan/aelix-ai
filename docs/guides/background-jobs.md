@@ -75,7 +75,13 @@ built-in names there leaves them on.
   `job_stop` refuses one and says so, and `/jobs stop` stops either. A running delegated agent
   takes a note with `agent(action="send", id=…, task=…)` and a wrap-up with
   `agent(action="wrap_up", id=…)` (#123; `docs/guides/agent-profiles.md`, "Steering a running
-  agent").
+  agent"). The `job` tools and `/jobs` take a background agent's own id as well as its job id,
+  for one this aelix process started or moved and, once it has ended, for one a restart read
+  back; a job id or a unique prefix of one is matched first, and the agent id only when neither
+  matches (#827, `tests/agents_ext/test_job_tool_agent_id_827.py`). In the `job` and `job_stop`
+  tools an id that names no job answers
+  `no job <id> in this session; job(action="list") lists this session's jobs and their ids`;
+  `/jobs` answers `no job <id> in this session`.
 
 ## How a result comes back
 
@@ -107,13 +113,25 @@ the model is writing, never inside it — and is placed once, even across a rest
   its panel row shows the mark then, and otherwise at the first snapshot marked after the move; a
   mark that cleared before the move asks nothing. It is not the agent's result, which still comes
   back once, after it, when the agent ends: the footer and `/jobs` do not count it (`/jobs send`
-  names it a notice beside the results it sends), `-p` gives it a notice turn and goes on waiting for the agent until its
+  names it a notice beside the results it sends, counting both among the notices still waiting,
+  and in the TUI sends it when it waits alone, #820), `-p` gives it a notice turn and goes on waiting for the agent until its
   result is posted, and `Ctrl+C` in that wait does not write it out. The TUI starts a turn for it
   when idle and its line reads `◆ background notice: …`; `agent(action="wait")` returns as soon
   as it is posted, once, while the agent runs, and adds its line after the result sentences, and
   `agent(action="status")` says `stuck: <pattern>` of a running agent
   (`tests/jobs/test_attention_123.py`). A foreground agent gets none: its panel row shows the
   mark.
+- **A run moved with Ctrl+B** counts its time from its start, not from the move: its notices'
+  "after …", `agent(action="status")`'s "for …" and the `/jobs` table include the time it ran in
+  the foreground, and `/jobs <id>`'s "started" is the wall-clock time the call started at (#821,
+  `tests/agents_ext/test_moved_elapsed_821.py`). After a restart, `/jobs <id>` of an ended job
+  shows the run time its outcome recorded.
+- **The `◆ background result` line** and an ended agent's `agent(action="status")` row show
+  the first line of what it said: an agent's is cut at 160 characters, the whole line at 256
+  bytes, and a cut one ends in `…`: at the last whitespace before the cut when that keeps at
+  least two thirds of the bound (107 characters, 171 bytes), otherwise at the bound itself, so a
+  long path or URL after a short word is cut inside it rather than dropped (#825,
+  `tests/jobs/test_brief_cut_825.py`).
 - **A session you open again** that has results nobody gave the model starts no turn for them.
   The TUI says `◆ 1 background result is waiting. It goes to the model with your next message,
   or run /jobs send to send it now.` (`tests/tui/test_restore_611.py`); `-p --continue` delivers
@@ -200,6 +218,9 @@ already posted or there is no session to post to. It is delivered the way a job'
 at the next boundary, never inside an answer and never while a dialog is open; in the TUI an
 idle session starts a turn for it (`tests/tui/test_wake_611.py::test_an_extension_notice_wakes_counts_and_is_sent`).
 Its id is your extension's name and `notice_id`, so another extension cannot collide with it.
+A lone surrogate in a notice's title, label, kind, brief or body reaches the model as U+FFFD,
+and two `notice_id`s that differ only there stay two notices
+(#810, `tests/jobs/test_lone_surrogate_title_810.py`).
 
 **A running job of your kind can ask for attention once:** its runner's context has
 `attention(body, *, brief="")` (`JobContext` in `aelix_coding_agent/jobs/contract.py`; #123).
@@ -232,6 +253,13 @@ The adapter is the `JobKindAdapter` protocol in
 outcome is decoded, rendered as a notice and as panel rows, paged, and recovered after a
 restart. A synthetic kind that implements all of it is
 [`tests/jobs/_sleeper.py`](https://github.com/handochan/aelix-ai/blob/main/tests/jobs/_sleeper.py).
+A kind whose jobs also have ids of its own adds `job_for(ident, jobs)` (the `JobIdAdapter`
+protocol, #827): when `ident` is neither a job id nor a unique prefix of one, the `job` tools and
+`/jobs` hand it its own jobs of the current session, newest first, use its answer only when it is
+one of them, and refuse an `ident` two kinds answer with different jobs. A kind that declares
+`controls` can also add `ended_control(job, verb)` (`JobEndedControlAdapter`, #822): the
+sentence `/jobs steer|wrap` and the panel show for a job of the kind that has ended, in place of
+`<id> already ended: <state>`.
 
 The facade is bound to your extension and to the runtime it came from: it registers kinds
 under your extension's name, starts, lists and stops only jobs of your kinds in the current

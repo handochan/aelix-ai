@@ -2138,6 +2138,9 @@ async def _open_stdin_reader(
     arm is reachable from a POSIX test box.
     """
 
+    from aelix_coding_agent.tools._subprocess import claim_stdin_for_protocol
+
+    claim_stdin_for_protocol()  # #828: no child aelix starts on its stdio reads it now
     if (platform if platform is not None else sys.platform) == "win32":
         return _thread_pumped_stdin_reader(sys.stdin.fileno())
     loop = asyncio.get_running_loop()
@@ -2465,9 +2468,10 @@ async def run_rpc_mode(
                     data = await control.handle(
                         payload.get("method"), payload.get("params", {}), payload.get("id")
                     )
-                    # Serialise here, inside the guard: a result the wire cannot
-                    # carry must still answer its id (#594).
-                    json.dumps(data, ensure_ascii=False)
+                    # Serialise and encode here, inside the guard: a result the
+                    # wire cannot carry must still answer its id (#594), and a
+                    # lone surrogate fails only the UTF-8 encode (Codex, #797 H1).
+                    json.dumps(data, ensure_ascii=False).encode("utf-8")
                     response = RpcSuccessResponse(id=payload.get("id"), command="aelix_control", data=data)
                 except asyncio.CancelledError:
                     response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error="Command cancelled")
@@ -2491,7 +2495,7 @@ async def run_rpc_mode(
                         if counted:
                             control.classic_done(payload.get("type"))
             try:
-                _output(response.to_json())
+                write_sink(_reply_bytes(response))
             except BrokenPipeError:
                 # Issue #57 (review MEDIUM): the response write is the ONLY
                 # stdout touch for event-less commands (get_state-style), so
@@ -2613,6 +2617,28 @@ async def run_rpc_mode(
         # interrupt, so joining it would hang shutdown until the client
         # happened to send another line — it is a daemon thread precisely so
         # the interpreter can exit out from under it.
+
+
+def _reply_bytes(response: RpcSuccessResponse | RpcErrorResponse) -> bytes:
+    """One correlated reply as the bytes the wire carries; never lost to its encoding.
+
+    A reply whose text UTF-8 cannot encode (a lone surrogate: a str any JSON
+    or ``ImportError`` can hold) raised in the write, after the dispatch guard,
+    so its id was never answered (Codex review of #797, H1: ``resources/list``
+    and ``selections/list``). It is answered instead with an error naming the
+    encode failure, written ASCII-escaped because its id and command came
+    from the request and may hold the same character.
+    """
+
+    try:
+        return serialize_json_line(response.to_json()).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        fallback = RpcErrorResponse(
+            id=response.id,
+            command=response.command,
+            error=f"the reply could not be written as UTF-8: {exc}",
+        )
+        return (json.dumps(fallback.to_json()) + "\n").encode("ascii")
 
 
 __all__ = [

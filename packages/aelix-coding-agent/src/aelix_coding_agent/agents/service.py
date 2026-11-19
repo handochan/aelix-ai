@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4253-4527``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4269-4543``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -84,16 +84,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4572-4574``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4589-4591``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:3061``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:3083``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:4122`` / ``:4499``).
+        reads on every (re)build (``cli/entry.py:4155`` / ``:4529``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.

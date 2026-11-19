@@ -110,7 +110,13 @@ def list_rows(service: JobService, width: int | None = None) -> list[str]:
 
 
 def find(service: JobService, ident: str) -> JobSnapshot | str:
-    """The job ``ident`` names (an id or a unique prefix of one), or why none."""
+    """The job ``ident`` names (an id, a unique prefix of one, or an id of its kind's own), or why none.
+
+    A kind's own id (a background agent's, #827) is asked of the kinds only when
+    neither an exact job id nor a prefix of one matched, so an id or a prefix
+    names the job it named before (Codex review of #827, H2); one two kinds
+    answer with different jobs is refused. The ``job`` and ``job_stop`` tools and
+    ``/jobs`` then take the id the kind's own answer gave."""
 
     ident = ident.strip().rstrip("…")
     if not ident:
@@ -121,9 +127,14 @@ def find(service: JobService, ident: str) -> JobSnapshot | str:
     matches = [s for s in service.snapshots() if s.job_id.startswith(ident)]
     if len(matches) == 1:
         return matches[0]
-    if not matches:
-        return f"no job {ident} in this session"
-    return f"{ident} names {len(matches)} jobs; give more of the id"
+    if matches:
+        return f"{ident} names {len(matches)} jobs; give more of the id"
+    named = service.jobs_named(ident)
+    if len(named) > 1:
+        return f"{ident} names {len(named)} jobs of different kinds; give a job id"
+    if named and (snap := service.snapshot(named[0])) is not None:
+        return snap
+    return f"no job {ident} in this session"
 
 
 def detail(service: JobService, snap: JobSnapshot, width: int | None = None) -> list[str]:
@@ -261,16 +272,21 @@ class JobsCommand:
             return f"no job {words[0]}"
 
     async def _send(self) -> str:
-        waiting = sum(1 for s in self._service.snapshots() if s.result_waiting)
-        waiting += self._service.extension_waiting()
-        if waiting == 0:
-            return "No results are waiting."
+        """``/jobs send``. A host's send hook (the TUI's ``JobsUi.send_now``) counts the
+        pending notices itself, an attention notice among them (#820); it is asked
+        before the result-only count below, which said "No results are waiting."
+        while only an attention notice waited (Codex review of #820, L10)."""
+
         send = self.send if self.send is not None else self._service.send_hook
         if send is not None:
             said = send()
             if not isinstance(said, str):
                 said = await said
             return said
+        waiting = sum(1 for s in self._service.snapshots() if s.result_waiting)
+        waiting += self._service.extension_waiting()
+        if waiting == 0:
+            return "No results are waiting."
         result = await self._service.send_waiting()
         if result.started:
             return f"Sent {waiting} waiting result{'s' if waiting != 1 else ''} to the model."

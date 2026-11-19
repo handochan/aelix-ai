@@ -73,6 +73,14 @@ def _text(text: str, *, error: bool = False) -> ToolResult:
     return ToolResult(content=[TextContent(text=text)], is_error=error)
 
 
+def _unfound(found: str) -> ToolResult:
+    """``commands.find``'s refusal, with the way to the ids when nothing matched (#827)."""
+
+    if found.startswith("no job "):
+        found += '; job(action="list") lists this session\'s jobs and their ids'
+    return _text(found, error=True)
+
+
 def create_job_tool(service: JobService) -> AgentTool:
     """The read-only ``job`` tool: ``list``, ``status``, ``result``."""
 
@@ -90,7 +98,7 @@ def create_job_tool(service: JobService) -> AgentTool:
             return _text(f"job(action={action!r}) needs an id", error=True)
         found = commands.find(service, ident)
         if isinstance(found, str):
-            return _text(found, error=True)
+            return _unfound(found)
         if action == "status":
             return _text("\n".join(commands.detail(service, found, width=160)))
         offset = args.get("offset")
@@ -130,7 +138,7 @@ def create_job_stop_tool(service: JobService) -> AgentTool:
             return _text(f"{JOB_STOP_TOOL_NAME} needs an id", error=True)
         found = commands.find(service, ident)
         if isinstance(found, str):
-            return _text(found, error=True)
+            return _unfound(found)
         registration = service.registry.get(found.kind)
         caps = registration.adapter.capabilities if registration is not None else None
         if caps is not None and not caps.job_tool_control:

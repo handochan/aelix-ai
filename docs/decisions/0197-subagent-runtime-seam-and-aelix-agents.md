@@ -1,6 +1,8 @@
 # 0197. Subagent-runtime seam & the bundled `aelix-agents` extension (P2)
 
-Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
+Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C). Amended 2026-11-19
+(#797): §(a)'s guarded import needs no `tui` extra, and a bundled import that fails is a listed
+load error; see the note of that date.
 **Superseded in part 2026-11-08 (ADR-0295, #723): the prohibition of background delegation —
 "a background child has no owner to reap it and no channel to report through" — is superseded
 by [ADR-0295](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md): a
@@ -1551,3 +1553,24 @@ structural gate `tests/agents/test_delegation_filter_gate_795.py`.
 (`test_a_runtime_with_only_the_seven_members_still_binds`), and `CONTRACT_VERSION` stays 1. The
 bundled runtime implements `ModelDelegation`; its `DelegationRefused` is a `ProfileError` and a
 `DelegationNotAllowed`. `SubagentHost` gains `agent_lists` and `active_profile` (default `None`).
+
+## Note (2026-11-19, #797)
+
+**§(a)'s guarded import, without the `tui` extra.** `aelix_agents/tool.py` and `panel.py`
+imported `rich.cells` and `wcwidth` at module top, and both come only with the `tui` extra, so
+on an install without it the guard printed one stderr warning and the run had no `agent` tool.
+Owner, 2026-11-18: "import 의존 제거 (권장)". `aelix_agents/_cells.py` resolves rich's
+`cell_len`/`set_cell_size` and `wcwidth` on first call and, without them, uses
+`aelix_coding_agent.jobs.cells`; `progress._panel_width` imports the TUI only when there is a
+chrome. A bundled package whose import fails (`aelix_agents`, `aelix_status`) is also a load
+error named `<name> (bundled)`: in RPC `resources/list`'s `extensionErrors`, and as an unavailable
+`failed to load: …` row of the `/extension` Installed tab and RPC `selections/list` (kind
+`extension`), across a `/reload` (`core/extension_selection.with_bundled`). Its text has each lone
+surrogate replaced by U+FFFD, and RPC encodes every reply inside its guard: an `ImportError` whose
+message held one left `resources/list` and `selections/list` unanswered (Codex's review, H1 and M3).
+The depth gate is read before the import, so at `MAX_SUBAGENT_DEPTH`, where the extension is never
+registered, a failed import is no failed extension (L8).
+`tests/agents_ext/test_cells_without_tui_797.py` runs a real `--mode rpc --agents` child whose
+interpreter refuses `rich`, `wcwidth` and `prompt_toolkit`, and drives the in-process RPC loop for
+the rest; `tests/rpc/test_reply_encoding_797.py` holds the reply guard. A wheel install without
+extras was run once by hand (`.omc/probes/b7f/impl/797-live/`).

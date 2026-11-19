@@ -53,8 +53,25 @@ runner's real user profile.
 | W1 | `HOME`-only test sandboxing → `sandbox_home` (HOME + USERPROFILE + HOMEDRIVE/HOMEPATH + APPDATA/LOCALAPPDATA), 25 sites across 9 files | `tests/env_sandbox.py`, `tests/test_env_sandbox_windows.py` |
 | W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read — the force-ASK half is **superseded by #204 / ADR-0237**, which routes PowerShell and `cmd` to classifiers of their own instead of downgrading them | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py`, `builtin/shell_classifiers/` |
 | W3 | win32-safe process-tree kill at the two owned spawn sites. The body moved to `aelix_ai/utils/_process_tree.py` in #202 so the `aelix-ai` sites could share it, leaving `tools/_process_tree.py` as a re-export shim; **#222 (2026-09-05) finished it** — both sites now attach a `ProcessTree` after the spawn and kill through it (a Job Object on win32), `bash.py`'s `_kill_group` and the shim are deleted | `packages/aelix-ai/src/aelix_ai/utils/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
-| W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
+| W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows); since #123 (ADR-0306 D2) it also carries every delegated child's command inbox — see *W4 since #123* below | `rpc/rpc_mode.py`, `cli/entry.py`, `modes/print_inbox.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
+
+**W4 since #123 (recorded 2026-11-18, #829).** A delegated child is launched with
+`--command-inbox=1` and a pipe for its stdin, and `cli/entry.py`'s `_command_inbox`
+opens that stdin with `rpc_mode._open_stdin_reader`, which on win32 is
+`_thread_pumped_stdin_reader(sys.stdin.fileno())`: the same `os.read` daemon thread
+W4 added for RPC, now in every delegated child (read in the code at `1c2a4a7c`).
+Before #123 a child's stdin was `DEVNULL` (`aelix_agents/print_channel.py`'s spawn at `790b237f^`) and the thread did not exist there. The
+thread is never joined, as `CommandInbox.pump_thread`'s docstring in
+`modes/print_inbox.py` says: a blocking read on stdin cannot be interrupted. The
+known gap: the three tests in `tests/cli/test_command_inbox_123.py` that run a real
+child are `posix_only`; the win32 arm is tested in process only
+(`test_the_win32_thread_pump_serves_the_inbox_and_its_eof_aborts_the_turn_once`
+patches `sys.platform` for the one call and uses an `os.pipe()` as fd 0), which
+ADR-0306 records as "Native Windows was not run in fix round 1". That test has no
+platform mark, so the `windows-latest` legs collect it; their logs were not read
+for it. Nobody has watched a steer, a wrap-up or the inbox's EOF on a Windows desk.
+The post-EOF path of a delegated child on Windows is the open #729.
 
 Two facts were measured rather than assumed, and both shaped the design:
 

@@ -282,6 +282,9 @@ class RunningChild:
     profile: str
     state: SubagentState = "starting"
     started_at: float = field(default_factory=time.monotonic)
+    started_wall: float = field(default_factory=time.time, compare=False)
+    """The same start on the wall clock: a Ctrl+B'd job's ``created`` (#821), which a
+    wall-clock change before the move must not rewrite (Codex review of #821, L11)."""
     proc: Any | None = None
     prompt: PromptFile | None = None
     """The 0700 temp dir, recorded BEFORE the process starts so a cancelled
@@ -1103,7 +1106,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:385-394``), and a child that waits forever on a
+    # forever" (``cli/entry.py:389-398``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that never ends on its
     # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -2348,7 +2351,7 @@ class PrintChannel:
                     # used to be DEVNULL, and the reason stands for a child
                     # launched without ``--command-inbox``: an inherited stdin
                     # cost +30 s per delegation (``_read_piped_stdin``,
-                    # ``cli/entry.py:320-444``) and any bytes that arrived were
+                    # ``cli/entry.py:324-448``) and any bytes that arrived were
                     # PREPENDED to the task. With the flag the child reads no
                     # prompt from it at all (and ``AELIX_STDIN_TIMEOUT=1`` in the
                     # env stays, belt-and-braces for a child without the flag).

@@ -114,7 +114,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:1653``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:1661``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -385,7 +385,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:738-788``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:741-791``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two

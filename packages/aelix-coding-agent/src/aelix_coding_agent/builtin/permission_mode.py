@@ -115,6 +115,49 @@ class ModeMeta:
 # Per-mode metadata. DEFAULT has an EMPTY ``badge_text`` so the footer omits the
 # segment entirely (parity with the steering segment's "no badge when default").
 # Glyphs are distinct from steering's ⏵⏵ (✎/⏸/⚠/🤖).
+PLAN_BLOCKED = (
+    "Plan mode is active: file edits and shell commands are blocked so "
+    "you can investigate and propose a plan first."
+)
+"""The first sentence of plan mode's refusal of a built-in edit or shell command."""
+
+#: How plan mode is left, said to the model in the refusal, per host (#826). Only
+#: the TUI has the key; a delegated child's print/json run, ``-p``/json and an
+#: RPC/ACP host get the way that applies there (``cli/entry.py`` picks one with
+#: :func:`plan_exit_for`).
+PLAN_EXIT_TUI = "shift+tab to exit plan mode."
+PLAN_EXIT_CHILD = (
+    "You are a delegated agent and your parent set plan mode, which a delegated "
+    "agent's run only ever tightens: give the plan in your answer."
+)
+PLAN_EXIT_PRINT = "This run was started in plan mode and stays in it: give the plan in your answer."
+PLAN_EXIT_HOST = (
+    "Plan mode can be left only by the application running aelix; until it is, "
+    "give the plan in your answer."
+)
+
+
+def plan_exit_for(app_mode: str, *, inbox: bool) -> str:
+    """The way out of plan mode a run's model is told (#826): ``app_mode`` is
+    ``cli/entry.py``'s (``interactive``, ``print``, ``json``, ``rpc``; ACP drives
+    ``rpc``), ``inbox`` whether this launch serves a delegation parent's command
+    inbox (``--command-inbox``, ADR-0306).
+
+    Chosen by the host that runs, not by ``AELIX_SUBAGENT_DEPTH``: an RPC or TUI
+    process can inherit that marker (a ``bash`` command a delegated child ran
+    starts one) and still has its own way out, as ``permissions/set`` or
+    shift+tab change its mode there (Codex review of #826, M7). The child's
+    sentence is for the print/json run whose inbox only ever tightens
+    (``modes/print_inbox.py``); one with no inbox stays in the mode it started in.
+    """
+
+    if app_mode == "interactive":
+        return PLAN_EXIT_TUI
+    if app_mode == "rpc":
+        return PLAN_EXIT_HOST
+    return PLAN_EXIT_CHILD if inbox else PLAN_EXIT_PRINT
+
+
 MODE_META: dict[PermissionMode, ModeMeta] = {
     PermissionMode.DEFAULT: ModeMeta(
         badge_text="",
@@ -140,11 +183,7 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
             "Plan mode — read-only investigation; edits, shell commands and "
             "MCP or extension tools are blocked. shift+tab to exit plan mode."
         ),
-        block_reason=(
-            "Plan mode is active: file edits and shell commands are blocked so "
-            "you can investigate and propose a plan first. shift+tab to exit "
-            "plan mode."
-        ),
+        block_reason=f"{PLAN_BLOCKED} {PLAN_EXIT_TUI}",
     ),
     PermissionMode.YOLO: ModeMeta(
         badge_text="⚠ yolo",

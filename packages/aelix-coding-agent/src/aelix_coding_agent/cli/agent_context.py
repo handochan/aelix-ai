@@ -543,14 +543,14 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:2305`` passes
+    exists to kill. ``cli/entry.py:2342-2348`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:1184-1186``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:2312``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:2342-2347``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
@@ -775,12 +775,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:1412-1413``) BEFORE the write check, and a headless run
+    # (``permission.py:1415-1416``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
-    # branch (d) at ``permission.py:1645-1648`` allows (or, for a delegated
+    # branch (d) at ``permission.py:1653-1656`` allows (or, for a delegated
     # child, blocks). The prompt is reached only via branch (h) at
-    # ``permission.py:1650-1658``, because ``.aelix`` is in
-    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:492-494``) so
+    # ``permission.py:1658-1666``, because ``.aelix`` is in
+    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:495-497``) so
     # ``_is_auto_allowable_write`` refuses to short-circuit (f)/(g).
     #
     # So the bullet asserts only the conditional ("may ask"), and spends its
@@ -795,10 +795,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:1595-1598``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:1603-1606``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
-    # (``permission.py:1645-1648``, ``headless_default == "block"``). Those are
+    # (``permission.py:1653-1656``, ``headless_default == "block"``). Those are
     # policy, not a human saying no, and retrying cannot change them — so the
     # clause names "blocked" alongside "declines" and routes both to the same
     # stop.

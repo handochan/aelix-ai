@@ -102,6 +102,8 @@ from aelix_coding_agent.jobs.contract import (
     ClientOutcome,
     HelperCleanup,
     JobControlAdapter,
+    JobEndedControlAdapter,
+    JobIdAdapter,
     JobKindAdapter,
     JobRunner,
     JobSnapshot,
@@ -281,6 +283,9 @@ class _Restored:
     notice: Notice | None = None
     notice_state: Literal["none", "pending", "delivered"] = "none"
     folded: FoldedJob | None = None
+    # The run's time its outcome fact recorded (``elapsed_ms``), ``None`` when it
+    # recorded none: ``0`` is what an outcome written with no measured run holds.
+    elapsed: float | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
     # An ``unresolved`` restored job is an obligation (Codex #11): it holds a
     # slot of its kind until it is settled, and while ``recheck`` is set the
@@ -783,6 +788,8 @@ class JobService:
         session: Any,
         client_start: Mapping[str, Any],
         process: ev.ProcessRecord,
+        ran_for: float = 0.0,
+        started_wall: float | None = None,
     ) -> _Job:
         """A job for a call Ctrl+B is moving, built and NOT yet inserted; nothing changes here.
 
@@ -793,6 +800,17 @@ class JobService:
         again). Its ``start`` and ``process`` facts are written by its own task
         (:meth:`run_adopted`), and its slot is handed over last
         (:meth:`give_slot`).
+
+        ``ran_for`` is how many seconds the call had run in the foreground (#821).
+        The job's clock and its ``created`` start that long before the move, so
+        its attention and finished notices, its snapshot's ``elapsed`` (the kind's
+        status rows, ``/jobs``) and ``/jobs <id>``'s "started" count the run from
+        its start; they counted from the move, and a run moved while stuck read
+        "is still running after 0s". Its last activity is still the move
+        (:meth:`adopt`): what it did before was watched by the foreground call.
+        ``started_wall`` is the wall clock the call's start read, its ``created``
+        when given: ``ran_for`` back from the move's wall time is the start only
+        while the wall clock did not change in between (Codex review of #821, L11).
         """
 
         if self._closed:
@@ -802,6 +820,7 @@ class JobService:
             raise JobStartRefused(f"no detachable job kind is registered under {kind!r}")
         if session is None or session is not self._session or self._owner is None:
             raise JobStartRefused("the call's session is not the one the job service serves")
+        ran = max(0.0, ran_for)
         job = _Job(
             job_id=uuid.uuid4().hex[:16],
             registration=registration,
@@ -809,8 +828,8 @@ class JobService:
             owner=self._owner,
             session=session,
             notify=registration.adapter.capabilities.notify,
-            created=self._wall(),
-            started_at=self._clock(),
+            created=started_wall if started_wall is not None else self._wall() - ran,
+            started_at=self._clock() - ran,
             # Spent until :meth:`give_slot` moves the call's slot in.
             reservation=Reservation(self.admission, registration.name, 0),
             runner=runner,
@@ -830,7 +849,7 @@ class JobService:
         """
 
         job.task = task
-        job.last_activity = job.started_at
+        job.last_activity = self._clock()  # the move, not the run's start (#821)
         self._started += 1
         job.seq = self._started
         self._jobs[job.job_id] = job
@@ -1232,11 +1251,13 @@ class JobService:
 
         job = self._jobs.get(job_id)
         if job is None or job.owner != self._owner:
-            if job is None and self.snapshot(job_id) is not None:
-                return f"{job_id[:6]} has ended: nothing runs to take {CONTROL_WORDS.get(verb, verb)}"
+            if job is None and (ended := self.snapshot(job_id)) is not None:
+                return self._ended_control(ended, verb) or (
+                    f"{job_id[:6]} has ended: nothing runs to take {CONTROL_WORDS.get(verb, verb)}"
+                )
             raise JobNotFound(job_id)
         if job.state in TERMINAL_STATES:
-            return f"{job_id[:6]} already ended: {job.state}"
+            return self._ended_control(self._snap(job), verb) or f"{job_id[:6]} already ended: {job.state}"
         caps = job.caps
         if verb not in caps.controls:
             return control_refusal(caps, verb)
@@ -1249,6 +1270,24 @@ class JobService:
             _log.debug("control %s on job %s raised", verb, job_id, exc_info=True)
             return f"{verb} failed: {type(exc).__name__}"
         return str(answer)
+
+    def _ended_control(self, job: JobSnapshot, verb: str) -> str | None:
+        """The kind's sentence for ``verb`` on an ended ``job``, or ``None`` (:class:`JobEndedControlAdapter`).
+
+        Asked only of a kind that declares ``verb``; one that raises answers
+        nothing, and the service's own sentence stands.
+        """
+
+        registration = self.registry.get(job.kind)
+        adapter = registration.adapter if registration is not None else None
+        if not isinstance(adapter, JobEndedControlAdapter) or verb not in adapter.capabilities.controls:
+            return None
+        try:
+            answer = adapter.ended_control(job, verb)
+        except Exception:  # noqa: BLE001 — never a traceback on a surface
+            _log.debug("ended_control %s on job %s raised", verb, job.job_id, exc_info=True)
+            return None
+        return answer if isinstance(answer, str) and answer else None
 
     # === stopping ==============================================================
 
@@ -1853,6 +1892,7 @@ class JobService:
             restored.state = _terminal(outcome.get("status"))
             restored.brief = str(outcome.get("brief", ""))
             restored.reason = None
+            restored.elapsed = _recorded_elapsed(outcome)
             self._settle_restored(restored)
             if registration is not None:
                 # The kind's reading of its outcome, joined with its own records
@@ -2316,6 +2356,37 @@ class JobService:
 
     # === reading ==================================================================
 
+    def jobs_named(self, ident: str) -> list[str]:
+        """The current session's jobs that a kind's own id ``ident`` names (#827).
+
+        Each registered kind that is a :class:`JobIdAdapter` is asked in name
+        order, with its own jobs of the current session, newest first; an
+        answer counts only when it is one of them (Codex review of #827, H2: an
+        adapter could name a job of another kind). A kind that raises answers
+        nothing. One id per job, so more than one means two kinds answered with
+        different jobs, which :func:`~aelix_coding_agent.jobs.commands.find`
+        refuses. The core reads no id: the kind does.
+        """
+
+        snaps = self.snapshots()
+        named: list[str] = []
+        for name in self.registry.names():
+            registration = self.registry.get(name)
+            adapter = registration.adapter if registration is not None else None
+            if not isinstance(adapter, JobIdAdapter):
+                continue
+            own = sorted((s for s in snaps if s.kind == name), key=lambda s: s.created, reverse=True)
+            if not own:
+                continue
+            try:
+                job_id = adapter.job_for(ident, own)
+            except Exception:  # noqa: BLE001 — a kind's lookup never breaks a surface
+                _log.debug("job_for(%r) raised for kind %s", ident, name, exc_info=True)
+                continue
+            if job_id in {s.job_id for s in own} and job_id not in named:
+                named.append(job_id)
+        return named
+
     def snapshot(self, job_id: str, *, any_owner: bool = False) -> JobSnapshot | None:
         """One job of the current session by its exact id; ``None`` for an unknown id or another session's.
 
@@ -2384,7 +2455,7 @@ class JobService:
             state=restored.state,
             owner=restored.owner,
             created=restored.created,
-            elapsed=None,
+            elapsed=restored.elapsed,
             last_activity_ago=None,
             quiet=False,
             result_waiting=restored.notice_state == "pending",
@@ -2592,6 +2663,22 @@ def _snap_of(kept: _Settled, label: str) -> JobSnapshot:
 
 def _terminal(status: Any) -> JobState:
     return status if status in TERMINAL_STATES else "unresolved"  # type: ignore[return-value]
+
+
+def _recorded_elapsed(outcome: Mapping[str, Any]) -> float | None:
+    """An ended job's run time as its outcome fact recorded it, for a restart's snapshot.
+
+    A restart showed ``elapsed —`` for every job it read back, though the fact
+    holds the run's ``elapsed_ms`` (Codex review of #821, M5). ``0`` and a value
+    that is not a number stay unknown: the outcomes written with no run behind
+    them (a launch the kind refused, a job a restart could not account for)
+    record ``0``.
+    """
+
+    value = outcome.get("elapsed_ms")
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return None
+    return value / 1000
 
 
 def _client_start_of(start: Mapping[str, Any]) -> dict[str, Any]:

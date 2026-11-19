@@ -83,7 +83,11 @@ from aelix_coding_agent.agents.discovery import discover_profiles
 from aelix_coding_agent.agents.prompt import compose_system_prompt
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
-from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
+from aelix_coding_agent.builtin.permission_mode import (
+    PermissionMode,
+    PermissionPosture,
+    plan_exit_for,
+)
 from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
     session_choice_label,
@@ -2131,6 +2135,9 @@ async def _build_harness_options(
     project_explicitly_trusted: bool = False,
     permission_ext: PermissionExtension | None = None,
     agents_ext: Any | None = None,
+    # #797 — the launch's failed import of ``aelix-agents`` (``_bundled_load_error``),
+    # listed with this build's own bundled failures and the loader's errors.
+    agents_load_errors: Sequence[Any] = (),
     # #722 (ADR-0293) — the job service's bridge extension; ``None`` while
     # background jobs are off (``jobs/activation.py``), which adds nothing.
     jobs_ext: Any | None = None,
@@ -2306,10 +2313,12 @@ async def _build_harness_options(
     #
     # Function-local + guarded, mirroring ADR-0197 §(a): a broken or absent
     # package degrades to "no status tool" rather than bricking startup.
+    bundled_errors: list[Any] = list(agents_load_errors)  # #797: a failed import is a load error too
     try:
         from aelix_status import StatusExtension
     except Exception as exc:  # noqa: BLE001 — never fatal
         print(f"Warning: aelix-status unavailable: {exc}", file=sys.stderr)
+        bundled_errors.append(_bundled_load_error("aelix-status", exc))
     else:
         prepend_extensions.append(
             StatusExtension(
@@ -2474,9 +2483,10 @@ async def _build_harness_options(
     if captured_extension_errors is not None:
         captured_extension_errors.clear()
         captured_extension_errors.extend(loaded.errors)
+        captured_extension_errors.extend(bundled_errors)  # #797
     if captured_inventory is not None:
         captured_inventory["inventory"] = build_inventory(
-            loaded, no_extensions=bool(parsed.no_extensions)
+            loaded, no_extensions=bool(parsed.no_extensions), bundled=bundled_errors
         )
         captured_inventory["records"] = list(loaded.discovered)
     # Seed the message-queue modes from persisted settings so a ``/settings``
@@ -3205,7 +3215,11 @@ async def _async_main(argv: list[str]) -> int:
     # ``/fork``. The same ``posture`` object is also passed to ``run_tui`` so a
     # shift+tab cycle and the gate read/write the SAME holder.
     permission_posture = PermissionPosture()
-    permission_ext = PermissionExtension(posture=permission_posture, settings=settings_manager)
+    permission_ext = PermissionExtension(
+        posture=permission_posture,
+        settings=settings_manager,
+        plan_exit=plan_exit_for(app_mode, inbox=parsed.command_inbox is not None),  # #826
+    )
 
     # ADR-0197 §(e) — CHILD-ONLY headless floor. A delegated child has no TUI, so
     # ``builtin/permission.py``'s ``not ctx.has_ui`` branch auto-ALLOWS every
@@ -3494,12 +3508,14 @@ async def _async_main(argv: list[str]) -> int:
     # the two points touches ``agents_ext``, and ``_harness_factory`` (defined
     # below) reads this closure variable at CALL time.
     agents_ext: Any = None
+    agents_load_errors: list[Any] = []  # #797: listed beside the refused packs, not only on stderr
     session_host: dict[str, Any] = {}  # #199 — the runtime host, once built (below)
-    if _agents_delegation_enabled(parsed, settings_manager):
-        try:
+    if _agents_delegation_enabled(parsed, settings_manager) and subagent_depth() < MAX_SUBAGENT_DEPTH:
+        try:  # depth first (#797, Codex L8): an import the depth gate forbids is no failed pack
             from aelix_agents import AgentsExtension
         except Exception as exc:  # noqa: BLE001 — never fatal
             print(f"Warning: aelix-agents unavailable: {exc}", file=sys.stderr)
+            agents_load_errors.append(_bundled_load_error("aelix-agents", exc))
         else:
             agents_ext = AgentsExtension(
                 # SECURITY: the SAME ``PermissionPosture`` object the gate reads,
@@ -4318,6 +4334,7 @@ async def _async_main(argv: list[str]) -> int:
             # corrected "the live child registry survives /new …" here).
             # ``None`` when delegation is off, which is the P2 default.
             agents_ext=agents_ext,
+            agents_load_errors=agents_load_errors,  # #797
             # #722 — same hold-the-ref rule; ``None`` while jobs are off.
             jobs_ext=jobs_ext,
             # #101 — the RESOLVED app mode, so the status tool reports the
@@ -6252,6 +6269,33 @@ def _selection_controls(
     )
     return SelectionControls(
         skill_control, tool_control, extension_control, agent_control, mcp_control
+    )
+
+
+def _bundled_load_error(name: str, exc: BaseException) -> Any:
+    """A bundled extension whose import failed, as a load error (#797).
+
+    The ``agent`` and ``status`` tools come from packages imported here with a
+    guard, so a missing dependency costs the tool and not the launch. The guard
+    printed one warning to stderr, which an RPC host (Aelix Studio, ACP) need
+    not show anyone: the tool was simply missing. As a load error it is also in
+    ``/extension`` and RPC ``resources/list``'s ``extensionErrors``, the list a
+    host already reads for packs that did not load.
+
+    Its text has each lone surrogate replaced by U+FFFD (``jobs.notice.utf8_safe``):
+    an ``ImportError`` can name a path the file system gave as one, and the RPC
+    reply that carries it is written as UTF-8 (Codex review of #797, H1:
+    ``resources/list`` and ``selections/list`` went unanswered).
+    """
+
+    from aelix_coding_agent.extensions.loader import ExtensionLoadError
+    from aelix_coding_agent.jobs.notice import utf8_safe
+
+    return ExtensionLoadError(
+        path=f"{name} (bundled)",
+        error=utf8_safe(f"{type(exc).__name__}: {exc}"),
+        verify_applies=False,
+        bundled=True,
     )
 
 

@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2294-2296`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2286-2288`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -259,7 +259,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3491-3507`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3520-3535`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -2221,6 +2221,11 @@ class AgentsExtension:
                 pgid=None if sys.platform == "win32" else proc.pid,
                 proc=proc,
             ),
+            # #821: the job counts the run from its start, as its result's
+            # ``elapsed_ms`` does (``runtime._run``: ``_now() - child.started_at``),
+            # and shows the start the wall clock read then (Codex L11).
+            ran_for=_monotonic() - row.started_at,
+            started_wall=row.started_wall,
         )
         entry.job_id = link.job_id = call.job_id = job.job_id
         agent_id = entry.agent_id or row.id
@@ -2540,6 +2545,14 @@ def _error(message: str) -> ToolResult:
     ``execute`` aborts the parent's whole turn."""
 
     return ToolResult(content=[TextContent(text=message)], is_error=True)
+
+
+def _monotonic() -> float:
+    """The clock a delegation row's ``started_at`` is on (``print_channel.RunningChild``)."""
+
+    import time
+
+    return time.monotonic()
 
 
 __all__ = [

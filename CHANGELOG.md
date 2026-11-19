@@ -988,6 +988,9 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **`SLICE-STATUS.md` records the win32 stdin pump under every delegated child's command inbox
+  (#829).** Since #123 the RPC thread pump (W4) also reads a child's inbox on Windows, and the
+  real-child inbox tests are POSIX only; both are now written there, with their sources.
 - **control-v1 version 1 only grows (#623, ADR-0302).** The `aelix_control` methods, the
   `aelix_subagent` and `extension_ui` events and the session-lock text `already open in another
   terminal` are version 1 from this change. An addition (a method, an optional param, a field,
@@ -1698,6 +1701,62 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The `agent` tool is offered on an install without the `tui` extra (#797).** `aelix_agents`
+  imported `rich` and `wcwidth` at module top, so `pip install aelix-coding-agent` and Aelix
+  Studio's bundle had no `agent` tool, and only stderr said why. Cell widths now resolve those
+  libraries on first use and fall back to the standard library without them; a bundled package
+  that still cannot be imported is listed as `<name> (bundled)` in RPC `resources/list`
+  `extensionErrors` and as a `failed to load` row of the `/extension` Installed tab and RPC
+  `selections/list`, across a `/reload` (`tests/agents_ext/test_cells_without_tui_797.py`, a
+  real `--mode rpc` child that refuses all three TUI libraries and the in-process RPC loop; a
+  wheel install without extras, run once on macOS). An error whose text holds a lone surrogate
+  no longer leaves those two lists unanswered: the text gets U+FFFD, and an RPC reply UTF-8
+  cannot encode is answered by its id with an error (`tests/rpc/test_reply_encoding_797.py`). A
+  delegated child at the depth limit, which never registers the extension, no longer imports it
+  and lists its failure.
+- **A background job whose title holds a lone surrogate ends with its outcome and its notice
+  (#810).** The notice's UTF-8 cuts raised `UnicodeEncodeError` and the job's drive task died;
+  the character now reaches the model as U+FFFD (`tests/jobs/test_lone_surrogate_title_810.py`,
+  a real `-p` run on POSIX included). Two extension notices whose ids differ only there stay two.
+- **The `◆ background result` line and an ended agent's `agent(action="status")` row end a cut
+  summary at a word, in `…` (#825).** They were cut at 160 characters and 256 bytes mid-word with
+  no mark. A cut now ends at the last whitespace before it, any Unicode whitespace, when what
+  that keeps is at least two thirds of the bound (107 of the agent brief's 160 characters, 171 of
+  the line's 256 bytes); otherwise, as for one long token or CJK without spaces, the word is cut
+  at the bound itself, never inside a character (`tests/jobs/test_brief_cut_825.py`).
+- **`/jobs send` no longer calls a waiting result "1 notice" while an attention notice is being
+  placed (#820).** Both counts are of the notices still waiting, and in the TUI an attention
+  notice waiting alone is sent rather than answered "No results are waiting."
+  (`tests/jobs/test_jobs_send_counts_820.py`).
+- **A delegation moved with Ctrl+B counts its time from its start (#821).** Its notices ("is
+  still running after 0s"), `agent(action="status")`'s "for …" and `/jobs` counted from the move;
+  `/jobs <id>`'s "started" is the wall-clock time the call started at. After a restart an ended
+  job shows the run time its outcome recorded instead of `elapsed —`
+  (`tests/agents_ext/test_moved_elapsed_821.py`).
+- **A refused `agent(action="wrap_up")` and `/jobs wrap` no longer say "with this text as its next
+  instruction" (#822).** A wrap-up carries no text; the refusal stops at `action="resume"`. On an
+  agent that has already ended, `/jobs wrap` says the same instead of "<id> already ended: done",
+  `/jobs steer` gives the steer's refusal, and the panel's `w` `w` and `m` say what those two say
+  instead of "<id> has ended" (`tests/agents_ext/test_wrap_up_refusal_822.py`).
+- **Plan mode's refusal says "shift+tab to exit plan mode." only in the TUI (#826).** RPC/ACP,
+  `-p`/`--mode json`, and a delegated child's `-p`/json run serving its parent's command inbox
+  each read the way out that applies there, chosen by the host that runs, not by the inherited
+  `AELIX_SUBAGENT_DEPTH` (`tests/builtin/test_plan_exit_by_host_826.py`, a real `--mode json -p`
+  child with and without the inbox included).
+- **`job(action="status"|"result")`, `job_stop` and `/jobs` take a background agent's own id
+  (#827).** They answered "no job … in this session" to the agent id the agent's own answer gave.
+  They now take it for an agent this aelix process started or moved and, after a restart, for one
+  whose run has ended (done or recovered); a spawned run a restart reads back as unresolved is
+  still named only by its job id (`agent()` takes its agent id). A job id or a unique prefix of
+  one still names the job it named; the agent id is tried only when neither matches. In the `job` and `job_stop` tools an id that names
+  no job now points at `job(action="list")` (`tests/agents_ext/test_job_tool_agent_id_827.py`).
+- **grep's `rg`, find's `fd` and the extension installer get `/dev/null` as stdin where aelix's
+  stdin is a protocol (#828).** A delegated child's stdin is its parent's command inbox (#123) and
+  RPC's is the RPC pipe. `rg` and `fd` always get `/dev/null` now, as pi's do; with the argv grep
+  ships, `rg` read no stdin before either, while a path-less `rg` took the inbox line. pip or uv,
+  run by the installer with aelix's stdio, gets `/dev/null` once `--mode rpc` or an inbox has
+  opened stdin, and keeps the terminal for `aelix extension install`
+  (`tests/tools/test_run_cancellable_stdin_828.py`).
 - **An `mcp.json` that is not UTF-8, or is nested too deep to parse, no longer ends the launch
   (#624).** The loader let `UnicodeDecodeError` and `RecursionError` out, and aelix exited; now
   each is a warning and that file's servers are not started (`tests/cli/test_mcp_loader_624.py`;

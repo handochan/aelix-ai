@@ -771,13 +771,18 @@ class SubagentProgressBridge:
 
         DEGRADES, never raises: a headless run, a UI without a chrome, a chrome
         whose output cannot be sized yet — each yields 80 columns.
-        """
 
-        from aelix_coding_agent.tui.width import terminal_columns
+        The TUI module is imported only once there is a chrome (#797): importing
+        ``aelix_coding_agent.tui`` loads prompt_toolkit, which an install without
+        the ``tui`` extra lacks, while an RPC host's UI has no chrome and still
+        takes the panel's ``set_widget``.
+        """
 
         chrome = getattr(self._ui(), "chrome", None)
         if chrome is None:
             return _FALLBACK_WIDTH
+        from aelix_coding_agent.tui.width import terminal_columns
+
         try:
             return terminal_columns(chrome)
         except Exception:  # noqa: BLE001 — an unsizeable output is not a render error

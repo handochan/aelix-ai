@@ -63,7 +63,8 @@ from aelix_coding_agent.builtin.guardrail import (
     _guard_key,
 )
 from aelix_coding_agent.builtin.permission_mode import (
-    MODE_META,
+    PLAN_BLOCKED,
+    PLAN_EXIT_TUI,
     PermissionMode,
     PermissionPosture,
 )
@@ -142,23 +143,25 @@ def _resolve_provenance(event: ToolCallHookEvent) -> ToolProvenance | None:
     return None if resolved is None else builtin_provenance(resolved)
 
 
-def _plan_block_reason(tool_name: str, provenance: ToolProvenance | None) -> str:
-    """PLAN's refusal, said for what was refused.
+def _plan_block_reason(
+    tool_name: str, provenance: ToolProvenance | None, plan_exit: str = PLAN_EXIT_TUI
+) -> str:
+    """PLAN's refusal, said for what was refused, ending in ``plan_exit``.
 
     The built-in bash/write tools keep the posture's own sentence. Any other tool
     gets one that names why it is blocked — the model cannot otherwise tell that
     an MCP ``search`` it believes is harmless was refused because aelix cannot
-    know that, and would retry it.
+    know that, and would retry it. ``plan_exit`` says how plan mode is left on
+    this run's host (#826): only the TUI has shift+tab.
     """
 
     if provenance in ("bash", "write"):
-        return MODE_META[PermissionMode.PLAN].block_reason
+        return f"{PLAN_BLOCKED} {plan_exit}"
     return (
         f"Plan mode is active: {tool_name!r} is not one of aelix's read-only "
         "built-in tools, so it is blocked like a file edit or a shell command "
         "(MCP and extension tools are never assumed to be read-only). Use read, "
-        "grep, find or ls to investigate, and propose a plan first. shift+tab "
-        "to exit plan mode."
+        f"grep, find or ls to investigate, and propose a plan first. {plan_exit}"
     )
 
 
@@ -1537,6 +1540,11 @@ class PermissionExtension:
     posture the child runs under is the actual guarantee, and the spawner
     CLAMPS it (``aelix_agents.posture.child_permission_mode``). Do not mistake
     this belt for the braces."""
+    plan_exit: str = PLAN_EXIT_TUI
+    """How plan mode's refusal tells the model the mode is left (#826).
+    ``cli/entry.py`` sets it from the run's host (``permission_mode.plan_exit_for``):
+    shift+tab in the TUI, other words for a delegated child's print/json run (its
+    command inbox), ``-p``/json and RPC/ACP, where no key reaches aelix."""
     settings: SettingsManager | None = None
     """The process's settings, read on every write decision for the plain
     ``skills`` / ``prompts`` paths of the GLOBAL file (#646). ``cli/entry.py``
@@ -1594,7 +1602,7 @@ class PermissionExtension:
         # can still investigate while planning.
         if mode == PermissionMode.PLAN and is_mutating:
             return ToolCallResult(
-                block=True, reason=_plan_block_reason(event.tool_name, provenance)
+                block=True, reason=_plan_block_reason(event.tool_name, provenance, self.plan_exit)
             )
 
         # (a) aelix's own read-only tools (and the bundled ``agent`` tool, whose

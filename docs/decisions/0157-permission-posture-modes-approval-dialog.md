@@ -1,6 +1,7 @@
 # ADR-0157 — Permission posture engine (shift+tab modes) + purpose-built approval dialog
 
-- **Status:** Accepted
+- **Status:** Accepted. Amended 2026-11-19 (#826): plan mode's refusal ends in the way out its
+  host has, not in "shift+tab" everywhere; see the note of that date.
 - **Date:** 2026-06-21
 - **Sprint:** WP-0 (TUI v2 overhaul roadmap)
 - **Supersedes/relates:** ADR-0004 (`GuardrailExtension` — the non-bypassable regex floor),
@@ -144,3 +145,20 @@ keys on the **provenance of the tool object** the loop will execute. Only aelix'
 it is prompted in DEFAULT and blocked in PLAN, AUTO_ACCEPT / AUTO never auto-allow it, and
 its session grant is an exact `tool:<name>` key. YOLO and the headless ALLOW are unchanged.
 The order of the ladder and every security decision above are unchanged.
+
+## Note (2026-11-19) — PLAN's refusal names the way out its host has (#826)
+
+PLAN's refusal ended in "shift+tab to exit plan mode." on every host, and the model reads it as
+its tool result. Only the TUI has the key. `PermissionExtension.plan_exit`, which `cli/entry.py`
+sets with `permission_mode.plan_exit_for(app_mode, inbox=…)`, now ends it, chosen by the host
+that runs: the TUI keeps "shift+tab to exit plan mode."; RPC (and ACP over it) is told that only
+the application running aelix can leave it; a `-p` or `--mode json` run serving a delegation
+parent's command inbox (`--command-inbox`, ADR-0306 D2), whose mode only ever tightens, is told
+its parent set the mode and to give the plan in its answer; any other `-p` or `--mode json` run,
+that it stays in plan mode. `AELIX_SUBAGENT_DEPTH` does not choose: an RPC or TUI process can
+inherit it and still changes its mode by `permissions/set` or shift+tab (Codex's review of this
+change, M7, measured a depth-1 `--mode rpc` loop told the child's sentence before a
+`permissions/set` left plan mode). pi has no built-in plan mode; its example extension says "Use
+/plan to disable plan mode first", a TUI command, on every host. The mode's TUI description is
+unchanged. `tests/builtin/test_plan_exit_by_host_826.py` (each host and an RPC and a json launch
+at depth 1; a real `--mode json -p` child with and without the inbox, the inbox row POSIX only).

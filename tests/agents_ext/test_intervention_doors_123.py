@@ -192,7 +192,10 @@ async def test_a_steer_is_queued_and_consumed_and_a_follow_up_goes_as_one(tmp_pa
     assert runtime._children == {}
     refused = await runtime.steer(row.id, "too late")
     assert refused == Delivery("refused", reason=RESUME_HINT)
-    assert (await runtime.wrap_up(row.id)).reason == RESUME_HINT
+    # #822: a wrap-up carries no text, so its refusal names none.
+    assert (await runtime.wrap_up(row.id)).reason == (
+        'the agent has finished or was stopped; to go on, use action="resume"'
+    )
 
 
 class _Stdin:

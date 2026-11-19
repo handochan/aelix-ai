@@ -772,7 +772,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1173``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1176``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -1584,9 +1584,9 @@ class _SubagentRuntimeImpl:
         """
 
         child = self._children.get(id)
-        refusal = _door_refusal(child)
+        refusal = _door_refusal(child, note=False)
         if refusal is not None or child is None:
-            return Delivery("refused", reason=refusal or RESUME_HINT, verb="wrap_up")
+            return Delivery("refused", reason=refusal or WRAP_UP_RESUME_HINT, verb="wrap_up")
         if child.wrap_up is not None:
             return Delivery("refused", reason="a wrap-up was already requested for this agent", verb="wrap_up")
         request = new_wrap_up(origin)
@@ -2043,7 +2043,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:283``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:2285-2291``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:2288-2294``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2487,10 +2487,11 @@ async def _join_settles(owner: set[asyncio.Task[None]]) -> None:
         await asyncio.wait(pending, timeout=SETTLE_JOIN_SECONDS)
 
 
-RESUME_HINT = (
-    "the agent has finished or was stopped; to go on, use action=\"resume\" with "
-    "this text as its next instruction"
-)
+WRAP_UP_RESUME_HINT = 'the agent has finished or was stopped; to go on, use action="resume"'
+"""The refusal of a wrap-up for a row no longer in the registry (#822): a wrap-up
+carries no text of the caller's, so the way on names none."""
+
+RESUME_HINT = f"{WRAP_UP_RESUME_HINT} with this text as its next instruction"
 """The refusal for a row no longer in the registry (ADR-0306 §3.2): a finished,
 stopped or failed agent continues only as a new process on its own file (#610)."""
 
@@ -2536,20 +2537,24 @@ def _ended_reason(outcome: str, *, note: bool) -> str:
     ``unknown`` stays the word, since a line dispatched and not acknowledged
     before a kill is possible too, but the way on is the one a finished row has:
     ``action="resume"``. A request made after the wire closed wrote nothing and
-    is refused with :data:`RESUME_HINT`, as a row already out of the registry is.
+    is refused with :data:`RESUME_HINT`, as a row already out of the registry is
+    (a wrap-up with :data:`WRAP_UP_RESUME_HINT`).
     """
 
     if outcome != "unknown":
-        return RESUME_HINT
+        return RESUME_HINT if note else WRAP_UP_RESUME_HINT  # #822: a late wrap-up names no text
     way = f'{ENDED_UNANSWERED}; to go on, use action="resume"'
     return f"{way} with this text as its next instruction" if note else way
 
 
-def _door_refusal(child: RunningChild | None) -> str | None:
-    """Why a row cannot take a line now, or ``None`` (ADR-0306 §3.2's state table)."""
+def _door_refusal(child: RunningChild | None, *, note: bool = True) -> str | None:
+    """Why a row cannot take a line now, or ``None`` (ADR-0306 §3.2's state table).
+
+    ``note`` is false for a wrap-up, whose refusal for a row out of the registry
+    names no text to resume with (#822)."""
 
     if child is None:
-        return RESUME_HINT
+        return RESUME_HINT if note else WRAP_UP_RESUME_HINT
     if child.stopped or child.eager_kill:
         return "the agent is stopping"
     wire = child.wire

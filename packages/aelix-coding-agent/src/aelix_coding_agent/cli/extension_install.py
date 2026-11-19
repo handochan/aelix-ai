@@ -2478,7 +2478,10 @@ def _default_runner(
 ) -> subprocess.CompletedProcess[bytes]:
     # Inherit stdio so the user sees pip's live progress; never shell=True. ``cwd``:
     # aelix's installer directory for a catalog/record install (#392), else inherited.
-    return subprocess.run(pip_args, check=False, cwd=cwd)  # noqa: S603 — argv list, no shell
+    # stdin too, unless it carries ``--mode rpc``'s or a command inbox's lines (#828).
+    from aelix_coding_agent.tools._subprocess import inherited_stdin
+
+    return subprocess.run(pip_args, check=False, cwd=cwd, stdin=inherited_stdin())  # noqa: S603 — argv list, no shell
 
 
 def _runner_in(

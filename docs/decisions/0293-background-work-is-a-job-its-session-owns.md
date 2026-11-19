@@ -8,7 +8,10 @@ turns §12's gate off for a launch; see the note at the end. Noted 2026-11-17 (#
 2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True`; in the kernel
 `AgentHarnessOptions.notice_inbox` stays off by default and product-core turns it on while
 `ACTIVE` (§12). Until then it was inert behind `ACTIVE = False`; see the note of 2026-11-17 (#779)
-at the end.
+at the end. Amended 2026-11-19 (#810, #820, #821, #822, #825, #827): a lone surrogate never ends
+a job's notice, cut briefs end at a word, a kind may name its jobs by ids of its own
+(`JobIdAdapter`) and word a control on an ended job (`JobEndedControlAdapter`), and a restart
+shows the run time an outcome recorded; see the note of that date.
 Date: 2026-11-08
 Issue: #722 (#611 slice S1b). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract), with rounds 3–5 and Codex's reviews of rounds 1, 3 and 5 beside it.
@@ -970,3 +973,62 @@ result, and the job was just stopped). `bind` posts a pending one again only whi
 and drops it otherwise. No fact is written, so a restart restores nothing of it, and a job #769
 lets go owes nothing for one still waiting. §10's `quiet` still never notifies. Each clause:
 `tests/jobs/test_attention_123.py`; the delegation kind's use: ADR-0306 D9.
+
+## Note (2026-11-19, #810, #820, #821, #822, #825, #827)
+
+**§8's frame and briefs.** Every cut in `jobs/notice.py` replaces a lone surrogate with U+FFFD
+before it measures UTF-8 bytes (`utf8_safe`, as `jobs_client._utf8_safe` does for a child's text
+since #782): a job whose title held one raised `UnicodeEncodeError` in `frame`, its drive task
+died, and it ended with no `outcome` fact and no notice (#810;
+`tests/jobs/test_lone_surrogate_title_810.py`, which also runs a real `-p` whose background
+`bash` command holds `\udcff`, POSIX only). An extension notice's key is its identity, not display
+text, so a name or id holding a lone surrogate is written apart, `ext~:` and the hex of its bytes:
+with U+FFFD in it, `"id\udcff"` and `"id\ufffd"` were one notice and the second was refused as a
+duplicate (Codex's review, L9). Each part's hex is of its first 128 bytes, as many as a valid key
+keeps; a first version kept 64, and two ids differing only after byte 64 were one notice (lane
+b7f verify round 2, N1; `test_a_surrogate_notice_key_keeps_as_many_bytes_per_part_as_a_valid_key`). `cut_brief` ends a cut brief in `…` inside its 256 bytes, and the
+agent kind's brief is cut so at 160 characters, at the last whitespace (`str.isspace`) before the
+cut when what that keeps measures at least two thirds of the bound (107 characters, 171 bytes),
+and otherwise hard, at the bound, never inside a character (#825;
+`tests/jobs/test_brief_cut_825.py`). A first version looked back 24 characters for an ASCII space
+only (Codex L12, verify F2); a second ended at any whitespace however far back, and "Failed:
+/very/long/path…" read "Failed:…" (lane b7f verify round 2, N2; the two-thirds rule is the
+lead's call).
+
+**§10's surfaces.** The TUI's `/jobs send` counts the results and the attention notices among
+the notices still pending, read in one step: an attention notice a boundary was placing made a
+waiting result read "1 notice", and `JobsCommand` asks the host's send hook before its own
+result-only count, which said "No results are waiting." while only an attention notice waited
+(#820; `tests/jobs/test_jobs_send_counts_820.py`, the placement paused at the session write).
+
+The `job` tools and `/jobs` find a job by a kind's own id too (#827). `commands.find` takes an
+exact job id, then a unique prefix of one, and only then asks each kind that is a
+`JobIdAdapter` (`jobs/contract.py`, one optional method, `job_for(ident, jobs)`), handing it its
+own jobs of the current session, newest first; an answer counts only when it is one of them, and
+an id two kinds answer with different jobs is refused (`JobService.jobs_named`). Asked before the
+prefix, as first built, a kind's alias redirected `job_stop` from the job a prefix named, and an
+adapter could name another kind's job (Codex's review, H2). The core still names no kind
+(`tests/jobs/test_core_is_kind_agnostic_611.py`). The agent kind answers from this process's
+names, then from each job's own data (the agent and session ids a restart read back into its
+payload, a moved run's linkage), so an agent of a run before a restart resolves too once that
+run has ended (Codex M4). A spawned run a restart reads back as unresolved (its recorded process
+alive, no settle record) has no read-back ids in its payload, and only its job id names it to the
+`job` tools and `/jobs`, while `agent()` takes its agent id (lane b7f verify round 2, V2-F2).
+An id that names no job gets a pointer to `job(action="list")` in the `job` and `job_stop` tools;
+`/jobs` says `no job <id> in this session` as before
+(`tests/agents_ext/test_job_tool_agent_id_827.py`). Resolving the id, rather than only pointing
+at `agent()`, is the implementer's call.
+
+A control (§3.1 of ADR-0306) that reaches an ended job asks its kind for the sentence when the
+kind is a `JobEndedControlAdapter` and declares the verb; otherwise the service's own "<id>
+already ended: <state>" stands. The agent kind answers its door's refusal, so `/jobs wrap` and
+`/jobs steer` on a finished agent say `use action="resume"` as the model is told (#822, Codex
+M6). The panel's `w` `w` and `m` on an ended row ask the same `control`, and show what those two
+say; they said "<id> has ended" without asking it (lane b7f verify round 2, V2-F1;
+`tests/agents_ext/test_wrap_up_refusal_822.py`).
+
+**Restart.** An ended job read back after a restart has the run time its outcome fact recorded
+as its `elapsed` (`elapsed_ms` above 0; 0 is what the outcomes written with no run behind them
+hold, and stays unknown): `/jobs <id>` read `elapsed —` for every such job, on `1c2a4a7c` too
+(Codex M5; `test_a_restart_shows_the_run_time_the_outcome_recorded` in
+`tests/agents_ext/test_moved_elapsed_821.py`).

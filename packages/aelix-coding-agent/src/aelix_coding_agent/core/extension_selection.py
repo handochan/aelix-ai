@@ -543,12 +543,20 @@ class ExtensionRow:
 
 @dataclass(frozen=True)
 class RefusedRow:
-    """A carrier discovery could not produce (a malformed manifest, a refused ``-e``)."""
+    """A carrier discovery could not produce (a malformed manifest, a refused ``-e``),
+    or a bundled package whose import failed (``failed``, #797: :func:`with_bundled`)."""
 
     key: str
     label: str
     reason: str
     path: str | None = None
+    failed: bool = False
+
+    @property
+    def why(self) -> str:
+        """``refused: <reason>``, or ``failed to load: <reason>`` for a bundled package."""
+
+        return f"{'failed to load' if self.failed else 'refused'}: {self.reason}"
 
 
 @dataclass(frozen=True)
@@ -584,9 +592,10 @@ def _row_key(tier: str, info: EntryInfo) -> str:
 
 
 def build_inventory(
-    loaded: LoadExtensionsResult, *, no_extensions: bool = False
+    loaded: LoadExtensionsResult, *, no_extensions: bool = False, bundled: Sequence[Any] = ()
 ) -> ExtensionInventory:
-    """Every carrier *loaded* found, on or off, with its outcome (no import)."""
+    """Every carrier *loaded* found, on or off, with its outcome (no import), and a
+    ``failed`` row per bundled package whose import failed (``bundled``, :func:`with_bundled`)."""
 
     owners = getattr(loaded.runtime, "provider_owners", None) or {}
     tied: set[int] = set()
@@ -648,7 +657,33 @@ def build_inventory(
         refused.append(
             RefusedRow(f"refused:{index}:{path}", label, str(getattr(err, "error", "")), path)
         )
-    return ExtensionInventory(tuple(rows), tuple(refused), loaded.runtime, no_extensions)
+    return with_bundled(
+        ExtensionInventory(tuple(rows), tuple(refused), loaded.runtime, no_extensions), bundled
+    )
+
+
+def with_bundled(inventory: ExtensionInventory, errors: Sequence[Any]) -> ExtensionInventory:
+    """``inventory`` with a ``failed`` row per bundled package that could not be imported (#797).
+
+    ``cli/entry.py`` imports the bundled ``aelix-agents`` and ``aelix-status``
+    under a guard and lists a failure as a load error (``_bundled_load_error``),
+    which RPC ``extensionErrors`` and the text viewer read. The ``/extension``
+    Installed tab and RPC ``selections/list`` read this inventory, which a
+    carrier discovery built and so held neither (Codex review of #797, M3).
+    """
+
+    if not errors:
+        return inventory
+    rows = tuple(
+        RefusedRow(
+            f"bundled:{getattr(err, 'path', '')}",
+            str(getattr(err, "path", "") or "?"),
+            str(getattr(err, "error", "")),
+            failed=True,
+        )
+        for err in errors
+    )
+    return replace(inventory, refused=(*inventory.refused, *rows))
 
 
 def _error_text(message: str, error_type: str | None) -> str:
@@ -1024,7 +1059,7 @@ class ExtensionKind:
                         kind="extension",
                         key=refused.key,
                         label=refused.label,
-                        description=f"refused: {refused.reason}",
+                        description=refused.why,
                         group="refused",
                         group_label="REFUSED  found, not loaded",
                         role="placeholder",
@@ -1185,7 +1220,7 @@ class ExtensionKind:
         )
         for refused in inventory.refused:
             locks[refused.key] = Lock(
-                False, f"refused: {refused.reason}", tag="refused", kind="unavailable"
+                False, refused.why, tag="failed" if refused.failed else "refused", kind="unavailable"
             )
         for item, lock in self._mcp_rows(inventory):
             locks[item.key] = lock
@@ -1727,5 +1762,6 @@ __all__ = [
     "target_of",
     "tool_group_tiers",
     "tool_rows",
+    "with_bundled",
     "without_hidden",
 ]

@@ -4,6 +4,9 @@ Status: Accepted (2026-11-18, #123). Implemented on `a1606f58` (after #779 merge
 decision is listed in "How it is held" at the end: the tests, the mutants and the pty captures, each
 with the condition it was measured under. Lane A of the two-lane contract; lane B (#612, the RPC
 and ACP exposure) follows in ADR-0307 and changes nothing a host sees until it lands.
+Amended 2026-11-19 (#822, #826, #828, #829): a refused wrap-up names no text and `/jobs wrap` on an
+ended agent says what the model is told; plan mode's refusal in a child names its way out; what
+aelix spawns with live stdio does not read the inbox; see the note of that date.
 Date: 2026-11-18
 Issue: #123 (intervening in a running delegated child; #604 stage 3).
 Design: `.omc/specs/123-612-contract-r2-2026-11-18.md` (contract r2, Part A and §12's Lane A block),
@@ -511,3 +514,30 @@ line for the notice is `◆ background notice: <brief>`, a result's stays `◆ b
   (`press w again to wrap up 549175`) and wrapping (`wrapping up · running bash · 18 tok` on the
   row), the result back `stopped` with the child's text naming the note and the wrap-up. A
   real-model run is the lead's.
+
+## Note (2026-11-19, #822, #826, #828, #829)
+
+- **A refused wrap-up names no text (#822).** §3.2's refusal for a row out of the registry and a
+  wrap-up line written after the wire closed (`refused`) say `the agent has finished or was
+  stopped; to go on, use action="resume"` (`runtime.WRAP_UP_RESUME_HINT`) in the model's answer and
+  in `/jobs wrap`'s and `w` `w`'s; a steer's and a follow-up's keep "with this text as its next
+  instruction". On a job that has ended, `/jobs wrap` got the service's "<id> already ended: done"
+  and the panel's `w` `w` and `m` their own "<id> has ended", each before the kind was asked; the
+  agent kind now words them, as its door does, and the panel asks the service's `control` as
+  `/jobs wrap` and `/jobs steer` do (ADR-0293's `JobEndedControlAdapter`, note of this date;
+  Codex's review, M6; lane b7f verify round 2, V2-F1).
+  `tests/agents_ext/test_wrap_up_refusal_822.py`.
+- **Plan mode's refusal in a child (#826).** §6 tightens a child to `plan`, and the refusal it
+  then read ended in "shift+tab to exit plan mode.". A `-p`/json run serving the command inbox
+  (D2's `--command-inbox`, which only ever tightens) now reads that its parent set plan mode and
+  to give the plan in its answer (`permission_mode.PLAN_EXIT_CHILD`). The inbox chooses it, not
+  `AELIX_SUBAGENT_DEPTH`, which an RPC or TUI process can inherit (Codex M7); ADR-0157's note of
+  this date has every host (`tests/builtin/test_plan_exit_by_host_826.py`, a real `--mode json -p`
+  child with the inbox included, POSIX only).
+- **D2's stdin is not grep's or find's (#828).** `tools/_subprocess.run_cancellable` spawns `rg`
+  and `fd` with `stdin=DEVNULL`: on `1c2a4a7c` an `rg` given no path read the inbox line, and the
+  child read nothing. The extension installer's runner, which keeps aelix's stdio for pip's
+  progress, passes `DEVNULL` once the inbox (or `--mode rpc`) has claimed stdin
+  (`tests/tools/test_run_cancellable_stdin_828.py`; ADR-0238's note of this date).
+- **Windows (#829).** `SLICE-STATUS.md` records the win32 `os.read` pump under every child's inbox
+  and that the real-child inbox tests are POSIX only.

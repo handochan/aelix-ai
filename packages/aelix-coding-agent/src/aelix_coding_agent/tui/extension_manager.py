@@ -101,12 +101,15 @@ def _extension_version(ext: Any) -> str | None:
 
 
 def _error_rows(errors: Any) -> list[str]:
-    """Render one ``✖ <label> — refused: <reason>`` row per load error.
+    """Render one ``✖ <label> — refused: <reason>`` row per load error (bundled: ``failed to load:``).
 
     ``errors`` is the loader's ``LoadExtensionsResult.errors`` — a list of
     :class:`~aelix_coding_agent.extensions.loader.ExtensionLoadError`, each a
     ``path`` label plus an ``error`` reason. getattr-guarded like every other
-    builder here, so an unexpected shape degrades to its ``str()``.
+    builder here, so an unexpected shape degrades to its ``str()``. A bundled
+    package whose import failed (``bundled``, #797) reads ``failed to load:``,
+    the Installed tab's word for it (``RefusedRow.why``; lane b7f verify round 2,
+    N3: this viewer said ``refused:``).
     """
 
     rows: list[str] = []
@@ -116,7 +119,8 @@ def _error_rows(errors: Any) -> list[str]:
         if not label and not reason:
             rows.append(f"  ✖ {err}")
             continue
-        rows.append(f"  ✖ {label or '?'} — refused: {reason or 'unknown reason'}")
+        word = "failed to load" if getattr(err, "bundled", False) is True else "refused"
+        rows.append(f"  ✖ {label or '?'} — {word}: {reason or 'unknown reason'}")
     return rows
 
 

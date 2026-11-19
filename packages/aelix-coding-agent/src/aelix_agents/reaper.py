@@ -51,7 +51,7 @@ grace.
 WHY A DESCENDANT WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
 too"*. That is factually wrong: ``tools/bash.py:919`` and
-``tools/_subprocess.py:107`` both spawn through
+``tools/_subprocess.py:109`` both spawn through
 ``containment_spawn_kwargs(new_session=True)`` — which is the
 ``start_new_session=True`` those two lines used to spell literally, and still is
 on POSIX — so a grandchild is the leader of its OWN group and ``killpg`` on the

@@ -12,7 +12,9 @@ the owner's OQ-S3-2 (2026-11-12: "↑↓·Enter·r·s s·Esc/q (권장)"):
 * ``m`` closes the panel with ``/jobs steer <id> `` in the input, for the human
   to finish the note (#123, ADR-0306 §3.1); ``w`` ``w`` asks the selected job
   to wrap up, armed exactly as ``s`` ``s`` is; on a job whose kind takes
-  neither, both leave the kind's refusal on the hint row;
+  neither, both leave the kind's refusal on the hint row; on a job that has
+  ended, ``w`` and ``m`` leave what ``/jobs wrap`` and ``/jobs steer`` answer
+  (the service's ``control``: an agent's kind sentence, else ``already ended``, #822);
 * ``Esc``/``q`` close it. Neither ends a running turn: the panel has the focus.
 
 Nothing here names a kind: every row is the service's snapshot and its kind's
@@ -286,8 +288,14 @@ class JobsPanel:
                 self._stop(arm.job_id)
             return
         snap = self.service.snapshot(row.key) if row is not None else None
-        if snap is None or snap.state in TERMINAL_STATES:
-            self.note = f"nothing to {verb}" if snap is None else f"{snap.job_id[:6]} has ended"
+        if snap is None:
+            self.note = f"nothing to {verb}"
+            return
+        if snap.state in TERMINAL_STATES:
+            if verb == "wrap":
+                self._ended(snap.job_id, "wrap_up")
+            else:
+                self.note = f"{snap.job_id[:6]} has ended"
             return
         self.arm = Arm(self.service.owner, snap.job_id, self.clock(), self.service.harness, verb)
         self._redraw_at_expiry()
@@ -310,16 +318,43 @@ class JobsPanel:
             asyncio.get_running_loop().create_task(go())
         self.list.refresh()
 
+    def _ended(self, job_id: str, verb: str) -> None:
+        """``w`` or ``m`` on a row that has ended: the note is what ``/jobs wrap`` or
+        ``/jobs steer`` answers, asked of the service's ``control`` and so of the kind
+        (#822, ``JobEndedControlAdapter``). Nothing is delivered: ``control`` answers an
+        ended job without reaching its adapter's ``control``. Until the answer comes
+        (one loop turn), the note is "<id> has ended", which was all it said before
+        (lane b7f verify round 2, V2-F1)."""
+
+        async def go() -> None:
+            try:
+                answer = await self.service.control(job_id, verb, {"origin": "user"})
+            except JobNotFound:
+                return
+            except Exception as exc:  # noqa: BLE001 — one line on the panel, never a traceback
+                answer = f"{verb} failed: {type(exc).__name__}"
+            self.note = answer
+            self.list.refresh()
+
+        self.note = f"{job_id[:6]} has ended"
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(go())
+        self.list.refresh()
+
     def on_message(self, row: PanelRow | None) -> None:
         """``m``: close with ``/jobs steer <id> `` for the input box (#123).
 
-        A job whose kind declares no ``steer`` keeps the panel open, and the
-        note is the sentence ``/jobs steer`` would answer (fix round 1, V7).
+        A job whose kind declares no ``steer``, or one that has ended, keeps the
+        panel open, and the note is the sentence ``/jobs steer`` would answer
+        (fix round 1, V7; for an ended job :meth:`_ended`, #822).
         """
 
         snap = self.service.snapshot(row.key) if row is not None else None
-        if snap is None or snap.state in TERMINAL_STATES:
-            self.note = "nothing to message" if snap is None else f"{snap.job_id[:6]} has ended"
+        if snap is None:
+            self.note = "nothing to message"
+            return
+        if snap.state in TERMINAL_STATES:
+            self._ended(snap.job_id, "steer")
             return
         registration = self.service.registry.get(snap.kind)
         caps = registration.adapter.capabilities if registration is not None else None

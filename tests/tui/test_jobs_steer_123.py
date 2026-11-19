@@ -372,8 +372,47 @@ async def test_m_on_an_ended_job_is_a_note_and_not_a_close(tmp_path: Path) -> No
         await rig.end("a")
         await wait_for(lambda: rig.state(next(iter(rig.service.snapshots())).job_id) == "done")
         panel.list.refresh()
+        panel.list._result = asyncio.get_running_loop().create_future()
         panel.list.press("m")
-        assert panel.note.endswith("has ended")
+        assert panel.note.endswith("has ended")  # until the service answers (one loop turn)
+        # Then what ``/jobs steer`` says, and ``w`` what ``/jobs wrap`` says: a kind with
+        # no ended words keeps the service's (lane b7f fix round 2, V2-F1). Fails on
+        # ``a3c8b9a6``: the note stays "<id> has ended".
+        short = next(iter(rig.service.snapshots())).job_id[:6]
+        steer_said = await JobsCommand(rig.service)(f"steer {short} x")
+        await wait_for(lambda: panel.note == steer_said, timeout=2.0)
+        panel.list.press("w")
+        wrap_said = await JobsCommand(rig.service)(f"wrap {short}")
+        await wait_for(lambda: panel.note == wrap_said, timeout=2.0)
+        assert (steer_said, wrap_said) == (f"{short} already ended: done", f"{short} already ended: done")
+        assert panel.arm is None and not panel.list._result.done()
+
+
+async def test_w_on_an_ended_row_whose_job_left_the_session_keeps_has_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``w`` on an ended row asks the service's ``control`` (lane b7f fix round 2,
+    V2-F1); one that answers ``JobNotFound`` (the session changed under the panel)
+    leaves the note "<id> has ended" and says nothing else."""
+
+    from aelix_coding_agent.jobs.service import JobNotFound
+
+    async with _rig(tmp_path) as rig:
+        a = await rig.start("a")
+        await rig.end("a")
+        await wait_for(lambda: rig.state(a) == "done")
+        panel = _opened(JobsPanel(rig.service, _Stub()))
+        asked: list[str] = []
+
+        async def gone(job_id: str, verb: str, payload: Any) -> str:
+            asked.append(verb)
+            raise JobNotFound(job_id)
+
+        monkeypatch.setattr(rig.service, "control", gone)
+        panel.list.press("w")
+        await wait_for(lambda: asked == ["wrap_up"], timeout=2.0)
+        await asyncio.sleep(0)
+        assert (panel.note, panel.arm) == (f"{a[:6]} has ended", None)
 
 
 async def test_the_jobs_ui_puts_the_prefill_in_the_input_box(

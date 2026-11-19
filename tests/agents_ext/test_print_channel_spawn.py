@@ -775,7 +775,7 @@ async def test_stdin_is_the_parents_pipe_with_nothing_on_it(tmp_path: Path) -> N
     holds open and writes nothing to unless asked.
 
     It used to be ``DEVNULL`` to pin the +30 s landmine — an INHERITED stdin sent
-    the child into ``_read_piped_stdin`` (``cli/entry.py:320-444``), which waited
+    the child into ``_read_piped_stdin`` (``cli/entry.py:324-448``), which waited
     the whole ``AELIX_STDIN_TIMEOUT`` and prepended any bytes to the task. That
     guard moved to the flag: a child launched with ``--command-inbox`` reads no
     prompt from stdin at all (``tests/cli/test_command_inbox_123.py``). This
@@ -1664,7 +1664,7 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
     ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:919``
-    and ``tools/_subprocess.py:107`` both spawn through
+    and ``tools/_subprocess.py:109`` both spawn through
     ``containment_spawn_kwargs(new_session=True)``, which on POSIX is the
     ``start_new_session=True`` both lines used to spell literally, so each
     grandchild leads its own group and nothing outside the child can find them
@@ -1982,7 +1982,7 @@ async def test_double_cancellation_still_kills(
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:919`` and ``tools/_subprocess.py:107`` both spawn through
+    ``tools/bash.py:919`` and ``tools/_subprocess.py:109`` both spawn through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX — so every tool subprocess the child starts is the leader of its
     own group. On the COOPERATIVE leg the child's own
@@ -2438,7 +2438,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1519-1523``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1522-1526``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2490,7 +2490,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:2285``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:2288``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
@@ -3053,7 +3053,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:386-394``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:390-398``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"

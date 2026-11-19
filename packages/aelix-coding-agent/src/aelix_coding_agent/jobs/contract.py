@@ -27,7 +27,7 @@ opaque strings its client supplies (ADR-0008 as amended by ADR-0293).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -250,6 +250,42 @@ class JobControlAdapter(Protocol):
 
 
 @runtime_checkable
+class JobEndedControlAdapter(Protocol):
+    """What a kind says when a verb it declares reaches one of its jobs that has ended (#822).
+
+    ``ended_control`` takes the ended job and the verb, and answers the sentence
+    the surface prints, or ``None`` for the service's own ("<id> already ended:
+    <state>"). A kind whose own door refuses such a job with a way on (a
+    background agent: ``action="resume"``) says it here too, so ``/jobs`` and the
+    panel say what the model is told (Codex review of #822, M6: ``/jobs wrap`` on
+    a finished agent said only "already ended: done").
+    """
+
+    def ended_control(self, job: JobSnapshot, verb: str) -> str | None: ...
+
+
+@runtime_checkable
+class JobIdAdapter(Protocol):
+    """The half a kind adds when its jobs are also named by ids of its own (#827).
+
+    ``job_for`` answers the id of the job that ``ident`` names among ``jobs``, or
+    ``None``. ``jobs`` are the kind's own jobs of the current session, newest
+    first, a restart's included; their ``payload`` and ``client_start`` are the
+    kind's to read. The ``job`` and ``job_stop`` tools and ``/jobs`` find a job by
+    its job id or a unique prefix of one; one of the kind's ids reached them as
+    "no job … in this session" though the kind's own surfaces take both (a
+    background agent's answer names its agent id and its job id).
+
+    The service asks only when neither an exact job id nor a unique prefix of one
+    matched (Codex review of #827, H2: a kind's answer had redirected a prefix
+    that named another job), keeps an answer only when it is one of ``jobs``, and
+    refuses an ``ident`` two kinds answer with different jobs. It reads no id itself.
+    """
+
+    def job_for(self, ident: str, jobs: Sequence[JobSnapshot]) -> str | None: ...
+
+
+@runtime_checkable
 class JobKindAdapter(Protocol):
     """A kind's view of its jobs. Every method may raise; ADR-0293's table says what the service does then."""
 
@@ -367,6 +403,8 @@ __all__ = [
     "HelperCleanup",
     "JobContext",
     "JobControlAdapter",
+    "JobEndedControlAdapter",
+    "JobIdAdapter",
     "JobKindAdapter",
     "JobRunner",
     "JobSnapshot",

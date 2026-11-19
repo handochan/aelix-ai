@@ -102,7 +102,7 @@ from aelix_coding_agent.jobs.contract import (
     Recovered,
     RelationSpec,
 )
-from aelix_coding_agent.jobs.notice import escape_body, format_elapsed
+from aelix_coding_agent.jobs.notice import end_at_word, escape_body, format_elapsed
 from aelix_coding_agent.jobs.records import JOB_FACT_TYPE, append_record
 
 from aelix_agents.child_session import (
@@ -128,6 +128,8 @@ from aelix_agents.result_file import (
 )
 from aelix_agents.runtime import (
     MAX_LIVE_CHILDREN,
+    RESUME_HINT,
+    WRAP_UP_RESUME_HINT,
     CallEnvelopes,
     Delivery,
     SpawnRecordMeta,
@@ -1075,6 +1077,30 @@ class DelegationKindAdapter:
             f'id="{child_line(session_id)}", profile="{name}", task=<its next instruction>).'
         )
 
+    def job_for(self, ident: str, jobs: Sequence[JobSnapshot]) -> str | None:
+        """The job among ``jobs`` that an agent's id (or its run's key) names, as ``agent()`` takes it (#827).
+
+        ``JobIdAdapter``: the ``job`` tools and ``/jobs`` ask it when ``ident`` is
+        neither a job id nor a prefix of one. This process's names first (a spawn
+        or a move names them), then, newest first, what each job's own data
+        names: the ids a restart read back into its ``payload`` from the run's
+        records, and a moved run's linkage (``client_start``, #775). So an agent
+        of a run before a restart resolves too once that run has ended (Codex
+        review of #827, M4: it reached ``job`` as "no job …" though ``agent()``
+        took it). A spawned run a restart reads back as unresolved has no ids
+        in its payload, and this answers ``None`` for its agent id (lane b7f
+        verify round 2, V2-F2).
+        """
+
+        ids = {snap.job_id for snap in jobs}
+        found = self._jobs.job_id_for(ident)
+        if found in ids:
+            return found
+        for snap in jobs:
+            if ident in _names_of(snap):
+                return snap.job_id
+        return None
+
     async def control(self, job_id: str, verb: str, payload: Mapping[str, Any]) -> str:
         """``steer`` / ``wrap_up`` on a running agent job, spawned or Ctrl+B'd (#123, ADR-0306 §3.1; Codex H9).
 
@@ -1088,6 +1114,19 @@ class DelegationKindAdapter:
             return delivered
         what = {"wrap_up": "the wrap-up", "follow_up": "the follow-up"}.get(delivered.verb, "the note")
         return describe_delivery(delivered, what=what)
+
+    def ended_control(self, job: JobSnapshot, verb: str) -> str:
+        """``steer`` / ``wrap_up`` on an agent job that has ended (#822, ``JobEndedControlAdapter``).
+
+        The refusal the model's door gives a row out of the registry
+        (``runtime._door_refusal``), in the human's words: a wrap-up names
+        ``action="resume"`` and no text to resume with, a steer names both. The
+        service answered "<id> already ended: done" before the kind was asked
+        (Codex review of #822, M6).
+        """
+
+        reason = WRAP_UP_RESUME_HINT if verb == "wrap_up" else RESUME_HINT
+        return describe_delivery(Delivery("refused", reason=reason, verb=verb), what="the wrap-up")
 
     def render_rows(self, snapshot: JobSnapshot, width: int) -> list[str]:
         """``<profile>: <task>``; while it runs ``running <tool>`` or ``thinking``, with
@@ -1762,9 +1801,25 @@ def _result_text(result: SubagentResult) -> str:
     return "\n".join(getattr(block, "text", "") for block in rendered.content)
 
 
+_BRIEF_CHARS = 160
+"""The longest brief, in characters: an agent's ``status`` row and its ``◆ background result`` line."""
+
+
 def _brief(result: SubagentResult) -> str:
+    """The first line of the summary (or error), at most :data:`_BRIEF_CHARS` characters.
+
+    A cut one ends in ``…`` (#825): it was cut at 160 mid-word with no mark, so
+    "… The second step remains undone. Stoppin" read as a whole answer. It ends at
+    a word when that keeps at least two thirds of the 160 characters, else it cuts
+    the word (:func:`~aelix_coding_agent.jobs.notice.end_at_word`)."""
+
     first = (result.summary or result.error or "").strip().splitlines()
-    return child_line(first[0][:160]) if first else result.status
+    if not first:
+        return result.status
+    line = child_line(first[0])
+    if len(line) <= _BRIEF_CHARS:
+        return line
+    return end_at_word(line[: _BRIEF_CHARS - 1], line[_BRIEF_CHARS - 1 :], _BRIEF_CHARS) + "…"
 
 
 def _where(payload: Mapping[str, Any]) -> str | None:
@@ -1902,6 +1957,24 @@ def _adopted_start(client_start: Any) -> Mapping[str, Any] | None:
         "profile": client_start.get("profile"),
         "child": dict(child) if isinstance(child, Mapping) else {},
     }
+
+
+def _names_of(snap: JobSnapshot) -> set[str]:
+    """The agent ids and run key a job's own data names (#827): its read-back
+    ``payload`` and a moved run's linkage."""
+
+    linked = _adopted_start(snap.client_start) or {}
+    child = linked.get("child")
+    if not isinstance(child, Mapping):
+        child = {}
+    names = {
+        snap.payload.get("agent_id"),
+        snap.payload.get("session_id"),
+        snap.payload.get("key"),
+        linked.get("key"),
+        child.get("session_id"),
+    }
+    return {name for name in names if isinstance(name, str) and name}
 
 
 def _job_named_by(entry: Any) -> tuple[str, set[Any]] | None:

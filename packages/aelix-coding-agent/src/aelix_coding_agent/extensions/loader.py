@@ -90,17 +90,17 @@ logger = logging.getLogger(__name__)
 class ExtensionLoadError:
     """Captures a per-extension failure without aborting the whole load.
 
-    ``verify_applies`` says whether ``aelix extension verify`` — which reads
-    installed endpoints only — has anything to add, so the ``/extension``
-    viewer's pointer to it is not printed under a refusal it cannot explain
-    (the #638 one for an ``-e`` entry). Left out of ``repr`` and ``==``: the
-    CLI prints the dataclass as it always has, and callers compare errors by
-    what they say.
+    ``verify_applies``: ``aelix extension verify`` reads installed endpoints only; the
+    ``/extension`` viewer's pointer to it is not printed under a refusal it cannot explain
+    (#638's ``-e`` entry). ``bundled``: a bundled package's failed import (#797), which the
+    viewer calls "failed to load", as the Installed tab does (lane b7f verify round 2, N3).
+    Both are out of ``repr`` and ``==``: the CLI prints the dataclass as it always has.
     """
 
     path: str
     error: str
     verify_applies: bool = field(default=True, repr=False, compare=False)
+    bundled: bool = field(default=False, repr=False, compare=False)
 
 
 class ExtensionInterrupted(KeyboardInterrupt):
@@ -753,7 +753,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2333`` and ``:3364``) pass
+       (``cli/entry.py:2342`` and ``:3387``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to

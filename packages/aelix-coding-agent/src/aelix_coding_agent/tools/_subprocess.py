@@ -33,15 +33,16 @@ same issue:
 - Both spawn through ``containment_spawn_kwargs(new_session=True)`` — on POSIX
   the ``start_new_session=True`` this file always passed, on win32
   ``CREATE_NEW_PROCESS_GROUP`` plus the job the attach adds.
-- ``bash.py`` passes ``stdin=DEVNULL`` and this file deliberately does NOT.
-  ``bash.py`` runs a SHELL command a model wrote, and such a child sharing
-  Aelix's stdin competes with the TUI for the user's keystrokes (measured in
-  #222's critique: the child read ``'secret\\n'``, the TUI's own ``read`` got
-  ``b''``). This file's only callers are ``grep._try_ripgrep`` and
-  ``find._try_fd``, which spawn a fixed ``rg``/``fd`` argv with no shell and
-  neither of which reads stdin, so there is nothing here to take away and
-  nothing measured to fix. Reasoned from those two call sites, not from a
-  measurement of ``rg``/``fd`` themselves.
+- Both pass ``stdin=DEVNULL`` (#828), as pi's grep and find tools spawn with
+  ``stdio: ["ignore", "pipe", "pipe"]``. This file used not to: its only
+  callers, ``grep._try_ripgrep`` and ``find._try_fd``, spawn a fixed argv that
+  names a path, and ``rg`` given a path reads no stdin. Since #123 (ADR-0306
+  D2) a delegated child's stdin is its parent's command inbox, and ``--mode
+  rpc``'s is the RPC pipe: MEASURED on ``1c2a4a7c`` (macOS, ``rg`` from
+  Homebrew), an ``rg`` spawned here with no path read the inbox line meant for
+  aelix, and aelix read nothing. ``bash.py``'s reason is the TUI's keystrokes
+  (#222's critique: the child read ``'secret\\n'``, the TUI's own ``read`` got
+  ``b''``); this file's is the same pipe, whoever writes it.
 - On ``TimeoutError``: end the tree, return ``None`` (matches the previous
   ``except subprocess.TimeoutExpired: return None`` branch in grep/find).
 - On ``CancelledError``: end the tree, **re-raise** (so Esc unwinds the turn;
@@ -101,6 +102,7 @@ async def run_cancellable(
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
@@ -196,4 +198,37 @@ async def run_cancellable(
     return stdout_text, proc.returncode or 0
 
 
-__all__ = ["run_cancellable"]
+_PROTOCOL_STDIN = False
+"""Whether this process's stdin carries a protocol (#828): see :func:`claim_stdin_for_protocol`."""
+
+
+def claim_stdin_for_protocol() -> None:
+    """Mark this process's stdin as a protocol's: ``--mode rpc``'s commands or a
+    delegated child's command inbox (ADR-0306 D2).
+
+    ``rpc_mode._open_stdin_reader`` calls it for both, the one place either is
+    attached. From then on :func:`inherited_stdin` answers ``DEVNULL``.
+    """
+
+    global _PROTOCOL_STDIN
+    _PROTOCOL_STDIN = True
+
+
+def inherited_stdin() -> int | None:
+    """The ``stdin`` for a child aelix starts on its own terminal (live output, never
+    captured): ``None``, inherit, until the stdin carries a protocol, then ``DEVNULL``.
+
+    Its one caller is the extension installer's ``_default_runner`` (pip or uv,
+    run with aelix's stdio so its progress shows): run under ``--mode rpc`` or a
+    command inbox, by an extension calling the Python API in process, it read the
+    line meant for aelix (Codex review of #828, L13). Typed at a terminal
+    (``aelix extension install``) it keeps the terminal, where pip may ask for an
+    index's credentials.
+    """
+
+    import subprocess
+
+    return subprocess.DEVNULL if _PROTOCOL_STDIN else None
+
+
+__all__ = ["claim_stdin_for_protocol", "inherited_stdin", "run_cancellable"]

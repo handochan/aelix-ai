@@ -9,6 +9,7 @@ Ctrl+B is prompt_toolkit's emacs `backward-char`, as it was, and every delegatio
 before (`tests/tui/test_detach_key_611.py::test_without_jobs_ctrl_b_is_backward_char_as_before`).
 ADR-0293's note on the kernel's `abort_pending` is its note of 2026-11-17 (#779).
 Amended 2026-11-17 by ADR-0304 (#795, #796): Ctrl+B is not gated by the agents policy; a moved run keeps running (dated note at the end).
+Amended 2026-11-19 (#821): a moved run's job counts its time from the run's start and shows the start its call's wall clock read; see the note of that date.
 Date: 2026-11-12
 Issue: #775 (#611 slice S3a). Parent: #611. Contract: `.omc/specs/611-s3-contract-r4-2026-11-12.md`
 (r4, with its 정오표; where it says "as r3" or "as r2", the r3 and r2 contracts in the same
@@ -405,3 +406,18 @@ its end, and its notice arrives; a later `resume` of that agent is a new start a
 (`tests/agents_ext/test_detach_driver_611.py`
 `test_a_gate_off_or_non_tui_call_builds_no_delegate`), so no batch or chain leaves the
 foreground with members queued.
+
+## Note (2026-11-19, #821)
+
+A moved run's job counts its time from the run's start. The commit hands `prepare_adopted` the
+seconds the call ran in the foreground (`ran_for`, from the row's monotonic `started_at`, the
+stamp its result's `elapsed_ms` counts from), and the job's clock and `created` start that long
+before the move: its attention notice (D9's "is still running after …"), its finished notice,
+`agent(action="status"|"wait")`'s "for …", the `/jobs` table and `/jobs <id>`'s "started" include
+the foreground time. They counted from the move, so a run moved while stuck read "after 0s". Its
+last activity is still the move, so `quiet` does not fire at once on a long-running run. A
+negative `ran_for` counts as none. The job's `created`, which `/jobs <id>` shows as "started", is
+the wall clock the call read at its start (`RunningChild.started_wall`), not the move's wall time
+less `ran_for`: a wall clock set between the start and the move moved it (Codex's review, L11).
+`tests/agents_ext/test_moved_elapsed_821.py` (the delegation row on POSIX, the service rows on
+every platform, on frozen clocks since fix round 1, verify F9).

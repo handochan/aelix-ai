@@ -4,7 +4,9 @@ Status: Accepted (2026-11-18, #623). Designed 2026-11-17 ("round 0"), revision 1
 a Codex and an opus review; implemented 2026-11-18; fix round 1 2026-11-18 after Codex's review
 of the implementation (its findings CX-5 to CX-9: D3, D4, D8, D9, Limits). What holds each decision is in "How it is held",
 each with the condition it was measured under; where the build differs from the design draft,
-"Where the build differs" says how and why.
+"Where the build differs" says how and why. Amended 2026-11-19 (#797): a bundled package that
+failed to import is in `resources/list`'s `extensionErrors` and `selections/list`'s extension
+rows, a compatible correction (the lead's call); see the note of that date.
 Date: 2026-11-18
 Issue: #623. Lands in one commit with #624 (ADR-0305). Lead's call: one lane and one PR,
 because #624's done-conditions include #623's contract tests and both change `rpc/control.py`.
@@ -693,3 +695,29 @@ run is named.
   a later change could delete together with its fixture. The generated floor with the
   merge-base ratchet protects both.
 - **Freezing the 18 classic commands too** — not the owner's option (D1).
+
+## Note (2026-11-19, #797): a bundled package's failed import is a compatible correction
+
+With #797, a launch whose bundled `aelix-agents` or `aelix-status` cannot be imported answers
+`resources/list` with an `extensionErrors` item `{"source": "<name> (bundled)", "message":
+"<ExceptionType>: <text>"}`; before, the same launch answered `[]` (verify of #797, F4:
+`rpc_broken_head.out`). `selections/list` with kind `extension` gains a row keyed
+`bundled:<name> (bundled)`, role `placeholder`, lock `unavailable` with tag `failed`.
+
+**Classification (the lead's call, 2026-11-19): a compatible correction, not a version 1 change.**
+The item shape and the field's meaning, "a pack that did not load", are unchanged; `source` held
+labels that are not paths before (`extensions/loader.py`), and a placeholder row with a `failed`
+lock is a shape `selections/list` already served (its kind `tool`). What changed is that a bundled
+pack's failure was omitted, which is the defect #797 reported. The selection row follows the same
+reasoning; extending it there is fix round 1's reading, not a separate call. No fixture is added:
+the contract fixtures run a launch whose bundled packages import.
+
+Consequence, as the verify of #797 read aelix-acp `16d6555` (not run): `src/aelix_acp/runtime/extensions.py:81-88`
+answers `"ready": not errors and …` after `/extension enable|disable`, so in such a launch it
+reports `ready: false`, which is true there.
+
+In the same change an RPC reply that UTF-8 cannot encode (a lone surrogate) is answered by its id
+with an error instead of not at all (`rpc_mode._reply_bytes`; `tests/rpc/test_reply_encoding_797.py`),
+inside the existing error envelope; a bundled error's text has its lone surrogates replaced by
+U+FFFD first, so that launch still answers both lists. The floor check (`scripts/check_control_v1.py
+--check --base 1c2a4a7c`) and `tests/rpc/control_v1` were run on this change.

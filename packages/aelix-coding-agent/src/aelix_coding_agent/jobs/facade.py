@@ -130,8 +130,13 @@ class JobsFacade:
         session: Any,
         client_start: Mapping[str, Any],
         process: Any,
+        ran_for: float = 0.0,
+        started_wall: float | None = None,
     ) -> Any:
-        """``JobService.prepare_adopted`` for a kind this extension registered: a job not yet inserted."""
+        """``JobService.prepare_adopted`` for a kind this extension registered: a job not yet inserted.
+
+        ``ran_for``: the seconds the call ran before the move; ``started_wall``: the
+        wall clock at the call's start (#821)."""
 
         from aelix_coding_agent.jobs.service import JobStartRefused
 
@@ -145,6 +150,8 @@ class JobsFacade:
             session=session,
             client_start=client_start,
             process=process,
+            ran_for=ran_for,
+            started_wall=started_wall,
         )
 
     def adopt(self, job: Any, task: Any) -> None:
