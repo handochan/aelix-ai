@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 from typing import Any
 
@@ -64,7 +65,8 @@ def test_the_header_names_who_asks_above_the_requests_own_title() -> None:
     ("kwargs", "header"),
     [
         ({"job_id": "8c1e2f"}, "general-purpose agent sub-3f2a asks · background job 8c1e2f"),
-        ({"cwd": "/repo/pkg/web"}, "general-purpose agent sub-3f2a asks · in pkg/web"),
+        # The header shows os.path.relpath's own separator: pkg\web on Windows (CI 44601140634).
+        ({"cwd": "/repo/pkg/web"}, f"general-purpose agent sub-3f2a asks · in {os.path.join('pkg', 'web')}"),
         ({"job_id": "8c1e2f", "cwd": "/repo/pkg"}, "general-purpose agent sub-3f2a asks · background job 8c1e2f · in pkg"),
     ],
 )
