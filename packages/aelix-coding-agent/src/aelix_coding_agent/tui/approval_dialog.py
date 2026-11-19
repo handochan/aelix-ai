@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import IO, TYPE_CHECKING, Any, cast
@@ -82,6 +83,13 @@ class ApprovalRequest:
     kind: str = "other"  # "bash" | "write" | "edit" | "other"
     yes_label: str | None = None
     redirect_label: str | None = None
+    requester: str | None = None
+    """Who asks, when it is not this process (#612, ADR-0308): a delegated child's
+    ``<profile> agent <id> asks`` (``ChildApprovalRequest.requester``, with its job
+    and its directory when it runs in another one). Drawn as a header row above
+    the request's own title, and "Yes, for this session" reads "Yes, for this
+    agent": the grant is the child's own. ``None`` — every approval of this
+    process's own calls — keeps the dialog byte for byte."""
 
 
 # Dialog rows (order is the displayed order + the digit shortcut order).
@@ -109,12 +117,19 @@ def rows_for(request: ApprovalRequest) -> tuple[tuple[ApprovalDecision, str, str
     explanation.
     """
 
+    session = "Yes, for this agent" if request.requester else "Yes, for this session"
     if not request.redirect_label:
-        return _ROWS
+        if not request.requester:
+            return _ROWS
+        return (
+            (ApprovalDecision.YES, "y", "Yes"),
+            (ApprovalDecision.YES_SESSION, "s", session),
+            (ApprovalDecision.NO, "n", "No"),
+        )
     yes = request.yes_label or "Yes"
     return (
         (ApprovalDecision.YES, "y", yes),
-        (ApprovalDecision.YES_SESSION, "s", "Yes, for this session"),
+        (ApprovalDecision.YES_SESSION, "s", session),
         (ApprovalDecision.REDIRECT, "p", request.redirect_label),
         (ApprovalDecision.NO, "n", "No"),
     )
@@ -449,7 +464,28 @@ def build_approval_view(
         )
 
     plain = [title[0], *(text for text, _spans in rows)]
-    return _panel_to_ansi(_named_text(title), body, width, plain)
+    lines = _panel_to_ansi(_named_text(title), body, width, plain)
+    if not request.requester:
+        return lines
+    # #612 (ADR-0308): who asks, above the request's own title, its steering
+    # characters named like every other string a model or a profile chose.
+    header = _shown(request.requester, one_row=True)
+    return [*_panel_to_ansi_line(_named_text(header, "bold cyan"), width, header[0]), *lines]
+
+
+def _panel_to_ansi_line(text: Any, width: int, plain: str) -> list[str]:
+    """``text`` rendered to ANSI lines at ``width``; ``[plain]`` if Rich fails."""
+
+    try:
+        from rich.console import Console  # noqa: PLC0415 — optional in degraded env
+
+        console = Console(
+            width=width, record=True, file=cast("IO[str]", _NullFile()), legacy_windows=False
+        )
+        console.print(text)
+        return console.export_text(styles=True).splitlines()
+    except Exception:  # noqa: BLE001 — never let the prompt fail to draw its rows
+        return [plain]
 
 
 def _argument_count(n: int) -> str:
@@ -576,6 +612,18 @@ def build_options_view(
 #: Answers the dialog takes whatever is on screen. Every other row approves
 #: something, so it is held while the body is not all shown (#188, #389).
 _ALWAYS_ANSWERABLE = frozenset({ApprovalDecision.NO, ApprovalDecision.CANCEL})
+
+CHILD_APPROVE_HOLD_SECONDS = 0.5
+"""How long a delegated child's dialog (one with a ``requester``) takes no approving
+key after its first paint (#612 fix round 1, approvals review P-L4; the lead's
+call), and again each time it is back on top after a modal mounted over it closed
+(fix round 2, F2: from its first paint there, and none before it). Owner Q-B
+opens it at once, often while the user is typing to the parent: an Enter, ``y``,
+``s``, ``1`` or ``2`` already on its way is dropped, not queued. No and Esc answer
+at once. The parent's own dialogs are unchanged."""
+
+_clock = time.monotonic
+"""The hold's clock (a module attribute, so a test can stand in for it)."""
 
 
 def _ansi_named(shown: _Shown) -> str:
@@ -757,9 +805,14 @@ class _BodyViewport:
         width_key: Callable[[], Any],
         *,
         held: str = "Yes",
+        exposure: Callable[[], Any] = lambda: None,
     ) -> None:
         self._lines = lines
         self._width_key = width_key
+        # What says the body is back on screen after something covered it (the
+        # chrome's ``modal_generation``); a constant never re-exposes it.
+        self._exposure = exposure
+        self._exposed_for: Any = object()
         # What the footer says is held: "Yes" here, "Enter" for the extension
         # ``select`` and "y" for its ``confirm`` (#399, ``tui/context.py``).
         self._held = held
@@ -768,6 +821,18 @@ class _BodyViewport:
         self._frame: tuple[Any, int, int, int] | None = None
         self._seen: set[int] = set()
         self._seen_for: Any = object()
+        self.exposed_at: float | None = None
+        """When the body was drawn first, or first again after it was covered
+        (:data:`_clock`), for a child's hold (P-L4; fix round 2, F2)."""
+
+    def on_screen_since(self) -> float | None:
+        """:attr:`exposed_at` while the body is on screen since then; ``None`` when it is not (F2).
+
+        ``None`` before the first paint, and from the moment a modal mounted
+        over the dialog until its first paint on top again.
+        """
+
+        return self.exposed_at if self._exposed_for == self._exposure() else None
 
     def all_shown(self) -> bool:
         """Has every line of the CURRENT body been drawn at least once?"""
@@ -803,6 +868,11 @@ class _BodyViewport:
         if self._seen_for != self._width_key():
             self._seen = set()
             self._seen_for = self._width_key()
+        exposure = self._exposure()
+        if self._exposed_for != exposure:
+            # The first paint, or the first since a modal over it closed (F2).
+            self.exposed_at = _clock()
+            self._exposed_for = exposure
         self._seen.update(range(self.top, self.top + shown))
         self._frame = (_render_stamp(), self.top, shown, total)
         return lines[self.top : self.top + shown]
@@ -916,7 +986,12 @@ async def run_approval_dialog(
     :class:`_BodyViewport` and the row between it and the options is its footer.
     Yes, "Yes, for this session" (and any other approving row) is not taken
     until every line of the body has been drawn; No, Esc and Ctrl+C always are.
-    PgUp/PgDn scroll a page, Ctrl+↑/↓ one line.
+    PgUp/PgDn scroll a page, Ctrl+↑/↓ one line. A delegated child's dialog
+    (``request.requester``) also takes no approving key for
+    :data:`CHILD_APPROVE_HOLD_SECONDS` after its first paint (#612, P-L4), nor
+    after it is back on top when a modal mounted over it closed — until its
+    first paint there and for the hold from it — when ``chrome`` has the
+    ``modal_generation`` the TUI's chrome has (fix round 2, F2).
     """
 
     from prompt_toolkit.formatted_text import ANSI  # noqa: PLC0415
@@ -964,19 +1039,34 @@ async def run_approval_dialog(
     # #188 review round 2, every kind since #389: the body is all the user has
     # to judge the call by, so Yes waits until every line of it has been on
     # screen (:class:`_BodyViewport`).
-    viewport = _BodyViewport(_body_lines, lambda: _body["width"])
+    generation = getattr(chrome, "modal_generation", None)
+    viewport = _BodyViewport(
+        _body_lines,
+        lambda: _body["width"],
+        exposure=generation if callable(generation) else (lambda: None),
+    )
 
     def _render_options() -> str:
         return "\n".join(build_options_view(state["idx"], rows_spec))
+
+    def _child_hold() -> bool:
+        """A child's dialog not yet :data:`CHILD_APPROVE_HOLD_SECONDS` on screen since it was last put there (P-L4, F2)."""
+
+        if request.requester is None:
+            return False
+        since = viewport.on_screen_since()
+        return since is None or _clock() - since < CHILD_APPROVE_HOLD_SECONDS
 
     def build(result: asyncio.Future[Any]) -> HSplit:
         kb = KeyBindings()
 
         def _resolve(value: ApprovalDecision) -> None:
-            if value not in _ALWAYS_ANSWERABLE and not viewport.all_shown():
+            if value not in _ALWAYS_ANSWERABLE and (not viewport.all_shown() or _child_hold()):
                 # An approval while part of the body has never been on screen
                 # is not taken. The footer says how many lines are hidden and
-                # how to reach them.
+                # how to reach them. A child's dialog also takes none in its
+                # first half second on screen, nor in its first half second
+                # back on top after a modal over it closed (P-L4, F2).
                 chrome.invalidate()
                 return
             if not result.done():
@@ -1043,6 +1133,7 @@ async def run_approval_dialog(
 
 
 __all__ = [
+    "CHILD_APPROVE_HOLD_SECONDS",
     "ApprovalDecision",
     "ApprovalRequest",
     "argument_rows",

@@ -135,7 +135,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:204``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:214``) and
 ``progress._TERMINAL_STATES`` (``progress.py:145``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -401,7 +401,7 @@ class RpcChannel:
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:1018-1024``) is NOT gated on the caller's
+            # disjunct (``envelope.py:1017-1023``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:
@@ -450,7 +450,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:2560-2567``); this channel
+            # ``_eager_abort`` (``print_channel.py:2618-2625``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

@@ -450,19 +450,30 @@ async def _cli_bash(mode: str) -> Any:
 
 
 @pytest.mark.usefixtures("own_cwd", "own_agent_dir", "jobs_active")
-async def test_rpc_and_acp_never_advertise_or_accept_it(tmp_path: Path) -> None:
-    """The CLI's own options: RPC (and ACP over it) never offers it; the TUI, -p and json do."""
+async def test_rpc_and_acp_advertise_and_accept_it_and_an_unknown_mode_does_not_612(tmp_path: Path) -> None:
+    """The CLI's own options: the TUI, -p, json and RPC (and ACP over it) offer it (#612, owner Q4).
+
+    Fails on ``567753c0``: RPC's ``background_host`` was false there, so its
+    bash listed no ``run_in_background`` and refused one. An app mode the CLI
+    does not know still offers nothing (Codex r1 #14, fail-closed).
+    """
 
     jobs = fast_service()
     _bg().register(jobs)
     activation.install_service(jobs)
     try:
-        rpc = await _cli_bash("rpc")
-        assert "run_in_background" not in rpc.parameters["properties"]
-        result = await _call(rpc, {"command": "echo ran", "run_in_background": True})
+        unknown = await _cli_bash("websocket")
+        assert "run_in_background" not in unknown.parameters["properties"]
+        result = await _call(unknown, {"command": "echo ran", "run_in_background": True})
         assert result.is_error and _text(result) == _bg().REFUSED_HERE
         assert jobs.snapshots() == []
-        for mode in ("interactive", "print", "json"):
+        rpc = await _cli_bash("rpc")
+        result = await _call(rpc, {"command": "echo ran", "run_in_background": True})
+        # Taken by the tool and handed to the service, which refuses it here only
+        # because this unbound service has no session to own it — not the host refusal.
+        assert _text(result) != _bg().REFUSED_HERE
+        assert "no session to own the job" in _text(result)
+        for mode in ("interactive", "print", "json", "rpc"):
             offered = await _cli_bash(mode)
             described = offered.parameters["properties"]["run_in_background"]["description"]
             # The TUI is attended (no default limit); -p and json are not (owner OQ-B).

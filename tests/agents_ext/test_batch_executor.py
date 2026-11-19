@@ -255,7 +255,7 @@ class _ExplodingChannel(_RecordingChannel):
     """Raises ``OSError`` for the first member, answers normally for the rest.
 
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:2288`` vs ``:2294-2295``) and
+    OUTSIDE its own ``try`` (``print_channel.py:2344`` vs ``:2350-2351``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
@@ -575,7 +575,7 @@ async def test_the_previous_summary_reaches_the_next_step_fenced(
     The substitution happens inside the TASK STRING and never touches argv — the
     ``"Task: "`` prefix ``profile_to_argv`` prepends is what keeps a summary
     beginning with ``--`` from being swallowed into ``parsed.unknown_flags``
-    (``print_channel.py:1010-1015``). So the assertion is on
+    (``print_channel.py:1045-1050``). So the assertion is on
     ``SpawnPlan.task``, which is exactly what rides that one argv element.
     """
 
@@ -606,7 +606,7 @@ async def test_what_feeds_the_next_link_is_the_summary_and_never_the_details(
 
     The module docstring says it in capitals: what feeds the next link is
     ``SubagentResult.summary``, verbatim, NOT ``details``. The reason is not
-    cosmetic — ``envelope._build_details`` (``envelope.py:729-750``) appends the
+    cosmetic — ``envelope._build_details`` (``envelope.py:730-751``) appends the
     RAW, UNSANITISED stderr tail on every failure path (provider SDK logging,
     SIGTERM tracebacks) and sets ``details = state.summary`` UNCAPPED on an OK
     run, with no truncation marker. Feeding that into the next step's task would
@@ -788,7 +788,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:2673-2676``.
+    ``print_channel.py:2731-2734``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -827,7 +827,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:2673-2676``.
+    escalation at ``print_channel.py:2731-2734``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1094,11 +1094,11 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
 ) -> None:
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
-    ``_host_posture()`` is a live getter (``extension.py:810-816``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:1717``), and baked into
+    ``_host_posture()`` is a live getter (``extension.py:846-852``) but it is read
+    once per call, inside ``_grant_for`` (``extension.py:1753``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
-    self.is_modal_open())`` (``chrome.py:1648-1651``). Under P2 the resulting window
+    self.is_modal_open())`` (``chrome.py:1655-1658``). Under P2 the resulting window
     was one child and milliseconds; here wave 2 may start any time later —
     no clock bounds wave 1 since #604. A user who watches the first four children do
     something alarming and tightens must reach members 5-8.
@@ -1142,7 +1142,7 @@ async def test_losing_the_ui_mid_batch_tightens_the_next_wave(
     ``has_ui`` sits beside ``posture`` in the SAME
     ``child_permission_mode(...)`` call, and it is the only input that decides
     what ``approval_mode: "ask"`` clamps to: the full inherit baseline with a
-    live UI, ``PLAN`` without one (``posture.py:198-201``). It is also the
+    live UI, ``PLAN`` without one (``posture.py:211-216``). It is also the
     sharper of the two: ``ctx.has_ui`` is ``False`` during
     ``harness.bootstrap()``, is re-pointed on every ``/new`` / ``/fork`` /
     ``/resume`` and is ``False`` again on TUI exit (OC-7,
@@ -1201,7 +1201,7 @@ async def test_a_steady_posture_gives_every_member_the_consented_mode(
     INCLUDING A WIDENED GRANT, and that is the whole reason the §3.9 floor is a
     GATE rather than an unconditional ``min(grant.mode, live)``.
     ``consent._may_widen`` offers the rung only when ``AUTO_ACCEPT`` is strictly
-    looser than the clamp (``consent.py:560``), so in the widened case
+    looser than the clamp (``consent.py:568``), so in the widened case
     ``grant.mode`` is strictly above the live clamp BY CONSTRUCTION — an
     unconditional rank-min would revoke every widening a human explicitly
     granted, on every batch, with no posture change at all.
@@ -1240,10 +1240,12 @@ async def test_tightening_the_parent_mid_batch_revokes_a_widening(
 
     Why it was inert. The gate compared the live CHILD CLAMP against
     ``clamp_at_start``, and that reference point SATURATES: ``_may_widen``
-    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:560``),
+    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:568``),
     the clamp's reachable set is ``{PLAN, AUTO_ACCEPT, YOLO}``
-    (``posture.py:228`` folds ``DEFAULT`` into ``PLAN``), so a widened batch
-    always began at ``PLAN`` — rank 0, with nothing strictly below it.
+    (``posture.py:246-248`` folds ``DEFAULT`` into ``PLAN``), so a widened batch
+    always began at ``PLAN`` — rank 0, with nothing strictly below it — when
+    the child has no approval channel (#612: with one, a widening can also
+    start from ``DEFAULT``).
     :func:`test_a_widened_batch_always_starts_from_the_bottom_of_the_lattice`
     pins that premise directly. The floor now ALSO watches the parent's own
     posture, which does not saturate, and this is the test that fires on it.
@@ -1277,7 +1279,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:2587-2598``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:2728-2739``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1306,7 +1308,9 @@ def test_a_widened_batch_always_starts_from_the_bottom_of_the_lattice() -> None:
 
     Exhaustive over the vocabulary: every ``approval_mode`` in
     ``agents/profile.py``'s ``_APPROVAL_MODES``, every parent posture, both
-    ``has_ui`` values, both widenable topologies.
+    ``has_ui`` values, both widenable topologies — WITHOUT the approval channel
+    (``asks_parent`` false: ``-p``, json, an RPC host that did not opt in). With
+    it the premise no longer holds; its companion below pins what does.
     """
 
     offered = []
@@ -1338,6 +1342,38 @@ def test_a_widened_batch_always_starts_from_the_bottom_of_the_lattice() -> None:
     }
 
 
+def test_with_the_approval_channel_a_widening_also_starts_from_default() -> None:
+    """#612 fix round 1, verify V-N2: the premise above, WITH the channel (``asks_parent``).
+
+    An ``auto`` or ``ask``-with-UI profile under a ``default`` parent clamps to
+    ``DEFAULT`` (ADR-0308 D3) and is offered the widening from there, so the clamp
+    comparison is no longer saturated for such a batch: a tighten to ``plan``
+    moves its clamp to ``PLAN``, below ``clamp_at_start``. The parent posture
+    still offers the rung only under ``PLAN`` or ``DEFAULT``. Fails on
+    ``567753c0``: ``child_permission_mode`` takes no ``asks_parent``.
+    """
+
+    offered = []
+    for approval_mode in ("inherit", "auto", "ask", "deny"):
+        for parent in PermissionMode:
+            for has_ui in (False, True):
+                for mode in ("single", "parallel"):
+                    resolved = _resolved(_profile(approval_mode=approval_mode))
+                    clamped = child_permission_mode(
+                        approval_mode, parent, resolved.scope, has_ui=has_ui, asks_parent=True
+                    )
+                    if _may_widen(resolved, clamped, has_ui=has_ui, mode=mode):
+                        offered.append((approval_mode, parent, clamped))
+
+    assert {clamped for _, _, clamped in offered} == {PermissionMode.PLAN, PermissionMode.DEFAULT}
+    assert {(a, p) for a, p, c in offered if c is PermissionMode.DEFAULT} == {
+        ("auto", PermissionMode.DEFAULT),
+        ("ask", PermissionMode.DEFAULT),
+    }
+    assert {parent for _, parent, _ in offered} == {PermissionMode.PLAN, PermissionMode.DEFAULT}
+    assert posture_rank(PermissionMode.PLAN) < posture_rank(PermissionMode.DEFAULT)
+
+
 # === S8 — the depth guard is still armed under fan-out ========================
 
 
@@ -1346,7 +1382,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
 ) -> None:
     """S8, asserted at the layer where it is actually assertable.
 
-    ``SpawnPlan`` (``print_channel.py:395-429``) carries no argv and no env —
+    ``SpawnPlan`` (``print_channel.py:423-457``) carries no argv and no env —
     both are built inside ``PrintChannel.run`` — so "a batch member cannot nest"
     cannot be read off a recording channel. And the one L1-reachable statement
     ("set ``AELIX_SUBAGENT_DEPTH=1`` and the batch is blocked at the hook") merely
@@ -1354,7 +1390,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
     ``test_tool_and_security.py:674-686``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
-    (``print_channel.py:1074``, unconditional, so it survives any settings gate)
+    (``print_channel.py:1109``, unconditional, so it survives any settings gate)
     and the depth env var. That is what would fire if a future refactor cached
     member 1's argv and mutated only the task.
     """
@@ -1387,7 +1423,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1883``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1936``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.
@@ -1585,7 +1621,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:2673-2676`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:2731-2734`` at once.
     """
 
     marker_dir = tmp_path / "markers"

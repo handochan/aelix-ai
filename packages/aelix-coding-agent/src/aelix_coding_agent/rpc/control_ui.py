@@ -30,6 +30,16 @@ DIALOG_TIMEOUT_SECONDS = 300.0
 # policy constant (tests/agents/test_p2_band_boundaries.py).
 _MAX_PENDING_DIALOGS = 32
 
+#: The answers a ``childApproval`` dialog offers (#612, ADR-0308). ``id`` is OPEN on
+#: the wire, ``kind`` closed (``session/request_permission``'s option kinds); there
+#: is no ``options`` array, and any reply value that is not one of these ids is a
+#: cancel, so a client that renders it as a generic dialog can approve nothing.
+CHILD_APPROVAL_CHOICES: tuple[dict[str, str], ...] = (
+    {"id": "yes", "label": "Yes", "kind": "allow_once"},
+    {"id": "yes_session", "label": "Yes, for this agent", "kind": "allow_always"},
+    {"id": "no", "label": "No", "kind": "reject_once"},
+)
+
 
 class RpcCommandUI(HeadlessExtensionUIContext):
     provides_tool_approval = False
@@ -39,6 +49,9 @@ class RpcCommandUI(HeadlessExtensionUIContext):
         self.enabled = False
         self.closed = False
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._methods: dict[str, str] = {}
+        """Each open dialog's method, so :meth:`withdraw_child_approvals` finds the children's."""
+        self._child_withdrawals = 0
 
     async def request(self, method: str, opts: Any = None, **params: Any) -> dict[str, Any]:
         """One correlated dialog. Returns the reply, or ``{"cancelled": True}``."""
@@ -62,6 +75,7 @@ class RpcCommandUI(HeadlessExtensionUIContext):
         request_id = "ui-" + uuid.uuid4().hex
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
+        self._methods[request_id] = method
         waiters: set[asyncio.Future[Any]] = {future}
         aborted: asyncio.Future[Any] | None = None
         if callable(getattr(signal, "wait", None)):
@@ -78,8 +92,80 @@ class RpcCommandUI(HeadlessExtensionUIContext):
             return {"cancelled": True}
         finally:
             self.pending.pop(request_id, None)
+            self._methods.pop(request_id, None)
             if aborted is not None:
                 aborted.cancel()
+
+    async def child_approval(self, request: Any) -> tuple[str, str | None]:
+        """Ask the host about one delegated child's call (#612, ADR-0308): a decision and its reason.
+
+        One ``extension_ui_request`` with ``method: "childApproval"``, answered by
+        an offered choice id; every other ending is ``cancel`` with the reason
+        the child's model reads, told apart here because :meth:`request` returns
+        a bare ``{"cancelled": True}`` for the client gone (:meth:`close`) and for
+        no answer within :data:`DIALOG_TIMEOUT_SECONDS` alike (§7 review L3). The
+        host's own reply is the one that carries its ``id``; the client gone is
+        :attr:`closed`; what is left is the bound. No clock is read: a loop's
+        timer may fire up to its clock's resolution early (15.6 ms on Windows),
+        so "elapsed ≥ the bound" would call a timeout the host's cancel. Raises
+        what :meth:`request` raises (dialogs off, too many open): the arbiter
+        answers ``cancel`` naming it. One the host took back while it was open
+        (:meth:`withdraw_child_approvals`) ends ``cancel`` "no one can answer
+        approvals here" (#612 fix round 1, P-L3).
+        """
+
+        withdrawals = self._child_withdrawals
+        # The method is a literal here: the control-v1 coverage gate reads it (``_ui_methods``).
+        reply = await self.request(
+            "childApproval",
+            None,
+            title=f"{request.requester}: {_child_title(request)}",
+            child={
+                "id": request.child_id,
+                "profile": request.profile,
+                "sessionId": request.session_id,
+                "jobId": request.job_id,
+                "parentToolCallId": request.parent_tool_call_id,
+                "background": request.background,
+                "cwd": request.cwd,
+                "epoch": request.epoch,
+            },
+            tool={
+                "callId": request.call_id,
+                "name": request.tool_name,
+                "kind": request.kind,
+                "args": request.args,
+            },
+            choices=[dict(choice) for choice in CHILD_APPROVAL_CHOICES],
+        )
+        value = reply.get("value")
+        if not reply.get("cancelled") and value in {c["id"] for c in CHILD_APPROVAL_CHOICES}:
+            return (str(value), None)
+        if self.closed:
+            return ("cancel", "the host is gone")
+        if "id" in reply:  # the host's own ``extension_ui_response``: a cancel, or no offered choice
+            return ("cancel", "the host cancelled the request")
+        if self._child_withdrawals != withdrawals:
+            from aelix_coding_agent.builtin.permission import CHILD_NO_APPROVER_REASON
+
+            return ("cancel", CHILD_NO_APPROVER_REASON)
+        return ("cancel", f"no answer from the host within {DIALOG_TIMEOUT_SECONDS:g} s")
+
+    def withdraw_child_approvals(self) -> None:
+        """The host stopped answering children (``ui/enable`` took the binding back, P-L3).
+
+        Each ``childApproval`` dialog still open ends now, as no one there to
+        answer it: the arbiter releases the gate's lock and the child reads "Not
+        approved: no one can answer approvals here."; a reply the host sends for
+        it later is ignored (:meth:`respond` finds nothing open). Other dialogs
+        are untouched.
+        """
+
+        self._child_withdrawals += 1
+        for request_id, method in list(self._methods.items()):
+            future = self.pending.get(request_id)
+            if method == "childApproval" and future is not None and not future.done():
+                future.set_result({"cancelled": True})
 
     def respond(self, payload: dict[str, Any]) -> None:
         request_id = payload.get("id")
@@ -217,3 +303,16 @@ class RpcCommandUI(HeadlessExtensionUIContext):
 
     def set_tools_expanded(self, expanded: bool) -> None:
         return None
+
+
+def _child_title(request: Any) -> str:
+    """The question a child's call asks, as the TUI dialog titles it (``approval_dialog``)."""
+
+    args = request.args if isinstance(request.args, dict) else {}
+    if request.kind == "bash":
+        return "Run shell command?"
+    if request.kind in ("write", "edit"):
+        path = next((args[k] for k in ("path", "file_path") if isinstance(args.get(k), str)), "")
+        verb = "Create/overwrite" if request.kind == "write" else "Edit"
+        return f"{verb} {path or '(unknown path)'}?"
+    return f"Allow {request.tool_name}?"

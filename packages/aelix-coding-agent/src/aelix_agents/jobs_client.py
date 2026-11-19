@@ -72,8 +72,13 @@ own exit cleanup (or aelix's stop legs ended it) and, on Linux, it was a
 subreaper — otherwise ``unverified`` with why. A win32 child whose Job the
 barrier confirmed empty answers ``confirmed``.
 
-RPC AND ACP refuse the background actions until #612: the tool there has the
-schema it had before #611 (``extension.py``).
+The CLI's RPC host (``--mode rpc`` with delegation and background jobs on)
+carries the background actions since #612 (owner Q4, 2026-11-18; ADR-0307): a
+host reaches the rows through ``children/`` and is woken by ``aelix_notice``.
+aelix-acp ``16d6555b`` drives that host but sends no ``children/`` method and
+drops both events, so with a native that has #612 an ACP model gets the
+background actions and reads a result at its next prompt, and its client sees
+neither; the WebSocket host (``aelix-server``) builds neither service.
 """
 
 from __future__ import annotations
@@ -105,6 +110,7 @@ from aelix_coding_agent.jobs.contract import (
 from aelix_coding_agent.jobs.notice import end_at_word, escape_body, format_elapsed
 from aelix_coding_agent.jobs.records import JOB_FACT_TYPE, append_record
 
+from aelix_agents.child_approvals import withdraw_approval
 from aelix_agents.child_session import (
     CANNOT_BIND_RUN,
     CHILD_SESSION_TYPE,
@@ -268,6 +274,15 @@ class _Launch:
     host: SubagentHost
     channel: SubagentChannel | None
     stop_grace: float = ev.STOP_GRACE
+    hub: Any = None
+    """The spawning build's :class:`~aelix_agents.child_events.ChildEventHub`
+    (#612, ADR-0307), handed once: the run's row feeds the hub a host of that
+    build reads, as a foreground row does. ``None``: no host view."""
+    decide_for_child: Any = None
+    """This process's approval arbiter (``PermissionExtension.decide_for_child``,
+    #612, ADR-0308), handed once: a row that asks its parent asks through it. The
+    process's one ``PermissionExtension`` outlives every build, so the run may
+    keep it past a ``/reload``. ``None``: a request is answered ``cancel``."""
 
 
 def frozen_host(
@@ -504,7 +519,12 @@ class DelegationRunner:
         self._own = own
         # Its own runtime over the frozen host: its own registry, its own door —
         # the session's ``stop_all`` never reaches it; the job service stops it.
-        runtime = _SubagentRuntimeImpl(host=launch.host, channel=launch.channel)
+        host = launch.host
+        if launch.decide_for_child is not None:
+            # #612 (ADR-0308): the frozen host answers nothing live, but a row that
+            # asks its parent still reaches this process's one arbiter.
+            host = dataclasses.replace(host, decide_for_child=launch.decide_for_child)
+        runtime = _SubagentRuntimeImpl(host=host, channel=launch.channel, events=launch.hub)
         self._runtime = runtime
 
         def tap(progress: SubagentProgress) -> None:
@@ -555,6 +575,8 @@ class DelegationRunner:
             # stopped. Before the process exists this is the whole stop: the
             # channel re-reads ``stopped`` before and after the spawn.
             for row in list(runtime._children.values()):
+                # #612 (ADR-0308): an open approval request is withdrawn first.
+                withdraw_approval(row)
                 row.stopped = True
         if own is not None:
             own.request_stop(self._launch.stop_grace)
@@ -679,6 +701,7 @@ class AdoptedRunner:
     def request_stop(self, reason: str) -> None:
         if self._stopped_by is None:
             self._stopped_by = reason
+        withdraw_approval(self._row)  # #612 (ADR-0308): before the stop
         self._row.stopped = True
         if self._stop is None:
             self._stop = asyncio.ensure_future(self._runtime.stop(self._row.id))
@@ -767,6 +790,8 @@ def _job_progress(ctx: Any, progress: SubagentProgress, entry: AgentJob | None =
                 # #123 (ADR-0306 §4, §5): what the rows and the status line say.
                 "stuck": progress.stuck,
                 "wrapping_up": progress.wrapping_up,
+                # #612 (ADR-0308): ``awaiting approval: <tool>``, or why it is held.
+                "approval": None if progress.approval is None else _utf8_safe(progress.approval),
             }
         )
     if entry is None or entry.attention_asked or progress.wrapping_up or progress.stuck not in STUCK_MEANING:
@@ -838,6 +863,9 @@ def _doing_row(snapshot: JobSnapshot, progress: Mapping[str, Any]) -> str | None
         return None
     tool = progress.get("tool")
     doing = f"running {tool}" if isinstance(tool, str) and tool else "thinking"
+    approval = progress.get("approval")
+    if isinstance(approval, str) and approval:
+        doing = approval  # #612 (ADR-0308): ``awaiting approval: <tool>`` and its holds
     if progress.get("wrapping_up"):
         doing = f"wrapping up · {doing}"
     stuck = progress.get("stuck")
@@ -1486,7 +1514,10 @@ def _status_line(jobs: DelegationJobs, snap: JobSnapshot) -> str:
     if snap.state not in TERMINAL_STATES and snap.elapsed is not None:
         parts.append(f"for {format_elapsed(snap.elapsed)}")
         tool = (snap.progress or {}).get("tool")
-        if isinstance(tool, str) and tool:
+        approval = (snap.progress or {}).get("approval")
+        if isinstance(approval, str) and approval:
+            parts.append(child_line(approval))  # #612 (ADR-0308)
+        elif isinstance(tool, str) and tool:
             parts.append(f"running {child_line(tool)}")
         stuck = (snap.progress or {}).get("stuck")
         if snap.state == "running" and isinstance(stuck, str) and stuck in STUCK_MEANING:

@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from aelix_coding_agent.rpc.control import MUTATING_METHODS, READ_ONLY_METHODS, RpcControlPlane
+from aelix_coding_agent.rpc.control import (
+    CONCURRENT_METHODS,
+    MUTATING_METHODS,
+    READ_ONLY_METHODS,
+    RpcControlPlane,
+)
 
 from tests.env_sandbox import sandbox_home
 from tests.rpc.control_v1 import rigs
@@ -77,7 +82,13 @@ async def test_requires_names_the_service_whose_absence_unlists_the_method(
 
 
 def test_every_served_method_has_a_fixture_and_every_fixture_is_served() -> None:
-    served = set(READ_ONLY_METHODS) | set(MUTATING_METHODS) | {"commands/cancel"}
+    # #612 (contract r5 §9.4; Codex 14): the lock-free interventions are served too.
+    served = (
+        set(READ_ONLY_METHODS)
+        | set(MUTATING_METHODS)
+        | set(CONCURRENT_METHODS)
+        | {"commands/cancel"}
+    )
     assert served == set(FLOOR["methods"]), served ^ set(FLOOR["methods"])
 
 

@@ -17,18 +17,22 @@ happens to a job when aelix itself dies. The design is
 
 ## Where they run
 
-| | TUI | `-p`, `--mode json` | `--mode rpc` (and ACP over it) |
+| | TUI | `-p`, `--mode json` | `--mode rpc` |
 | --- | --- | --- | --- |
-| `agent` `spawn`, `wait`, `status`, `stop`, `result` | yes | yes | no, until #612 |
-| `bash` `run_in_background` (local shell only) | yes | yes | no, until #612 |
-| `job` and `job_stop` tools | yes | yes | no, until #612 |
+| `agent` `spawn`, `wait`, `status`, `stop`, `result` | yes | yes | yes, since #612 |
+| `bash` `run_in_background` (local shell only) | yes | yes | yes, since #612 |
+| `job` and `job_stop` tools | yes | yes | yes, since #612 |
 | `/jobs` | the panel; `/jobs list` the table | not a command | `commands/run` prints the table |
 | Ctrl+B, the footer, the restored line | yes | — | — |
 | Waits for its jobs before it exits | — | yes | — |
+| `children/*` methods, `aelix_child` and `aelix_notice` | — | — | yes ([below](#over-rpc-and-acp)) |
 
-On RPC the job service is still built and `/jobs` is still a command; only the two tools
-are left out, before and after `new_session` and `resources/reload`
-(`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_neither_across_rebuilds_and_keep_the_jobs_command`).
+RPC got the tools and the background actions with #612 (owner, 2026-11-18: "전부 열기 (권장)"),
+before and after `new_session` and `resources/reload`
+(`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`).
+The `--mode rpc` column is the CLI's RPC host with delegation and background jobs on; the
+WebSocket host (`aelix-server`) builds neither service, so it has none of these. ACP is
+[below](#over-rpc-and-acp).
 
 For the tool flags, `job` and `job_stop` count as built-in tools (#779, R9 — the lead's
 call): `--no-builtin-tools` and a profile's `builtin_tools: false` turn them off, `--tools`
@@ -132,6 +136,8 @@ the model is writing, never inside it — and is placed once, even across a rest
   least two thirds of the bound (107 characters, 171 bytes), otherwise at the bound itself, so a
   long path or URL after a short word is cut inside it rather than dropped (#825,
   `tests/jobs/test_brief_cut_825.py`).
+- **Over RPC** a waiting notice raises an `aelix_notice` frame, and the host places it with
+  `children/notices` or with its next prompt ([Over RPC and ACP](#over-rpc-and-acp)).
 - **A session you open again** that has results nobody gave the model starts no turn for them.
   The TUI says `◆ 1 background result is waiting. It goes to the model with your next message,
   or run /jobs send to send it now.` (`tests/tui/test_restore_611.py`); `-p --continue` delivers
@@ -177,9 +183,9 @@ a repository's `.aelix/settings.json` cannot change them.
   the next one and never stops a running job. A value outside its range falls back to the
   default with one warning (`tests/jobs/test_admission_611.py`). A refused start says which
   setting refused it.
-- **Over RPC and ACP** a delegated agent's limit is still the fixed 4 of `MAX_LIVE_CHILDREN`:
-  the delegation job kind is not registered there until #612, so `limits.agents` and
-  `maxTotal` do not apply to it (contract r2 §5.1, Codex r1 #12).
+- **Over `--mode rpc`** `limits.agents` and `maxTotal` apply as in the TUI since #612: the
+  delegation job kind is registered there now
+  ([ADR-0307](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7).
 
 ## If aelix itself dies
 
@@ -199,6 +205,97 @@ On macOS there is no `pdeathsig`. A delegated child ends because its command inb
 from aelix, closes when aelix dies (#123, ADR-0306); nothing stops a background `bash` and what
 it runs. Stop what is left yourself, or quit aelix instead of killing it: a normal quit stops
 every job first.
+
+## Over RPC and ACP
+
+Since #612 (owner, 2026-11-18: "전부 열기 (권장)") the CLI's RPC host (`aelix --mode rpc`, with
+delegation and background jobs on) gets what the TUI gets: the model can spawn a background agent,
+run a background `bash` command and use `job` and `job_stop`
+([ADR-0307](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7).
+The host sees and steers the delegated agents with six `aelix_control` methods, listed in
+`capabilities.methods` only where served: the first five when delegation is on, `children/notices`
+when background jobs are on.
+
+| Method | What it does |
+| --- | --- |
+| `children/list` | `{epoch, children}`: every running delegated agent and up to 64 that ended, foreground and background, each with its state, end, current tool, last calls and text, stuck and wrap-up marks, open approval, `sessionId`, `jobId` and the `agent` call that started it. Answered during a turn. |
+| `children/events {id, afterSeq}` | that agent's kept events after `afterSeq`, all of them without it: `{epoch, events, nextSeq, lowSeq, gap}`. Answered during a turn. |
+| `children/steer {id, text, mode}` | a note, as `/jobs steer`; `mode: "follow_up"` lands it after the agent's current answer. Answers `queued`, `unknown` or `not_sent`; a refusal is an error that names the state. |
+| `children/wrap_up {id}` | asks the agent to finish now, as `/jobs wrap`: it ends "wrapped up at the user's request". |
+| `children/stop {id}` | stops the agent and answers the state it has when the stop returned, or after 10 s; its last `state` event is its end. |
+| `children/notices` | places the notices that wait for the model, in one notice turn: `{started, placed, reason, remaining}`. |
+
+The three that act on an agent are answered even while `agents/run` holds the session, are
+refused while a session change runs ("a session change is in progress; retry when it has
+finished"), and one in flight when a session change begins ends `unknown`: the agent may have read
+it (`tests/rpc/test_children_family_612.py`). The exception is a wrap-up still waiting for the agent
+to take the `cancel` of its open approval request: it is answered with the error "a session change
+began before this request was sent", the wrap-up is not kept, and you can ask again. The agent may
+still have read that `cancel`, "the agent was asked to wrap up".
+
+**Events.** `aelix_child` carries one agent's changes: `state` (first, then on each change of its
+state, its session or its job; the last one has `end` — `completed`, `wrapped_up`, `stopped`,
+`cancelled` or `failed` — with the outcome and reason), `tool_start` and `tool_end` (every start has
+exactly one end; `no_result` for a call its turn or its run ended without), `text`, `stuck`,
+`wrap_up`, and `approval` ([agent-approvals.md](agent-approvals.md)). Every event carries `id`,
+`seq` and `epoch`; each string is cut to one line, 120 characters for a name or an argument and 512
+for a text, and the largest event measured with every string at its cap is under 5 KiB
+(`tests/agents_ext/test_child_events_612.py`). `aelix_notice` (`event: "queued"`) says a notice
+waits for the model; a session that starts with notices already waiting sends one at once. Call
+`children/notices` while the session is idle, and again while `remaining` is above 0, or prompt,
+which places them first. `placed` counts the notices placed before the turn's first model call
+(at most 64 KiB); the turn can place more between its model calls, so read `remaining`, not
+`placed`, to know what still waits. `aelix_subagent` is unchanged, and a
+background agent never sends one.
+
+**Replay.** Each agent keeps its latest 256 events. `epoch` names the session's current build: a
+`/reload`, `resources/reload` or a session change starts a new one, and the events of an earlier
+one cannot be replayed (owner, 2026-11-18: "같은 프로세스 + 영속 기록 (권장)"). Keep `(epoch, id,
+seq)` and drop duplicates; an answer with `gap: true` means events were lost, so read
+`children/list` again. After a reconnect no agent of before is running: what remains is the parent
+session's messages (`get_messages`; the `agent` call's result says what it did) and each agent's
+own session file, which its `sessionId` names.
+
+**When a session ends** — a session change, quitting, `/reload`, or EOF on an RPC host's input — a
+running turn is stopped first and given at most 10 s to settle (#800), then the session's agents and
+jobs are stopped and given 10 s more ([When jobs stop](#when-jobs-stop)). A job started for a
+session that has ended is refused, "the session ended before the job started"
+(`tests/jobs/test_ended_owner_epoch_612.py`). One an extension starts from a `session_start`
+handler after a `/reload` or a session change is the new session's
+(`tests/cli/test_session_start_job_owner_612.py`, measured over RPC).
+
+**Resuming a stopped agent** goes through the model; a host has no method for it (owner,
+2026-11-18: "#612에서 빼기 (권장)"): `agent(action="resume", id=<its sessionId>, profile=…, task=…)`.
+It resumes when the agent's start is on the session's current branch and was the model's own, its
+records and file are as they were written, its profile is the same file and not a project one,
+nothing in this process runs it, its folder is still inside yours, its model still resolves the
+same way, and no other process holds its file's lock — a free lock does not prove the agent's
+process exited, and a filesystem that cannot lock skips that check
+([agent-profiles.md](agent-profiles.md#resuming-an-agent)). An agent started with `--no-session`
+cannot be resumed.
+
+**A cancelled delegation.** When a turn is cancelled while an `agent` call runs, the call's result
+is the report of what the agents did, so `get_messages` returns it, also after a relaunch with
+`--session` (#800). If a second cancel lands while that result is being written, the report reaches
+the model at the next prompt in the same process instead, as a message, and a session reopened in
+a new process before that prompt does not have it.
+
+**Asking you.** A host that sends `ui/enable {"enabled": true, "childApprovals": true}` is asked a
+`default` parent's child's questions ([agent-approvals.md](agent-approvals.md)).
+
+This was run live with a real model on macOS against a real `--mode rpc` parent.
+
+**ACP.** aelix-acp `16d6555b` runs `aelix --mode rpc` as its native, and the native it records
+(`runtime-reference.json`, aelix-ai `e19ab55e`) predates #612: with that native nothing on this
+page changes under ACP. With a native that has #612 and the adapter unchanged, the ACP model gets
+what an RPC model gets — `agent(action="spawn")` and the other background actions, `job`,
+`job_stop` and `bash`'s `run_in_background` — but the adapter sends no `children/*` method and drops
+`aelix_child` and `aelix_notice`, so the client sees no agent rows, no events and no notices, and a
+background result reaches the model at its next prompt. The adapter closes its native with SIGTERM,
+then SIGKILL after 5 s (`terminate_owned`), so the stages of [When a session ends](#over-rpc-and-acp)
+— up to 10 s for a turn, then 10 s for the agents and jobs — can be cut short there. The host
+controls and events need the aelix-acp change (ADR-0307 D8). This is read from the adapter's source
+at `16d6555b`; ACP was not run.
 
 ## For extensions
 
@@ -231,7 +328,9 @@ job that does not notify, and for a job that is starting, asked to stop or whose
 returned. It is not the job's result: `JobSnapshot.result_waiting` and `notice_state` do not
 count it, `JobSnapshot.attention_waiting` does, and nothing of it is restored after a restart
 (`tests/jobs/test_attention_123.py`). Over RPC it is placed ahead of the host's next prompt as a
-`user` message, as a result's notice is, and no event announces it (ADR-0306, "Consequences").
+`user` message, as a result's notice is; since #612 the host is told of it by an `aelix_notice`
+frame, as of every queued notice, and can place it with `children/notices` (read in the code,
+not measured for this notice).
 
 **`jobs`** lets you run your own kind of job, which the footer, `/jobs` and the `job` tool
 then show beside the built-in ones:

@@ -115,6 +115,11 @@ _HEADLESS_BLOCK_REASON = (
 )
 
 # Dialog option labels (pi-permission-system parity).
+CHILD_PLAN_REASON = "the parent is in plan mode"
+"""Why a delegated child's request was answered ``no`` by its parent's posture (#612, ADR-0308)."""
+CHILD_NO_APPROVER_REASON = "no one can answer approvals here"
+"""Why a child's request was answered ``cancel`` where nobody answers them (#612, ADR-0308)."""
+
 _YES = "Yes"
 _YES_SESSION = "Yes, for this session"
 _NO = "No"
@@ -1551,6 +1556,19 @@ class PermissionExtension:
     passes the one it builds. Without it only those paths are not protected:
     the project file is read by the gate itself, and every other folder the
     loader reads is known without settings (:func:`_loader_resource_roots`)."""
+    ask_parent: Callable[[Any, str], Awaitable[tuple[str, str | None]]] | None = None
+    """A DELEGATED CHILD's way to ask its parent (#612, ADR-0308): set by
+    ``cli/entry.py`` only for a ``--command-inbox=2`` launch, bound to the inbox's
+    ``ParentApprovals.ask``. With it a call that would reach the headless verdict
+    at branch (d) goes on to (h) under the lock and is asked of the parent
+    (:meth:`_ask_parent`) instead of being blocked. ``None`` everywhere else."""
+    child_approver: Callable[[Any], Awaitable[tuple[str, str | None]]] | None = None
+    """Who answers a delegated child's request in THIS process (#612, ADR-0308): the
+    TUI's dialog (``tui/shell.py``), or an RPC host that sent ``ui/enable
+    {enabled: true, childApprovals: true}`` (``rpc/control.py``). ``None`` — every
+    ``-p`` and json run, and an RPC host that did not opt in — means no one: a
+    child is then launched without the channel (``asks_parent`` false), and one
+    launched with it is answered ``cancel`` (:meth:`decide_for_child`)."""
 
     def __call__(self, aelix: ExtensionAPI) -> None:
         """Setup: register the ``tool_call`` + ``session_shutdown`` handlers."""
@@ -1650,20 +1668,31 @@ class PermissionExtension:
         #
         # #594: a bound UI that does not answer tool approvals (the RPC control
         # surface's command dialogs) is no UI for this decision.
-        if not _has_approval_ui(ctx):
+        #
+        # #612 (ADR-0308): a child launched with the approval back-channel
+        # (``ask_parent``) goes on to (h) and asks its parent instead.
+        if not _has_approval_ui(ctx) and self.ask_parent is None:
             if self.headless_default == "block":
                 return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)
             return None
 
         # (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash / any tool aelix did
-        # not build, outside YOLO) → the 4-option prompt.
+        # not build, outside YOLO) → the 4-option prompt, or the parent.
         # Serialize prompts so parallel tool calls never race two modals.
         async with self._lock:
+            # #612 (fix round 1, P-M2): a delegated child's posture may have become
+            # ``plan`` while this call waited for the lock (the parent's
+            # ``set_permission_mode``); a grant made before that admits nothing now.
+            if self.ask_parent is not None and self.posture.get() == PermissionMode.PLAN:
+                return ToolCallResult(
+                    block=True, reason=_plan_block_reason(event.tool_name, provenance, self.plan_exit)
+                )
             # Re-check inside the lock — a concurrent prompt may have just
             # added a matching session rule.
             if self._is_session_allowed(rule_key):
                 return None
-            return await self._prompt(event, ctx)
+            ask = self._ask_parent if self.ask_parent is not None else self._prompt
+            return await ask(event, ctx)
 
     @staticmethod
     def _auto_classify_bash(args: dict[str, Any]) -> str:
@@ -1949,6 +1978,150 @@ class PermissionExtension:
         # CANCEL / Esc / unknown → deny.
         return ToolCallResult(block=True, reason="Denied by the user (cancelled).")
 
+    async def _ask_parent(
+        self, event: ToolCallHookEvent, ctx: ExtensionContext
+    ) -> ToolCallResult | None:
+        """Ask the delegation parent about this call (#612, ADR-0308), under the gate's lock.
+
+        The same :class:`ApprovalRequest` the TUI dialog takes, whole (#395: a change
+        is approved on its full content), and the same decision mapping as
+        :meth:`_prompt_via_dialog`, plus three things. A request too large to send
+        is blocked unsent. An approving answer re-reads the posture FIRST — a
+        ``plan`` set while the parent asked (the parent's own ``set_permission_mode``
+        reaches this process on the same wire) blocks the call and records nothing
+        — and only then records a "Yes, for this agent" grant (§7 review L1: a grant
+        made after a tighten would admit the calls parked on this lock). A refusal
+        that carries the parent's reason reads "Not approved: <reason>."
+        """
+
+        from aelix_coding_agent.modes.print_inbox import ApprovalTooLarge
+        from aelix_coding_agent.tui.approval_dialog import ApprovalRequest
+
+        provenance = _resolve_provenance(event)
+        redirect = (
+            _extension_redirect(event.args, ctx.cwd)
+            if provenance == "write" and event.tool_name == "write"
+            else None
+        )
+        request = ApprovalRequest(
+            tool_name=event.tool_name,
+            args=event.args,
+            kind=_gate_request_kind(provenance, event.tool_name),
+            yes_label=redirect[0] if redirect else None,
+            redirect_label=redirect[1] if redirect else None,
+        )
+        try:
+            decision, reason = await self.ask_parent(request, event.tool_call_id)  # type: ignore[misc]
+        except ApprovalTooLarge as exc:
+            return ToolCallResult(
+                block=True,
+                reason=(
+                    f"This change is too large to show for approval ({exc.size} bytes; "
+                    "the limit is 1 MiB)."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — deny-on-error is fail-safe
+            return ToolCallResult(
+                block=True,
+                reason=f"Permission prompt unavailable; denied for safety ({exc.__class__.__name__}).",
+            )
+        return self._parent_verdict(event, provenance, redirect, decision, reason)
+
+    def _parent_verdict(
+        self,
+        event: ToolCallHookEvent,
+        provenance: ToolProvenance | None,
+        redirect: tuple[str, str, str] | None,
+        decision: str,
+        reason: str | None,
+    ) -> ToolCallResult | None:
+        """What a parent's answer means for this call (#612, ADR-0308). The order is the guarantee."""
+
+        if decision in ("yes", "yes_session", "redirect") and self.posture.get() == PermissionMode.PLAN:
+            return ToolCallResult(
+                block=True, reason=_plan_block_reason(event.tool_name, provenance, self.plan_exit)
+            )
+        if decision == "redirect":
+            if redirect is None:
+                return ToolCallResult(block=True, reason="Denied by the user (unexpected redirect).")
+            return self._redirect_write(event, redirect[2])
+        if decision == "yes":
+            return None
+        if decision == "yes_session":
+            self._session_allows.add(_gate_session_wildcard(provenance, event.tool_name, event.args))
+            return None
+        if reason:
+            return ToolCallResult(block=True, reason=f"Not approved: {reason}.")
+        if decision == "no":
+            return ToolCallResult(block=True, reason="Denied by the user.")
+        return ToolCallResult(block=True, reason="Denied by the user (cancelled).")
+
+    async def decide_for_child(self, request: Any) -> tuple[str, str | None]:
+        """The ARBITER (#612, ADR-0308): this process's answer to one delegated child's request.
+
+        Only a human answers (:attr:`child_approver`); this process's posture only
+        refuses. ``plan`` is checked before asking, again under the gate's lock (a
+        tighten while the request queued behind another dialog), raced against the
+        dialog while it is open, and once more after the answer — and the router
+        writes the answer with no await after this returns, so a tighten decided
+        before the answer gives ``no``, and one made after a ``yes`` follows it on
+        the child's wire (``set_permission_mode``). No approver → ``cancel``; the
+        approver raising → ``cancel`` naming its type. Serialised with this
+        process's own prompts on the gate's lock: one dialog at a time in the TUI
+        (on RPC the parent's own calls never take it, K13).
+        """
+
+        if self.posture.get() == PermissionMode.PLAN:
+            return ("no", CHILD_PLAN_REASON)
+        if self.child_approver is None:
+            return ("cancel", CHILD_NO_APPROVER_REASON)
+        async with self._lock:
+            approver = self.child_approver
+            if self.posture.get() == PermissionMode.PLAN:
+                return ("no", CHILD_PLAN_REASON)
+            if approver is None:
+                return ("cancel", CHILD_NO_APPROVER_REASON)
+            answer = await self._raced_against_plan(approver, request)
+            if answer is None or self.posture.get() == PermissionMode.PLAN:
+                return ("no", CHILD_PLAN_REASON)
+            return answer
+
+    async def _raced_against_plan(
+        self, approver: Callable[[Any], Awaitable[tuple[str, str | None]]], request: Any
+    ) -> tuple[str, str | None] | None:
+        """``approver(request)``, or ``None`` once this process's posture becomes ``plan`` (the dialog closed)."""
+
+        loop = asyncio.get_running_loop()
+        planned: asyncio.Future[None] = loop.create_future()
+
+        def _listen(_previous: PermissionMode, current: PermissionMode) -> None:
+            if current == PermissionMode.PLAN and not planned.done():
+                planned.set_result(None)
+
+        listeners = getattr(self.posture, "listeners", None)
+        if listeners is not None:
+            listeners.append(_listen)
+        asking = asyncio.ensure_future(approver(request))
+        try:
+            await asyncio.wait({asking, planned}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            asking.cancel()
+            raise
+        finally:
+            if listeners is not None:
+                with contextlib.suppress(ValueError):
+                    listeners.remove(_listen)
+        if not asking.done():
+            asking.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asking
+            return None
+        try:
+            decision, reason = asking.result()
+        except Exception as exc:  # noqa: BLE001 — a failed prompt answers cancel
+            return ("cancel", f"the approval prompt failed ({exc.__class__.__name__})")
+        return (decision, reason)
+
     def _on_shutdown(
         self,
         _event: SessionShutdownHookEvent,
@@ -1957,4 +2130,4 @@ class PermissionExtension:
         self._session_allows.clear()
 
 
-__all__ = ["PermissionExtension"]
+__all__ = ["CHILD_NO_APPROVER_REASON", "CHILD_PLAN_REASON", "PermissionExtension"]

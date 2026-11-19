@@ -198,19 +198,27 @@ class CommandWire:
         future: asyncio.Future[Reply] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
-            writer.write(line.encode("utf-8"))
-            await asyncio.wait_for(writer.drain(), WRITE_SECONDS)
-        except TimeoutError:
+            try:
+                writer.write(line.encode("utf-8"))
+                await _drained(writer)
+            except TimeoutError:
+                self._pending.pop(request_id, None)
+                self.broken = True
+                return Reply("unknown", error=f"the agent's inbox did not take the line within {WRITE_SECONDS:g} s")
+            except (OSError, RuntimeError, ValueError) as exc:
+                # ``BrokenPipeError``/``ConnectionResetError`` are ``OSError``; a closed
+                # transport raises ``RuntimeError``. Bytes may have left: unknown.
+                self._pending.pop(request_id, None)
+                self.broken = True
+                return Reply("unknown", error=f"the write to the agent's inbox failed: {type(exc).__name__}")
+            done, _ = await asyncio.wait({future}, timeout=timeout)
+        except asyncio.CancelledError:
+            # #612 (contract r5 §3.4; Codex r4-2 9): the caller stopped waiting — a
+            # host's request a session change settled. Its correlation entry goes
+            # with it, so a late answer is an unknown id; the line, whose write
+            # had begun, may still be read.
             self._pending.pop(request_id, None)
-            self.broken = True
-            return Reply("unknown", error=f"the agent's inbox did not take the line within {WRITE_SECONDS:g} s")
-        except (OSError, RuntimeError, ValueError) as exc:
-            # ``BrokenPipeError``/``ConnectionResetError`` are ``OSError``; a closed
-            # transport raises ``RuntimeError``. Bytes may have left: unknown.
-            self._pending.pop(request_id, None)
-            self.broken = True
-            return Reply("unknown", error=f"the write to the agent's inbox failed: {type(exc).__name__}")
-        done, _ = await asyncio.wait({future}, timeout=timeout)
+            raise
         if not done:
             self._pending.pop(request_id, None)
             return Reply("unknown", error=f"the agent did not answer within {timeout:g} s")
@@ -239,6 +247,29 @@ class CommandWire:
                 writer.close()
 
 
+async def _drained(writer: Any) -> None:
+    """``writer.drain()`` within :data:`WRITE_SECONDS`; :class:`TimeoutError` past it.
+
+    ``asyncio.wait``, not ``asyncio.wait_for`` (#612): on Python 3.11 ``wait_for``
+    returns the drain's result when the caller's cancel lands in the turn the drain
+    completed (CPython gh-86296, fixed in 3.12), so a request a session change
+    settled went on to wait for its answer (measured,
+    ``.omc/probes/612/impl/A/wait-for-311.txt``). ``wait`` never keeps a cancel:
+    the drain is cancelled with the caller, and on the bound.
+    """
+
+    drain = asyncio.ensure_future(writer.drain())
+    try:
+        done, _ = await asyncio.wait({drain}, timeout=WRITE_SECONDS)
+    except asyncio.CancelledError:
+        drain.cancel()
+        raise
+    if not done:
+        drain.cancel()
+        raise TimeoutError
+    drain.result()
+
+
 def close_wire(wire: Any) -> None:
     """``CommandWire.close`` for a row that may have no wire (a stub channel's)."""
 
@@ -262,7 +293,22 @@ def new_wrap_up(origin: str, *, text: str = WRAP_UP_TEXT) -> WrapUp:
     return WrapUp(origin=origin, text=text, requested_at=time.monotonic())
 
 
+class InterventionNotSent(asyncio.CancelledError):
+    """A door's cancel that landed before its line's write began (#612 fix round 1, V-F1).
+
+    Still a :class:`asyncio.CancelledError`, so a caller that propagates a cancel
+    goes on doing so. ``not_sent`` is what a host reads (``SubagentControls.wrap_up``):
+    product core does not import this module. ``runtime.wrap_up`` raises it when a
+    cancel lands while an open approval request's ``cancel`` waits for its
+    acknowledgement, ahead of the final steer (ADR-0308), once it has taken the
+    wrap-up back.
+    """
+
+    not_sent = True
+
+
 __all__ = [
+    "InterventionNotSent",
     "ACK_SECONDS",
     "ENDED_UNANSWERED",
     "INBOX_BROKEN",

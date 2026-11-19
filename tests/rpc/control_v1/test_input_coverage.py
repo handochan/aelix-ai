@@ -124,9 +124,14 @@ def test_the_fixture_is_well_formed(fixture: dict[str, Any]) -> None:
         if "source" not in case:
             assert case["rig"] in rigs.RIG_NAMES, label
         assert case.get("replay", False) is False or case["rig"] in ("bare", "child"), label
-        assert set(case.get("during", {})) <= {"method", "params", "wait_for", "ended_by_case"}, (
-            label
-        )
+        # ``classic`` (#612): a classic command held by a setup, in place of ``method``.
+        assert set(case.get("during", {})) <= {
+            "method",
+            "params",
+            "wait_for",
+            "ended_by_case",
+            "classic",
+        }, label
         assert case.get("setup") is None or case["setup"] in rigs.SETUPS, label
         assert case.get("check") is None or case["check"] in rigs.CHECKS, label
         assert str(case.get("since", fixture["since"])) == fixture["since"] or re.fullmatch(
@@ -365,6 +370,81 @@ def _literal(name: str) -> Any:
     return values
 
 
+def _contract(name: str, *extra: Any) -> Any:
+    """A ``Literal`` of ``subagent_contract`` (#612), with *extra* values a path also holds."""
+
+    def values() -> list[Any]:
+        from aelix_coding_agent import subagent_contract
+
+        return list(get_args(getattr(subagent_contract, name))) + list(extra)
+
+    return values
+
+
+def _delivery_outcomes() -> list[str]:
+    """What a ``children/steer`` or ``children/wrap_up`` answers: a ``refused`` one is an error (D2.3)."""
+
+    from aelix_coding_agent.subagent_contract import DeliveryOutcome
+
+    return [value for value in get_args(DeliveryOutcome) if value != "refused"]
+
+
+def _phases() -> list[Any]:
+    from aelix_agents.runtime import _PHASES
+
+    return [*_PHASES.values(), None]
+
+
+def _verbs() -> list[str]:
+    from aelix_coding_agent.rpc.control_children import STEER_MODES
+
+    return [*STEER_MODES, "wrap_up"]
+
+
+def _steer_modes() -> list[str]:
+    from aelix_coding_agent.rpc.control_children import STEER_MODES
+
+    return list(STEER_MODES)
+
+
+def _child_events() -> list[str]:
+    from aelix_coding_agent.subagent_contract import CHILD_EVENTS
+
+    return list(CHILD_EVENTS)
+
+
+def _notice_reasons() -> list[Any]:
+    """``PromptNoticesResult.reason`` is a ``str``: the literals its producers write, and ``None`` (a turn ran)."""
+
+    from aelix_agent_core.harness import core
+    from aelix_coding_agent.jobs import service
+
+    text = Path(core.__file__).read_text("utf-8") + Path(service.__file__).read_text("utf-8")
+    return [
+        None,
+        *sorted(set(re.findall(r'PromptNoticesResult\(started=False, reason="(\w+)"\)', text))),
+    ]
+
+
+def _choices(key: str) -> Any:
+    def values() -> list[str]:
+        from aelix_coding_agent.rpc.control_ui import CHILD_APPROVAL_CHOICES
+
+        return [choice[key] for choice in CHILD_APPROVAL_CHOICES]
+
+    return values
+
+
+def _approval_kinds() -> list[str]:
+    """What the gate's ``ApprovalRequest.kind`` can be (``_request_kind``'s four answers)."""
+
+    from aelix_coding_agent.builtin.permission import _request_kind
+
+    return sorted(
+        {_request_kind(name) for name in ("bash", "edit", "write", "a tool aelix did not build")}
+    )
+
+
 #: Every enum the floor holds, and the code's value set it must equal (closed) or
 #: sit inside (open). ``None`` says the code keeps the set as literals with no
 #: name to read; the fixture alone pins it, and the reason is the string.
@@ -392,6 +472,42 @@ CODE_VALUES: dict[tuple[str, str, str], Any] = {
     ("methods", "selections/list", "data.scopes{}"): _selection_scopes,
     ("events", "aelix_subagent", "frame.event"): _subagent_channels,
     ("events", "extension_ui", "frame.method"): _ui_methods,
+    # #612 (contract r5 §9.3; ADR-0307, ADR-0308): one closed enum per path.
+    ("methods", "children/steer", "params.mode"): _steer_modes,
+    ("methods", "children/steer", "data.outcome"): _delivery_outcomes,
+    ("methods", "children/wrap_up", "data.outcome"): _delivery_outcomes,
+    ("methods", "children/steer", "data.phase"): _phases,
+    ("methods", "children/wrap_up", "data.phase"): _phases,
+    ("methods", "children/steer", "data.verb"): _verbs,
+    ("methods", "children/wrap_up", "data.verb"): _verbs,
+    ("methods", "children/list", "data.children[].state"): _contract("SubagentState"),
+    ("methods", "children/stop", "data.state"): _contract("SubagentState"),
+    ("methods", "children/events", "data.events[].data.state"): _contract("SubagentState"),
+    ("events", "aelix_child", "frame.data.state"): _contract("SubagentState"),
+    ("methods", "children/list", "data.children[].end"): _contract("ChildEnd", None),
+    ("methods", "children/events", "data.events[].data.end"): _contract("ChildEnd"),
+    ("events", "aelix_child", "frame.data.end"): _contract("ChildEnd"),
+    ("methods", "children/events", "data.events[].data.outcome"): _contract(
+        "SubagentOutcome", None
+    ),
+    ("events", "aelix_child", "frame.data.outcome"): _contract("SubagentOutcome", None),
+    ("methods", "children/list", "data.children[].activity[].status"): _contract(
+        "SubagentToolStatus"
+    ),
+    ("methods", "children/events", "data.events[].data.status"): _contract("ToolEndStatus"),
+    ("events", "aelix_child", "frame.data.status"): _contract("ToolEndStatus"),
+    ("methods", "children/list", "data.children[].stuck"): _contract("StuckPattern", None),
+    ("methods", "children/events", "data.events[].data.stuck"): _contract("StuckPattern", None),
+    ("events", "aelix_child", "frame.data.stuck"): _contract("StuckPattern", None),
+    ("methods", "children/events", "data.events[].data.step"): _contract("ApprovalStep"),
+    ("events", "aelix_child", "frame.data.step"): _contract("ApprovalStep"),
+    ("methods", "children/events", "data.events[].event"): _child_events,
+    ("events", "aelix_child", "frame.event"): _child_events,
+    ("methods", "children/notices", "data.reason"): _notice_reasons,
+    ("events", "aelix_notice", "frame.event"): lambda: ["queued"],
+    ("events", "extension_ui", "frame.choices[].kind"): _choices("kind"),
+    ("events", "extension_ui", "frame.choices[].id"): _choices("id"),
+    ("events", "extension_ui", "frame.tool.kind"): _approval_kinds,
 }
 
 

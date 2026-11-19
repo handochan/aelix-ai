@@ -1,0 +1,68 @@
+{
+  "contract": "control-v1",
+  "event": "aelix_notice",
+  "frameType": "aelix_notice",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "jobs",
+  "frame": {
+    "type": "object",
+    "required": [
+      "type",
+      "event",
+      "data"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "aelix_notice"
+      },
+      "event": {
+        "type": "string",
+        "enum": [
+          "queued"
+        ]
+      },
+      "data": {
+        "type": "object"
+      }
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "queued when a notice is posted",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "post_notice": {
+          "id": "rig-notice-1",
+          "body": "a job ended"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "queued"
+              },
+              "data": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

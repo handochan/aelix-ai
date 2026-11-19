@@ -109,7 +109,7 @@ def test_a_refused_member_that_echoes_a_runtime_string_is_still_a_real_failure()
 
 def test_roll_up_sums_the_counters_and_maxes_tokens() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
-    (``subagent_contract.py:98-99``), not a running total. Summing three
+    (``subagent_contract.py:99-100``), not a running total. Summing three
     children's context levels reports a number three times the real one — the
     mistake ``stream.py:291-294`` already warns about.
     """
@@ -304,7 +304,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated() -> None:
 
 
 def test_an_empty_summary_falls_back_to_the_no_output_sentinel() -> None:
-    """``envelope.NO_OUTPUT`` (``envelope.py:35``): an empty summary renders as a
+    """``envelope.NO_OUTPUT`` (``envelope.py:36``): an empty summary renders as a
     blank line and reads like a bug, whereas "(no output)" is a fact."""
 
     assert "[1/1 ok] (no output)" in _text([_ran(1, summary="")])
@@ -348,7 +348,7 @@ def test_a_did_not_start_members_usage_line_does_not_say_error() -> None:
     """The heading and the line beneath it must not disagree.
 
     Every refusal envelope carries ``status="error"`` — ``_refusal_envelope``
-    (``batch.py:642-657``) and ``runtime._error_result`` both mint one that way —
+    (``batch.py:654-669``) and ``runtime._error_result`` both mint one that way —
     so a verbatim ``result.status`` prints ``[agent scout · error · 0.0s]``
     directly under ``[2/2 did not start] …``. That tells the reader in two
     consecutive lines that this member did and did not run, and "error" is the
@@ -473,7 +473,7 @@ def test_the_not_run_line_does_not_blame_a_failure_that_never_happened() -> None
 
     The reachable one: step 2's task renders past ``MAX_TASK_BYTES`` once
     ``{previous}`` is substituted, so ``_run_chain`` appends a ``never_started``
-    member and breaks (``batch.py:373-380``) — no child, no failure. With the
+    member and breaks (``batch.py:378-385``) — no child, no failure. With the
     reason hard-coded, the same result then says ``0 failed`` in its header,
     ``did not start`` in step 2's heading, and "the chain stopped at the first
     failure" in its last line. Three sentences about one batch, two of which

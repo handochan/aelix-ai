@@ -21,9 +21,9 @@ Why a clamp and not a lookup table (P2 review finding B4). The obvious shape —
 map ``approval_mode`` to a posture and hand it to the child — lets a profile
 declaring ``approval_mode: auto`` lift a DEFAULT (prompt-for-everything) parent
 into a child that auto-accepts repo-wide writes with no human in the loop. The
-child cannot compensate: ``builtin/permission.py:1432-1437`` allows an
+child cannot compensate: ``builtin/permission.py:1437-1442`` allows an
 AUTO_ACCEPT in-cwd write in ``posture_decision``, which the gate asks BEFORE
-its headless branch at ``builtin/permission.py:1653-1656``, so the child-only
+its headless branch at ``builtin/permission.py:1674-1677``, so the child-only
 headless floor (``PermissionExtension.headless_default``) never runs for
 exactly the writes that matter. The posture the child is LAUNCHED with is
 therefore the real guarantee, and it is computed here, in the parent.
@@ -45,7 +45,8 @@ from aelix_coding_agent.builtin.permission_mode import AUTHORITY_RANK, Permissio
 _RANK: dict[PermissionMode, int] = dict(AUTHORITY_RANK)
 
 # ``inherit`` (and ``ask`` WITH a live parent UI) baseline. DEFAULT collapses to
-# PLAN because "prompt" is meaningless in a process with no prompt channel; AUTO
+# PLAN because "prompt" is meaningless in a process with no prompt channel —
+# unless the parent offers one (#612, ADR-0308: ``asks_parent``); AUTO
 # collapses to AUTO_ACCEPT because AUTO's extra authority is bash classification
 # (ADR-0158) and a child must not run classified shell commands unattended.
 _INHERIT_BASELINE: dict[PermissionMode, PermissionMode] = {
@@ -170,7 +171,12 @@ def declares_write_authority(approval_mode: str) -> bool:
 
 
 def child_permission_mode(
-    approval_mode: str, parent: PermissionMode, scope: str, *, has_ui: bool = False
+    approval_mode: str,
+    parent: PermissionMode,
+    scope: str,
+    *,
+    has_ui: bool = False,
+    asks_parent: bool = False,
 ) -> PermissionMode:
     """The FLOOR posture a child runs under — ADR-0197 §(e).
 
@@ -189,6 +195,13 @@ def child_permission_mode(
     Only the literal ``"project"`` triggers the widening ban; ``"explicit"``
     (``--agent-file``) is a path the human typed, so it is treated as
     user-authored.
+
+    ``asks_parent`` (#612, ADR-0308; owner Q-A, 2026-11-18: "default로 돌며
+    물어봄") is true for a child its parent will answer — the TUI, or an RPC host
+    that turned child approvals on. Then a ``default`` parent's ``inherit``,
+    ``auto`` and ``ask``-with-UI child runs ``default`` and asks before each change
+    its gate would ask about, instead of collapsing to ``plan``. Every other cell
+    is unchanged, and every cell stays at or below the parent (ADR-0199 §3.9).
     """
 
     if approval_mode == "deny":
@@ -197,6 +210,8 @@ def child_permission_mode(
         requested = PermissionMode.AUTO_ACCEPT
     elif approval_mode == "ask" and not has_ui:
         requested = PermissionMode.PLAN
+    elif asks_parent and parent is PermissionMode.DEFAULT:
+        requested = PermissionMode.DEFAULT  # "inherit", or "ask" WITH a live UI, under a parent that answers
     else:  # "inherit", or "ask" WITH a live UI (the dialog's baseline)
         requested = _INHERIT_BASELINE[parent]
     # SECURITY (B4): a PROJECT-scoped profile may never WIDEN. The repo does not
@@ -217,7 +232,9 @@ def child_permission_mode(
     # The project-scope guarantee that actually bites today is §(i)'s absolute
     # "never offer widening for a project-scoped profile" dialog rule.
     if scope == "project" and approval_mode == "auto":
-        fallback = child_permission_mode("inherit", parent, "user", has_ui=has_ui)
+        fallback = child_permission_mode(
+            "inherit", parent, "user", has_ui=has_ui, asks_parent=asks_parent
+        )
         if _RANK[fallback] < _RANK[requested]:
             requested = fallback
     # The clamp itself.
@@ -225,7 +242,10 @@ def child_permission_mode(
     # DEFAULT in a child means "prompt", and the child has no prompt. PLAN gives
     # the same denial with a model-actionable reason and does not depend on
     # ``headless_default`` being set correctly. Strictly tighter, never looser.
-    return PermissionMode.PLAN if clamped is PermissionMode.DEFAULT else clamped
+    # A child its parent answers (``asks_parent``) has a prompt: its parent's.
+    if clamped is PermissionMode.DEFAULT and not asks_parent:
+        return PermissionMode.PLAN
+    return clamped
 
 
 def resume_clamp(ceiling: PermissionMode, live: PermissionMode) -> PermissionMode:

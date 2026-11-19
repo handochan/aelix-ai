@@ -7,6 +7,8 @@ each with the condition it was measured under; where the build differs from the 
 "Where the build differs" says how and why. Amended 2026-11-19 (#797): a bundled package that
 failed to import is in `resources/list`'s `extensionErrors` and `selections/list`'s extension
 rows, a compatible correction (the lead's call); see the note of that date.
+Noted 2026-11-19 (#612, ADR-0307, ADR-0308): #612 is the first lane added under D9; see the note
+"(2026-11-19, #612)".
 Date: 2026-11-18
 Issue: #623. Lands in one commit with #624 (ADR-0305). Lead's call: one lane and one PR,
 because #624's done-conditions include #623's contract tests and both change `rpc/control.py`.
@@ -721,3 +723,38 @@ with an error instead of not at all (`rpc_mode._reply_bytes`; `tests/rpc/test_re
 inside the existing error envelope; a bundled error's text has its lone surrogates replaced by
 U+FFFD first, so that launch still answers both lists. The floor check (`scripts/check_control_v1.py
 --check --base 1c2a4a7c`) and `tests/rpc/control_v1` were run on this change.
+
+## Note (2026-11-19, #612): the first lane added under D9
+
+#612 is the first lane added under D9 ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md), [ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md)). Under its rules:
+
+- **New methods and event types, not new values of a closed enum.** Six `children/*` methods and
+  two event types, `aelix_child` and `aelix_notice` (ADR-0307 D4, D5), each a fixture file of its
+  own with `"since": "#612"`; `aelix_subagent`'s closed `event` enum and `event.aelix_subagent.json`
+  are untouched, so D3's "#612 adding an event value is therefore a change" never arises.
+- **An addition in an open enum.** `extension_ui_request.method` gains `childApproval` (ADR-0308
+  D5), in a case of its own, and the code's value set has it (`rpc/control_ui.py` sends it as a
+  literal `request("childApproval"`, which `test_input_coverage.py`'s `_ui_methods` reads). A new
+  optional param, `ui/enable.childApprovals`, and its result field answer v1's `{enabled}` byte for
+  byte when the param is absent.
+- **The lock-free admission path** the lead's note for B7 left to #612's ADR is ADR-0307 D4:
+  `children/list` and `children/events` in `READ_ONLY_METHODS`; a new set, `CONCURRENT_METHODS`
+  (`children/steer`, `children/wrap_up`, `children/stop`), admitted in `handle` before the
+  mutation lock, fenced against every session change and bound to the harness generation;
+  `children/notices` in `MUTATING_METHODS` and `CANCELLABLE_METHODS`. `test_floor.py`'s served set
+  counts `CONCURRENT_METHODS`.
+- **The rig** gains #612's services, as D9 asks: a job service bound to every harness build, the
+  process's `PermissionExtension` as the plane's `permissions=`, and, on `full` and `turn`, the
+  fake delegation runtime's `controls` (`tests/rpc/control_v1/fake_children.py`), installed in the
+  rig's harness factory so a reload or a classic swap carries them; a classic `during` kind, a
+  `post_notice` trigger and four setups (`children`, `jobs_only`, `hold_the_swap`,
+  `hold_the_model`). `--update` added 6 methods and 2 events and the new cases of
+  `capabilities`, `ui/enable` and `extension_ui`; the v1 digest is unchanged.
+- **`prefixItems` is a keyword the floor reads** (fix round 1, Codex C-L10): kept whole, like
+  `allOf`, `anyOf` and `not` (`scripts/check_control_v1.py` `SCHEMA_KEYWORDS`, `schema_facts`), and
+  the rig's `opened` walks into it. The four `children/events` cases that answer events pin their
+  ordered seq list with it, inside an `allOf` beside the `contains` they already pinned (the floor
+  keeps every fact a later case had), with `minItems` and `maxItems` at the count. At `111e02d7`
+  a reversed slice `[5, 4, 3, 2]` and a stale-cursor slice `[46, 301]` in place of 256 frames were
+  accepted (`tests/rpc/control_v1/test_replay_order_612.py`). `--update` changed only those four
+  cases' facts; the v1 digest is unchanged.

@@ -260,18 +260,25 @@ def _numbered(template: Any, n: int) -> Any:
 
 
 class FakeSubagents:
-    """The fake bound subagent runtime of the ``full`` rig.
+    """The fake bound subagent runtime of the ``full`` and ``turn`` rigs.
 
     ``spawn`` publishes the three progress channels on the harness's event bus
     while it runs, so an ``agents/run`` is the parent of those
-    ``aelix_subagent`` frames.
+    ``aelix_subagent`` frames. #612: ``controls`` is the seam's optional
+    ``SubagentControls`` over this build's children (:mod:`fake_children`); an
+    ``agents/run`` whose task is ``hold``, ``ask`` or ``script:<name>`` drives
+    one of them instead, and publishes nothing on the bus.
     """
 
     def __init__(self, bus: Any) -> None:
         from aelix_coding_agent.subagent_contract import CONTRACT_VERSION
 
+        from tests.rpc.control_v1.fake_children import RigChildren
+
         self.contract_version = CONTRACT_VERSION
         self.bus = bus
+        self.children = RigChildren()
+        self.controls = self.children.controls
 
     def resolve_profile(self, name: str, *, allow_project: bool = False) -> Any:
         from aelix_coding_agent.agents.profile import AgentProfile
@@ -287,6 +294,15 @@ class FakeSubagents:
     async def spawn(self, resolved: Any, task: str, **_: Any) -> Any:
         from aelix_coding_agent.subagent_contract import SubagentProgress, SubagentResult
 
+        if task in ("hold", "ask") or task.startswith("script:"):
+            ok, status, summary = await self.children.spawn(task)
+            return SubagentResult(
+                id="child-1",
+                profile=resolved.name,
+                ok=ok,
+                status=status,
+                summary=summary,  # type: ignore[arg-type]
+            )
         for channel, state, tool in (
             ("subagent_start", "starting", None),
             ("subagent_tool", "running", "read"),
@@ -321,13 +337,23 @@ REQUIRES: dict[str, str] = {
     "auth": "auth_storage",
     "agents": "agent_service",
     "selections": "selections",
+    "jobs": "jobs",
 }
 
 
-def bind_fake_subagents(harness: Any) -> None:
-    """Bind :class:`FakeSubagents` as the harness's delegation runtime (``agents/run`` is served)."""
+def bind_fake_subagents(harness: Any, rig: Rig | None = None) -> FakeSubagents:
+    """Bind :class:`FakeSubagents` as the harness's delegation runtime (``agents/run`` is served).
 
-    harness.runtime._subagents = FakeSubagents(harness.runtime.event_bus)
+    With a *rig*, its children reach the rig's wire markers and the process's
+    ``PermissionExtension`` (``permissions``, the plane's too: #612, ADR-0308).
+    """
+
+    fake = FakeSubagents(harness.runtime.event_bus)
+    if rig is not None:
+        fake.children.mark = rig.mark
+        fake.children.permissions = rig.services.get("permissions")
+    harness.runtime._subagents = fake
+    return fake
 
 
 def rpc_services(
@@ -352,9 +378,11 @@ def rpc_services(
     from aelix_ai.settings.settings_manager import SettingsManager
     from aelix_ai.settings.storage import FileSettingsStorage
     from aelix_coding_agent.agents.service import AgentProfileService
+    from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.cli.args import Args
     from aelix_coding_agent.extensions.loader import ExtensionLoadError
+    from aelix_coding_agent.jobs.service import JobService
 
     trusted = name in ("full", "turn")
     settings = SettingsManager.from_storage(
@@ -382,13 +410,19 @@ def rpc_services(
         live=live if live is not None else (lambda: harness),
         inventory=inventory,
     )
+    # #612: the process's ``PermissionExtension`` over the plane's posture (the
+    # CLI passes the instance it builds, ``cli/entry.py``), and its job service,
+    # which :func:`open_rig` binds to every harness build.
+    posture = PermissionPosture()
     return {
-        "permission_posture": PermissionPosture(),
+        "permission_posture": posture,
         "settings_manager": settings,
         "auth_storage": AuthStorage(seed.auth_path),
         "agent_service": agents,
         "extension_errors": errors,
         "selections": controls.by_kind(),
+        "permissions": PermissionExtension(posture=posture),
+        "jobs": JobService(),
     }
 
 
@@ -484,6 +518,8 @@ class Setup:
     inventory: Callable[[Seed], Awaitable[Any]] | None = None
     """#624: the extension inventory ``/extension`` and ``selections/*`` kind
     ``extension`` list, built before the services (``None``: the built-in rows only)."""
+    subagents: bool = True
+    """#612: whether ``full`` and ``turn`` bind :class:`FakeSubagents` (a jobs-only host does not)."""
 
 
 def _unreadable_global_settings(seed: Seed) -> None:
@@ -590,6 +626,39 @@ async def _unbound_subagents(rig: Rig) -> None:
     rig.harness.runtime._subagents = None
 
 
+async def _children(rig: Rig) -> None:
+    """#612: the build's children, one row per state a fixture reads (``fake_children``)."""
+
+    rig.runtime.harness.runtime.subagents.children.populate()
+
+
+async def _hold_the_swap(rig: Rig) -> None:
+    """#612: the next classic ``new_session`` waits, inside its swap, until the case is answered."""
+
+    rig.hold = asyncio.Event()
+    runtime = rig.runtime
+    new_session = runtime.new_session
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        rig.mark("swap_entered")
+        await rig.hold.wait()  # type: ignore[union-attr]
+        return await new_session(*args, **kwargs)
+
+    runtime.new_session = held
+
+
+async def _hold_the_model(rig: Rig) -> None:
+    """#612: a notice is waiting and the model answers only once the case is answered."""
+
+    from aelix_agent_core.harness.inbox import Notice
+
+    rig.gate.clear()
+    rig.cleanups.append(rig.gate.set)
+    rig.runtime.harness.post_notice(
+        Notice(notice_id="rig-notice-held", custom_type="aelix.fixture", body="a job ended")
+    )
+
+
 def _project_settings_absent(seed: Seed) -> None:
     """A trusted project with no ``.aelix/settings.json``: a project save would create it."""
 
@@ -660,6 +729,10 @@ SETUPS: dict[str, Setup] = {
     "hold_the_rebuild": Setup(post=_hold_the_rebuild),
     "stopped_harness": Setup(post=_stopped_harness),
     "no_subagents": Setup(post=_unbound_subagents),
+    "children": Setup(post=_children),
+    "jobs_only": Setup(subagents=False),
+    "hold_the_swap": Setup(post=_hold_the_swap),
+    "hold_the_model": Setup(post=_hold_the_model),
 }
 
 
@@ -680,10 +753,25 @@ def _global_list_not_the_project_one(rig: Rig, result: CaseResult) -> None:
     assert shown != project["skills"], shown
 
 
+def _the_held_run_ended(rig: Rig, result: CaseResult) -> None:
+    """#612: ``children/stop`` ended the child a held ``agents/run`` ran; the run answered."""
+
+    assert result.during is not None and result.during["success"] is True, result.during
+    assert result.during["data"]["result"]["status"] == "aborted", result.during
+
+
+def _child_approvals_unbound(rig: Rig, result: CaseResult) -> None:
+    """#612 (ADR-0308): a ``ui/enable`` without ``childApprovals`` took the plane's binding back."""
+
+    assert rig.services["permissions"].child_approver is None
+
+
 CHECKS: dict[str, Callable[[Rig, CaseResult], None]] = {
     "session_file_exists": _session_file_exists,
     "cancelled_the_during_command": _cancelled_the_during_command,
     "global_list_not_the_project_one": _global_list_not_the_project_one,
+    "the_held_run_ended": _the_held_run_ended,
+    "child_approvals_unbound": _child_approvals_unbound,
 }
 
 
@@ -792,6 +880,9 @@ async def build_harness(name: str, seed: Seed | None, gate: asyncio.Event, sessi
             # the ``tools/set_active`` refusal case names it.
             tool_policy=ToolPolicy(exclude=("find",)) if name != "child" else None,
             project_trusted=name != "child",
+            # #612: the notice inbox the job service posts to (the CLI's own
+            # harness has it on whenever it builds a job service).
+            notice_inbox=True,
         )
     )
     harness.set_skills(list(load_skills(str(seed.agent_dir / "skills")).skills))
@@ -843,7 +934,12 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
             if hold is not None:
                 box[0].mark("build_entered")
                 await hold.wait()
-            return await build_harness(name, seed, gate, session)
+            built = await build_harness(name, seed, gate, session)
+            if box:
+                # #612 (contract r5 §9.5; Codex r4-2 16): every rebuild carries the
+                # fake and the job service, as the CLI's rebuilds carry its own.
+                await _bind_services(box[0], built, hook)
+            return built
 
         harness = await build_harness(name, seed, gate, session)
         runtime = await create_agent_session_runtime(harness, factory, repo=repo, fs=fs)
@@ -859,7 +955,6 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
     )
     box.append(rig)
     if name in ("full", "turn"):
-        bind_fake_subagents(harness)
         register_oauth_provider(_FixtureOAuth())
         rig.cleanups.append(lambda: unregister_oauth_provider(OAUTH_PROVIDER))
     inventory = (
@@ -877,6 +972,7 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
         inventory=inventory,
     )
     rig.services = services
+    await _bind_services(rig, harness, hook)
     if "auth_storage" in services:
         await services["auth_storage"].load()
     rig.task = asyncio.create_task(
@@ -900,6 +996,16 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
         yield rig
     finally:
         await _close(rig)
+
+
+async def _bind_services(rig: Rig, harness: Any, hook: Setup) -> None:
+    """A harness build's fake delegation runtime (``full``, ``turn``) and the job service's binding."""
+
+    if rig.name in ("full", "turn") and hook.subagents:
+        bind_fake_subagents(harness, rig)
+    jobs = rig.services.get("jobs")
+    if jobs is not None:
+        await jobs.bind(harness)
 
 
 async def _hold_a_turn(rig: Rig) -> None:
@@ -926,6 +1032,10 @@ async def _close(rig: Rig) -> None:
         if rig.runtime is not None:
             with contextlib.suppress(Exception):
                 await rig.runtime.dispose()
+        jobs = rig.services.get("jobs")
+        if jobs is not None:
+            with contextlib.suppress(Exception):
+                await jobs.shutdown()
         for proc in rig.processes:
             if proc.returncode is None:
                 proc.terminate()
@@ -1017,6 +1127,7 @@ async def run_case(
     emit_subagent: Callable[[str, Any], None] | None = None,
     on_answered: Callable[[], None] | None = None,
     prefix: str = "",
+    post_notice: Callable[[dict[str, Any]], None] | None = None,
 ) -> CaseResult:
     """Send one case's ``before``, ``during`` and request over ``wire``; collect what came back.
 
@@ -1039,7 +1150,16 @@ async def run_case(
     failed = True
     try:
         await _send_case(
-            fixture, case, wire, values, result, override, emit_subagent, prefix, during
+            fixture,
+            case,
+            wire,
+            values,
+            result,
+            override,
+            emit_subagent,
+            prefix,
+            during,
+            post_notice,
         )
         if on_answered is not None:
             on_answered()
@@ -1058,11 +1178,15 @@ async def run_case(
         # answer is not ``result.during``. On a failure the cleanup keeps quiet,
         # so the failure is what the test reports.
         if values.get("during_id") == f"{prefix}during":
+            if during is not None and "classic" in during and on_answered is not None:
+                on_answered()  # a held classic swap goes on; it is never cancelled
             if failed:
                 with contextlib.suppress(Exception):
-                    await _end_during(wire, prefix)
+                    await _end_during(
+                        wire, prefix, classic=during is not None and "classic" in during
+                    )
             else:
-                await _end_during(wire, prefix)
+                await _end_during(wire, prefix, classic=during is not None and "classic" in during)
     return result
 
 
@@ -1076,6 +1200,7 @@ async def _send_case(
     emit_subagent: Callable[[str, Any], None] | None,
     prefix: str,
     during: dict[str, Any] | None,
+    post_notice: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     for index, step in enumerate(case.get("before", [])):
         answer = await request(
@@ -1084,25 +1209,34 @@ async def _send_case(
         assert answer.get("success") is True, f"before step {index} failed: {answer}"
     if during is not None:
         values["during_id"] = f"{prefix}during"
-        wire.send(
-            {
-                "type": "aelix_control",
-                "id": f"{prefix}during",
-                "method": during["method"],
-                "params": resolve(during.get("params", {}), values),
-            }
-        )
+        if "classic" in during:
+            wire.send({**during["classic"], "id": f"{prefix}during"})
+        else:
+            wire.send(
+                {
+                    "type": "aelix_control",
+                    "id": f"{prefix}during",
+                    "method": during["method"],
+                    "params": resolve(during.get("params", {}), values),
+                }
+            )
         await _wait(
             wire.record(lambda r: _matches(r, during["wait_for"])), "the during marker", wire
         )
     trigger = case.get("trigger")
     seen = {id(record) for record in wire.records}
+    collect_only = trigger is not None and (
+        "emit_subagent" in trigger or ("post_notice" in trigger and "method" not in fixture)
+    )
+    if trigger is not None and "post_notice" in trigger:
+        assert post_notice is not None, "this transport cannot post a job notice"
+        post_notice(trigger["post_notice"])
     if trigger is not None and "emit_subagent" in trigger:
         assert emit_subagent is not None, "this transport cannot emit subagent progress"
         emitted = trigger["emit_subagent"]
         emit_subagent(emitted["event"], emitted["value"])
-    else:
-        call = trigger if trigger is not None else case
+    elif not collect_only:
+        call = trigger if trigger is not None and "post_notice" not in trigger else case
         method = call.get("method", fixture.get("method"))
         params = resolve(call.get("params", {}), values)
         if override:
@@ -1112,7 +1246,7 @@ async def _send_case(
             {"type": "aelix_control", "id": f"{prefix}case", "method": method, "params": params}
         )
     family = case.get("frameType", fixture.get("frameType"))
-    answered = f"{prefix}case" if trigger is None or "emit_subagent" not in trigger else None
+    answered = None if collect_only else f"{prefix}case"
 
     def next_frame(record: dict[str, Any]) -> bool:
         if record.get("type") == "response" and record.get("id") == answered:
@@ -1128,7 +1262,7 @@ async def _send_case(
         reply = step.get("reply")
         if reply is not None:
             wire.send({"type": "extension_ui_response", "id": frame.get("id"), **reply})
-    if trigger is None or "emit_subagent" not in trigger:
+    if not collect_only:
         result.response = await _wait(
             wire.response(f"{prefix}case"), f"the response to {case['name']}", wire
         )
@@ -1138,14 +1272,18 @@ def _answered(wire: Any, request_id: str) -> bool:
     return any(r.get("type") == "response" and r.get("id") == request_id for r in wire.records)
 
 
-async def _end_during(wire: Any, prefix: str) -> None:
+async def _end_during(wire: Any, prefix: str, *, classic: bool = False) -> None:
     """End a ``during`` command the case left running; what it answers reaches no assertion.
 
     It runs in ``run_case``'s ``finally``: after the case's own answer was read,
-    or when the case failed, so a rig never closes over a running command.
+    or when the case failed, so a rig never closes over a running command. A
+    classic one was released by the caller: its own answer is awaited.
     """
 
     if _answered(wire, f"{prefix}during"):
+        return
+    if classic:
+        await _wait(wire.response(f"{prefix}during"), "the classic during command's end", wire)
         return
     wire.send(
         {
@@ -1175,6 +1313,17 @@ async def run_in_process(
             progress = SubagentProgress(**value) if "profile" in value else _Bare(**value)
             rig.runtime.harness.runtime.event_bus.emit(event, progress)
 
+        def post(notice: dict[str, Any]) -> None:
+            from aelix_agent_core.harness.inbox import Notice
+
+            rig.runtime.harness.post_notice(
+                Notice(
+                    notice_id=str(notice.get("id", "rig-notice")),
+                    custom_type="aelix.fixture",
+                    body=str(notice.get("body", "a job ended")),
+                )
+            )
+
         result = await run_case(
             fixture,
             case,
@@ -1183,6 +1332,7 @@ async def run_in_process(
             override=override,
             emit_subagent=emit,
             on_answered=rig.release,
+            post_notice=post,
         )
         name = case.get("check") if override is None else None
         bound = (lambda: CHECKS[name](rig, result)) if name else (lambda: None)
@@ -1241,7 +1391,7 @@ def envelope_fixture() -> dict[str, Any]:
 
 
 _SUBSCHEMA = ("items", "contains", "not", "propertyNames")
-_SUBSCHEMAS = ("allOf", "anyOf")
+_SUBSCHEMAS = ("allOf", "anyOf", "prefixItems")
 
 
 def opened(schema: Any) -> Any:

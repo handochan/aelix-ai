@@ -494,7 +494,7 @@ async def test_a_mismatched_grant_is_refused(tmp_path: Path) -> None:
 async def test_two_concurrent_hook_invocations_serialize(tmp_path: Path) -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:971``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:978``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn hangs
     until Ctrl+C (until #701, which stacks it; two dialogs at once stay wrong). Three independent defences cover it — the kernel's own
     sequential prep phase, the tool's ``execution_mode="sequential"``, and
@@ -956,7 +956,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:2305-2306``), so a handler registered after it is not hypothetical.
+    (``entry.py:2315-2316``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —

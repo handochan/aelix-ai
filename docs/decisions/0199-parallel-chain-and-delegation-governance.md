@@ -27,6 +27,7 @@ that fits whole while the option rows scroll, and holds every option but `Cancel
 only while a taller title has not all been drawn — see the note closing §(c)'s
 R2/R3 subsection.**
 Amended 2026-11-17 by ADR-0304 (#796): (g) records the rule a profile's `agents:` will follow when nesting arrives (dated note at the end).
+Amended 2026-11-19 by ADR-0308 (#612): the child→parent approval back-channel exists; a channel child's chain steps are asked per call, and the floor a tighten sends is each row's own (dated note at the end).
 Date: 2026-07-28
 Builds on: ADR-0196 (the agent-profile identity every child runs under),
 ADR-0197 (the subagent-runtime seam, the clamp, the consent gate, the caps this
@@ -1556,3 +1557,21 @@ What stays open:
   posture may still start under it, since there is no await between the last approval and the
   starts (`aelix_agent_core/loop.py`); the promise is that the tighter posture governs every
   approval the child makes after it applied.
+
+## Note (2026-11-19, ADR-0308, #612)
+
+- **Not in scope / Deferred** ("the child→parent approval back-channel — its own sprint"): done by
+  [ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md).
+- **R-A**, "The complete answer is the per-tool child→parent approval back-channel, which is its own
+  sprint": with the channel, each mutating call a chain step makes is asked of the human (a
+  `default` parent's child in the TUI, or under an RPC host that turned child approvals on; ADR-0308
+  D3, D5). A step's text is still minted mid-call, and a child without the channel (`-p`, json, an
+  RPC host that did not opt in) runs under the grant as before, so R-A stays open there.
+- **§3.9 and the 2026-11-18 amendment** ("the mode a row is compared against … `default` is `plan`
+  for a child"): per row — a row that asks its parent has `default` as its floor under a `default`
+  parent (`tighten_all` reads the row's `asks_parent`;
+  `tests/agents_ext/test_approval_clamp_612.py::test_tighten_all_takes_each_rows_own_floor`). A
+  batch's later waves keep the grant's column, and lose it when the UI goes
+  (`::test_a_batchs_later_waves_take_the_grants_column_both_at_start_and_live`,
+  `::test_an_ask_profiles_later_waves_lose_the_column_when_the_ui_goes`). A tighten to `plan` also
+  answers an open approval request `no` (ADR-0308 D4).

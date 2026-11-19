@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2286-2288`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2296-2298`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -76,6 +76,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.aggregate import render_batch_result, render_cancel_report
 from aelix_agents.batch import MAX_CONCURRENCY, run_batch
+from aelix_agents.child_events import ChildEventHub
 from aelix_agents.child_session import RESUME_PROFILE_CHANGED, resume_refusal_text
 from aelix_agents.consent import (
     SpawnGrant,
@@ -85,6 +86,7 @@ from aelix_agents.consent import (
     request_resume_consent,
     request_spawn_consent_batch,
 )
+from aelix_agents.host_controls import HostControls
 from aelix_agents.panel import PartialThrottle
 from aelix_agents.posture import child_permission_mode, resume_clamp
 from aelix_agents.print_channel import (
@@ -120,7 +122,7 @@ from aelix_agents.tool import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from aelix_agent_core.harness.hooks import (
         BeforeAgentStartHookEvent,
@@ -311,7 +313,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3520-3535`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3532-3547`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -463,11 +465,11 @@ class AgentsExtension:
     background_host: Callable[[], bool] | None = None
     """Can this host carry the background actions? (#611 S1c, ADR-0295.)
 
-    Wired in ``cli/entry.py`` to "not an RPC host": RPC and ACP refuse the
-    background actions until #612, so there the tool keeps the schema it had
-    before #611. ``None`` — the bare form the tests build — means yes. Read
-    only while background jobs are on (``jobs/activation.py``); while they are
-    off nothing here is asked."""
+    Wired in ``cli/entry.py`` to "yes" on every host, RPC and ACP over it
+    included since #612 (owner Q4, 2026-11-18); an embedder may still answer
+    no, and there the tool keeps the schema it had before #611. ``None`` — the
+    bare form the tests build — means yes. Read only while background jobs are
+    on (``jobs/activation.py``); while they are off nothing here is asked."""
 
     detach_host: Callable[[], bool] | None = None
     """Can a running ``run``/``resume`` be moved into a job with Ctrl+B? (#775, ADR-0298.)
@@ -489,6 +491,20 @@ class AgentsExtension:
     launch, then whatever ``/agents use`` or RPC ``agents/use`` switched to.
     Its ``agents:`` narrows what the model may delegate to. ``None``: no
     identity, no narrowing."""
+
+    asks_parent: Callable[[], bool] | None = None
+    """Is there someone in this process to answer a child's approval request? (#612, ADR-0308.)
+
+    Wired in ``cli/entry.py`` to "the ``PermissionExtension``'s ``child_approver``
+    is bound" (the TUI binds its dialog; an RPC host binds its own with ``ui/enable
+    {childApprovals: true}``), read when a spawn is planned and fixed on its grant.
+    ``None`` — the bare form the tests build, and every ``-p`` and json run in
+    effect — means no: the child's clamp and argv are what they were before #612."""
+
+    decide_for_child: Callable[[Any], Any] | None = None
+    """This process's approval arbiter (``PermissionExtension.decide_for_child``,
+    #612, ADR-0308), wired in ``cli/entry.py``: what a row that asks its parent
+    asks, foreground or background. ``None``: such a request is answered ``cancel``."""
 
     _api: Any | None = field(default=None, init=False)
     _ctx: Any | None = field(default=None, init=False)
@@ -583,6 +599,13 @@ class AgentsExtension:
         # facade only while background jobs are on and the host can carry them.
         # Off, nothing is asked and the tool is what it was before #611.
         background = self._register_kind(aelix)
+        # #612 (ADR-0307) — what an RPC host sees and reaches of this build's
+        # children: one hub per build, fed by this runtime's publishes and by
+        # every background run it launches (``_Launch.hub``), and the controls
+        # over it, which product core reads off the seam as ``controls``.
+        hub = ChildEventHub()
+        self._runtime.events = hub
+        self._runtime.controls = HostControls(hub, stop_job=_job_stopper(self._jobs_facade))
         self._tool = create_agent_tool(
             description=build_description("", background=background),
             execute=self._execute,
@@ -653,7 +676,7 @@ class AgentsExtension:
         """Register the ``agent`` job kind for this build; whether it is registered (#611 S1c).
 
         Only while background jobs are on (``jobs/activation.py``) and the host
-        is not RPC/ACP (:attr:`background_host`, #612). The adapter and the
+        carries them (:attr:`background_host`). The adapter and the
         runner factory are this client's (``jobs_client``); a registration
         made through ``aelix.jobs`` lives as long as this build's runtime, and
         every build registers it again — a new generation (ADR-0293 §2).
@@ -786,7 +809,20 @@ class AgentsExtension:
             has_ui=self._host_has_ui,
             agent_lists=self._host_agent_lists,
             active_profile=self._host_active_profile,
+            asks_parent=self._asks_parent,
+            decide_for_child=self.decide_for_child,
         )
+
+    def _asks_parent(self) -> bool:
+        """Does someone here answer a child's approval request RIGHT NOW (#612)? False when unwired or unreadable."""
+
+        getter = self.asks_parent
+        if getter is None:
+            return False
+        try:
+            return bool(getter())
+        except Exception:  # noqa: BLE001 — a host that cannot say has no one to ask
+            return False
 
     def _host_agent_lists(self) -> Any:
         """The applied ``agents`` lists RIGHT NOW (ADR-0304 D3); ``None`` when unwired."""
@@ -830,7 +866,7 @@ class AgentsExtension:
         member (``batch._live_floor``); ``_grant_for`` keeps its own read because
         it is handed the ``ctx`` explicitly and decides only whether to ask.
         Errs toward FALSE, which clamps ``approval_mode: "ask"`` to ``PLAN``
-        (``posture.py:198-201``) — the read-only direction.
+        (``posture.py:211-216``) — the read-only direction.
 
         READS THROUGH :meth:`_live_ctx`, and before #304 it did not — it was a
         bare ``getattr(self._ctx, "has_ui", False)``, whose default catches
@@ -1455,7 +1491,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1872-1882``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1925-1935``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1641,7 +1677,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1450-1456``). The
+        EVERY member or refuses the call outright (``consent.py:1464-1470``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -1716,11 +1752,14 @@ class AgentsExtension:
 
         parent = self._host_posture()
         has_ui = bool(getattr(ctx, "has_ui", False))
+        # #612 (ADR-0308): read once for the whole call, fixed on the grant.
+        asks = self._asks_parent()
         want = child_permission_mode(
             resolved.profile.approval_mode,
             parent,
             resolved.scope,
             has_ui=has_ui,
+            asks_parent=asks,
         )
         ceiling = resume.limits.granted_mode if resume is not None else None
         if ceiling is not None:
@@ -1737,6 +1776,7 @@ class AgentsExtension:
                 profile=resolved.name,
                 source_path=resolved.source_path,
                 scope=resolved.scope,
+                asks_parent=asks,
                 mode=want,
                 widened=False,
                 consented=True,
@@ -1767,6 +1807,7 @@ class AgentsExtension:
                 tasks[0],
                 parent,
                 model=resume.limits.model.model,
+                asks_parent=asks,
             )
         return await request_spawn_consent_batch(
             ctx,
@@ -1776,6 +1817,7 @@ class AgentsExtension:
             cwd=cwd,
             mode=mode,
             model=self._child_model(resolved),
+            asks_parent=asks,
         )
 
     def _child_model(self, resolved: Any) -> str | None:
@@ -1785,7 +1827,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1824-1833``).
+        seam is released on teardown, ``extension.py:1866-1875``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -2104,7 +2146,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1883``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1936``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -2128,7 +2170,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2427-2431``) with no ``await`` between them, so THIS
+            # (``runtime.py:2523-2527``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a
@@ -2261,7 +2303,7 @@ class AgentsExtension:
                 # member. A ``bool(...)`` here read the UI live exactly once and
                 # then froze it for as long as the batch ran, and the stale
                 # value is the LOOSE one: ``has_ui`` is the only input deciding
-                # what ``approval_mode: "ask"`` clamps to (``posture.py:198-201``),
+                # what ``approval_mode: "ask"`` clamps to (``posture.py:211-216``),
                 # so a batch that outlived its UI kept write authority a live read
                 # would have revoked.
                 has_ui=self._host_has_ui,
@@ -2512,6 +2554,9 @@ class AgentsExtension:
             latest = None if self._progress is None else self._progress.latest(row.id)
             if latest is not None:
                 route(latest)
+            # #612 (contract r5 §4.1): the move named the row's job; a host's
+            # ``state`` frame says so now, not at the child's next line.
+            runtime._publish_identity(row)
 
         return dt.Plan(
             start=lambda: facade.run_adopted(job),
@@ -2572,6 +2617,10 @@ class AgentsExtension:
             task=pending.call.task,
             cwd=pending.cwd,
             tool_call_id=ctx.tool_call_id,
+            # #612 — the run's row feeds this build's hub, as a foreground one does,
+            # and asks this process's arbiter when it asks its parent (ADR-0308).
+            hub=runtime.events,
+            decide_for_child=self.decide_for_child,
             host=frozen_host(
                 cwd=self._host_cwd(),
                 posture=self._host_posture(),
@@ -2762,6 +2811,23 @@ def _send_text(delivery: Any, *, agent_id: str, verb: str) -> tuple[str, bool]:
         return json.dumps(body), False
     word = "not sent" if outcome == "not_sent" else "refused"
     return f"The {noun} was {word}: {reason}.", True
+
+
+def _job_stopper(facade: Any) -> Callable[[str], Awaitable[Any]] | None:
+    """A host's stop of a job row: the job service's, asked by the user, not waited for (#612).
+
+    It returns once the stop is requested — before the job's stop legs — so
+    ``children/stop`` answers what it observes then (contract r5 §3.1).
+    ``None`` while background jobs are off: no row is a job's.
+    """
+
+    if facade is None:
+        return None
+
+    async def stop(job_id: str) -> None:
+        await facade.stop(job_id, reason="user", wait=0.0)
+
+    return stop
 
 
 def _guarded(call: CallDetach | None, fn: Callable[[Any], None]) -> Callable[[Any], None]:

@@ -5,6 +5,8 @@ longer all kept for the process's life; delegation pages by bytes too. **Active 
 (#779, 2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True` (ADR-0293 §12); with
 it off — a rollback, or `backgroundJobs.enabled: false` — the `bash` tool is the tool it was (§1).
 See the note of 2026-11-17 (#779) at the end.
+Amended 2026-11-19 (#612, ADR-0307): RPC (and so ACP) lists and accepts `run_in_background` too;
+see the note "(2026-11-19, ADR-0307, #612)".
 Date: 2026-11-11
 Issue: #760 (#611 slice S2d). Parent: #611. Contract: `.omc/specs/611-s2-contract-r3-2026-11-10.md`
 (r3; where it says "as r2", `611-s2-contract-r2-2026-11-10.md` §5 and §7 S2d), with Codex's two
@@ -367,3 +369,14 @@ child interpreter. The draft above is in `docs/guides/tools.md`, "Running a comm
 background", as written except its "At most 4": that is the default of `backgroundJobs.limits.bash`,
 from 1 to 16 (Codex, #779 review: five held with the limit at 5); `job` and `job_stop` are built-in tools and not on RPC or ACP (ADR-0293's
 note of this date).
+
+## Note (2026-11-19, ADR-0307, #612)
+
+"RPC — and ACP, which drives aelix over RPC — never lists or accepts it until #612": owner, 2026-11-18,
+r2 Q4, "전부 열기 (권장)" ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7). `_tool_options_for` gives `bash` `background_host` true for
+`rpc` as for the TUI, `-p` and json, and an unknown app mode still gets nothing
+(`tests/tools/test_bash_background_611.py::test_rpc_and_acp_advertise_and_accept_it_and_an_unknown_mode_does_not_612`,
+the renamed `::test_rpc_and_acp_never_advertise_or_accept_it`). On RPC it is `unattended`, as in
+`-p` and json (only the TUI is not), so a background command without `timeout` is stopped after
+`AELIX_BASH_DEFAULT_TIMEOUT` seconds (by reading `_tool_options_for`; not run on RPC). The guide's "Not available over RPC or
+ACP yet (#612)" (the text this ADR published) is replaced in `docs/guides/tools.md`.

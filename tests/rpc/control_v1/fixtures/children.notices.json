@@ -1,0 +1,268 @@
+{
+  "contract": "control-v1",
+  "method": "children/notices",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "jobs",
+  "params": {},
+  "consumers": [],
+  "cases": [
+    {
+      "name": "nothing waits",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": false
+          },
+          "placed": {
+            "type": "integer",
+            "const": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": "nothing"
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "nothing starts on the real child",
+      "since": "#612",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": false
+          },
+          "placed": {
+            "type": "integer",
+            "const": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "nothing"
+              },
+              {
+                "type": "string",
+                "const": "refused"
+              }
+            ]
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "a posted notice starts a turn",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "trigger": {
+        "post_notice": {
+          "id": "rig-notice-1",
+          "body": "a job ended"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": true
+          },
+          "placed": {
+            "type": "integer",
+            "const": 1
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": null
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn refuses children/notices",
+      "since": "#612",
+      "rig": "turn",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "idle"
+      }
+    },
+    {
+      "name": "cancelled by commands/cancel",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "method": "commands/cancel",
+      "setup": "hold_the_model",
+      "during": {
+        "method": "children/notices",
+        "params": {},
+        "wait_for": {
+          "type": "agent_start"
+        },
+        "ended_by_case": true
+      },
+      "check": "cancelled_the_during_command",
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "method"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": true
+          },
+          "method": {
+            "type": "string",
+            "const": "children/notices"
+          }
+        }
+      }
+    },
+    {
+      "name": "served without delegated agents",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "setup": "jobs_only",
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": false
+          },
+          "placed": {
+            "type": "integer",
+            "const": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": "nothing"
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "a host with no job service refuses it",
+      "since": "#612",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no job service"
+      }
+    }
+  ]
+}

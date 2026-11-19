@@ -8,6 +8,8 @@ replacement is a protected transition too). Amended 2026-11-18 by ADR-0302
 (#623: version 1 only grows; the compatibility rule is stated in the note at
 the end) and ADR-0305 (#624: `selections/list`, `selections/set`,
 `capabilities.selectionKinds`; `selections/set` opens a dialog).
+Noted 2026-11-19 by ADR-0307 and ADR-0308 (#612): §2's lock rules gain the `children/` methods
+and §4's dialogs `childApproval` (note at the end).
 Date: 2026-10-23
 Issue: #593 (the envelope), #594 (review remediation)
 
@@ -257,3 +259,21 @@ given none. §2: `selections/list` bypasses the mutation lock; `selections/set` 
 cancellable once its save starts, and cancellable while its dialog waits (ADR-0305 D4).
 Validation gains `tests/rpc/control_v1/`, `tests/rpc/test_selections_rpc_624.py`,
 `tests/rpc/test_selections_same_bytes_624.py` and `scripts/check_control_v1.py`.
+
+## Note (2026-11-19, ADR-0307, ADR-0308, #612)
+
+- **§1**: the `children/` methods are listed only where served — the five delegation methods when
+  the bound runtime has delegation controls, `children/notices` when the host was given a job
+  service ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D4); `aelix-server`'s WebSocket host is given neither.
+- **§2**: `children/list` and `children/events` bypass the mutation lock, as the read-only methods
+  do. `children/steer`, `children/wrap_up` and `children/stop` bypass it too — they are answered
+  while `agents/run` holds it — but are refused while the host closes or a session lifecycle
+  transition or a classic session swap runs, bound to the harness generation that admitted them,
+  and cancelled and answered (`unknown`, with the cause) when a transition begins (ADR-0307 D4).
+  They are not operations: `commands/cancel {}` does not reach them. `children/notices` is a
+  mutation that runs one notice turn, cancellable by `commands/cancel`.
+- **§4**: after `ui/enable {enabled: true, childApprovals: true}` a delegated child's approval
+  request opens an `extension_ui_request` with `method: "childApproval"` ([ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md) D5).
+- **aelix-acp**: reaching the five pre-lock methods through `_aelix/manage` before its session lock,
+  with `children/notices` under it, is the aelix-acp PR's proposal (lane L3, ADR-0307 D8), not in
+  this repository; aelix-acp `16d6555b` sends none of them.

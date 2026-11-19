@@ -1,0 +1,247 @@
+{
+  "contract": "control-v1",
+  "method": "children/stop",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {
+    "id": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "stops a running child",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "children",
+      "sensitive": {
+        "id": "sub-job"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "name": "a job row answers the state it observed",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-job"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "running"
+          }
+        }
+      }
+    },
+    {
+      "name": "a finished child answers its state",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-done"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "done"
+          }
+        }
+      }
+    },
+    {
+      "name": "a tombstoned child answers its terminal state",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-tomb"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "done"
+          }
+        }
+      }
+    },
+    {
+      "name": "reaches a not-started child",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-starting"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "name": "an unknown id is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-nope"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no agent"
+      }
+    },
+    {
+      "name": "ends a held agents/run",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-held"
+      },
+      "during": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "hold"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "agents_run_entered"
+        },
+        "ended_by_case": true
+      },
+      "check": "the_held_run_ended",
+      "data": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ],
+            "const": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "name": "refused while a classic session swap runs",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "hold_the_swap",
+      "during": {
+        "classic": {
+          "type": "new_session"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "swap_entered"
+        },
+        "ended_by_case": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "session change"
+      }
+    }
+  ]
+}

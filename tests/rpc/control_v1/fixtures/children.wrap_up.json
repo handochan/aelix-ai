@@ -1,0 +1,371 @@
+{
+  "contract": "control-v1",
+  "method": "children/wrap_up",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {
+    "id": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "queues a wrap-up",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "children",
+      "sensitive": {
+        "id": "sub-unknown"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "wrap_up"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a second wrap-up is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "children",
+      "before": [
+        {
+          "method": "children/wrap_up",
+          "params": {
+            "id": "sub-running"
+          }
+        }
+      ],
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "already"
+      }
+    },
+    {
+      "name": "a child not started yet is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-starting"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "not started"
+      }
+    },
+    {
+      "name": "a finished child is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-done"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "resume"
+      }
+    },
+    {
+      "name": "a stopping child is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-stopping"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "stopping"
+      }
+    },
+    {
+      "name": "a child that ended with the line open answers unknown and ended",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-ended-open"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "unknown"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ]
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "wrap_up"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": true
+          },
+          "reason": {
+            "type": "string",
+            "pattern": "resume"
+          }
+        }
+      }
+    },
+    {
+      "name": "answered while agents/run holds the lock",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-held"
+      },
+      "during": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "hold"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "agents_run_entered"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "wrap_up"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn does not refuse children/wrap_up",
+      "since": "#612",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "wrap_up"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "refused while a session reload runs",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running"
+      },
+      "setup": "hold_the_rebuild",
+      "during": {
+        "method": "resources/reload",
+        "params": {},
+        "wait_for": {
+          "type": "rig",
+          "event": "build_entered"
+        },
+        "ended_by_case": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "session change"
+      }
+    }
+  ]
+}

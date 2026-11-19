@@ -73,6 +73,13 @@ platform mark, so the `windows-latest` legs collect it; their logs were not read
 for it. Nobody has watched a steer, a wrap-up or the inbox's EOF on a Windows desk.
 The post-EOF path of a delegated child on Windows is the open #729.
 
+**W4 since #612 (recorded 2026-11-19).** A delegated child its parent answers is launched with
+`--command-inbox=2` (ADR-0308): its `approval_request` lines go out on its stdout and the parent's
+`approval` answers come in on the same inbox, through the same win32 `os.read` pump. The tests that
+run a real version-2 child (`tests/cli/test_inbox_v2_612.py`, and the real-child cases of
+`tests/agents_ext/test_child_approvals_612.py`) are skipped on win32, as their #123 siblings are;
+nobody has watched a child's approval on Windows.
+
 Two facts were measured rather than assumed, and both shaped the design:
 
 - **`ntpath.expanduser` never reads `HOME`.** It reads `%USERPROFILE%`, then
@@ -189,7 +196,7 @@ moved. Anyone extending this slice should follow the pattern.
    already on UTF-8 is untouched, which is what keeps the helper inert on every
    platform that was already correct; input streams are never re-encoded at all
    (`read_all_text` picks a decoder from the bytes instead).
-8. **Ctrl+G external editor.** `tui/shell.py:3986` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:4033` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
    (Until this pass the line was duplicated five times, citing `:2567`,
    `:2583`, `:2588`, `:2607` and `:2791` — one per branch that ran

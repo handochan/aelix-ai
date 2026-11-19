@@ -2,10 +2,9 @@
 
 Built once by the CLI, only while background jobs are active, and threaded into
 every build by reference (as the permission and delegation extensions are). It
-registers the ``job`` and ``job_stop`` tools — for the TUI, ``-p`` and json hosts
-only, so not over RPC or under ACP, which drives aelix over RPC, until #612 (#779,
-R9: the lead's call) —
-and the ``/jobs`` command, and turns a
+registers the ``job`` and ``job_stop`` tools on every host that builds the
+service (#779; RPC, and ACP over it, since #612, owner Q4) — and the ``/jobs``
+command, and turns a
 ``session_shutdown`` into the service's stop of that session's jobs — every
 reason stops them: ``/new``, ``/resume``, ``/fork`` and quitting end the owner,
 and ``/reload`` stops them too (owner decision 4, 2026-11-07). The stop is

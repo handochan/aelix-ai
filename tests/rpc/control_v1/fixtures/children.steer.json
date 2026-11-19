@@ -1,0 +1,791 @@
+{
+  "contract": "control-v1",
+  "method": "children/steer",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {
+    "id": {
+      "type": "string",
+      "required": true
+    },
+    "text": {
+      "type": "string",
+      "required": true,
+      "maxLength": 100000
+    },
+    "mode": {
+      "type": "string",
+      "required": false,
+      "enum": [
+        "steer",
+        "follow_up"
+      ],
+      "absent": "steer"
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "queues a steer when mode is absent",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "look at b.py"
+      },
+      "setup": "children",
+      "sensitive": {
+        "id": "sub-unknown"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "steer"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "queues a steer",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "look at b.py",
+        "mode": "steer"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "steer"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "queues a follow_up",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "then c.py",
+        "mode": "follow_up"
+      },
+      "setup": "children",
+      "sensitive": {
+        "mode": "steer"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "follow_up"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a text of 100000 characters is accepted",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": {
+          "$gen": "text",
+          "count": 100000,
+          "char": "t"
+        }
+      },
+      "setup": "children",
+      "sensitive": {
+        "text": {
+          "$gen": "text",
+          "count": 100001,
+          "char": "t"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a text of 100001 characters is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": {
+          "$gen": "text",
+          "count": 100001,
+          "char": "t"
+        }
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "100000"
+      }
+    },
+    {
+      "name": "answered while agents/run holds the lock",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-held",
+        "text": "hurry"
+      },
+      "during": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "hold"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "agents_run_entered"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ],
+            "const": "steer"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn does not refuse children/steer",
+      "since": "#612",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "note"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "queued"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": "streaming"
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a line with no acknowledgement answers unknown",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-unknown",
+        "text": "note"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "unknown"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ],
+            "const": null
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a child that ended with the line open answers unknown and ended",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-ended-open",
+        "text": "note"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "unknown"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ]
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "const": true
+          },
+          "reason": {
+            "type": "string",
+            "pattern": "resume"
+          }
+        }
+      }
+    },
+    {
+      "name": "a line that could not be written answers not_sent",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-not-sent",
+        "text": "note"
+      },
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "phase",
+          "verb",
+          "ended",
+          "reason"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "not_sent",
+              "queued",
+              "unknown"
+            ],
+            "const": "not_sent"
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "idle",
+              "streaming",
+              null
+            ]
+          },
+          "verb": {
+            "type": "string",
+            "enum": [
+              "follow_up",
+              "steer",
+              "wrap_up"
+            ]
+          },
+          "ended": {
+            "type": "boolean",
+            "const": false
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a child not started yet is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-starting",
+        "text": "note"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "not started"
+      }
+    },
+    {
+      "name": "a stopping child is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-stopping",
+        "text": "note"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "stopping"
+      }
+    },
+    {
+      "name": "a finished child is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-done",
+        "text": "note"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "resume"
+      }
+    },
+    {
+      "name": "a broken inbox is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-broken",
+        "text": "note"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "broken"
+      }
+    },
+    {
+      "name": "an unknown id is refused",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-nope",
+        "text": "note"
+      },
+      "setup": "children",
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no agent"
+      }
+    },
+    {
+      "name": "refused while a session reload runs",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "note"
+      },
+      "setup": "hold_the_rebuild",
+      "during": {
+        "method": "resources/reload",
+        "params": {},
+        "wait_for": {
+          "type": "rig",
+          "event": "build_entered"
+        },
+        "ended_by_case": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "session change"
+      }
+    },
+    {
+      "name": "refused while a classic session swap runs",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "note"
+      },
+      "setup": "hold_the_swap",
+      "during": {
+        "classic": {
+          "type": "new_session"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "swap_entered"
+        },
+        "ended_by_case": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "session change"
+      }
+    },
+    {
+      "name": "a host with no delegated agents refuses children/steer",
+      "since": "#612",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "id": "sub-running",
+        "text": "note"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no delegated agents"
+      }
+    }
+  ]
+}

@@ -12,7 +12,7 @@ measured reasons, all of which make the hook the only correct location:
    the SEQUENTIAL prep phase (``loop.py:600-621``, driven from ``:1016-1053``) but
    ``execute`` in a task per call (``loop.py:1059-1062``), with
    ``tool_execution = "parallel"`` by default (``harness/core.py:323``). Two
-   modals from one batch collide on ``tui/chrome.py:971``'s single ``_modal``
+   modals from one batch collide on ``tui/chrome.py:978``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C. (Since #701 the slot
    stacks — the first dialog comes back when the second closes — but two
@@ -119,7 +119,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:1416-1419``), and NO process is
+into a blocked call the model reads (``extension.py:1452-1455``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -127,7 +127,7 @@ _MODES: tuple[SubagentMode, ...] = ("single", "parallel", "chain")
 """The one spelling of the mode set, shared by the schema's ``enum`` and by
 :func:`parse_agent_call`. Two hand-maintained copies is how a schema starts
 advertising a mode the parser refuses. Mirrors ``SubagentMode``
-(``subagent_contract.py:74``), which is imported for TYPE CHECKING only —
+(``subagent_contract.py:75``), which is imported for TYPE CHECKING only —
 evaluating it at runtime would pull a product-core symbol into this module's
 import graph to save one tuple."""
 
@@ -153,8 +153,8 @@ start the foreground run they were not."""
 
 _BACKGROUND_ACTIONS: tuple[AgentAction, ...] = ("spawn", "wait", "status", "stop", "result", "send", "wrap_up")
 """The background actions (#611 S1c, ADR-0295), offered ONLY where background
-jobs are on and the host can carry them (``jobs/activation.py``, and not an
-RPC/ACP host until #612). Elsewhere the schema does not list them and
+jobs are on and the host can carry them (``jobs/activation.py``; every CLI
+host since #612). Elsewhere the schema does not list them and
 :func:`parse_agent_call` refuses them with exactly the refusal it gave before
 #611 — an action this build does not know.
 
@@ -278,7 +278,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:1416-1419``) with no process created.
+    # (``extension.py:1452-1455``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -482,8 +482,8 @@ class AgentCall:
     task — are P4 ``aelix-team`` work, and the reason is not conservatism: with
     one profile every member shares the same clamp
     (``posture.child_permission_mode``), the same ``consent_is_required``
-    (``consent.py:591-682``) and the same ``_may_widen``
-    (``consent.py:493-588``), which is what makes ONE consent decision for the
+    (``consent.py:599-690``) and the same ``_may_widen``
+    (``consent.py:501-596``), which is what makes ONE consent decision for the
     whole batch coherent. :class:`~aelix_agents.consent.SpawnGrant` is singular
     by construction (``consent.py:268-275``: one ``profile``, one
     ``source_path``, one ``mode``).
@@ -1070,7 +1070,7 @@ def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> Ag
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:1416-1419``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:1452-1455``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:608-621``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -1452,7 +1452,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:1205-1207`` → ``envelope.py:1116``), which makes it attacker-supplied
+(``stream.py:1233-1235`` → ``envelope.py:1125``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""

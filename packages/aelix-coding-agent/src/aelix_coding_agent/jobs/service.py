@@ -151,6 +151,10 @@ _OUTBOX_BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
 _GENERIC_NOTICE = "The job ended with status {status}; its client could not render a result."
 
 
+SESSION_ENDED_FIRST = "the session ended before the job started"
+"""A start refused because its owner ended, or the service shut down, while it was being made (#612)."""
+
+
 class JobStartRefused(Exception):
     """A job could not start: no slot, no such kind, or its ``start`` fact could not be written."""
 
@@ -484,6 +488,15 @@ class JobService:
         self._trimming: asyncio.Task[None] | None = None
         self._trim_again = False
         self._closed = False
+        #: #612 (contract r5 §6.4; Codex r4-2 7): a counter :meth:`owner_ended` raises,
+        #: and the value it raised to for each owner it ended. Never emptied: a start
+        #: that read an older value refuses for an owner ended since, however late it
+        #: arrives, and a ``/reload`` of the same owner raises it again.
+        self._end_epoch = 0
+        self._ended_at: dict[str, int] = {}
+        #: The epoch when the current harness was bound: Ctrl+B's adoption door
+        #: refuses an owner ended since (:meth:`prepare_adopted`).
+        self._bound_epoch = 0
         #: The running foreground calls Ctrl+B could move into a job (#775).
         self.detach = DetachOffers()
         self.registry.add_listener(self._on_registration)
@@ -502,13 +515,16 @@ class JobService:
         """The harness (and its session) is the current one now: post what this owner is owed.
 
         Called after every harness build — startup, ``/new``, ``/resume``,
-        ``/fork``, ``/reload``. Notices of this owner's jobs that were posted
+        ``/fork``, ``/reload``; the CLI binds a rebuilt harness before its
+        ``session_start`` handlers run (#612 fix round 2), so a job one of them
+        starts is the new session's. Notices of this owner's jobs that were posted
         to an earlier harness and not placed are posted again; the session's
         facts are folded once per owner and per process, and what they owe is
         posted as *restored* (a TUI does not start a turn for those).
         """
 
         self._harness = harness
+        self._bound_epoch = self._end_epoch
         session = getattr(harness, "session", None)
         self._session = session
         self._owner = await _owner_of(session)
@@ -538,11 +554,24 @@ class JobService:
             await self.reconcile(session, self._owner)
         self._touch()
 
+    def _binding_ended(self) -> bool:
+        """The bound session's owner ended since the bind: its jobs were stopped, and no new bind came yet."""
+
+        return self._ended_at.get(self._owner or "", 0) > self._bound_epoch
+
     async def owner_ended(self, owner: str | None, reason: StopReason) -> None:
-        """Stop every live job of ``owner`` and wait for the barriers up to :data:`CLEANUP_BOUND`."""
+        """Stop every live job of ``owner`` and wait for the barriers up to :data:`CLEANUP_BOUND`.
+
+        First, synchronously, the owner's ended epoch is raised (#612, contract r5
+        §6.4): a :meth:`start` already past its entry for this owner — parked in its
+        fact append — refuses at registration instead of registering a job after the
+        snapshot below was taken (Codex r4-2 7 measured one registered at the base).
+        """
 
         if owner is None:
             return
+        self._end_epoch += 1
+        self._ended_at[owner] = self._end_epoch
         jobs = [
             j for j in self._jobs.values() if j.owner == owner and j.state not in TERMINAL_STATES
         ]
@@ -670,10 +699,21 @@ class JobService:
         ``client`` and handed back on every snapshot of the job
         (``JobSnapshot.client_start``), a restart's included, and to the
         kind's ``restored_note``.
+
+        A start whose owner ended after it began (:meth:`owner_ended`), or that
+        the service's :meth:`shutdown` overtook, is refused at registration with
+        its outcome fact ``failed`` (#612, contract r5 §6.4): nothing awaits
+        between that check and the job's insertion. A start for the bound
+        session once its owner ended — a ``session_shutdown`` hook that runs
+        after this service's own — is refused at entry, before anything is
+        written, until the next :meth:`bind` (#612 fix round 1, Codex C-H1).
         """
 
+        epoch = self._end_epoch
         if self._closed:
             raise JobStartRefused("the job service is shutting down")
+        if (session is None or session is self._session) and self._binding_ended():
+            raise JobStartRefused(SESSION_ENDED_FIRST)
         registration = self.registry.get(kind)
         if registration is None:
             raise JobStartRefused(f"no job kind is registered under {kind!r}")
@@ -741,6 +781,19 @@ class JobService:
                     ),
                 )
                 raise JobLaunchFailed(f"client error: {type(exc).__name__}: {exc}") from exc
+            if self._closed or self._ended_at.get(owner, 0) > epoch:
+                await self._write_quietly(
+                    target,
+                    make_fact(
+                        "outcome",
+                        job_id,
+                        status="failed",
+                        brief=SESSION_ENDED_FIRST,
+                        elapsed_ms=0,
+                        client_records="missing",
+                    ),
+                )
+                raise JobStartRefused(SESSION_ENDED_FIRST)
             job = _Job(
                 job_id=job_id,
                 registration=registration,
@@ -813,8 +866,12 @@ class JobService:
         while the wall clock did not change in between (Codex review of #821, L11).
         """
 
-        if self._closed:
-            raise JobStartRefused("the job service is shutting down")
+        if self._closed or self._binding_ended():
+            # #612 (contract r5 §6.4): or the session this harness serves ended
+            # since it was bound, and its jobs were already stopped.
+            raise JobStartRefused(
+                "the job service is shutting down" if self._closed else SESSION_ENDED_FIRST
+            )
         registration = self.registry.get(kind)
         if registration is None or not registration.adapter.capabilities.detachable:
             raise JobStartRefused(f"no detachable job kind is registered under {kind!r}")
@@ -2785,6 +2842,7 @@ __all__ = [
     "EXIT_SETTLE_GRACE",
     "LIVENESS_INTERVAL",
     "QUIET_AFTER",
+    "SESSION_ENDED_FIRST",
     "SETTLED_KEPT",
     "JobLaunchFailed",
     "JobNotFound",

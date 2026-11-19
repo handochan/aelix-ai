@@ -799,7 +799,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2608-2625``) nor child (``modes/print_mode.py:263-322``)
+    (``tui/shell.py:2654-2671``) nor child (``modes/print_mode.py:263-322``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -947,7 +947,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:1164-1170``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:1192-1198``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -2438,7 +2438,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1522-1526``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1573-1577``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2490,11 +2490,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:2288``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:2344``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:283``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:288``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 

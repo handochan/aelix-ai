@@ -1,23 +1,38 @@
 # 0307. A cancelled delegation's report is its call's result, and a session change settles the turn first
 
+*Since #612's lane L2 also: an RPC host sees and steers the delegated children (D4–D8).*
+
 Status: Accepted (2026-11-19, #800). D1–D3 and the known limits K1–K6 are decided and implemented
-here (lane L1 of #612's contract r5). #612's lane L2 adds D4–D8 (the RPC and ACP exposure of
-delegated children) and K7–K9 to this record; until then nothing below changes a wire shape.
+here (lane L1 of #612's contract r5). Amended 2026-11-19 (#612, lane L2): D4–D8 — the `children/`
+family and its admission, the `aelix_child` and `aelix_notice` events and the hub behind them,
+replay within one hub generation, owner Q4's flips with the session lifetime and the ended-owner
+epoch, and the aelix-acp contract (whose half is the aelix-acp PR's, lane L3, not in this
+repository) — and K7–K9 are added. "Where the build differs from contract r5" lists what lane L2's
+implementation changed of r5, and the lead's calls on them (2026-11-19).
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
 #800's body records Studio's user decision of 2026-11-17: "beta.3에 들어오면 Studio 첫 Beta에
-표시를 넣고, 아니면 다음 release로 넘긴다."
-Design: `.omc/specs/612-contract-r5-2026-11-19.md` §5 (#800), §10.1, §10.3, §10.4 and §12.3 (L1).
-The known limits are narrowings under the lead's rule for r5 (lead's call, r5 brief 2026-11-19): a
-case outside the guarantee keeps the base's behaviour and is stated, never silently lost. Probes:
-`.omc/probes/612/design-r5/` (`l1/l1_owed_probe.py`, `swap/swap_probe.py`,
-`giveback/giveback_probe.py`) and this lane's `.omc/probes/800/impl/`.
+표시를 넣고, 아니면 다음 release로 넘긴다." D4–D8: #612 (delegated children on RPC and ACP
+hosts). Owner, 2026-11-18: r2 Q4 **"전부 열기 (권장)"** (the background actions, the `job` tools
+and `run_in_background` on RPC, with a wake for the host); r3 Q1, host resume: **"#612에서 빼기
+(권장)"**; reconnect replay: **"같은 프로세스 + 영속 기록 (권장)"**.
+Design: `.omc/specs/612-contract-r5-2026-11-19.md` §5 (#800), §10.1, §10.3, §10.4 and §12.3 (L1);
+§3, §4, §6 and §8 (L2's D4–D8). The known limits are narrowings under the lead's rule for r5 (lead's
+call, r5 brief 2026-11-19): a case outside the guarantee keeps the base's behaviour and is stated,
+never silently lost. Probes: `.omc/probes/612/design-r5/` (`l1/l1_owed_probe.py`,
+`swap/swap_probe.py`, `giveback/giveback_probe.py`), `.omc/probes/800/impl/`, and lane L2's
+`.omc/probes/612/impl/A/`, `.omc/probes/612/impl/B/` and `.omc/probes/612/impl/C/live/`.
 Amends: ADR-0290 §8 and limit 8, ADR-0276 D14 (items 2–3) and its limit "The Esc report lives in
-memory", ADR-0278 D7, ADR-0081 P-340 (the teardown order), ADR-0286 (what a swap gives back). Each
-carries a dated note.
+memory", ADR-0278 D7, ADR-0081 P-340 (the teardown order), ADR-0286 (what a swap gives back) (L1);
+ADR-0306 D8's RPC rows, ADR-0293, ADR-0295 and ADR-0297 (what RPC and ACP refused "until #612"),
+ADR-0302 D9 (#612 is the first lane added under it), ADR-0275 §2 (its lock rules gain the
+`children/` methods), ADR-0277 (the host surface still resumes nothing), ADR-0278 D3 (what a host
+reads of a child's calls and text) (L2). Each carries a dated
+note.
 Relates: ADR-0235 (pi is the reference, not a parity target), ADR-0306 (the delegated child's
-command inbox; unchanged), ADR-0277 (resume; unchanged), #612.
+command inbox and #123's doors, which D4 exposes), ADR-0308 (the approval back-channel, whose
+steps ride D5's `approval` event), ADR-0277 (resume), #612.
 pi: `earendil-works/pi` `origin/main` `5a14e69c0`, `packages/coding-agent/src/core/agent-session-runtime.ts`
 `teardownCurrent` (`:186-197`) and `dispose` (`:434-443`), which begin with `await this.session.abort()`.
 
@@ -137,6 +152,314 @@ exception, and in one stderr line only when the outgoing harness had no UI, read
 (verify round 2 F3) — and the swap goes on with the first, as at the base. This follows pi's `teardownCurrent` and `dispose`; it diverges from
 aelix's earlier port of them (ADR-0081 P-340), not from pi.
 
+### D4. The `children/` family: a host's view of the delegated children, and #123's doors (#612)
+
+Six `aelix_control` methods, one `_families()` entry (`"children"`, ADR-0302 D9), handled in
+`rpc/control_children.py` (contract r5 §3, a proposal; `children/notices` is owner Q4's wake):
+
+| Method | Params | Answer | Admission |
+| --- | --- | --- | --- |
+| `children/list` | none | `{epoch, children: [Child]}` | `READ_ONLY_METHODS` (lock-free) |
+| `children/events` | `id`; `afterSeq` (integer, optional: absent = from the oldest kept) | `{epoch, events: [{event, data}], nextSeq, lowSeq, gap}` | `READ_ONLY_METHODS` |
+| `children/steer` | `id`; `text` (at most 100000 characters); `mode` (`steer` \| `follow_up`, optional: absent = `steer`) | `{outcome, phase, verb, ended, reason}` | `CONCURRENT_METHODS` (new) |
+| `children/wrap_up` | `id` | the same, `verb` `wrap_up` | `CONCURRENT_METHODS` |
+| `children/stop` | `id` | `{state}` | `CONCURRENT_METHODS` |
+| `children/notices` | none | `{started, placed, reason, remaining}` | `MUTATING_METHODS` and `CANCELLABLE_METHODS` |
+
+- **A row** (`Child`) is `{id, profile, state, end, currentTool, elapsedMs, tokens, cost, model,
+  provider, activity: [{name, args, status}], lastText, stuck, wrappingUp, approval, seq, lowSeq,
+  sessionId, jobId, parentToolCallId, background}`: `id` is the row id `aelix_subagent.data.id`
+  carries, `sessionId` the child session id `agent(action="resume")` takes (null until the receipt
+  is allocated), `jobId` set for a background row, `parentToolCallId` the `agent` call that started
+  it (null for `agents/run`), `approval` `{callId, toolName}` while a request of ADR-0308 is open.
+  Field names are camelCase (ADR-0305's style).
+- **The doors** are #123's (ADR-0306 §3), reached through one optional seam:
+  `subagent_contract.SubagentControls` (`epoch`, `list`, `events`, `steer`, `wrap_up`, `stop`,
+  `subscribe`, `close`), which `aelix_agents/host_controls.py`'s `HostControls` implements over the
+  build's hub (D5) and which the agents extension binds as `controls` on the runtime it binds, one
+  per harness build. No member is added to `SubagentRuntime`, so a third-party runtime keeps
+  binding; product core reads `getattr(runtime.subagents, "controls", None)` and imports nothing of
+  `aelix_agents`. Every door is asked with `origin="user"` (a proposal): a host's request is a
+  person's action in that host, so a host's wrap-up ends "wrapped up at the user's request".
+- **Answers.** A delivery's `outcome` is `queued` (with `phase` `streaming` or `idle`), `unknown`
+  (`ended: true` and a reason naming `action="resume"` when the child ended with the line open) or
+  `not_sent`; a `refused` delivery is an error response with its reason (ADR-0302 D2.3) — "the agent
+  has not started yet; retry", "the agent is stopping", "the agent's inbox is broken; stop or
+  resume it", "a wrap-up was already requested for this agent", ADR-0306's resume hints for an
+  ended row, "no agent '<id>' in this session" for an id this build never held. `children/stop`
+  answers the state the hub holds when its door returned, or at `CHILD_STOP_ANSWER_BOUND` = 10 s
+  while the stop goes on; the end is the terminal `aelix_child` `state` frame. A foreground row's
+  door is `runtime.stop`; a job row's is the job service's stop, asked by the user, which returns
+  before the job's stop legs, so it usually answers `running`. An open approval request is withdrawn
+  first (ADR-0308; the lead's call after part A).
+- **`children/notices`** is the `/jobs send` door, `JobService.send_waiting()`, then a notice turn,
+  answered with `PromptNoticesResult`'s `started`, `placed`, `reason` (`null`, `held`, `disposed`,
+  `busy`, `nothing`, `refused`) and **`remaining`**, the inbox's pending count after the turn.
+  `placed` counts what the turn placed before its first model call, one 64 KiB drain budget; each
+  boundary inside the turn claims another budget, so one call can place more than `placed` says
+  (`PromptNoticesResult`'s own definition, `harness/inbox.py`). `remaining > 0` is the host's cue
+  to call again. (Fix round 1, Codex C-M9, measured two 65,436-byte notices placed by one call that
+  answered `placed: 1, remaining: 0`; the lead's call: one budget shared across the notice turn
+  would change the kernel's boundary drain for every host's notice turn, not only RPC's, so the
+  text is narrowed to what is built, and contract r5 §3.1's "one 64 KiB budget per call" does not
+  hold.) It holds the lock for the turn, as `agents/run` does, and `commands/cancel` cancels it.
+- **Capabilities** list the five delegation methods when the bound runtime has `controls`, and
+  `children/notices` when the plane was given a job service (`jobs=`), independently: jobs on with
+  agents off lists `children/notices` alone. Without `controls` the five refuse "This RPC host has
+  no delegated agents"; without a job service `children/notices` refuses "This RPC host has no job
+  service".
+- **Admission** (contract r5 §3.4). `RpcControlPlane.handle` sends a `CONCURRENT_METHODS` request to
+  `_concurrent` before the `MUTATING_METHODS` test and the lock, so it is answered while
+  `agents/run` holds the lock. `_concurrent` refuses while the host closes ("The RPC host is
+  shutting down") or while a control lifecycle method (`transitioning`) or a classic swap
+  (`classic_swapping`) runs ("a session change is in progress; retry when it has finished"), and
+  records the request with the harness **generation** that admitted it and that generation's
+  `controls`, the only ones it ever calls. Interventions are not `_Operation`s, so `commands/cancel
+  {}` (what aelix-acp sends on `session/cancel`) never reaches one.
+- **Settled when a change begins.** `transition()` and, for a classic `CLASSIC_SWAPS` command,
+  `settle_classic` await `settle_interventions()`: each admitted request is cancelled and waited for
+  at most `SETTLE_GRACE_SECONDS` = 1 s. In `transition()` the settle runs inside the same shielded
+  step as the replacement, so a `commands/cancel` answered `deferred` that lands during the settle
+  no longer drops a command's guarded reload (fix round 1, Codex C-M2: at `111e02d7` the factory
+  was never entered;
+  `tests/rpc/test_children_family_612.py::test_a_deferred_cancel_landing_in_the_settle_still_lets_the_guarded_reload_finish`). A cancelled steer or wrap-up answers `unknown` with "a
+  session change began before the agent answered" — the line may have been read, since nothing
+  awaits before the door writes — except a wrap-up cancelled while the `cancel` of an open
+  approval request waits for its acknowledgement, which answers the error "a session change
+  began before this request was sent" (fix round 1; "Where the build differs", item 2); a stop
+  answers the state the hub holds.
+- **Fencing is not retirement.** The settle does not close the controls. At the rebind
+  (`bind_progress` → `_bind_children`) the generation is raised, the old hub's subscription ends,
+  the new one is subscribed and the old `controls.close()` makes every later intervention on them
+  refuse "the session changed" while reads go on. A change that never replaces the harness — a
+  vetoed classic `new_session`, `switch_session` or `fork`, a control branch that rejects its
+  params — never rebinds, and admission resumes on the same generation. Frames the old hub emits
+  during the teardown (the terminal states of the children it stopped, ADR-0308's `withdrawn`
+  steps) reach the host until the rebind.
+- **Every shutdown cancels them.** `begin_shutdown` cancels the interventions in flight (answering
+  `unknown` with "the RPC host began shutting down before the agent answered"), and
+  `run_rpc_mode`'s `finally` calls it first, so a cancelled `run_rpc_mode` cancels them too. The
+  children's hub subscription outlives the other event channels there: it ends, and the controls
+  are retired, only after `runtime_host.dispose()`, so the terminal `state` frames of the children
+  the disposal's `session_shutdown` stops reach a host that half-closed its input and still reads
+  (fix round 1, Codex C-M4: at `111e02d7` the wire held only the earlier `running` frame;
+  `tests/rpc/test_children_family_612.py::test_input_eof_still_sends_the_terminal_frames_the_disposal_publishes_then_retires`).
+- **`CommandWire.request` drops its correlation entry when cancelled** (contract r5 §3.4; Codex
+  measured one left behind at the base) **and drains its write under `asyncio.wait`**, not
+  `asyncio.wait_for`: on Python 3.11 `wait_for` returned the drain's result when a cancel landed in
+  the drain's last turn (CPython gh-86296), so a settled request waited for its answer — measured
+  on 3.11.15 ("NOT raised"; raised on 3.12.13 and 3.14.5, `.omc/probes/612/impl/A/wait-for-311.txt`).
+  The lead's call after part A: this is a fix, not a limit.
+
+### D5. `aelix_child` and `aelix_notice`: new event types, and the hub behind them (#612)
+
+`aelix_subagent` is unchanged (its `event` is a closed enum, ADR-0302): every new kind of frame
+rides two new types, which aelix-acp `16d6555b` drops silently (its event chain has no branch for
+an unknown type), so a host on today's adapter sees what it saw.
+
+- **`{"type": "aelix_child", "event", "data": {id, seq, epoch, …}}`**, `event` closed to seven
+  values (`subagent_contract.CHILD_EVENTS`): `state` (`state`, `profile`, `sessionId`, `jobId`,
+  `parentToolCallId`, `background`, `wrappingUp`; on the terminal one also `end`, `outcome`,
+  `reason`, `note`), `tool_start` (`callId`, `name`, `args`), `tool_end` (`callId`, `status` ∈
+  `ToolEndStatus` = `ok`, `failed`, `no_result`), `text` (`text`), `stuck` (`stuck`, an open set:
+  `repeat`, `error loop`, or null when cleared), `wrap_up` (`requested`: `true` when recorded,
+  `false` when a `not_sent` write took it back) and `approval` (`callId`, `toolName`, `step` ∈
+  `ApprovalStep` = `asked`, `allowed`, `denied`, `withdrawn`; ADR-0308). **`end`** ∈ `ChildEnd` =
+  `completed` (outcome `ok`), `wrapped_up` (the `aborted` a consumed wrap-up made of an `ok` run),
+  `stopped` (a stop door ran on the row), `cancelled` (the parent's turn cancel), `failed` (every
+  other end: `error`, `timeout`, `declined`, an abort the child made itself, and a run that left no
+  envelope, whose `outcome`, `reason` and `note` are then null). The terminal fields come from the
+  envelope the runtime built, with `_wrap_up_verdict`'s precedence (`envelope.child_end`). The
+  wrap-up is weighed after the run's own verdict, so a consumed one turns only a run that would be
+  `ok`; the child's own abort, an error or a non-zero exit keep their status and reason and end
+  `failed` (fix round 1, Codex C-M8: at `111e02d7` an `aborted` stream and an `error` stream exiting
+  1 both became `wrapped_up` once the final steer was read;
+  `tests/agents_ext/test_child_events_612.py::test_a_consumed_wrap_up_never_masks_the_childs_own_failure`).
+- **The hub** (`aelix_agents/child_events.py` `ChildEventHub`): one per harness build, its `epoch`
+  a uuid, handed once to every background run the build starts (`jobs_client._Launch.hub`), so a
+  spawned or moved row feeds the same hub as a foreground one. It is fed only from
+  `runtime._publish`, the sole producer of a child's progress: the snapshot's fields and the
+  reducer's transition list (`_StreamState.transitions`, immutable `start`/`end` records appended
+  before the display window trims). It emits only on a change. A child keeps a ring of its latest
+  256 frames; an ended child keeps its ring until 64 ended rows accumulate, then leaves a tombstone
+  `{id, state, end, sessionId, jobId}` (at most 1024 kept). It tracks at most 1024 open calls per
+  child, and a start it cannot track (past that, or with no call id) is not emitted, so **every
+  emitted `tool_start` has exactly one `tool_end`**: its own, or a synthetic `no_result` at a turn
+  boundary or the run's end, in start order, before any frame of the next turn.
+- **The identity frame comes at once**: at the first snapshot, at the receipt that names the child
+  session, and at a Ctrl+B move that names its job, without waiting for the child to speak. The
+  two later ones feed the hub only (`runtime._publish_identity`), not the other taps of
+  `_publish`. A host sees **exactly one terminal `state` frame**, the one with `end`: a terminal
+  state the row reaches before its final publish is held back, and a non-terminal `state` frame
+  carries no `end`, `outcome`, `reason` or `note`.
+- **Every projected string is capped**, control-stripped to one line with lone surrogates replaced
+  by U+FFFD: 120 characters for `currentTool`, `name`, `args`, `toolName`, `model`, `provider`,
+  `profile`; 512 for `text`, `lastText`, `reason`, `note`; 32 for `stuck`; `activity` holds at most
+  four entries. A call id goes through `wire_call_id`: the id itself when it is at most 128 bytes
+  **as the wire writes it** (JSON-escaped with `ensure_ascii=False`, UTF-8, without its quotes: a
+  control character is six bytes, a quote or backslash two), encodable, and does not start with
+  `h:`; otherwise `h:` and the first 32 hex digits of its sha256, so a literal short id can never
+  equal another id's hashed rendering (fix round 1, Codex C-M6: at `111e02d7` the budget was the
+  raw UTF-8 length, and 128 NULs were 768 bytes on the wire). The hub's open-call table is keyed by
+  that wire id, so a call's raw id is not kept while it runs (Codex C-M7: 96 half-MiB ids held
+  50,335,862 B at `111e02d7`). `tokens` and `elapsedMs` are integers in `[0, 2^53 − 1]` and `cost` a
+  finite number, never negative, an overflow reading as the largest finite double (Codex C-M6: a
+  4,001-digit count and an `Infinity` cost, which a strict JSON reader rejects, at `111e02d7`).
+  **Measured** on the complete JSONL line the plane writes, with every string at its cap in 4-byte
+  characters, an approval open, a 128-byte call id of 4-byte characters or of quotes, and usage
+  values of `10^4000` and `inf` (`.omc/probes/612/fix-r1/R1-a/bounds-head.txt`): the largest frame,
+  a terminal `state`, is 5,078 B, and a `children/list` row 9,316 B; at `111e02d7` the same build
+  measured 5,718 B and 18,551 B (`bounds-base-111e02d7.txt`). The guard test
+  (`tests/agents_ext/test_child_events_612.py::test_the_largest_frame_and_row_stay_inside_the_bounds_as_the_wire_writes_them`)
+  holds a frame at ≤ 5 KiB and a row at ≤ 12 KiB and parses each line with no `Infinity` or `NaN`.
+  `children/list` holds the live rows plus at most 64 ended ones. (Contract r5's "a frame ≤ ~4 KiB"
+  is not what was measured; the lead's call after part A: state the measured bound and cut no field
+  further.)
+- **`{"type": "aelix_notice", "event": "queued", "data": {}}`** (`event` closed to `queued`, `data`
+  empty and open) is emitted when the harness's notice inbox reports `queued`. The plane subscribes
+  at each binding when it was given a job service and the harness's inbox is on, and **primes** it:
+  notices already pending (a startup restores them before the listener exists) raise one frame at
+  once. A placed or idle change raises none.
+- **The plane subscribes through the seam**, `controls.subscribe`, not a fourth bus channel, so
+  `aelix_subagent`'s three channels stay three. A background child never produces `aelix_subagent`
+  (its snapshots go to its job), which keeps aelix-acp's "at most one `agent` call is open" parent
+  guess right after Q4 opened `spawn`.
+
+### D6. Replay within one hub generation of one live process (#612)
+
+Owner, 2026-11-18: "같은 프로세스 + 영속 기록 (권장)". A hub lives for one harness build: a
+`/reload`, RPC `resources/reload` and every session change build a new harness and a new hub with
+a new `epoch`. `epoch` is on every frame, on `children/list` and on `children/events`, and the key
+a host keeps and deduplicates by is `(epoch, id, seq)`. `children/events {id, afterSeq}` answers by
+one cursor table (`ChildEventHub.events`):
+
+| Cursor | Answer |
+| --- | --- |
+| `afterSeq` absent | every kept event; `gap` is `lowSeq > 1` |
+| `lowSeq - 1 ≤ afterSeq < nextSeq` | the events with `seq > afterSeq` (none when current); `gap: false` |
+| `afterSeq < lowSeq - 1` (older than the ring) | every kept event; `gap: true` (resync from `children/list`) |
+| `afterSeq ≥ nextSeq` | error "afterSeq is ahead of this agent's events (next is N)" |
+| `afterSeq < 0` | error "afterSeq must not be negative" |
+| an id held only as a tombstone | error "agent '<id>'s events are no longer kept (it ended <end>)" |
+| an id this hub never held (any id of another epoch included) | error "no agent '<id>' in this session" |
+
+The hub appends to a ring and calls its subscribers in one synchronous step, the plane writes a
+frame before returning, and `children/events` snapshots a ring in one step: so on the native wire,
+of the frames the plane emitted from the generation it is subscribed to, every frame with `seq <
+nextSeq` precedes the response and every later one follows it. Through aelix-acp the order of a
+notification and a response is not promised; the host dedupes by the same key.
+
+After a reconnect no child of before is alive: a CLI RPC EOF ends the process, a WebSocket
+reconnect builds a fresh session, aelix-acp's `session/load` starts a new native. The durable
+record is the parent session's messages (`get_messages`; the `agent` call's result, which for a
+cancelled call is D1's report or, under K1, the next prompt's copy) and each child's own session
+file, which the parent session's `aelix.child_session` receipt names (none for a child started
+`--no-session`). #612 adds no method to read a child's file (contract r5's follow-up F7).
+
+### D7. Owner Q4's flips, the session lifetime, and the ended-owner epoch (#612)
+
+Owner, 2026-11-18, r2 Q4: "전부 열기 (권장)". In `cli/entry.py`: `JobsExtension(…, tools=…)`
+registers `job` and `job_stop` for `rpc` too; `AgentsExtension(background_host=lambda: True)`, so the
+`agent` tool's background actions and kind are registered on RPC; `_tool_options_for` gives `bash`
+`background_host` true for `rpc`, while an unknown app mode still offers nothing. Each holds when
+the CLI built a job service (`backgroundJobs.enabled` not `false`); the WebSocket host builds
+none. Admission is then the job service's (`backgroundJobs.limits`, ADR-0293) on RPC as in the TUI,
+and with jobs off the fixed `MAX_LIVE_CHILDREN = 4` admits. ACP drives aelix over RPC, so with a
+native that has #612 it gets the same tools; aelix-acp `16d6555b` records native `e19ab55e`
+(`runtime-reference.json`), which predates #612, and its client sees no `children/*` method or event
+(D8), so a result reaches the ACP model at its next prompt (verify V-F6, Codex L11; by reading the
+adapter at `16d6555b`, not run).
+
+- **Posture on a host.** An idle `permissions/set` fires the agents extension's posture listener
+  over every live runtime, a background job's included, so a running background child is tightened
+  — asynchronously: the response can come before the child applied it, and a child that does not
+  apply it within 30 s, or whose inbox cannot be written, is stopped "permission floor could not
+  be applied" (ADR-0306 D8). A foreground child during a parent turn stays out of a host's reach
+  (`permissions/set` needs an idle harness).
+- **The ended-owner epoch** (contract r5 §6.4; Codex r4-2 7 measured a job registered after its
+  owner ended at the base). `JobService.owner_ended` first raises `_end_epoch` and records it as the
+  owner's (`_ended_at`, never emptied), synchronously, then takes its snapshot of the owner's live
+  jobs. `start` reads the epoch at entry, before its first await, and immediately before it
+  registers the job — no await between — refuses when the service is closed or the owner's epoch
+  rose since: it writes the outcome fact `failed`, "the session ended before the job started"
+  (`SESSION_ENDED_FIRST`), and raises `JobStartRefused`. A `/reload` of the same owner raises its
+  epoch, so a start parked across the reload is refused and one begun after it passes. A start
+  for the bound session that ENTERS after its owner ended — a `session_shutdown` hook that runs
+  after the jobs extension's own, through its jobs facade — is refused at entry with the same
+  sentence and writes nothing, until the next `bind` (fix round 1, Codex C-H1: at `111e02d7` the
+  epoch it read at entry was the raised one, so a sleeper started that way was still `running`
+  under the old owner after a classic `new_session`;
+  `tests/jobs/test_ended_owner_epoch_612.py::test_a_session_shutdown_hook_after_the_jobs_own_cannot_start_a_job_for_the_ended_session`).
+  A start from the INCOMING session's `session_start` handlers is not such a start: the CLI binds
+  the service to the rebuilt harness before those handlers run (`AgentSessionRuntime.set_before_session_start`,
+  after the host's rebind; it bound after them through `set_after_session_start`), so the start
+  runs under the new session's owner on `resources/reload`, `new_session`, `switch_session` and
+  `fork` alike (fix round 2, F1: at `510b186c` each was refused with that sentence, and at
+  `111e02d7` and the base a `new_session` one ran under the ended owner;
+  `tests/cli/test_session_start_job_owner_612.py`, the real CLI over RPC, which also keeps the
+  `session_shutdown` start refused; the order on every swap and on a reload's failed-rebuild restore:
+  `tests/runtime/test_before_session_start_612.py`; a swap's failed rebuild takes the same path, measured
+  by lane verify round 3's probe only). A start from the launch's own (`startup`)
+  `session_start` is still refused, "there is no session to own the job": the first bind comes
+  after it, unchanged by #612 (one probe at fix round 2's head). Live, `openai/gpt-4.1-mini`
+  through OpenRouter, a real `--mode rpc` process with an `-e` extension, macOS: the handler's
+  starts on `new_session` and `resources/reload` ran under the new session's owner, `running`; on
+  `510b186c` both were refused with that sentence (`.omc/probes/612/fix-r2/live-rpc/`).
+  Ctrl+B's adoption door (`prepare_adopted`) refuses a closed service, and an owner whose epoch
+  rose since the service's last `bind` (part B's deviation, below).
+- **The lifetime, by stage** (contract r5 §6.4; stages 1 and 2 by reading, unchanged by #612 but
+  for the epoch):
+
+  | Stage | Trigger | What runs | Bound | Past the bound |
+  | --- | --- | --- | --- | --- |
+  | 0 | a swap or quit with a live turn | D3's seal and settle | `SWAP_SETTLE_SECONDS` 10 s | the swap goes on (K4) |
+  | 1 | `session_shutdown` (a swap, a quit, `/reload`) | the agents extension stops its foreground rows; `JobsExtension` → `owner_ended(owner, "owner_end" \| "reload")` | `CLEANUP_BOUND` 10 s | the job reads `unresolved` (`owner_end_timeout`/`reload_timeout`), in memory and provisional: a runner that ends later writes its real outcome |
+  | 2 | process exit | `JobService.shutdown()`: admission closed, stop all, wait | 10 s, cancel through the barrier, 10 s more, then `task.cancel()` | a job with no written outcome is settled by the next start's reconcile (ADR-0293) |
+
+  Each child runs in its own session and ends on its inbox's EOF (exit 1, ADR-0306) or, on Linux,
+  its parent-death signal.
+- **Resumable means** what the runtime checks, and nothing is inferred from a free lock: the model's
+  `agent(action="resume", id=<child session id>, profile=…, task=…)` (hosts resume through the
+  model, owner r3 Q1) finds the child only if `find_resume_target` passes (a START on the parent's
+  current branch, the model's own first run, valid recorded limits, the file placed as allocated, a
+  loadable header, a user message) and then the runtime's checks pass, in order: the channel can
+  resume; the profile, re-resolved by name, is the file the first run used and not project-scoped;
+  no live row or claim in this process runs that child session; the recorded directory is still
+  that directory inside the parent's; the pinned model route resolves the same registration; no
+  other process holds the child file's writer lock (skipped on a filesystem that cannot lock). The
+  last check does not prove the child's process exited. A child started `--no-session` is never
+  resumable. #612's body, rule 2 ("`/new`·`/resume`·`/fork`·종료 때 자식은 멈추되, resume할 수
+  있게 기록한다"), is met under those conditions. ACP `session/cancel` stops the turn, not the jobs.
+
+### D8. The aelix-acp contract (proposals for the aelix-acp PR, lane L3; not in this repository)
+
+aelix-acp `16d6555b`, unchanged, drops `aelix_child` and `aelix_notice`, sends no `children/*`
+method and never opts in to child approvals. The PR's proposals (contract r5 §8), which lane L3
+builds against this branch once the fixtures fix the wire:
+
+- **Admission**: `children/list`, `children/events`, `children/steer`, `children/wrap_up` and
+  `children/stop` go through `_aelix/manage` before its session-lock test, straight to the native,
+  so they work during `session/prompt` and during `agents/run`; `children/notices` stays under the
+  lock. A counter raised inside `Session.restart()` and `Session.close()` fences them: one that
+  arrives while it is up is refused "the session is changing" before anything is written; one
+  already sent when it rises answers "the session changed while this request ran; its delivery is
+  unknown".
+- **Events**: for a client that declared `_meta["aelix/nestedToolCalls"]`, `tool_start`/`tool_end`
+  become `tool_call`/`tool_call_update` with `toolCallId = <id>:<callId>` and the parent's call as
+  `_meta.parentToolCallId` (a synthetic top-level `aelix-child:<id>` for an `agents/run` child); a
+  `children` map keyed `(epoch, id)` that the per-prompt clear leaves alone keeps a spawned child's
+  frames under its call after the call ended, and drops an older epoch's entries. `aelix_notice` is
+  forwarded as `_aelix/notice` only to a client that declared `_meta["aelix/notices"]`.
+- **The notice turn**: `_aelix/manage children/notices` through a `notice_turn()` that shares the
+  prompt's setup and is cancelled by `session/cancel`.
+- **The child's end** on ACP is the terminal `state` frame's `end`; ACP's session `stopReason` stays
+  `end_turn | cancelled`.
+- **#800**: a re-abort of a cancelled turn only every 2 s (the native's `_REABORT_GRACE_SECONDS`),
+  not every 50 ms poll (lowers K5).
+- **Close**: wait 45 s after SIGTERM before SIGKILL for a native whose `capabilities.methods` lists
+  `children/list` (K7).
+- **Approvals**: ADR-0308 D5.
+
 ## Known limits
 
 Each is a narrowing under the lead's rule for r5: outside the guarantee the behaviour is the base's.
@@ -173,6 +496,88 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
 - **K6 — ACP recovery.** aelix-acp's guarantee is the recorded terminal `tool_call_update`. A
   `session/load` from an empty table projects native user and assistant messages only, and one from a
   partial table replays without the report.
+- **K7 — closing a host.** aelix-acp's close is an escalation deadline (45 s on POSIX for a
+  children-capable native, with the aelix-acp PR, D8): past it the native is killed; on Windows the
+  worker's Job Object kill ends the native and its children at once, so no stage of D7 runs. Records
+  not yet written are reconciled at the next start (ADR-0293). Neither deadline was run here.
+  aelix-acp `16d6555b`, unchanged, sends SIGTERM and SIGKILL 5 s later (`wire/process.py`
+  `terminate_owned`), so D7's session-end stages (up to 10 s for a turn, then 10 s for the agents
+  and jobs) can be cut short under it (verify V-F6; by reading, not run).
+- **K8 — a slow host.** Each frame is written with a blocking write and flush; a host that stops
+  reading stalls the native's event loop (its turn, its children's pumps, every handler) until it
+  reads. This is how every RPC event is written; #612 adds no bound (by reading the plane's emit
+  path; not measured).
+- **K9 — replay's reach.** `children/events` replays within one hub generation (`epoch`) of one live
+  process: a `/reload`, a session change or a reconnect starts a new one, and earlier rows are not
+  replayable after it (D6).
+- **Not run for D4–D8**: ACP (lane L3), Windows and Linux live (the live runs were macOS only; the
+  real-child tests are POSIX only), a reconnect, and the live refusals for a not-started, stopping
+  or broken-inbox child (in-process tests only).
+
+## Where the build differs from contract r5 (lane L2)
+
+Part A's deviations 1–9 (items 1–9) and part B's deviation in step (c) (item 10). The lead's calls
+after part A (2026-11-19) decided items 2, 4 and 8 as written here and had the rest recorded in this
+ADR; the lead's calls after part B accepted item 10 as written. Part B's step (d) deviations are
+ADR-0308's.
+
+1. **Identity publishes feed the hub only** (`_publish_identity`): at the receipt and at a Ctrl+B
+   move the hub emits the `state` frame at once, and `on_event`, the statusline and the job route
+   see no extra snapshot (r5 §4.1 said "`_publish` is also called"; the frame is the same).
+2. **"Before it was sent" only for a wrap-up held by an approval.** Admission, the params and the
+   call into the controls run with no `await`, and a steer's door writes before its first
+   suspension, so a settle's cancel lands only after the write: a cancelled steer answers `unknown`
+   with the cause. A wrap-up's door has one suspension before its final steer when the row has an
+   approval request open: the `cancel` it writes to that request waits for its acknowledgement
+   (ADR-0308). A settle's cancel landing there closes the request (step `denied`, the row's note
+   "the answer's delivery is unknown; it may have been read"), takes the wrap-up back, and answers
+   the error "a session change began before this request was sent" ("the RPC host began shutting
+   down before this request was sent" at shutdown), so a retry is served
+   (`tests/rpc/test_children_family_612.py::test_a_wrap_up_a_vetoed_swap_cancels_before_its_steer_is_refused_unsent_and_can_be_asked_again`
+   and `::test_shutdown_while_a_wrap_up_waits_on_its_approval_cancel_answers_not_sent`; fix round 1,
+   verify V-F1 and Codex C-M3: at `111e02d7` the wrap-up stayed recorded with no steer written, the
+   request stayed open and every later wrap-up was refused "already requested"). "Before this
+   request was sent" is the final steer's: the approval `cancel` written first cannot be unsent, so
+   the child may have read "the agent was asked to wrap up" while no wrap-up is recorded and none
+   ends its run (fix round 2, F4, the lead's call: narrowed, no change in behaviour; verify r2's
+   `codex/lifecycle_wrap2.py` printed `delivered: [('approval', 'cancel', 'the agent was asked to
+   wrap up')]` with the reply's error). The door raises
+   `InterventionNotSent` (`aelix_agents/command_wire.py`), a `CancelledError` whose `not_sent` the
+   plane reads (product core does not import it), so the model's `agent(action="wrap_up")` cancelled by
+   Esc in that wait is still a cancel, with the same clean-up
+   (`tests/agents_ext/test_child_approvals_612.py::test_a_wrap_up_cancelled_while_its_approval_cancel_awaits_the_ack_is_taken_back`).
+   The shutdown wording for a written line, "the RPC host began shutting down before the agent
+   answered", is part A's (r5 gave none). A stop answers `{state}` from the controls' rows; if the
+   row is no longer listed the cancel propagates ("Command cancelled"). A cancel that is not the
+   plane's own propagates, and the plane takes back (`uncancel`) only the cancels it answers.
+3. **One terminal frame**: a terminal state seen before the row's final publish is held back (the
+   print channel marks `stopped` while `_run` unwinds), so a host sees exactly one terminal `state`
+   frame, the one with `end`.
+4. **The frame bound is the measured one** — 5,078 B for the largest complete JSONL frame and
+   9,316 B for a row under the hub's caps (fix round 1's re-measure, ids budgeted as the wire
+   writes them and usage values bounded; part A measured 4,983 B and 9,077 B without escaping,
+   approval or usage), held at ≤ 5 KiB and ≤ 12 KiB by the guard — not r5's "≤ ~4 KiB" (D5).
+5. **`children/steer` refuses more than r5 listed**: blank text, and text with a NUL or half of a
+   character, which would break the inbox line (#627's `unsendable_refusal`). `mode` and `afterSeq`
+   sent as `null` read as absent, as `commands/cancel`'s `requestId` does. The text bound is the
+   literal `100_000` (a named constant in product core trips the band rule's cap heuristic).
+6. **`children/notices` without a job service** refuses "This RPC host has no job service" (r5 named
+   no text). `remaining` reads the inbox after the turn; a turn's boundaries may place more than
+   `placed` counts, so two budget-sized notices can both go in one call (measured in
+   `tests/rpc/test_children_family_612.py::test_children_notices_runs_one_turn_and_says_what_is_left`:
+   `remaining` equals the inbox's count).
+7. **A job row's stop** goes through the jobs facade, `stop(job_id, reason="user", wait=0.0)` (the
+   same request as `JobService.request_stop`, plus the session-owner check the facade applies), and
+   falls back to the row's own `runtime.stop` if that raises. The job reads `stopping` when the call
+   returns.
+8. **`CommandWire` drains under `asyncio.wait`** (D4), beyond r5's "drop the entry on cancel": a
+   3.11-only gap measured here (CPython gh-86296). The lead's call: a fix, not a limit.
+9. **`CHILD_EVENTS` is a seam constant** (`tests/agents/test_p2_band_boundaries.py`'s seam list was
+   edited on purpose), and `tests/rpc/control_v1/test_floor.py`'s temporary set of methods served
+   before their fixtures was deleted when the fixtures landed (the lead's call after part A).
+10. **Ctrl+B's adoption door** (`prepare_adopted`, synchronous) compares the owner's ended epoch with
+    the one recorded at the service's last `bind`, not one captured at its own entry (r5 §6.4); its
+    refusal is `SESSION_ENDED_FIRST` when the service is not closed (part B, step (c)).
 
 ## Consequences
 
@@ -197,6 +602,33 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
 - In the TUI the report is the generic error card, whose long lines are cut at the card's width with
   "…" and which `/expand` does not open (verify round 1 F9; that card predates #800): the whole text is
   in the session file and in what the model reads.
+- (D4–D8) An RPC host given the CLI's services lists six more methods and receives two more event
+  types; a host that does not call them, and aelix-acp `16d6555b`, see what they saw (the new types
+  are dropped, `aelix_subagent` is unchanged). They are control-v1 additions under ADR-0302 D9, with
+  fixtures and floor entries of their own.
+- (D7) On the CLI's RPC host, and so under ACP with a native that has #612, the model can now spawn
+  a background agent and run a background `bash` command, and has `job` and `job_stop` (under
+  aelix-acp `16d6555b` the client sees none of the events, and a result reaches the model at its
+  next prompt); a host learns that a result waits from an
+  `aelix_notice` frame and places it with `children/notices` (or its next prompt). With background
+  jobs on, the RPC session's delegated agents are bounded by `backgroundJobs.limits`, as in the TUI;
+  with them off, by the fixed `MAX_LIVE_CHILDREN = 4`, as before.
+- (D7) A job start that a session end overtakes now fails with an outcome written, where at the base
+  it registered and ran for an ended session.
+- (D4) A host's `children/stop` on a job row ends the job with the job service's generic stop reason,
+  "stopped by the session (stop, /new, /resume, /fork or quit)", which does not name the host
+  (seen in the live run, `.omc/probes/612/impl/C/live/README.md`; not changed here).
+- Follow-ups, drafted in contract r5's Appendix A and not posted: F1 `children/resume` (owner r3 Q1);
+  F2 aelix-acp reconciles an empty or partial table with the native (K6); F3 the kernel projects
+  `result` onto `ToolExecutionEndHookEvent` (K2); F4 an abort ends a prompt still in its input or
+  `before_agent_start` handlers (K4); F5 a writer task with a bounded queue for RPC events (K8); F6
+  `permissions/set {tighten: true}`; F7 a host method to read a child's session file; F8 `/fork` and
+  `/clone` settle before the copy (K3); F9 one native abort per client cancel (K5); F10 the approval
+  channel's version fallback (ADR-0308 K10).
+- Complexity (ruff 0.15.13, `--isolated --select C901`; part A's `c901-diff.txt`, part B's): no
+  listed score rose (`run_rpc_mode` 45, `RpcControlPlane._dispatch` 26 → 25, `runtime._run` 21,
+  `_async_main` 156); `CommandWire.request` 9 → 10, `handle` 9 → 10, `capabilities` 7 → 9; no new
+  function passes 20 (ADR-0300).
 
 ## How it is held
 
@@ -331,3 +763,91 @@ worktree with its own venv and these test files copied in):
   input row reads `❯ Type your message or @path/to/file`, where verify round 2's capture of `9acd9ea0`
   held that line once, written into the input row. The sweep after fix round 2:
   `.omc/probes/800/fix-r2/entry-point-sweep.md`.
+
+**D4–D8 (lane L2 of #612).** Tests, each failing on `567753c0` (the base of lane L2: b7f and #800
+merged) unless marked a guard; parts A and B ran them on a detached `567753c0` worktree with its own
+venv, where every new file fails at import (`ModuleNotFoundError: aelix_agents.child_events`, or the
+missing `RpcControlPlane(jobs=)`), and a behaviour probe answered every `children/*` method
+"Unsupported runtime control method" and left a cancelled `CommandWire.request`'s entry behind
+(`.omc/probes/612/impl/A/base-behaviour.txt`, `.omc/probes/612/impl/B/onbase/`):
+
+- D4: `tests/rpc/test_children_family_612.py` — the admission sets; list, events and the doors
+  reach the controls; steer refuses what its inbox cannot take; a host with no delegated agents
+  refuses and lists none of them; capabilities list each half on its own service; the
+  `aelix_subagent` channels stay three (a guard); an intervention is answered while a mutation
+  holds the lock; refused while a reload runs and settled (`unknown`) when it begins; a stop a
+  session change interrupts answers the hub's state; the old generation's frames reach the host
+  until the rebind and none after; a held classic swap refuses interventions and a vetoed one
+  admits again on the same generation; `commands/cancel {}` does not reach one; shutdown and a
+  cancelled `run_rpc_mode` cancel them; a settled steer leaves no correlation entry, and a cancel in
+  any turn of the write raises and leaves none (on 3.11 too); a model `send` and a host steer racing
+  on one row are both answered; `children/notices` runs one turn, says what is left and is cancelled
+  by `commands/cancel`, leaving the harness idle. `tests/agents_ext/test_child_events_612.py`'s
+  host-controls cases: refusals by state on real rows, a live stub child steered and wrapped up
+  (`wrapped_up`, "… the user's request"), a spawned job's row in the build's hub with its stop going
+  through the job service, the stop's 10 s bound, the job stop's fallback.
+  `tests/cli/test_rpc_children_plumbing_612.py`: the launch hands RPC its job service (none with
+  `backgroundJobs.enabled: false`) and its permission extension.
+- D5: `tests/agents_ext/test_child_events_612.py` — the first snapshot is a `state` frame and every
+  frame has `id`, `seq`, `epoch`; five open calls then `agent_end` are five starts and five
+  `no_result` ends in start order; a turn boundary closes the ended turn's calls first; a start with
+  no id, and one past 1024 open calls, emit neither a start nor an end; `text`, `stuck` and
+  `wrap_up` frames on a change, and `requested: false` after a `not_sent` write on the wire; the
+  terminal `end` for each way a run ends (ok, wrapped up, stopped, cancelled with and without a
+  process, its own abort, a channel that raised); a terminal state before the final publish is held
+  back; a silent child's receipt gives a `state` frame with its `sessionId` before any output, and
+  a real Ctrl+B move one with its `jobId`; a 3 MiB tool name is capped and the row stays under
+  12 KiB; a literal `h:` id and a 129-byte id map to different wire ids; an id is budgeted as
+  the wire writes it; usage values are bounded and strict JSON; open calls are keyed by the wire
+  id; the largest complete frame and row, built from 4-byte characters and escaping ids, stay
+  inside 5 KiB and 12 KiB; the cursor table; the tombstones, and their bound. `tests/rpc/test_children_family_612.py`: a notice pending at subscription primes one
+  `aelix_notice` and each later queued notice raises one (placed and idle raise none); a spawned
+  child emits `aelix_child` and no `aelix_subagent` (POSIX).
+- D7: `tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`,
+  `tests/tools/test_bash_background_611.py::test_rpc_and_acp_advertise_and_accept_it_and_an_unknown_mode_does_not_612`
+  (two of the three #611/#779 tests that pinned the refusal, inverted and renamed; the third,
+  `tests/agents_ext/test_agent_background_611.py::test_a_host_that_answers_no_keeps_the_pre_611_tool`,
+  stays as the guard for an embedder whose host answers no);
+  `tests/jobs/test_ended_owner_epoch_612.py` (a start parked while its owner with no jobs ended, one
+  parked across `shutdown`, one parked across a `/reload` of the same owner, one begun after the
+  owner ended and before the next bind — directly and from a later `session_shutdown` hook over
+  RPC — and an adoption after the owner ended since the bind are refused; a guard: an owner ended
+  after the start registered stops its job); `tests/cli/test_session_start_job_owner_612.py` and
+  `tests/runtime/test_before_session_start_612.py` (fix round 2, F1, above); `tests/rpc/test_rpc_background_612.py` (an idle RPC `permissions/set plan`
+  tightens a running background child; POSIX; it fails on the base only through the CLI, which
+  registered no `agent` kind on RPC, as its docstring says).
+- The control-v1 fixtures (ADR-0302 D9): `tests/rpc/control_v1/fixtures/children.list.json`,
+  `children.events.json`, `children.steer.json`, `children.wrap_up.json`, `children.stop.json`,
+  `children.notices.json`, `event.aelix_child.json` and `event.aelix_notice.json` (`"since": "#612"`,
+  `hosts: ["cli-rpc"]`, `consumers: []`), and new cases in `capabilities.json`, `ui.enable.json`
+  and `event.extension_ui.json`: 79 cases, each passing in process (`test_contract.py`, 294 cases in
+  all) and the one replay case on a real `--mode rpc` child as well (`test_real_child.py`). The
+  rig's children are this product's hub, `_publish`, reducer and `HostControls` doors over rows
+  whose inbox answers a scripted reply and that have no process
+  (`tests/rpc/control_v1/fake_children.py`). `scripts/check_control_v1.py --update` added 6
+  methods and 2 events (32 and 4), `V1_SHA256` is unchanged and `--check --base 567753c0` holds;
+  `docs/contracts/control-v1.md` lists the six methods as served, not yet consumed, and both
+  events as dropped by aelix-acp `16d6555b`. On `567753c0` every `children/*` case answers
+  "Unsupported runtime control method" and no `aelix_child` or `aelix_notice` frame comes
+  (`.omc/probes/612/impl/C/onbase/base-fixture-answers.txt`).
+- Mutants (`.agents/skills/aelix-tests-that-bite/scripts/mutants.py`): part A, 105 distinct over
+  every product file it changed, 99 killed on the first pass and the six survivors killed by tests
+  added for them (`.omc/probes/612/impl/A/spec-*.json`, `log-*.json`); part B's in ADR-0308.
+- Pythons and platforms (part A, `.omc/probes/612/impl/A/`): its new and touched files on 3.11, 3.12
+  and 3.14 with `-W error::pytest.PytestUnraisableExceptionWarning` (157 passed each), Linux docker
+  3.12 (156 passed, 1 skipped), the coarse Windows clock (80 passed).
+- Live with `openai/gpt-4.1-mini` through OpenRouter, a real `--mode rpc --agents` parent over pipes,
+  macOS, scratch HOME, agent dir and cwd (`.omc/probes/612/impl/C/live/README.md`, `rpc/interventions-1/`):
+  the six `children/*` methods listed; the parent model spawned a background child, whose frames
+  came `state` (with `jobId` and `background: true`), a `state` with its `sessionId` before any
+  output, `running`, `text`, and one terminal `state` with `end`, each with `epoch` and `seq`;
+  `children/events {afterSeq: 1}` replayed from `seq` 2; `children/steer` answered
+  `queued`/`streaming` and `mode: follow_up` `verb: follow_up`; `children/wrap_up` answered `queued`,
+  a second one was refused "already requested", and the child ended `wrapped_up`, `aborted`,
+  "wrapped up at the user's request"; `children/stop` on a job row answered `{state: "running"}` and
+  then a terminal frame `end: stopped`, a second `stopped`, a later steer the resume hint, an unknown
+  id "no agent 'sub-nope' in this session"; two `aelix_notice` frames, and `children/notices`
+  answered `{started: true, placed: 1, reason: null, remaining: 0}`, then `{started: false, placed: 0,
+  reason: "nothing", remaining: 0}`. One `children/notices` sent 0.05 s before a job posted its
+  notice answered `nothing`, and the `aelix_notice` frame followed: a host that follows the frames
+  calls again.

@@ -1,4 +1,4 @@
-"""#779 (R9, the lead's call) — ``job`` and ``job_stop`` count as built-in tools, and RPC/ACP has neither.
+"""#779 (R9, the lead's call) — ``job`` and ``job_stop`` count as built-in tools; RPC/ACP has both since #612.
 
 With the jobs gate on (shipped since #779), ``JobsExtension`` registered both tools
 on every host, and they survived ``--no-builtin-tools``
@@ -7,8 +7,10 @@ scratch plugin). R9: they come from aelix itself, so the run's tool policy count
 them as built-in (``tools.BUILTIN_TOOL_NAMES``, ``cli/entry.py`` ``_tool_policy``):
 ``--no-builtin-tools`` turns them off, ``--tools`` filters them like any other
 name, and ``--no-tools`` turns them off with everything else. On an RPC host —
-and so under ACP, which drives aelix over RPC (ADR-0275) — they are not
-registered at all until #612, while the job service and ``/jobs`` still are.
+and so under ACP, which drives aelix over RPC (ADR-0275) — they were not
+registered at all before #612; since #612 (owner Q4, 2026-11-18, "전부 열기")
+they are, with the ``agent`` tool's background actions, on the first harness and
+on every rebuilt one.
 
 The matrix, each row driven through the REAL ``_async_main``:
 
@@ -26,7 +28,9 @@ the shipped value: R9 is what the gate-on build does, and a rollback of the gate
 is not a change of R9 (fix-r1, verify r1 F6). Fails on ``bf507d59`` with the gate
 on: ``BUILTIN_TOOL_NAMES`` did not exist, and with only that shimmed the
 ``--no-builtin-tools`` rows had both tools active and the RPC rows had both
-registered (verify r1, ``.omc/probes/779/verify-r1/bite/``).
+registered (verify r1, ``.omc/probes/779/verify-r1/bite/``). The RPC row fails on
+``567753c0`` (before #612): neither tool is registered there and the ``agent``
+tool's description has no background paragraph.
 """
 
 from __future__ import annotations
@@ -247,12 +251,14 @@ def _control(request_id: str, method: str) -> dict[str, Any]:
     return {"id": request_id, "type": "aelix_control", "method": method, "params": {}}
 
 
-async def test_rpc_and_acp_register_neither_across_rebuilds_and_keep_the_jobs_command(
+async def test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612(
     env: Path,  # noqa: F811
     wire: list[tuple[str, str | None]],  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RPC's own ``new_session`` and ACP's envelope (``resources/list``, ``resources/reload``)."""
+    """RPC's own ``new_session`` and ACP's envelope (``resources/list``, ``resources/reload``) (#612)."""
+
+    from aelix_agents.tool import _BACKGROUND_HEAD
 
     _write_models(env, "rec")
     responses = _drive_real_rpc(
@@ -265,13 +271,16 @@ async def test_rpc_and_acp_register_neither_across_rebuilds_and_keep_the_jobs_co
             _control("l3", "resources/list"),
         ],
     )
-    code = await entry_mod._async_main(["--model", "rec/m1", "--mode", "rpc"])
+    # ``--agents``: delegation is off by default (``[features] agents``).
+    code = await entry_mod._async_main(["--model", "rec/m1", "--mode", "rpc", "--agents"])
     assert code == 0
     assert [r["success"] for r in responses] == [True] * 5, responses
     for listed in (responses[0], responses[2], responses[4]):
         data = listed["data"]
         tools = {t["name"] for t in data["tools"]}
         assert "bash" in tools, sorted(tools)
-        assert not JOB_TOOLS & tools, sorted(tools)
-        assert not JOB_TOOLS & set(data["activeTools"])
+        assert tools >= JOB_TOOLS, sorted(tools)
+        assert set(data["activeTools"]) >= JOB_TOOLS
+        (agent,) = [t for t in data["tools"] if t["name"] == "agent"]
+        assert _BACKGROUND_HEAD in agent["description"]
         assert "jobs" in {c["name"] for c in data["commands"]}, "the service and /jobs are built on RPC"

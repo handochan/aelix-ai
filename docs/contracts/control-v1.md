@@ -118,7 +118,10 @@ the timeout is 60 s with no cancel (`server.py:309-310`).
 `_aelix/manage` refuses with "Session is busy" whenever the session's `mutation_lock` is held
 (`server.py:279-280`), and aelix-acp `16d6555b` holds that lock for the whole of a
 `session/prompt` (`server.py:248-255`). So during a turn Studio gets "Session is busy" from
-`_aelix/manage` before any of these actions reaches aelix-ai. #612's aelix-acp PR changes this.
+`_aelix/manage` before any of these actions reaches aelix-ai. #612's aelix-acp PR (lane L3, not
+yet opened) proposes sending `children/list`, `children/events`, `children/steer`,
+`children/wrap_up` and `children/stop` before that lock (ADR-0307 D8); until it lands, none of
+the `children/` methods reaches aelix-ai through aelix-acp (§6).
 
 ### 3.2 Forwarded field paths
 
@@ -160,6 +163,9 @@ every case.
 | `extension_ui_request` | `authProgress` | — | `_aelix/notification`, the whole frame | `session.py:620-623` |
 | `extension_ui_request` | `notify`, `setStatus`, `setWidget`, `setTitle` | `method` (which branch: `session.py:619`); `message`, `text` (read and shown as an agent message chunk: `session.py:624-628`) | — | `session.py:624-628` |
 | `extension_ui_request` | any other method | — | the dialog client action (`server.client_action(self, "dialog", event)`), the whole frame; an unknown method is shown as a dialog too | `session.py:629-632` |
+| `extension_ui_request` | `childApproval` (#612, ADR-0308): a delegated child's approval request | — | — | never sent to `16d6555b`: it is emitted only after `ui/enable` with `childApprovals: true`, which aelix-acp does not send (`session.py:282-284`); the row above would forward it as a dialog |
+| `aelix_child` | any (#612, ADR-0307) | — | — | dropped: `Session.event` has no branch for it (`session.py:463-522`) |
+| `aelix_notice` | any (#612, ADR-0307) | — | — | dropped: `Session.event` has no branch for it (`session.py:463-522`) |
 | `extension_ui_response` (client → host) | ACP writes `{"type": "extension_ui_response", "id", …answer}`: the client's whole dialog reply (`value`, `confirmed`, `cancelled`), or `{"cancelled": true}` | — | — | `session.py:629-636`; the write at `:635` |
 
 The fixtures are `tests/rpc/control_v1/fixtures/event.aelix_subagent.json` (frames emitted while an
@@ -168,6 +174,10 @@ keys are required in both) and `fixtures/event.extension_ui.json` (`select`, `co
 `editor`, `notify`, `setStatus`, `setWidget`, `setTitle`, `auth/login`'s `authProgress`, `oauth`,
 `oauthSelect` and `input`, and a reply reaching the command; `confirm` is replayed on a real
 child).
+#612 adds `fixtures/event.aelix_child.json` (one case per `event` value, and the receipt's
+`state` frame, a wrap-up taken back and the `no_result` ends of a run's open calls),
+`fixtures/event.aelix_notice.json`, and three `childApproval` cases in
+`fixtures/event.extension_ui.json` (answered `yes`, cancelled, and answered with a label).
 
 ### 4.1 Forwarded frame paths
 
@@ -178,7 +188,7 @@ differ.
 | Frame | Paths |
 |---|---|
 | `aelix_subagent` | `data`, `data.cost`, `data.current_tool`, `data.elapsed_ms`, `data.id`, `data.model`, `data.profile`, `data.provider`, `data.state`, `data.tokens`, `event`, `type` |
-| `extension_ui_request` | `id`, `instructions`, `key`, `kind`, `lines`, `lines[]`, `message`, `method`, `options`, `options[]`, `options[].id`, `options[].label`, `placeholder`, `placement`, `prefill`, `text`, `title`, `type`, `url` |
+| `extension_ui_request` | `child`, `child.background`, `child.cwd`, `child.epoch`, `child.id`, `child.jobId`, `child.parentToolCallId`, `child.profile`, `child.sessionId`, `choices`, `choices[]`, `choices[].id`, `choices[].kind`, `choices[].label`, `id`, `instructions`, `key`, `kind`, `lines`, `lines[]`, `message`, `method`, `options`, `options[]`, `options[].id`, `options[].label`, `placeholder`, `placement`, `prefill`, `text`, `title`, `tool`, `tool.args`, `tool.args.command`, `tool.callId`, `tool.kind`, `tool.name`, `type`, `url` |
 
 ## 5. Classic commands — observed, not frozen
 
@@ -206,6 +216,10 @@ differ.
 |---|---|---|---|
 | `permissions/evaluate` | #594 | none (aelix-acp names it only in `READ_ONLY_CONTROLS`) | `permissions.evaluate.json` |
 | `selections/list`, `selections/set` (and `capabilities.selectionKinds`) | #624 (ADR-0305), in the freeze commit itself | Studio #7, through aelix-acp's `_aelix/manage`. Its allowlist (`server.py:303`) and `READ_ONLY_CONTROLS` (`session.py:45-47`) do not list them yet. When aelix-acp adds `selections/set`, its default 60 s timeout is short: the consent dialog alone is bounded at 45 s (`rpc/control_selection.py` `CONSENT_TIMEOUT_SECONDS`), and settings-lock contention can add 30 s (ADR-0305 D4). So the request is to give it at least 90 s, or to send `commands/cancel` with its `requestId` on timeout. | `selections.list.json`, `selections.set.json`, `capabilities.json` |
+| `children/list`, `children/events`, `children/steer`, `children/wrap_up`, `children/stop` | #612 (ADR-0307 D4) | Studio, through aelix-acp's `_aelix/manage` once its #612 PR (lane L3) sends them before the session lock (ADR-0307 D8). `16d6555b`'s allowlist (`server.py:303`) does not list them. | `children.list.json`, `children.events.json`, `children.steer.json`, `children.wrap_up.json`, `children.stop.json` |
+| `children/notices` | #612 (ADR-0307 D4, owner Q4) | aelix-acp's notice turn after an `aelix_notice` frame (ADR-0307 D8) | `children.notices.json` |
+| The `childApprovals` param of ui/enable and the `extension_ui_request` method `childApproval` | #612 (ADR-0308) | aelix-acp, mapped to `session/request_permission` (ADR-0308; lane L3) | `ui.enable.json`, `event.extension_ui.json` |
+| `aelix_child`, `aelix_notice` events | #612 (ADR-0307 D5) | aelix-acp (lane L3); `16d6555b` drops both (§4) | `event.aelix_child.json`, `event.aelix_notice.json` |
 
 ## 7. Changes since aelix-acp's pin, accepted as v1
 

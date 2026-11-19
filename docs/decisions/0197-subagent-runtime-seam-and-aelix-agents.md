@@ -33,6 +33,7 @@ PROVENANCE. §(e)'s child floor now also blocks every MCP / extension tool, and
 §(i)'s "`agent` is not mutating" is now the `delegation` provenance of the object
 `aelix_agents` builds. See the dated note at the end of §(e).**
 Amended 2026-11-17 by ADR-0304 (#795, #796): the roster and the model's door are filtered by the `agents` lists and the identity's `agents:`; the human doors are not; the seam gains the optional `ModelDelegation` and `DelegationNotAllowed` with no version bump (dated note at the end).
+Amended 2026-11-19 by ADR-0308 (#612): §(e)'s `DEFAULT → PLAN` holds for a child without the approval channel; with it a `default` parent's child runs `default` and asks through its parent; the deferred back-channel is done (dated note at the end).
 Design record that lands with the P2 implementation (same pattern as
 ADR-0186/0187/0188/0189/0196).
 Date: 2026-07-26
@@ -1574,3 +1575,34 @@ registered, a failed import is no failed extension (L8).
 interpreter refuses `rich`, `wcwidth` and `prompt_toolkit`, and drives the in-process RPC loop for
 the rest; `tests/rpc/test_reply_encoding_797.py` holds the reply guard. A wheel install without
 extras was run once by hand (`.omc/probes/b7f/impl/797-live/`).
+
+## Note (2026-11-19, ADR-0308, #612)
+
+The child→parent approval back-channel this ADR deferred is [ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md) (owner, 2026-11-18: "자식 승인
+통로도 #612에"; Q-A "default로 돌며 물어봄 (권장)"). What changes here:
+
+- **§(e)**, "Then `DEFAULT → PLAN`, because DEFAULT in a child means "prompt" and the child has no
+  prompt", is true of a child without the channel. A child its parent answers (`asks_parent`: the
+  TUI, or an RPC host that sent `ui/enable {enabled: true, childApprovals: true}`) has a prompt,
+  its parent's: under a `default` parent its `inherit`, `auto` and `ask`-with-UI baseline is
+  `default`, and every other cell of the realized table is unchanged (ADR-0308 D3, the table with
+  its new column; `tests/agents_ext/test_approval_clamp_612.py::test_the_table_with_and_without_the_channel`,
+  which holds the table above as the guard without the column). "With no channel back to the
+  parent" becomes "unless its parent offers one".
+- **The notes of 2026-10-06 and 2026-11-03** ("reaches the headless row and is **blocked**"): blocked
+  for a child without the channel; asked through the parent with it (ADR-0308 D2:
+  `PermissionExtension.ask_parent`, set only for a `--command-inbox=2` launch, and branch (d)
+  becomes "no approval UI and no `ask_parent`").
+- **Deferred: the back-channel** is done by ADR-0308. Its four blockers: (a) stdin read to EOF → the
+  command inbox on the child's stdin (ADR-0306), which version 2 extends with `approval`; (b) RPC
+  responses dropped → `RpcCommandUI` and its lock-free reply route (ADR-0275), carrying the new
+  `childApproval` dialog; (c) no modal arbiter → the TUI's modal stack and the gate's lock, one
+  approval dialog at a time in the TUI (ADR-0308 K13 names where that does not hold); (d) §(e)'s
+  derivation → amended by the column above.
+- **Consequences**, "Out of the box a delegated child is read-only": read-only when its parent has
+  no one to ask (`-p`, json, an RPC host that did not opt in); in the TUI a `default` parent's child
+  asks before each change its gate would ask about (owner Q-A). **R1**, "consent is per-spawn, not
+  per-tool": per-tool for every call a channel child asks about.
+- **The kernel** is still free of delegation: the gate's `ask_parent` and `decide_for_child` are
+  product core (`builtin/permission.py`), the router is the bundled extension's
+  (`aelix_agents/child_approvals.py`).

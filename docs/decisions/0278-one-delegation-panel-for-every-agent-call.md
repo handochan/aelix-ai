@@ -16,6 +16,8 @@ Amended 2026-10-30 (round-2 delta review, #132): D4 (what still re-cuts a
 label, a header choice past a reserve moves back, the frame times at the
 widths the panel is drawn at), Limits (five residuals left for a follow-up).
 No code changed.
+Noted 2026-11-19 (ADR-0307, #612): D3's `activity` and `last_text` reach an RPC host through
+`children/list` and `aelix_child`, while `aelix_subagent` stays as it was (note at the end).
 Date: 2026-10-30
 Issue: #132 (absorbs #26). Design (final, owner-approved layout A):
 `.omc/specs/132-design-2026-10-30.md`; the measured BEFORE state:
@@ -449,3 +451,14 @@ it writes no statusline row either
 `stuck: repeat` and `wrapping up` beside the idle term of a live member (ADR-0306 D9–D10). D3's
 `activity` window is untouched and is not what decides `stuck`: the fingerprints are built from
 the raw tool events.
+
+## Note (2026-11-19, ADR-0307, #612)
+
+D3's "the `aelix_subagent` event does not carry them (#612 owns that)": it still does not —
+`aelix_subagent` is frozen in control-v1 (ADR-0302) and #612 leaves it as it was. An RPC host reads
+them elsewhere ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md)
+D4, D5): a `children/list` row carries `activity` (at most four `{name, args, status}`), `lastText`,
+`stuck` and `wrappingUp`, and the `aelix_child` event carries `tool_start`/`tool_end` from the
+reducer's transitions (not from `recent`, whose `ToolCall` objects are mutable and trimmed), `text`,
+`stuck` and `wrap_up`, each string capped (120 characters for a name or an argument, 512 for a
+text).

@@ -726,23 +726,24 @@ it is still the `--mode json -p` process it was, with the same result.
   not (`tests/agents_ext/test_command_wire_123.py`).
 - **A tighter posture** — shift+tab reaches every running child above the new rank, governs its
   approvals from then on, and stops one that does not apply it within 30 s
-  (`tests/agents_ext/test_permission_floor_123.py`); RPC `permissions/set` reaches none (ADR-0306 D8).
+  (`tests/agents_ext/test_permission_floor_123.py`); an idle RPC `permissions/set` reaches background ones.
 - **A stuck mark** — four identical calls and results, or three identical errors: `stuck:
   repeat` / `stuck: error loop` on the panel, one note, never a stop
   (`tests/agents_ext/test_stuck_123.py`); in the background the parent model is told once.
 
-`stop` is unchanged (ADR-0291). RPC and ACP gain no method or event until #612 (ADR-0306).
+`stop` is unchanged (ADR-0291). An RPC host reaches these doors too ([background-jobs.md](background-jobs.md#over-rpc-and-acp)).
+Under a `default` parent a child asks you before each change in the TUI ([agent-approvals.md](agent-approvals.md)).
 
 ### How many run at once
 
 | Host | Bound on live delegated agents | Can you change it |
 | --- | --- | --- |
-| TUI, `-p`, `--mode json` | `backgroundJobs.limits.agents` (default 4), foreground and background together, and `backgroundJobs.maxTotal` if you set it | yes, in your global settings (1 to 16; `maxTotal` 1 to 32) |
-| `--mode rpc`, and ACP over it | `MAX_LIVE_CHILDREN = 4`, as before #611 | no |
+| TUI, `-p`, json, `--mode rpc` | `backgroundJobs.limits.agents` (default 4), foreground and background together, and `backgroundJobs.maxTotal` if you set it | yes, in your global settings (1 to 16; `maxTotal` 1 to 32) |
+| `backgroundJobs.enabled: false` | `MAX_LIVE_CHILDREN = 4` | no |
 
-Over RPC and ACP the background actions are refused until #612, and the bound is
-the fixed one, because the delegation job kind is not registered there (contract r2
-§5.1, Codex r1 #12; `tests/agents_ext/test_agent_background_611.py::test_an_rpc_host_refuses_the_background_actions_until_612`).
+`--mode rpc` has the background actions and the settings' bound since #612
+(owner, 2026-11-18: "전부 열기 (권장)"; ADR-0307 D7; ACP:
+[background-jobs.md](background-jobs.md#over-rpc-and-acp)).
 Where the bound is reached, a call is refused before its dialog, and the refusal
 names the setting.
 

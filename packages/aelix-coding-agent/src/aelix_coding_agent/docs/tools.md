@@ -257,8 +257,11 @@ with the end of its output, the file's path and how to read the rest
 default at most 4 run at once; `backgroundJobs.limits.bash` in your global settings sets 1 to 16. `-p` and `--mode json` wait for them. In those
 unattended runs a command without `timeout` is stopped after `AELIX_BASH_DEFAULT_TIMEOUT`
 seconds (600; 0 for none); in the TUI there is no default. A command that ends normally leaves
-what it started running, as a foreground one does, and the notice says when it left any. Not
-available over RPC or ACP yet (#612) or with a remote shell.
+what it started running, as a foreground one does, and the notice says when it left any. Over
+`--mode rpc` it is offered too since #612 (owner, 2026-11-18: "전부 열기 (권장)"; ACP:
+[background-jobs.md](background-jobs.md#over-rpc-and-acp);
+`tests/tools/test_bash_background_611.py::test_rpc_and_acp_advertise_and_accept_it_and_an_unknown_mode_does_not_612`);
+it is not available with a remote shell.
 
 This is ADR-0297's text for the switch-on, with the limit given as the default it is
 ([ADR-0297](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0297-a-bash-command-can-run-in-the-background-as-a-job-of-its-session.md),

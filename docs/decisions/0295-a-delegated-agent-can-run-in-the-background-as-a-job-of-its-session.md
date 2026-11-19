@@ -8,6 +8,8 @@ surrogate in a background agent's text is replaced by U+FFFD where it enters the
 note at the end. **Active since #611 S3 (#779, 2026-11-17):** `aelix_coding_agent/jobs/activation.py`
 `ACTIVE = True` (ADR-0293 §12); until then everything below was inert behind `ACTIVE = False`. See
 the note of 2026-11-17 (#779) at the end.
+Amended 2026-11-19 (#612, ADR-0307): the background actions are offered on RPC (and so under ACP)
+too, owner r2 Q4; see the note "(2026-11-19, ADR-0307, #612)".
 Date: 2026-11-08
 Issue: #723 (#611 slice S1c). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract: §2.2's A rows, §2.3, §2.4, §2.10), with rounds 3–5 and Codex's reviews
@@ -682,3 +684,20 @@ and `agent(action="wrap_up", id=…)` are offered beside the background actions 
 agent, or one Ctrl+B moved, through the kind's control adapter (ADR-0306 D4). The notice, the job
 states and the result file are unchanged; a wrapped-up agent's job ends `stopped` with an
 `aborted` envelope (ADR-0306 D7).
+
+## Note (2026-11-19, ADR-0307, #612)
+
+The 2026-11-07 decision recorded in the Status block ("background actions refused on RPC/ACP until
+#612") is lifted by the owner's r2 Q4 of 2026-11-18, "전부 열기 (권장)" ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7): the CLI's
+`AgentsExtension` is built with `background_host=lambda: True`, so on RPC the `agent` tool offers
+`spawn`, `wait`, `status`, `stop`, `result` and the background paragraph, and the kind is
+registered (`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`,
+with `--agents`, across `new_session` and `resources/reload`). The "Hosts" paragraph ("RPC and ACP
+still refuse the background actions and keep `MAX_LIVE_CHILDREN = 4`") no longer holds while the
+CLI built a job service: admission is `backgroundJobs.limits`, as in the TUI; with
+`backgroundJobs.enabled: false` the kind is not registered and `MAX_LIVE_CHILDREN = 4` admits. The
+test that pinned the refusal is kept as the guard for an embedder whose host answers no
+(`tests/agents_ext/test_agent_background_611.py::test_a_host_that_answers_no_keeps_the_pre_611_tool`).
+A host sees a spawned child as `aelix_child` frames (never `aelix_subagent`) and reaches it with
+`children/steer`, `children/wrap_up` and `children/stop` (ADR-0307 D4, D5); its question, under a
+`default` parent and a host that opted in, is ADR-0308's `childApproval`.

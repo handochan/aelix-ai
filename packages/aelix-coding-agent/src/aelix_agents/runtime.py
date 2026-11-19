@@ -71,6 +71,7 @@ from aelix_coding_agent.subagent_contract import (
 )
 from aelix_coding_agent.tools._path_utils import resolve_to_cwd
 
+from aelix_agents.child_approvals import ChildApprovals
 from aelix_agents.child_session import (
     RESUME_CONVERSATION_CHANGED,
     RESUME_IN_USE,
@@ -90,12 +91,21 @@ from aelix_agents.child_session import (
 )
 from aelix_agents.child_session import find_resume_target as _find_resume_target
 from aelix_agents.child_session import resumable_agents as _resumable_agents
-from aelix_agents.command_wire import ENDED_UNANSWERED, NUDGE_TEXT, Reply, WrapUp, new_wrap_up
+from aelix_agents.command_wire import (
+    ENDED_UNANSWERED,
+    NUDGE_TEXT,
+    InterventionNotSent,
+    Reply,
+    WrapUp,
+    new_wrap_up,
+    wrap_up_consumed,
+)
 from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
     REASON_CANCELLED,
     build_result,
+    child_end,
     declined_result,
 )
 from aelix_agents.posture import child_permission_mode, posture_rank
@@ -120,7 +130,7 @@ from aelix_agents.prompt_file import remove_prompt_dir
 from aelix_agents.stream import activity_of, path_for_display, stuck_of, written_paths
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Sequence
 
     from aelix_coding_agent.subagent_contract import SubagentMode
 
@@ -163,7 +173,7 @@ _SESSION_DRAINING = (
 
 WITHOUT IT, ``stop_all`` CANNOT STOP A BATCH — it makes it bigger. Every abort
 ``stop_all`` performs RELEASES a member parked on the batch semaphore
-(``batch.py:455-458``), and every ``await`` in ``stop_all`` is a chance for that
+(``batch.py:460-463``), and every ``await`` in ``stop_all`` is a chance for that
 member to reach ``create_subprocess_exec``. Draining alone is not enough and a
 flag held only FOR THE DURATION of the drain is not enough either: MEASURED with
 real processes, a wave-1 member's ``PrintChannel.run`` routinely returns — and
@@ -203,7 +213,7 @@ _NOT_CONSENTED = (
 
 _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values that
-END a delegation (``subagent_contract.py:66``, and see the "terminal" note at
+END a delegation (``subagent_contract.py:67``, and see the "terminal" note at
 ``:239``).
 
 DELIBERATELY A SECOND COPY of ``progress._TERMINAL_STATES``
@@ -612,6 +622,15 @@ class SubagentHost:
     """The session's identity (``--agent``, ``/agents use``), read live, whose
     ``agents:`` narrows what the MODEL may delegate to (#796, ADR-0304 D4).
     ``None``: no identity, no narrowing."""
+    asks_parent: Callable[[], bool] = lambda: False
+    """Whether a child spawned now would ask this process before each change (#612,
+    ADR-0308): someone answers approvals here — the TUI, or an RPC host that sent
+    ``ui/enable {childApprovals: true}``. Read once per spawn, by its consent, and
+    fixed on the grant. ``False`` — ``-p``, json, and every host before #612."""
+    decide_for_child: Callable[[Any], Awaitable[tuple[str, str | None]]] | None = None
+    """This process's approval arbiter (``PermissionExtension.decide_for_child``,
+    #612, ADR-0308): what a row that asks its parent asks. ``None``: such a row's
+    requests are answered ``cancel`` ("no one can answer approvals here")."""
 
 
 @dataclass(frozen=True)
@@ -772,9 +791,20 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1176``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1216``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
+    events: Any = None
+    """The build's :class:`~aelix_agents.child_events.ChildEventHub` (#612,
+    ADR-0307), fed by :meth:`_publish` — the third tap after ``on_event`` and
+    ``host.on_progress`` — or ``None`` (a runtime built without one: the tests',
+    an embedder's). A background run's own runtime gets its build's hub through
+    its launch (``jobs_client._Launch.hub``), so its row feeds the same one."""
+    controls: Any = None
+    """The build's :class:`~aelix_coding_agent.subagent_contract.SubagentControls`
+    (``aelix_agents.host_controls``), set by the agents extension: what an RPC
+    host reaches through ``getattr(runtime, "controls", None)`` (#612). Not a
+    member of the ``SubagentRuntime`` Protocol."""
 
     def __post_init__(self) -> None:
         # THE DEFAULT CHANNEL IS BUILT HERE because it needs the host's LIVE
@@ -1069,6 +1099,7 @@ class _SubagentRuntimeImpl:
             task,
             self.host.posture(),
             cwd=child_cwd,
+            asks_parent=_asks_parent(self.host),
             # Named on the dialog for the same reason the directory and the
             # posture are: it is part of what is being approved.
             #
@@ -1482,7 +1513,7 @@ class _SubagentRuntimeImpl:
         been aborted there was nothing left that could start another, and a
         single pass followed by ``self._children.clear()`` was correct. Under P3
         a batch's later waves are parked on the batch semaphore and are released
-        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:455-458``): killing
+        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:460-463``): killing
         wave 1 frees four permits, wave 2 reaches ``create_subprocess_exec``
         during this method's own ``await``\\ s, and the unconditional ``clear()``
         then dropped the only handle on them. Measured, with real processes:
@@ -1579,8 +1610,15 @@ class _SubagentRuntimeImpl:
 
         Recorded on the row, its head on the row's stream state (F4), before the write, so the
         envelope judges it however the child answers; taken back when nothing was written (a
-        ``not_sent``). ``final`` ends the run after the next model call, made with no tools (a retry
-        of it too), the text a courtesy. A second request on the same row is refused: one per run.
+        ``not_sent``), and when a cancel lands before the final steer's write began. ``final`` ends
+        the run after the next model call, made with no tools (a retry of it too), the text a
+        courtesy. A second request on the same row is refused: one per run.
+
+        The one suspension before that write is the open approval request's ``cancel``, which
+        waits for its acknowledgement (ADR-0308). A cancel there — an RPC settle at a session
+        change, shutdown, Esc on the model's call — leaves that request closed with its step
+        (:meth:`ChildApprovals._write`), takes the wrap-up back and raises
+        :class:`~aelix_agents.command_wire.InterventionNotSent` (#612 fix round 1, V-F1).
         """
 
         child = self._children.get(id)
@@ -1591,6 +1629,19 @@ class _SubagentRuntimeImpl:
             return Delivery("refused", reason="a wrap-up was already requested for this agent", verb="wrap_up")
         request = new_wrap_up(origin)
         _record_wrap_up(self, child, request)
+        if child.approvals is not None:
+            # #612 (ADR-0308, §7 review M1): an open approval request is answered
+            # ``cancel`` first, on the same wire, then the final steer.
+            try:
+                await child.approvals.wrap_up()
+            except asyncio.CancelledError:
+                # The final steer's write never began, so no wrap-up is recorded and none
+                # ends the run. The approval ``cancel`` was written first and cannot be
+                # unsent: the child may have read "the agent was asked to wrap up" (fix
+                # round 2, F4: ``.omc/probes/612/verify-r2/codex/lifecycle_wrap2.py``).
+                if child.wrap_up is request:
+                    _record_wrap_up(self, child, None)
+                raise InterventionNotSent from None
         reply = await child.wire.request("steer", {"message": request.text, "final": True})
         if reply.outcome == "not_sent":
             _record_wrap_up(self, child, None)
@@ -1620,9 +1671,11 @@ class _SubagentRuntimeImpl:
         approval the child makes after it applied.
         """
 
-        floor = child_permission_mode("inherit", mode, "user")
         tasks: list[asyncio.Task[None]] = []
         for child in list(self._children.values()):
+            # #612 (ADR-0308): per row — a row that asks its parent has the
+            # ``asks_parent`` column's floor (``default`` under ``default``).
+            floor = child_permission_mode("inherit", mode, "user", asks_parent=child.asks_parent)
             granted = child.granted_mode
             if granted is None or posture_rank(floor) >= posture_rank(granted):
                 continue
@@ -1893,6 +1946,8 @@ class _SubagentRuntimeImpl:
             cleanups=self._cleanups,
             # #775 — Ctrl+B's side of the call, for a TUI run or resume only.
             detach=detach,
+            # #612 — the ``agent`` call a host nests this child's events under.
+            parent_tool_call_id=record.tool_call_id if record is not None else None,
         )
         self._children[spawn_id] = child
         # What the argv will carry, so the id shown is the id launched — read
@@ -1901,6 +1956,10 @@ class _SubagentRuntimeImpl:
 
         def _emit(state: _StreamState) -> None:
             self._publish(child, state, on_event, spawn_model=spawn_model)
+
+        # #612 (ADR-0308): the grant decided whether this child asks its parent;
+        # the row keeps it for its argv, its router and every later floor.
+        self._route_approvals(child, grant, lambda: _emit(child.stream), child_cwd, parent_cwd)
 
         plan = SpawnPlan(
             id=spawn_id,
@@ -1917,7 +1976,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:1648-1651``) and wave 2 may start half an hour after
+            # (``chrome.py:1655-1658``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).
@@ -1929,6 +1988,7 @@ class _SubagentRuntimeImpl:
             limits=limits,
             dropped_tools=computed.dropped,
             resumes=resume.target.first_key if resume is not None else None,
+            asks_parent=child.asks_parent,
         )
         # #123 — what a later tighten compares against (ADR-0306 §6.2).
         child.granted_mode = plan.permission_mode
@@ -1979,6 +2039,9 @@ class _SubagentRuntimeImpl:
                 plan = dataclasses.replace(plan, session_path=receipt.child.path)
                 child.session_id = receipt.child.session_id
                 child.session_rel = receipt.child.rel
+                # #612 (contract r5 §4.1): the host learns the child's session now,
+                # not at its next line — a silent child may print none for a while.
+                self._publish_identity(child)
             # ``channel`` is declared optional because ``None`` is the documented
             # request for the default (``__post_init__`` builds a
             # ``PrintChannel``), so it is never ``None`` here — unless something
@@ -1996,6 +2059,8 @@ class _SubagentRuntimeImpl:
             # existed, the receipt's session, and the written paths resolved
             # against the child's directory. Synchronous and total.
             result = self._with_run_facts(result, child=child, receipt=receipt, plan=plan)
+            # #612 — what the terminal ``aelix_child`` frame reads its end off.
+            child.envelope = result
             # Left for the call BEFORE the append: a cancel that lands inside
             # the append still has this envelope to report (D14).
             _leave_envelope(record, result)
@@ -2018,6 +2083,7 @@ class _SubagentRuntimeImpl:
                         else self._unsettled_records(receipt, child, failure)
                     )
                     if closing is None and isinstance(failure, asyncio.CancelledError):
+                        child.cancelled = True  # #612: the parent's cancel, not a stop
                         # THE CANCELLED SPAWN'S ENVELOPE (ADR-0276 D14), built
                         # from the live stream — priced one line up — with NO
                         # ``await``, and before the shielded append: a second
@@ -2041,9 +2107,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:283``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:288``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:2288-2294``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:2344-2350``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2059,7 +2125,7 @@ class _SubagentRuntimeImpl:
                 # ``error`` / ``stopped`` is left exactly as it was.
                 if child.state not in _TERMINAL_STATES:
                     child.state = "error"
-                self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+                self._publish(child, child.stream, on_event, spawn_model=spawn_model, final=True)
 
     async def _close_records(
         self,
@@ -2253,6 +2319,7 @@ class _SubagentRuntimeImpl:
             return
         result = self._cancelled_envelope(child=child, receipt=receipt, plan=plan)
         if result is not None:
+            child.envelope = result  # #612: the terminal frame's end, outcome and reason
             _leave_envelope(record, result)
 
     def _cancelled_envelope(
@@ -2364,6 +2431,27 @@ class _SubagentRuntimeImpl:
             return None
         return level if isinstance(level, str) and level in VALID_THINKING_LEVELS else None
 
+    def _route_approvals(
+        self, child: RunningChild, grant: SpawnGrant, publish: Callable[[], None], cwd: str, parent_cwd: str
+    ) -> None:
+        """Fix the grant's channel on the row and give a row that asks its router (#612, ADR-0308).
+
+        The router asks this host's arbiter (``host.decide_for_child``), feeds the
+        build's hub (:attr:`events`) and republishes the row's snapshot when its
+        note changes. A method of its own so ``_run`` (baseline-listed) gains no branch.
+        """
+
+        child.asks_parent = bool(getattr(grant, "asks_parent", False))
+        if child.asks_parent:
+            child.approvals = ChildApprovals(
+                child,
+                decide=self.host.decide_for_child,
+                hub=self.events,
+                publish=publish,
+                cwd=cwd,
+                parent_cwd=parent_cwd,
+            )
+
     def _publish(
         self,
         child: RunningChild,
@@ -2371,14 +2459,20 @@ class _SubagentRuntimeImpl:
         on_event: Callable[[SubagentProgress], None] | None,
         *,
         spawn_model: str | None = None,
+        final: bool = False,
     ) -> None:
-        """Fan one progress snapshot out to both taps.
+        """Fan one progress snapshot out to both taps, and to the build's event hub.
 
         Both, never one or the other: ``on_event`` is the per-spawn callback the
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
         containment ``EventBus`` itself applies (``extensions/api.py:332-338``).
+
+        The third tap (#612, ADR-0307) is :attr:`events`: the snapshot and the
+        tool transitions the reducer recorded since the last one
+        (:meth:`_feed_events`). ``final`` marks the row's last publish, in
+        ``_run``'s ``finally``: the hub's terminal frame carries the end.
         """
 
         stuck = stuck_of(state.fingerprints)
@@ -2392,13 +2486,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:1116-1117``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:1125-1126``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:1205-1207``) — authoritative, because it
+            # ``message_end`` (``stream.py:1233-1235``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -2422,6 +2516,8 @@ class _SubagentRuntimeImpl:
             # fingerprints, never from ``activity``; and whether a wrap-up is in.
             stuck=stuck,
             wrapping_up=child.wrap_up is not None,
+            # #612 (ADR-0308): the row's approval request, as its router says it.
+            approval=child.approval_note,
         )
         _nudge_once(child, stuck)
         for tap in (on_event, self.host.on_progress):
@@ -2429,6 +2525,42 @@ class _SubagentRuntimeImpl:
                 continue
             with contextlib.suppress(Exception):
                 tap(progress)
+        self._feed_events(child, state, progress, final=final)
+
+    def _publish_identity(self, child: RunningChild) -> None:
+        """Feed the hub alone, for a change of the row's identity made outside a snapshot (#612).
+
+        The receipt naming the child session, a Ctrl+B move naming its job
+        (contract r5 §4.1): the hub's ``state`` frame goes out now, and the other
+        taps see no extra snapshot.
+        """
+
+        self._feed_events(child, child.stream, None)
+
+    def _feed_events(
+        self,
+        child: RunningChild,
+        state: _StreamState,
+        progress: SubagentProgress | None,
+        *,
+        final: bool = False,
+    ) -> None:
+        """Drain the reducer's tool transitions into :attr:`events` with ``progress``. Never raises.
+
+        Drained whether or not a hub is bound, so a runtime without one holds none.
+        """
+
+        transitions = tuple(state.transitions)
+        state.transitions.clear()
+        hub = self.events
+        if hub is None:
+            return
+        try:
+            hub.publish(
+                self, child, progress, transitions, terminal=_terminal_facts(child) if final else None
+            )
+        except Exception:  # noqa: BLE001 — a host's view never costs a delegation
+            logger.debug("the child-event hub raised for %s", child.id, exc_info=True)
 
 
 CLEANUP_BOUND = 10.0
@@ -2565,6 +2697,15 @@ def _door_refusal(child: RunningChild | None, *, note: bool = True) -> str | Non
     return None
 
 
+def _asks_parent(host: SubagentHost) -> bool:
+    """``host.asks_parent()``, false when it cannot answer (#612): the conservative direction."""
+
+    try:
+        return bool(host.asks_parent())
+    except Exception:  # noqa: BLE001 — a host that cannot say has no one to ask
+        return False
+
+
 def _nudge_once(child: RunningChild, stuck: str | None) -> None:
     """The one stuck nudge through the inbox (ADR-0306 §5.3): once per row, never a kill.
 
@@ -2598,15 +2739,39 @@ def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMo
     return min(mode, floor, key=posture_rank)
 
 
+def _terminal_facts(child: RunningChild) -> dict[str, Any]:
+    """The terminal ``aelix_child`` frame's ``end``, ``outcome``, ``reason`` and ``note`` (#612, contract r5 §4.3).
+
+    From the envelope ``_run`` built (:attr:`RunningChild.envelope`), with the
+    precedence :func:`~aelix_agents.envelope.child_end` keeps; a run that left
+    none ends by what happened to it, its other three ``None``.
+    """
+
+    result = child.envelope
+    return {
+        "end": child_end(
+            result,
+            stopped=child.stopped,
+            cancelled=child.cancelled,
+            wrap_up_consumed=wrap_up_consumed(child.wrap_up, child.stream),
+        ),
+        "outcome": getattr(result, "status", None),
+        "reason": getattr(result, "reason", None),
+        "note": getattr(result, "note", None),
+    }
+
+
 def _record_wrap_up(runtime: _SubagentRuntimeImpl, child: RunningChild, request: WrapUp | None) -> None:
     """Record a wrap-up on the row and on its stream state, and publish the mark; ``None`` takes both back.
 
-    Taken back only for a request that was ``not_sent`` (fix round 1, N1): the
+    Taken back for a request that was ``not_sent`` (fix round 1, N1): the
     wire answers that before it writes or suspends, so the child read nothing,
     no message was reduced in between and ``wrap_up_read`` is still down. A row
     left recorded refused the next request "already requested", kept the
     panel's "wrapping up", and had its envelope say a wrap-up "never reached
-    the model" about a line that was never sent.
+    the model" about a line that was never sent. And for one cancelled before
+    the final steer's write began (#612 fix round 1, V-F1): the only line
+    written was the approval's ``cancel``, which carries no wrap-up.
     """
 
     child.wrap_up, child.stream.wrap_up_head = request, None if request is None else request.head

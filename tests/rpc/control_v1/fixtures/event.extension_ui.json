@@ -970,6 +970,729 @@
           }
         }
       }
+    },
+    {
+      "name": "childApproval asks for a delegated agent's call",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true,
+            "childApprovals": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "ask"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "child",
+              "tool",
+              "choices"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "childApproval",
+                "enum": [
+                  "childApproval"
+                ],
+                "open": true
+              },
+              "title": {
+                "type": "string",
+                "pattern": "^reviewer agent sub-asks asks"
+              },
+              "child": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "cwd",
+                  "epoch"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-asks"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "jobId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "epoch": {
+                    "type": "string"
+                  }
+                }
+              },
+              "tool": {
+                "type": "object",
+                "required": [
+                  "callId",
+                  "name",
+                  "kind",
+                  "args"
+                ],
+                "properties": {
+                  "callId": {
+                    "type": "string",
+                    "const": "call-ask"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "bash",
+                    "enum": [
+                      "bash",
+                      "edit",
+                      "other",
+                      "write"
+                    ],
+                    "open": true
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "command"
+                    ],
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "const": "make"
+                      }
+                    }
+                  }
+                }
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label",
+                    "kind"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "enum": [
+                        "no",
+                        "yes",
+                        "yes_session"
+                      ],
+                      "open": true
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "allow_always",
+                        "allow_once",
+                        "reject_once"
+                      ]
+                    }
+                  }
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "no"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes_session"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "reply": {
+            "value": "yes"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "const": "ran: make"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a cancelled childApproval refuses the call",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true,
+            "childApprovals": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "ask"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "child",
+              "tool",
+              "choices"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "childApproval",
+                "enum": [
+                  "childApproval"
+                ],
+                "open": true
+              },
+              "title": {
+                "type": "string",
+                "pattern": "^reviewer agent sub-asks asks"
+              },
+              "child": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "cwd",
+                  "epoch"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-asks"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "jobId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "epoch": {
+                    "type": "string"
+                  }
+                }
+              },
+              "tool": {
+                "type": "object",
+                "required": [
+                  "callId",
+                  "name",
+                  "kind",
+                  "args"
+                ],
+                "properties": {
+                  "callId": {
+                    "type": "string",
+                    "const": "call-ask"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "bash",
+                    "enum": [
+                      "bash",
+                      "edit",
+                      "other",
+                      "write"
+                    ],
+                    "open": true
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "command"
+                    ],
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "const": "make"
+                      }
+                    }
+                  }
+                }
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label",
+                    "kind"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "enum": [
+                        "no",
+                        "yes",
+                        "yes_session"
+                      ],
+                      "open": true
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "allow_always",
+                        "allow_once",
+                        "reject_once"
+                      ]
+                    }
+                  }
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "no"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes_session"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "reply": {
+            "cancelled": true
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "const": "refused: cancel (the host cancelled the request)"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a label is not a choice",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true,
+            "childApprovals": true
+          }
+        }
+      ],
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "ask"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "method",
+              "title",
+              "child",
+              "tool",
+              "choices"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "childApproval",
+                "enum": [
+                  "childApproval"
+                ],
+                "open": true
+              },
+              "title": {
+                "type": "string",
+                "pattern": "^reviewer agent sub-asks asks"
+              },
+              "child": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "cwd",
+                  "epoch"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-asks"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "jobId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "epoch": {
+                    "type": "string"
+                  }
+                }
+              },
+              "tool": {
+                "type": "object",
+                "required": [
+                  "callId",
+                  "name",
+                  "kind",
+                  "args"
+                ],
+                "properties": {
+                  "callId": {
+                    "type": "string",
+                    "const": "call-ask"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "bash",
+                    "enum": [
+                      "bash",
+                      "edit",
+                      "other",
+                      "write"
+                    ],
+                    "open": true
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "command"
+                    ],
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "const": "make"
+                      }
+                    }
+                  }
+                }
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label",
+                    "kind"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "enum": [
+                        "no",
+                        "yes",
+                        "yes_session"
+                      ],
+                      "open": true
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "allow_always",
+                        "allow_once",
+                        "reject_once"
+                      ]
+                    }
+                  }
+                },
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "no"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "const": "yes_session"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "reply": {
+            "value": "Yes"
+          }
+        }
+      ],
+      "expect": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "const": "refused: cancel (the host cancelled the request)"
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

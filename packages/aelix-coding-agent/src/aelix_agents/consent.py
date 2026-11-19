@@ -30,7 +30,7 @@ WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 from ``:1012-1049``) while ``execute()`` runs in a task per call
 (``loop.py:1059-1062``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:323``). Two modals from one batch would collide on
-``tui/chrome.py:971``'s single ``_modal`` slot — ``mount_modal`` overwrites
+``tui/chrome.py:978``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
 tool's ``execution_mode="sequential"`` are the belt and braces.
@@ -114,7 +114,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:1661``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:1682``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1736-1748``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1775-1792``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -308,6 +308,14 @@ class SpawnGrant:
     :func:`request_spawn_consent_batch` at all, so a disclosure emitted inside
     this file would be skipped on the model door — the exact door that matters.
     One producer per grant, one consumer, nothing to keep in agreement."""
+
+    asks_parent: bool = False
+    """Whether the child asks this process before each change its gate would ask
+    about (#612, ADR-0308): the clamp was taken with ``asks_parent`` (someone answers
+    approvals here — the TUI, an RPC host that opted in), and the plan, the argv
+    (``--command-inbox=2``) and every later floor follow it. Read ONCE, by whichever
+    door produced the grant, so the posture and the channel cannot disagree.
+    Trailing and defaulted: every grant before #612 is ``False``."""
 
 
 DIALOG_ROW_CHARS = 80
@@ -385,7 +393,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:741-791``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:775-825``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
@@ -921,7 +929,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:1066-1069``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:1096-1099``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The
@@ -1081,6 +1089,10 @@ def _baseline_label(clamped: PermissionMode) -> str:
 
     if clamped is PermissionMode.PLAN:
         return f"Run read-only ({clamped.value})"
+    if clamped is PermissionMode.DEFAULT:
+        # #612 (ADR-0308): a child its parent answers runs ``default`` under a
+        # ``default`` parent and asks before each change (owner Q-A).
+        return f"Run and ask before each change ({clamped.value})"
     return f"Run with the inherited posture ({clamped.value})"
 
 
@@ -1136,11 +1148,11 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
-# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:1023-1039``
+# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:1113-1129``
 # already solves this shape — ``HSplit([body, footer, options])`` with
 # the options at ``Dimension.exact(n)`` so "the security-critical deny option is
 # ALWAYS visible even when the diff body is far taller than the cap"
-# (``tui/approval_dialog.py:912-913``) — and ADR-0197 residual R3 named it as
+# (``tui/approval_dialog.py:982-983``) — and ADR-0197 residual R3 named it as
 # the mitigation for this dialog. It is not taken because ``ctx.ui.select`` is
 # product-core and P3 decision S2 sets the product-core delta for this phase at
 # ZERO. R3 stays OPEN and is restated in ADR-0199; it is the natural companion
@@ -1340,6 +1352,7 @@ async def request_spawn_consent(
     *,
     cwd: str,
     model: str | None = None,
+    asks_parent: bool = False,
 ) -> SpawnGrant:
     """Take one human decision about one spawn. Never raises, never spawns.
 
@@ -1416,7 +1429,7 @@ async def request_spawn_consent(
     # docstring: this value flips during bootstrap and again on TUI exit.
     has_ui = bool(getattr(ctx, "has_ui", False))
     clamped = child_permission_mode(
-        resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui
+        resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui, asks_parent=asks_parent
     )
 
     def _grant(
@@ -1426,6 +1439,7 @@ async def request_spawn_consent(
             profile=resolved.name,
             source_path=resolved.source_path,
             scope=resolved.scope,
+            asks_parent=asks_parent,
             mode=mode,
             widened=widened,
             consented=consented,
@@ -1541,6 +1555,7 @@ async def request_spawn_consent_batch(
     cwd: str,
     mode: SubagentMode,
     model: str | None = None,
+    asks_parent: bool = False,
 ) -> SpawnGrant:
     """ONE human decision about ONE tool call, however many children it starts.
 
@@ -1592,13 +1607,13 @@ async def request_spawn_consent_batch(
         # preview and its plural heading would be a gratuitous behaviour change
         # for the shape that is already shipped and already tested.
         return await request_spawn_consent(
-            ctx, resolved, tasks[0], parent, cwd=cwd, model=model
+            ctx, resolved, tasks[0], parent, cwd=cwd, model=model, asks_parent=asks_parent
         )
 
     # LIVE read (OC-7), exactly as the single-task door does it.
     has_ui = bool(getattr(ctx, "has_ui", False))
     clamped = child_permission_mode(
-        resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui
+        resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui, asks_parent=asks_parent
     )
 
     def _grant(
@@ -1608,6 +1623,7 @@ async def request_spawn_consent_batch(
             profile=resolved.name,
             source_path=resolved.source_path,
             scope=resolved.scope,
+            asks_parent=asks_parent,
             mode=granted,
             widened=widened,
             consented=consented,
@@ -1710,6 +1726,7 @@ async def request_resume_consent(
     parent: PermissionMode,
     *,
     model: str | None = None,
+    asks_parent: bool = False,
 ) -> SpawnGrant:
     """Take one human decision about one RESUME (#610 D10). Never raises, never spawns.
 
@@ -1744,7 +1761,7 @@ async def request_resume_consent(
     clamped = resume_clamp(
         ceiling,
         child_permission_mode(
-            resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui
+            resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui, asks_parent=asks_parent
         ),
     )
 
@@ -1755,6 +1772,7 @@ async def request_resume_consent(
             profile=resolved.name,
             source_path=resolved.source_path,
             scope=resolved.scope,
+            asks_parent=asks_parent,
             mode=mode,
             widened=widened,
             consented=consented,

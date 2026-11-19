@@ -12,6 +12,9 @@ at the end. Amended 2026-11-19 (#810, #820, #821, #822, #825, #827): a lone surr
 a job's notice, cut briefs end at a word, a kind may name its jobs by ids of its own
 (`JobIdAdapter`) and word a control on an ended job (`JobEndedControlAdapter`), and a restart
 shows the run time an outcome recorded; see the note of that date.
+Amended 2026-11-19 (#612, ADR-0307): `job` and `job_stop` are registered on RPC (and so under ACP)
+too, and a start or a Ctrl+B adoption that its owner's end overtook is refused with a `failed`
+outcome (the ended-owner epoch); see the note "(2026-11-19, ADR-0307, #612)".
 Date: 2026-11-08
 Issue: #722 (#611 slice S1b). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract), with rounds 3–5 and Codex's reviews of rounds 1, 3 and 5 beside it.
@@ -1032,3 +1035,28 @@ as its `elapsed` (`elapsed_ms` above 0; 0 is what the outcomes written with no r
 hold, and stays unknown): `/jobs <id>` read `elapsed —` for every such job, on `1c2a4a7c` too
 (Codex M5; `test_a_restart_shows_the_run_time_the_outcome_recorded` in
 `tests/agents_ext/test_moved_elapsed_821.py`).
+
+## Note (2026-11-19, ADR-0307, #612)
+
+- **RPC and ACP** (the Status block's "named so that a new app mode gets neither, so not on RPC and
+  not under ACP until #612"): owner, 2026-11-18, r2 Q4, "전부 열기 (권장)". `JobsExtension`
+  registers `job` and `job_stop` for `rpc` too, the `agent` kind's background actions and
+  `bash`'s `run_in_background` are offered there, and an unknown app mode still gets none
+  (`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`,
+  `tests/tools/test_bash_background_611.py::test_rpc_and_acp_advertise_and_accept_it_and_an_unknown_mode_does_not_612`).
+  A host learns of a waiting notice from an `aelix_notice` frame and places it with
+  `children/notices` (ADR-0307 D4, D5).
+- **The ended-owner epoch** ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7). `owner_ended` raised nothing a start already past its
+  entry could see, so a start parked in its fact append while the owner ended registered after the
+  stop's snapshot and ran for an ended session (Codex measured it, contract r5 §6.4). `JobService`
+  now keeps `_end_epoch` and `_ended_at` (one integer per owner, never emptied): `owner_ended`
+  raises the owner's epoch synchronously first, and `start` refuses at registration — no await
+  between the check and the insertion — when the service is closed or the owner's epoch rose since
+  its entry, writing the outcome fact `failed`, "the session ended before the job started", and
+  raising `JobStartRefused`. `prepare_adopted` (Ctrl+B) refuses the same pair, comparing with the
+  epoch recorded at the last `bind` (it is synchronous). `tests/jobs/test_ended_owner_epoch_612.py`:
+  a start parked while its owner with no jobs ended, one parked across `shutdown`, one parked across
+  a `/reload` of the same owner (the next one passes), and an adoption after the owner ended since
+  the bind are refused; on `567753c0` each parked start registered its job and the adoption did
+not raise (`.omc/probes/612/impl/B/onbase/c-tests.txt`); a guard, an owner ended after the start
+registered stops its job, passes on both.

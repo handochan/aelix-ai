@@ -297,8 +297,10 @@ async def test_with_the_shipped_gate_the_tool_offers_the_background_actions(tmp_
         activation.install_service(None)
 
 
-async def test_an_rpc_host_refuses_the_background_actions_until_612(tmp_path: Path, jobs_on: Any) -> None:
-    """Jobs on, an RPC host: the tool is the pre-#611 one and the kind is not registered (#612)."""
+async def test_a_host_that_answers_no_keeps_the_pre_611_tool(tmp_path: Path, jobs_on: Any) -> None:
+    """Jobs on, a host whose ``background_host`` says no (an embedder's; no CLI host since #612):
+    the tool is the pre-#611 one and the kind is not registered. The CLI's RPC launch carries
+    the actions (``tests/cli/test_job_tools_builtin_779.py``, the RPC row)."""
 
     rig = await _rig(tmp_path, background_host=lambda: False)
     assert rig.tool.parameters == AGENT_TOOL_PARAMETERS

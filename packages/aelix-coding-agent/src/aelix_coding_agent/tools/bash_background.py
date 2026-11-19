@@ -16,9 +16,10 @@ call runs as it did before #611.
 
 WHERE IT RUNS (Codex #14). Only on a local backend, and only on a host that says
 so: the CLI hands the tool a fail-closed ``background_host`` (true for the TUI,
-``-p`` and json, false for RPC — and ACP, which drives aelix over RPC — until
-#612), the same way delegation learns it. A tool built with no such option, or
-with a remote ``operations`` backend, offers nothing and refuses the call.
+``-p``, json and RPC — and so ACP, which drives aelix over RPC — since #612;
+an unknown mode is false), the same way delegation learns it. A tool built
+with no such option, or with a remote ``operations`` backend, offers nothing
+and refuses the call.
 
 THE OUTPUT. The command's stdout and stderr go, as raw bytes, to a file of its
 own, ``<tempdir>/aelix-jobs-<user>/<16 hex>.log``, in a 0700 directory checked
@@ -200,8 +201,8 @@ _LEFT_RUNNING = (
 
 REFUSED_HERE = (
     "bash: run_in_background is not available here: this host does not run background "
-    "commands (RPC and ACP until #612, a remote shell, or a tool built without the "
-    "host's say). Run the command without it."
+    "commands (a remote shell, or a tool built without the host's say). Run the "
+    "command without it."
 )
 NUL_REFUSED = "bash: the command contains a NUL byte, which no shell can be given. Remove it."
 TRAILING_AMPERSAND = (

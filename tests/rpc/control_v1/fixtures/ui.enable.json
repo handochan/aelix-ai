@@ -12,6 +12,11 @@
       "type": "boolean",
       "required": false,
       "absent": "dialogs off"
+    },
+    "childApprovals": {
+      "type": "boolean",
+      "required": false,
+      "absent": "off"
     }
   },
   "consumers": [
@@ -133,6 +138,153 @@
         ],
         "properties": {
           "enabled": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "turns child approvals on",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "enabled": true,
+        "childApprovals": true
+      },
+      "sensitive": {
+        "childApprovals": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "childApprovals"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "childApprovals": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "child approvals need dialogs on",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "enabled": false,
+        "childApprovals": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "childApprovals"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": false
+          },
+          "childApprovals": {
+            "type": "boolean",
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "name": "absent leaves child approvals off",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "enabled": true
+      },
+      "before": [
+        {
+          "method": "ui/enable",
+          "params": {
+            "enabled": true,
+            "childApprovals": true
+          }
+        }
+      ],
+      "check": "child_approvals_unbound",
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "not": {
+          "required": [
+            "childApprovals"
+          ]
+        }
+      }
+    },
+    {
+      "name": "a host with no delegated agents answers false",
+      "since": "#612",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "enabled": true,
+        "childApprovals": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "childApprovals"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "childApprovals": {
+            "type": "boolean",
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn does not refuse childApprovals",
+      "since": "#612",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "enabled": true,
+        "childApprovals": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "childApprovals"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true
+          },
+          "childApprovals": {
             "type": "boolean",
             "const": true
           }

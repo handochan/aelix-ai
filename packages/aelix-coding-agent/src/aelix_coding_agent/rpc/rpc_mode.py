@@ -2167,6 +2167,8 @@ async def run_rpc_mode(
     agent_service: Any = None,
     extension_errors: Any = None,
     selections: Any = None,
+    jobs: Any = None,
+    permissions: Any = None,
 ) -> None:
     """Pi parity: ``rpc-mode.ts:runRpcMode`` (lines 50-492).
 
@@ -2213,6 +2215,10 @@ async def run_rpc_mode(
         install_signal_handlers: Set False in tests to skip the
             SIGTERM/SIGHUP wiring (the test harness uses asyncio cancel
             instead).
+        jobs: The process's job service (#612): ``children/notices`` and the
+            ``aelix_notice`` wake. ``None`` where the host built none.
+        permissions: The process's ``PermissionExtension`` (#612, ADR-0308):
+            the approval back-channel ``ui/enable.childApprovals`` binds.
     """
 
     # Pi takeOverStdout — pre-redirect the real stdout fd to stderr so
@@ -2294,7 +2300,8 @@ async def run_rpc_mode(
     from aelix_coding_agent.rpc.control import RpcControlPlane, control_error_message
     control = RpcControlPlane(runtime_host, permission_posture=permission_posture,
                               settings_manager=settings_manager, auth_storage=auth_storage,
-                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output, selections=selections)
+                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output, selections=selections,
+                              jobs=jobs, permissions=permissions)
 
     # === Event pipe ===========================================================
     # Pi parity: session.subscribe((event) => output(event)). The Aelix
@@ -2490,6 +2497,9 @@ async def run_rpc_mode(
                     )
                 else:
                     try:
+                        # #612 — a classic session swap settles the children's
+                        # interventions first, as a control transition does.
+                        await control.settle_classic(payload.get("type"))
                         response = await _handle_command(capture.harness, payload, dispatch)
                     finally:
                         if counted:
@@ -2573,6 +2583,11 @@ async def run_rpc_mode(
             if pending_command_tasks:
                 await asyncio.gather(*pending_command_tasks, return_exceptions=True)
     finally:
+        # #612 (contract r5 §3.4; Codex r4-2 9): every way out cancels the
+        # children's interventions — a ``run_rpc_mode`` cancelled before its main
+        # loop's call too. Idempotent: it sets ``closing``, closes the dialogs,
+        # cancels.
+        control.begin_shutdown()
         pump_task.cancel()
         with contextlib.suppress(BaseException):
             await pump_task
@@ -2584,7 +2599,9 @@ async def run_rpc_mode(
         # Sprint 6h₄b (P-303): the LIVE unsubscribe handle lives on the
         # capture cell — rebinds replace it each time.
         capture.unsubscribe()
-        control.unbind_progress()
+        # #612 fix round 1 (Codex C-M4): every channel but the children's ends
+        # here; that one ends after the disposal below (``control.retire``).
+        control.unbind_progress(children=False)
         await control.mcp.close()
         # Restore signal handlers.
         if install_signal_handlers:
@@ -2609,8 +2626,14 @@ async def run_rpc_mode(
         # ``rpc-mode.ts`` end-of-run teardown). Sprint 6h₄b routes
         # through :meth:`AgentSessionRuntime.dispose` which fires
         # ``beforeSessionInvalidate`` then disposes the LIVE harness.
-        with contextlib.suppress(Exception):
-            await runtime_host.dispose()
+        try:
+            with contextlib.suppress(Exception):
+                await runtime_host.dispose()
+        finally:
+            # The disposal's ``session_shutdown`` stopped the children; their terminal
+            # ``aelix_child`` frames went out above. Now the subscription ends and the
+            # controls are retired.
+            control.retire()
         # Neither stdin arm needs teardown. On POSIX asyncio closes the pipe
         # transport when the reader hits EOF. On Windows (#107) the pump
         # thread is parked in a blocking ``readline`` that nothing can

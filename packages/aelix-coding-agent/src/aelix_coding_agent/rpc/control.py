@@ -26,6 +26,7 @@ Lifecycle rules (#594):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -44,6 +45,14 @@ from aelix_coding_agent.core.resource_filter import validate_entries
 from aelix_coding_agent.extensions.command_dispatch import (
     CommandDispatchService,
     CommandSurfaceBindings,
+)
+from aelix_coding_agent.rpc.control_children import (
+    NO_DELEGATED_AGENTS,
+    SESSION_CHANGE_IN_PROGRESS,
+    SETTLE_GRACE_SECONDS,
+    Intervention,
+    children_call,
+    intervene,
 )
 from aelix_coding_agent.rpc.control_mcp import RpcMcpController
 from aelix_coding_agent.rpc.control_ui import RpcCommandUI
@@ -100,6 +109,9 @@ READ_ONLY_METHODS = frozenset(
         "agents/list",
         "agents/show",
         "selections/list",
+        # #612 (ADR-0307): a host's view of the delegated children, lock-free.
+        "children/list",
+        "children/events",
     }
 )
 MUTATING_METHODS = frozenset(
@@ -118,12 +130,23 @@ MUTATING_METHODS = frozenset(
         "agents/run",
         "sessions/branch",
         "selections/set",
+        # #612 (owner Q4, 2026-11-18): the host's wake — one notice turn.
+        "children/notices",
     }
 )
 # Running operations that undo themselves when cancelled: a command handler and a
-# delegation are interrupted where they stand, a login abandons its flow, and an
-# MCP configuration rolls back to the previous lease.
-CANCELLABLE_METHODS = frozenset({"commands/run", "agents/run", "auth/login", "mcp/configure"})
+# delegation are interrupted where they stand, a login abandons its flow, an
+# MCP configuration rolls back to the previous lease, and a notice turn ends as
+# a cancelled turn does.
+CANCELLABLE_METHODS = frozenset(
+    {"commands/run", "agents/run", "auth/login", "mcp/configure", "children/notices"}
+)
+# #612 (ADR-0307, contract r5 §3.4): a host's interventions on a running child.
+# Admitted BEFORE the mutation lock — they are answered while ``agents/run`` holds
+# it — but fenced against every session change, bound to the harness generation
+# that admitted them, and settled when a change begins. Not ``_Operation``s:
+# ``commands/cancel {}`` cancels "the running one", and an intervention is not it.
+CONCURRENT_METHODS = frozenset({"children/steer", "children/wrap_up", "children/stop"})
 # Session lifecycle transitions: never interrupted half-way (a reload cancelled
 # between disposing the old harness and installing the new one leaves a disposed
 # harness live).
@@ -238,6 +261,8 @@ class RpcControlPlane:
         extension_errors: Any = None,
         emit: Any = None,
         selections: Mapping[str, Any] | None = None,
+        jobs: Any = None,
+        permissions: Any = None,
     ) -> None:
         self.runtime = runtime_host
         self.posture = permission_posture
@@ -259,6 +284,20 @@ class RpcControlPlane:
         self.transitioning = 0
         self.classic_swapping = 0
         self.closing = False
+        # #612 (ADR-0307): the process's job service (``children/notices``, the
+        # ``aelix_notice`` wake) and its permission extension (the approval
+        # back-channel, ADR-0308), each ``None`` where the host has none.
+        self.jobs = jobs
+        self.permissions = permissions
+        #: The admitted ``CONCURRENT_METHODS`` requests still running (contract r5 §3.4).
+        self.interventions: list[Intervention] = []
+        #: Raised at every harness binding; an intervention keeps the one that admitted it.
+        self.generation = 0
+        #: This generation's ``SubagentControls`` (the seam's optional ``controls``), or ``None``.
+        self.controls: Any = None
+        #: Its hub subscription, kept apart from :attr:`subscriptions` so that it can
+        #: outlive them at the host's end (:meth:`retire`).
+        self._child_subscription: Callable[[], None] | None = None
         self.bind_progress(self.harness)
 
     @property
@@ -276,6 +315,8 @@ class RpcControlPlane:
             return self.cancel(params)
         if method in READ_ONLY_METHODS:
             return await self._dispatch(method, params)
+        if method in CONCURRENT_METHODS:
+            return await self._concurrent(method, params)
         if method not in MUTATING_METHODS:
             raise ValueError(f"Unsupported runtime control method: {method}")
         if self.closing:
@@ -315,9 +356,19 @@ class RpcControlPlane:
             )
         self.transitioning += 1
         try:
-            return await _finish_uncancelled(start())
+            return await _finish_uncancelled(self._settled_then(start))
         finally:
             self.transitioning -= 1
+
+    async def _settled_then(self, start: Callable[[], Awaitable[_T]]) -> _T:
+        """#612 — the children's interventions of the outgoing harness end first, then ``start``.
+
+        One shielded step (fix round 1, Codex C-M2): a ``commands/cancel`` answered
+        ``deferred`` that lands while the settle waits must not drop the replacement.
+        """
+
+        await self.settle_interventions()
+        return await start()
 
     def _require_quiescent(self) -> None:
         if self.classic_inflight:
@@ -357,6 +408,7 @@ class RpcControlPlane:
 
         self.closing = True
         self.ui.close()
+        self._cancel_interventions("shutdown")
         for operation in list(self.operations):
             task = operation.task
             if task is None or task.done():
@@ -395,6 +447,67 @@ class RpcControlPlane:
         if command_type in CLASSIC_SWAPS:
             self.classic_swapping = max(0, self.classic_swapping - 1)
 
+    # === Children's interventions (#612, ADR-0307; contract r5 §3.4) ============
+
+    async def _concurrent(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Admit one ``CONCURRENT_METHODS`` request: lock-free, fenced, bound to this generation.
+
+        Refused while the host shuts down or any session change runs — a control
+        lifecycle method (``transitioning``) or a classic swap
+        (``classic_swapping``). Admitted, it calls only the controls it captured
+        here, and :meth:`settle_interventions` can end it.
+        """
+
+        if self.closing:
+            raise ValueError("The RPC host is shutting down")
+        if self.transitioning or self.classic_swapping:
+            raise ValueError(SESSION_CHANGE_IN_PROGRESS)
+        controls = self.controls
+        if controls is None:
+            raise ValueError(NO_DELEGATED_AGENTS)
+        record = Intervention(method, asyncio.current_task(), self.generation, controls)
+        self.interventions.append(record)
+        try:
+            return await intervene(record, params)
+        finally:
+            self.interventions.remove(record)
+
+    def _cancel_interventions(self, why: str) -> list[asyncio.Task[Any]]:
+        """Cancel every admitted intervention; each answers by its stage (``why`` names the cause)."""
+
+        cancelled: list[asyncio.Task[Any]] = []
+        for record in list(self.interventions):
+            task = record.task
+            if task is None or task.done():
+                continue
+            record.why = record.why or why
+            task.cancel()
+            cancelled.append(task)
+        return cancelled
+
+    async def settle_interventions(self) -> None:
+        """A session change begins: cancel the interventions in flight and wait for them, at most 1 s.
+
+        Fencing, not retirement: the controls stay this generation's until a new
+        harness binds (:meth:`bind_progress`), so a change that is vetoed or fails
+        admits again on the same generation.
+        """
+
+        cancelled = self._cancel_interventions("session")
+        if cancelled:
+            await asyncio.wait(cancelled, timeout=SETTLE_GRACE_SECONDS)
+
+    async def settle_classic(self, command_type: object) -> None:
+        """:meth:`settle_interventions` before a classic command that replaces the session runs.
+
+        ``command_type`` is the client's raw ``type``: anything not a string is no
+        swap, and is answered ``parse`` by the dispatcher (fix round 1, Codex C-M5:
+        an unhashable one raised ``TypeError`` here and lost its reply).
+        """
+
+        if isinstance(command_type, str) and command_type in CLASSIC_SWAPS:
+            await self.settle_interventions()
+
     # === Methods ==============================================================
 
     def capabilities(self) -> dict[str, Any]:
@@ -423,6 +536,18 @@ class RpcControlPlane:
             methods.append("agents/run")
         if self.selections:
             methods += ["selections/list", "selections/set"]
+        # #612 (contract r5 §3.5): each half on its own service — jobs with the
+        # agents off list ``children/notices`` alone.
+        if self.controls is not None:
+            methods += [
+                "children/list",
+                "children/events",
+                "children/steer",
+                "children/wrap_up",
+                "children/stop",
+            ]
+        if self.jobs is not None:
+            methods.append("children/notices")
         model = self.harness.current_model
         return {
             "version": 1,
@@ -440,9 +565,6 @@ class RpcControlPlane:
         family = self._families().get(method.partition("/")[0])
         if family is not None:
             return await family(method, params)
-        if method == "ui/enable":
-            self.ui.enabled = params.get("enabled") is True and not self.closing
-            return {"enabled": self.ui.enabled}
         if method == "permissions/evaluate":
             return self.evaluate_permission(params)
         if method == "mcp/status":
@@ -802,6 +924,7 @@ class RpcControlPlane:
 
     def bind_progress(self, harness: Any) -> None:
         self.unbind_progress()
+        self._bind_children(harness)
         runtime = getattr(harness, "runtime", None)
         bus = getattr(runtime, "event_bus", None)
         if bus is None:
@@ -830,10 +953,73 @@ class RpcControlPlane:
 
             self.subscriptions.append(bus.on(channel, receive))
 
-    def unbind_progress(self) -> None:
+    def unbind_progress(self, *, children: bool = True) -> None:
+        """End every event subscription; with ``children=False``, all but the children's (:meth:`retire`)."""
+
         for unsubscribe in self.subscriptions:
             unsubscribe()
         self.subscriptions.clear()
+        if children:
+            self.unbind_children()
+
+    def unbind_children(self) -> None:
+        """End the children's hub subscription (:meth:`_bind_children`); idempotent."""
+
+        unsubscribe, self._child_subscription = self._child_subscription, None
+        if unsubscribe is not None:
+            unsubscribe()
+
+    def retire(self) -> None:
+        """The host is gone and the build disposed: end the children's subscription, retire the controls.
+
+        ``run_rpc_mode``'s last step (#612 fix round 1, Codex C-M4). Until here the
+        children's subscription outlived the other channels (``unbind_progress(children=False)``), so
+        the terminal frames the disposal's ``session_shutdown`` publishes reach a
+        host that half-closed its input and still reads.
+        """
+
+        self.unbind_children()
+        controls = self.controls
+        if controls is not None:
+            with contextlib.suppress(Exception):
+                controls.close()
+
+    def _bind_children(self, harness: Any) -> None:
+        """A harness binds (#612, contract r5 §3.4, §4.5): a new generation, its controls and its notices.
+
+        The OLD generation's controls are retired here, at the rebind, never at a
+        fence: ``close()`` refuses their interventions from now on, and the old
+        hub's subscription has just ended (:meth:`unbind_progress`) — after the
+        teardown it saw, whose frames (the terminal states of the children it
+        stopped) reached the host. Not a fourth bus channel: the hub is
+        subscribed through the seam, so ``aelix_subagent``'s three stay three.
+
+        The notice inbox is subscribed when the host has a job service, and
+        PRIMED: notices already pending (a startup restores them before this
+        listener exists) raise one ``aelix_notice`` at once.
+        """
+
+        previous = self.controls
+        self.generation += 1
+        runtime = getattr(harness, "runtime", None)
+        controls = getattr(getattr(runtime, "subagents", None), "controls", None)
+        self.controls = controls
+        if previous is not None and previous is not controls:
+            with contextlib.suppress(Exception):
+                previous.close()
+        if controls is not None:
+            self._child_subscription = controls.subscribe(self._emit_child)
+        if self.jobs is not None and getattr(harness, "notices_enabled", False) is True:
+            self.subscriptions.append(harness.add_notice_listener(self._on_notice))
+            if getattr(harness, "pending_notices", 0):
+                self._on_notice("queued")
+
+    def _emit_child(self, event: str, data: dict[str, Any]) -> None:
+        self.emit({"type": "aelix_child", "event": event, "data": data})
+
+    def _on_notice(self, change: str) -> None:
+        if change == "queued":
+            self.emit({"type": "aelix_notice", "event": "queued", "data": {}})
 
     async def agent_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "agents/run":
@@ -1044,7 +1230,57 @@ class RpcControlPlane:
             "auth": self.auth_action,
             "agents": self.agent_action,
             "selections": self.selection_action,
+            "children": self.children_action,
+            "ui": self.ui_action,
         }
+
+    async def ui_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """``ui/enable`` (ADR-0275), and since #612 its ``childApprovals`` (ADR-0308).
+
+        ``{enabled: true, childApprovals: true}`` makes this host the one who answers
+        a delegated child's approval request: the process's ``PermissionExtension``
+        gets this plane's ``childApproval`` dialog as its ``child_approver``, so a
+        child spawned from now on under a ``default`` parent runs ``default`` and
+        asks (owner Q-A). Absent, ``false``, ``enabled`` not ``true``, or no
+        delegation seam on the bound runtime: nothing is bound, and an earlier
+        binding of this plane's is taken back with the requests it has open
+        (each answered "no one can answer approvals here"). The result carries
+        ``childApprovals`` only when the request did, so ``ui/enable`` without it
+        answers as it did in v1.
+        """
+
+        if method != "ui/enable":
+            raise ValueError(f"Unsupported runtime control method: {method}")
+        self.ui.enabled = params.get("enabled") is True and not self.closing
+        bound = self._bind_child_approvals(params.get("childApprovals") is True)
+        result: dict[str, Any] = {"enabled": self.ui.enabled}
+        if "childApprovals" in params:
+            result["childApprovals"] = bound
+        return result
+
+    def _bind_child_approvals(self, wanted: bool) -> bool:
+        """Bind (or take back) this plane's dialog as the child approver; whether it is bound."""
+
+        permissions = self.permissions
+        if permissions is None:
+            return False
+        bound = wanted and self.ui.enabled and self.controls is not None
+        mine = self.ui.child_approval
+        if bound:
+            permissions.child_approver = mine
+        elif getattr(permissions, "child_approver", None) == mine:
+            permissions.child_approver = None
+            self.ui.withdraw_child_approvals()  # its open requests too (fix round 1, P-L3)
+        return bound
+
+    async def children_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """``children/list``, ``children/events`` and ``children/notices`` (#612, ADR-0307).
+
+        The three ``CONCURRENT_METHODS`` never come here: :meth:`handle` admits
+        them before the lock (:meth:`_concurrent`).
+        """
+
+        return await children_call(self, method, params)
 
     async def selection_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """``selections/list`` and ``selections/set`` (ADR-0305), when this host serves a kind."""

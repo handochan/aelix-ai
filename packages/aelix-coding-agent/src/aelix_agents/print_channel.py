@@ -102,7 +102,11 @@ from aelix_coding_agent.agents.resolver import (
 )
 from aelix_coding_agent.agents.sendable import unencodable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
-from aelix_coding_agent.cli.args import COMMAND_INBOX_FLAG, COMMAND_INBOX_VERSION
+from aelix_coding_agent.cli.args import (
+    COMMAND_INBOX_APPROVALS,
+    COMMAND_INBOX_FLAG,
+    COMMAND_INBOX_VERSION,
+)
 from aelix_coding_agent.jobs.contract import JOB_INTERNAL_ENV
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
@@ -112,6 +116,7 @@ from aelix_coding_agent.subagent_contract import (
 )
 from aelix_coding_agent.tools import ALL_TOOL_NAMES, launch_ledger
 
+from aelix_agents.child_approvals import APPROVAL_PREFIX, withdraw_approval
 from aelix_agents.child_session import RESUME_CWD_GONE, ChildLimits, ResumeRefused
 from aelix_agents.command_wire import CommandWire, close_wire, wrap_up_consumed
 from aelix_agents.consent import contains_control_chars
@@ -390,6 +395,29 @@ class RunningChild:
     :attr:`granted_mode` ranks below this once its inbox is attached was
     tightened while it had no process, and is sent that mode then
     (:func:`tighten_late`)."""
+    parent_tool_call_id: str | None = None
+    """The ``agent`` call that started this row (``SpawnRecordMeta.tool_call_id``),
+    or ``None`` (``/agents run``, RPC ``agents/run``): a host nests the child's
+    events under that call (#612, contract r5 §4.1)."""
+    envelope: Any = field(default=None, repr=False, compare=False)
+    """The run's :class:`SubagentResult` once ``runtime._run`` has it — the
+    channel's, or the one built for a cancel — which the terminal ``aelix_child``
+    frame reads its ``end``, ``outcome``, ``reason`` and ``note`` off (#612).
+    ``None`` for a run that left none."""
+    cancelled: bool = False
+    """The run ended on a cancel of its spawn (the parent's turn), not a stop (#612)."""
+    asks_parent: bool = False
+    """The row asks its parent before each change its gate would ask about (#612,
+    ADR-0308): launched with ``--command-inbox=2``, clamped and tightened to the
+    ``asks_parent`` column (``posture.child_permission_mode``). Fixed at the plan
+    (``SpawnPlan.asks_parent``): a host that withdraws its approver later leaves the
+    child asking and the arbiter answering ``cancel``."""
+    approvals: Any = field(default=None, repr=False, compare=False)
+    """The row's :class:`~aelix_agents.child_approvals.ChildApprovals` when it asks
+    its parent, else ``None``. The row's, like :attr:`wire`: a Ctrl+B'd run carries it."""
+    approval_note: str | None = None
+    """What the row's approval request is doing, on one line, for the progress
+    snapshot (``SubagentProgress.approval``); set by the router."""
 
 
 @dataclass(frozen=True)
@@ -475,6 +503,12 @@ class SpawnPlan:
     """The first run's spawn key when this plan RESUMES that child (#610), else
     ``None``. A channel that cannot honour recorded limits refuses such a plan
     (``rpc_channel``)."""
+    asks_parent: bool = False
+    """The child asks its parent before each change its gate would ask about (#612,
+    ADR-0308): its argv carries ``--command-inbox=2``. The grant's
+    (``SpawnGrant.asks_parent``), read once when the spawn was planned: true where
+    this process has someone to answer (the TUI, an RPC host that opted in), false
+    on every ``-p`` and json run, whose children's argv stays byte for byte."""
 
 
 @dataclass(frozen=True)
@@ -993,6 +1027,7 @@ def build_child_argv(
     model_registry: Any | None = None,
     model_pin: ModelPin | None = None,
     inbox: bool = False,
+    asks_parent: bool = False,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -1075,8 +1110,13 @@ def build_child_argv(
         # #123 (ADR-0306): the command inbox on the child's stdin, versioned. A
         # flag and not an env var: an env var is inherited by the child's own
         # ``bash`` and helpers and would have to be popped as ``JOB_INTERNAL_ENV``
-        # is (the lead's call). ``PrintChannel`` passes it for every row.
-        *([f"{COMMAND_INBOX_FLAG}={COMMAND_INBOX_VERSION}"] if inbox else []),
+        # is (the lead's call). ``PrintChannel`` passes it for every row; version 2
+        # for a row that asks its parent (#612, ADR-0308), with no fallback (K10).
+        *(
+            [f"{COMMAND_INBOX_FLAG}={COMMAND_INBOX_APPROVALS if asks_parent else COMMAND_INBOX_VERSION}"]
+            if inbox
+            else []
+        ),
     ]
 
 
@@ -1204,6 +1244,7 @@ async def _pump_stdout(
     state: _StreamState,
     on_line: Callable[[_StreamState], None] | None,
     wire: Any = None,
+    approvals: Any = None,
 ) -> None:
     """Chunk → lines → reduced state, for the child's whole lifetime.
 
@@ -1234,9 +1275,16 @@ async def _pump_stdout(
     such lines). Everything else is folded as before, the ``user`` message a
     consumed steer makes included, which the reducer keeps for the wire to
     read (``_StreamState.user_texts``; the wrap-up's reading is latched, ``wrap_up_read``).
+
+    ``approvals`` (#612, ADR-0308) is the row's router when it asks its parent: an
+    ``approval_request`` line goes to it before the wire and the reducer, and the
+    router starts a task — this pump never waits for an answer.
     """
 
     def _reduce(line: str) -> None:
+        if approvals is not None and line.startswith(APPROVAL_PREFIX):
+            approvals.offer(line)
+            return
         if wire is not None and wire.take(line):
             return
         # Contract violation, not flow control — hence swallow-and-continue
@@ -1474,6 +1522,9 @@ async def abort_child(
     remove.
     """
 
+    # #612 (ADR-0308): an approval request open on the row is withdrawn first —
+    # or, its answer's write begun, recorded as that decision — then the kill.
+    withdraw_approval(child)
     child.stopped = True
     child.eager_kill = True
     # A reaper ``_reap`` already started is in its grace and is reused below;
@@ -2029,6 +2080,11 @@ def _end_of_run(row: RunningChild, grace: float) -> None:
     removes the directory once it has read what may be kept there.
     """
 
+    # #612 (ADR-0308) — an approval request still open is withdrawn before the
+    # wire closes, as a stop withdraws it, and the router answers nothing more.
+    if row.approvals is not None:
+        with contextlib.suppress(Exception):
+            row.approvals.close()
     # #123 — the parent's end of the inbox, every row: a request still open is
     # failed ``unknown`` ("the agent ended before answering"), never "not
     # delivered", and the write end closes after the reap (ADR-0306 §3.3).
@@ -2317,6 +2373,8 @@ class PrintChannel:
                 # #123 — every row gets the inbox: all of ADR-0296's doors
                 # reach this method, and the wire is the row's (ADR-0306 §2.3).
                 inbox=True,
+                # #612 (ADR-0308): version 2 for a row that asks its parent.
+                **({"asks_parent": True} if plan.asks_parent else {}),
             )
             from aelix_coding_agent.builtin.permission import pass_loader_roots_to_child
             env = pass_loader_roots_to_child(self._env_builder(profile), plan.parent_cwd)
@@ -2363,7 +2421,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2608-2625``) nor child
+                    # neither parent (``tui/shell.py:2654-2671``) nor child
                     # (``modes/print_mode.py:263-322``) installs a SIGINT
                     # handler to convert that into a result.
                     #
@@ -2491,7 +2549,7 @@ class PrintChannel:
 
         pumps = asyncio.gather(
             asyncio.ensure_future(
-                _pump_stdout(proc.stdout, assembler, state, on_stream, row.wire)
+                _pump_stdout(proc.stdout, assembler, state, on_stream, row.wire, row.approvals)
             ),
             asyncio.ensure_future(_pump_stderr(proc.stderr, ring)),
         )
@@ -2731,6 +2789,7 @@ class PrintChannel:
         cancellation hole between the kill and the shielded final wait.
         """
 
+        withdraw_approval(row)  # #612 (ADR-0308): before the kill
         row.eager_kill = True
         # A reaper already in its grace read ``eager_kill`` when it started; the
         # event is what ends that grace now, with the snapshot it took before

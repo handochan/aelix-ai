@@ -23,6 +23,55 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **An RPC host sees and steers the delegated agents, and a delegated agent asks you before a
+  change (#612, ADR-0307, ADR-0308).** Background jobs are on over the CLI's RPC host
+  (`--mode rpc`), as in the TUI (owner, 2026-11-18: "전부 열기 (권장)"): the model can spawn a
+  background agent, run a background `bash` command and use `job` and `job_stop`
+  (`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`).
+  Under ACP the model gets them only with a native that has #612 (aelix-acp `16d6555b` records
+  `e19ab55e`), and reads a background result at its next prompt; the WebSocket host has none.
+  A host gets six `aelix_control` methods: `children/list` and `children/events`, answered during
+  a turn; `children/steer`, `children/wrap_up` and `children/stop`, answered while `agents/run`
+  holds the session, refused while a session change runs, and ended `unknown` when one begins — but
+  a wrap-up still waiting for the agent to take the `cancel` of its open approval request is
+  refused "… before this request was sent" and can be asked again, though the agent may already
+  have read that `cancel`, "the agent was asked to wrap up"; and `children/notices`, one
+  notice turn that says how much is still `remaining`. It also gets two
+  event types: `aelix_child` (an agent's `state` with its `end`, `tool_start` and `tool_end` with
+  exactly one end per start, `text`, `stuck`, `wrap_up` and `approval`, each with `epoch` and
+  `seq` and replayable within one session build; every string capped, and the largest event
+  measured with every string at its cap is under 5 KiB) and `aelix_notice` (a notice waits for
+  the model) (`tests/rpc/test_children_family_612.py`, `tests/agents_ext/test_child_events_612.py`).
+  `aelix_subagent` is unchanged, and aelix-acp `16d6555b` drops both new types: ACP needs an
+  aelix-acp change to show them. An idle RPC `permissions/set` now reaches running background
+  agents, and a job start that a session end overtook is refused, "the session ended before the
+  job started", with a `failed` outcome written, as is one that a `session_shutdown` hook begins
+  after the session's jobs were stopped, which writes nothing (`tests/jobs/test_ended_owner_epoch_612.py`).
+  A job an extension starts from a `session_start` handler after a `/reload`, `/new`, `/resume`
+  or `/fork` (RPC `resources/reload`, `new_session`, `switch_session`, `fork`) runs for the session
+  that is starting: the job service is bound to the new session before those handlers run, where
+  it had been bound after them and gave a `/new`, `/resume` or `/fork` job to the session that had
+  ended (a `/reload` keeps its session, so its job already ran there)
+  (`tests/cli/test_session_start_job_owner_612.py`, measured over RPC).
+  In the TUI, and on an RPC host that sends `ui/enable {"enabled": true, "childApprovals": true}`,
+  a `default` parent's delegated agent runs in `default` mode and asks before each change its gate
+  would ask about — a file change, a shell command, an MCP or extension tool (owner, 2026-11-18:
+  "default로 돌며 물어봄 (권장)"). The TUI's approval dialog names who asks (`<profile> agent <id>
+  asks`, its background job, its folder) and offers Yes / Yes, for this agent / No; a background
+  agent's question opens it at once and starts no turn (owner, 2026-11-18: "즉시 대화창 (권장)")
+  unless another dialog, consent question or panel is open, behind which it waits, and for its
+  first half second it takes no Enter, `y`, `s`, `1` or `2` — nor for half a second after it is
+  back on top when a dialog that opened over it closes, so the second Enter of a double press on
+  that dialog no longer approves the agent's call (`tests/tui/test_child_approval_dialog_612.py`;
+  live at 120x40 with an extension's select over it: `.omc/probes/612/fix-r2/live/`); `/jobs` shows `awaiting approval`; a switch to
+  `plan` or a wrap-up answers for you; an RPC host is sent an `extension_ui_request` with
+  `method: "childApproval"`, and turning `childApprovals` off ends the questions still open
+  (`tests/rpc/test_child_approvals_rpc_612.py`). `-p` and json are unchanged:
+  a delegated agent's argv is byte for byte the same, and a `default` parent's child is still
+  read-only (`tests/agents_ext/test_approval_clamp_612.py`). Run live with `openai/gpt-4.1-mini`
+  through OpenRouter in the TUI at 120x40 and against a real `--mode rpc` parent, on macOS only
+  (`.omc/probes/612/impl/C/live/`); not run under ACP. Guides: `agent-approvals.md`, and "Over RPC
+  and ACP" in `background-jobs.md`.
 - **An RPC host can list and turn on and off skills, tools, extensions, agent profiles and
   `mcp.json` servers, the way the TUI panels do (#624, ADR-0305).** `selections/list {kind}`
   returns a panel's rows (saved, applied, pending, the lock and, for every row that cannot

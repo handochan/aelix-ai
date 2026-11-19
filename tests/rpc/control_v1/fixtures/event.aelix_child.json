@@ -1,0 +1,2768 @@
+{
+  "contract": "control-v1",
+  "event": "aelix_child",
+  "frameType": "aelix_child",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "frame": {
+    "type": "object",
+    "required": [
+      "type",
+      "event",
+      "data"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "aelix_child"
+      },
+      "event": {
+        "type": "string",
+        "enum": [
+          "state",
+          "tool_start",
+          "tool_end",
+          "text",
+          "stuck",
+          "wrap_up",
+          "approval"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "id",
+          "seq",
+          "epoch"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "running",
+              "starting",
+              "stopped"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "completed",
+              "failed",
+              "stopped",
+              "wrapped_up"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aborted",
+              "declined",
+              "error",
+              "ok",
+              "timeout",
+              null
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "failed",
+              "no_result",
+              "ok"
+            ]
+          },
+          "stuck": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "error loop",
+              "repeat",
+              null
+            ],
+            "open": true
+          },
+          "step": {
+            "type": "string",
+            "enum": [
+              "allowed",
+              "asked",
+              "denied",
+              "withdrawn"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "state: the first snapshot, running, then the end with how it ended",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:states"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-states"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "starting"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-states"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp",
+                  "end",
+                  "outcome",
+                  "reason",
+                  "note"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-states"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "done"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  },
+                  "end": {
+                    "type": "string",
+                    "const": "completed"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "const": "ok"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool_start",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:tools"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool_end, ok and failed",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:tools"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 4
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-tools"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 5
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "failed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "text",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:text"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-text"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "text"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "text"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-text"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string",
+                    "const": "half way"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "stuck",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:stuck"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-0"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-0"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 4
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 5
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 6
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 7
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 8
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-3"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 9
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-3"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "stuck"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "stuck"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-stuck"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 10
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "stuck": {
+                    "type": "string",
+                    "const": "repeat",
+                    "enum": [
+                      "error loop",
+                      "repeat",
+                      null
+                    ],
+                    "open": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "wrap_up",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:wrap_up"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-wrap"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "wrap_up"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "requested"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-wrap"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "requested": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a wrap-up taken back",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:wrap_up_taken_back"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-wrap-back"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "wrap_up"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "requested"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-wrap-back"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "requested": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "wrap_up"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "requested"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-wrap-back"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "requested": {
+                    "type": "boolean",
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "approval: asked, then allowed",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:approval"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-approval"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-approval"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-a"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "approval"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "toolName",
+                  "step"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-approval"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-a"
+                  },
+                  "toolName": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "step": {
+                    "type": "string",
+                    "const": "asked"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "approval"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "toolName",
+                  "step"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-approval"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 4
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-a"
+                  },
+                  "toolName": {
+                    "type": "string",
+                    "const": "bash"
+                  },
+                  "step": {
+                    "type": "string",
+                    "const": "allowed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a state frame on a receipt allocation",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:receipt"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-receipt"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-receipt"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "const": "child-session-1"
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "no_result for a call trimmed at the run's end",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "trigger": {
+        "method": "agents/run",
+        "params": {
+          "name": "reviewer",
+          "task": "script:five_open"
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "running"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 2
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-0"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 3
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 4
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 5
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-3"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_start"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "name",
+                  "args"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 6
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-4"
+                  },
+                  "name": {
+                    "type": "string",
+                    "const": "read"
+                  },
+                  "args": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 7
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-0"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "no_result"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 8
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-1"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "no_result"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 9
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-2"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "no_result"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 10
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-3"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "no_result"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "tool_end"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "callId",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 11
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "callId": {
+                    "type": "string",
+                    "const": "call-4"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "no_result"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event",
+              "data"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "const": "state"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "seq",
+                  "epoch",
+                  "state",
+                  "profile",
+                  "sessionId",
+                  "jobId",
+                  "parentToolCallId",
+                  "background",
+                  "wrappingUp",
+                  "end",
+                  "outcome",
+                  "reason",
+                  "note"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "const": "sub-five"
+                  },
+                  "seq": {
+                    "type": "integer",
+                    "const": 12
+                  },
+                  "epoch": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "done"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "const": "reviewer"
+                  },
+                  "sessionId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "jobId": {
+                    "type": "null",
+                    "const": null
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "const": "call-parent-1"
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "wrappingUp": {
+                    "type": "boolean"
+                  },
+                  "end": {
+                    "type": "string",
+                    "const": "completed"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "const": "ok"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -490,6 +490,52 @@ def reload_success_line(
     return head if more_below else f"{head} · no changes"
 
 
+def _child_approver(
+    run_dialog: Callable[[Any], Awaitable[Any]],
+    *,
+    until_no_modal: Callable[[], Awaitable[None]] | None = None,
+) -> Callable[[Any], Awaitable[tuple[str, str | None]]]:
+    """The TUI's answer to a delegated child's approval request (#612, ADR-0308; owner Q-B).
+
+    The same dialog this process's own calls get (``run_dialog``, the bound
+    ``approval_runner``), with the child named in a header row and "Yes, for
+    this agent" for the grant the child keeps. Called by the arbiter under the
+    gate's lock, so it waits behind this process's own approval prompt; and it
+    opens only when no modal at all is open (``until_no_modal``, the chrome's:
+    any dialog, panel or consent prompt), otherwise it waits behind it (fix
+    round 1, V-F3; the lead's call) — while it waits, this process's own
+    prompts wait behind it on the lock. With none open it opens at once, starts
+    no turn and wakes no model. Esc answers ``cancel`` for that child only.
+    """
+
+    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision, ApprovalRequest
+
+    words = {
+        ApprovalDecision.YES: "yes",
+        ApprovalDecision.YES_SESSION: "yes_session",
+        ApprovalDecision.NO: "no",
+        ApprovalDecision.NO_REASON: "no",
+        ApprovalDecision.REDIRECT: "redirect",
+    }
+
+    async def ask(request: Any) -> tuple[str, str | None]:
+        if until_no_modal is not None:
+            await until_no_modal()
+        decision = await run_dialog(
+            ApprovalRequest(
+                tool_name=request.tool_name,
+                args=request.args,
+                kind=request.kind,
+                yes_label=request.yes_label,
+                redirect_label=request.redirect_label,
+                requester=request.requester,
+            )
+        )
+        return (words.get(decision, "cancel"), None)
+
+    return ask
+
+
 def turn_end_line(outcome: str, seconds: float, ended_at: float) -> BlankRowAbove:
     """#702 — the dim line a typed turn leaves when it is over, a blank row above it (#732).
 
@@ -2391,7 +2437,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:5213``) always passes one, so this is
+            # production caller (``entry.py:5238``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3912,6 +3958,7 @@ async def run_tui(
             )
 
         permission_ext.approval_runner = _run_approval
+        permission_ext.child_approver = _child_approver(_run_approval, until_no_modal=out_chrome.until_no_modal)
 
     # Sprint 6h₁₅ (ADR-0123) — Alt+Up restores queued steer + follow-up messages
     # back into the editor (pi app.message.dequeue parity). The harness has no
@@ -4673,11 +4720,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:2101``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:2111``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:2084`` already printed at startup, and one that
+    #       what ``entry.py:2094`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -5514,7 +5561,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:5104-5120 and
+            # Two audiences, discriminated exactly as entry.py:5129-5145 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

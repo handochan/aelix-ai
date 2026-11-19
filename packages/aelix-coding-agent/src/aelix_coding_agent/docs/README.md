@@ -33,9 +33,13 @@ prints one. That is why every cross-directory link here is an absolute URL —
   server states `/mcp list`, `/extension` and `aelix status` show, and how an
   extension's servers relate.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
+- [agent-approvals.md](agent-approvals.md) — when a delegated agent asks you before
+  a change: what asks, the dialog and "Yes, for this agent", the answers given for
+  you, and RPC's `childApprovals`.
 - [background-jobs.md](background-jobs.md) — work the model did not wait for: a
   background agent or `bash` command, the footer and `/jobs`, how a result comes
-  back, the `backgroundJobs` settings, and what is left when aelix is killed.
+  back, the `backgroundJobs` settings, what is left when aelix is killed, and what
+  an RPC host sees and steers (`children/*`).
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
   (tools, slash commands, hooks, flags), and turn one off in `/extension`.
 - [extension-providers.md](extension-providers.md) — a model provider from an

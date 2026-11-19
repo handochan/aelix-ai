@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1648``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1694``,
 # ``rpc/rpc_mode.py:1645``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -106,6 +106,12 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         # below rejects both the leading underscore and the euphemism, and the
         # escape it chose instead (make it the extension's number) has no
         # meaning for a constant no extension participates in.
+        "APPROVAL_REQUEST_MAX_BYTES",  # modes/print_inbox.py — #612 (ADR-0308, contract
+        # r5 §7.1): a FRAMING bound on one line of the child's approval protocol (1 MiB),
+        # kept under ``aelix_agents.stream.MAX_LINE_BYTES`` so the parent never drops a
+        # request silently. It is the CHILD's wire, in product core because print mode
+        # writes it; it bounds no delegation (not concurrency, time, task size or budget),
+        # and no subagent runtime chooses it. Amended deliberately.
         "MAX_PROMPT_FILE_BYTES",  # cli/system_prompt_files.py — #287's regular
         # local prompt-file read bound, shared with explicit prompt-file flags.
         # It cannot limit delegated tasks or spawn behavior; it prevents a
@@ -207,6 +213,9 @@ _SEAM_CONSTANTS = frozenset(
         "SUBAGENT_START",
         "SUBAGENT_TOOL",
         "SUBAGENT_END",
+        # #612 (ADR-0307): the ``aelix_child`` event's closed value set, a wire
+        # vocabulary like the three channel names above — not a cap.
+        "CHILD_EVENTS",
     }
 )
 

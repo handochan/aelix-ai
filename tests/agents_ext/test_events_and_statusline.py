@@ -2,7 +2,7 @@
 
 Two consumers, one tap. The event bus is what a P4 dashboard, a Web UI or a
 third-party extension subscribes to; the statusline is the one height-1 row the
-user actually sees (``tui/chrome.py:1828-1851`` — multi-row panels are
+user actually sees (``tui/chrome.py:1835-1858`` — multi-row panels are
 ``set_widget``, which is P4).
 
 THREE MEASURED HAZARDS ARE PINNED HERE, and each is invisible in production:
@@ -408,7 +408,7 @@ def test_a_hostile_model_string_cannot_break_the_status_row() -> None:
 # THE MEASURED GAP (live QA, main @ 9ed0dde). ``format_status_row`` renders the
 # model when ``SubagentProgress.model`` is set and omits it when it is not — both
 # correct — but that field was fed ONLY from ``_StreamState.model``, which
-# ``stream.py:1205-1207`` assigns from the child's first ``message_end``. A short
+# ``stream.py:1233-1235`` assigns from the child's first ``message_end``. A short
 # delegation returns before one arrives, so the field was ``None`` for the whole
 # VISIBLE LIFE of the row and the live statusline read ``agent explorer · 1s``
 # with no model at all — the feature shipped and was invisible in practice.

@@ -31,6 +31,22 @@ string is dropped and nothing is run (F8):
   never ``CYCLE_ORDER``); a widen is refused by the child itself, so the
   rpc-channel docstring's reasoning holds on both ends.
 
+Version 2 (``--command-inbox=2``, #612, ADR-0308) adds the approval back-channel:
+
+* the child writes ``{"type": "approval_request", "id": "ap-<n>", "toolCallId",
+  "toolName", "kind", "args", "yesLabel", "redirectLabel"}`` on stdout, through
+  print mode's writer and in stream order, where its gate would have asked a
+  human (:class:`ParentApprovals`, which the gate's ``ask_parent`` is bound to),
+  and waits — under the gate's lock, so one request per child is open — with no
+  bound of its own: each host's bound is the parent's;
+* ``approval {request, decision, reason?}`` → the open request ``request`` ends
+  with ``decision`` ∈ ``yes``/``yes_session``/``no``/``cancel``/``redirect`` and
+  the parent's ``reason`` (a sentence, or ``null``); answered ``{"taken": true}``,
+  or refused "no approval 'ap-9' is pending" for an id that is not open.
+
+A version-1 inbox answers ``approval`` as an unknown command, and its gate never
+asks (``-p``/json parents launch ``=1``: their children keep today's verdicts).
+
 Nothing else: no ``prompt`` (one process = one turn + steer), no ``abort`` (a stop
 is today's kill, ADR-0291; the cooperative abort rewrites the transcript,
 ADR-0286 §6), no ``get_state``.
@@ -83,6 +99,102 @@ from aelix_coding_agent.rpc._jsonl import JsonlLineReader
 RESPONSE_TYPE = "response"
 """The ``type`` of every reply; the parent's pump routes on it before the reducer."""
 
+APPROVAL_REQUEST_TYPE = "approval_request"
+"""The ``type`` of a version-2 child's question to its parent (#612, ADR-0308); the
+parent's pump diverts it before the reducer and the wire's correlator."""
+
+APPROVAL_REQUEST_MAX_BYTES = 1024 * 1024
+"""The largest ``approval_request`` line a child writes (#612, ADR-0308): 1 MiB. A
+change whose line would be larger is blocked unsent (:class:`ApprovalTooLarge`),
+because the parent's stream reader drops a line over ``aelix_agents.stream``'s
+``MAX_LINE_BYTES`` (4 MiB) without a word, and a request it never read would hold
+the child at its gate. A guard test keeps this under that bound."""
+
+APPROVAL_DECISIONS = frozenset({"yes", "yes_session", "no", "cancel", "redirect"})
+"""What a parent may answer (``ApprovalDecision``'s values but ``no_reason``)."""
+
+
+class ApprovalTooLarge(Exception):
+    """The request line would exceed :data:`APPROVAL_REQUEST_MAX_BYTES`; nothing was written."""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(f"{size} bytes")
+        self.size = size
+
+
+class ParentApprovals:
+    """The child's half of the approval back-channel (#612, ADR-0308): ask, then wait for the answer.
+
+    Built by ``cli/entry.py`` for a ``--command-inbox=2`` launch; the gate's
+    ``PermissionExtension.ask_parent`` is :meth:`ask`, and the inbox's ``approval``
+    command is :meth:`answer`. The writer is print mode's, bound when the inbox is
+    served (:func:`serve_inbox`), so the request reaches stdout in stream order.
+    """
+
+    def __init__(self) -> None:
+        self._write: Writer | None = None
+        self._open: dict[str, asyncio.Future[tuple[str, str | None]]] = {}
+        self._count = 0
+
+    def bind(self, write: Writer) -> None:
+        self._write = write
+
+    async def ask(self, request: Any, tool_call_id: str) -> tuple[str, str | None]:
+        """Write one ``approval_request`` for ``request`` and wait for its decision and reason.
+
+        Raises :class:`ApprovalTooLarge` (nothing written) when the line is over the
+        bound, and :class:`RuntimeError` when there is no writer yet; the gate
+        blocks the call either way. A cancel (the turn's abort, the inbox's EOF)
+        ends the wait and the request with it.
+        """
+
+        write = self._write
+        if write is None:
+            raise RuntimeError("no parent to ask")
+        self._count += 1
+        request_id = f"ap-{self._count}"
+        line = (
+            json.dumps(
+                {
+                    "type": APPROVAL_REQUEST_TYPE,
+                    "id": request_id,
+                    "toolCallId": tool_call_id,
+                    "toolName": request.tool_name,
+                    "kind": request.kind,
+                    "args": request.args,
+                    "yesLabel": request.yes_label,
+                    "redirectLabel": request.redirect_label,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+            + "\n"
+        )
+        size = len(line.encode("utf-8", errors="surrogatepass"))
+        if size > APPROVAL_REQUEST_MAX_BYTES:
+            raise ApprovalTooLarge(size)
+        future: asyncio.Future[tuple[str, str | None]] = asyncio.get_running_loop().create_future()
+        self._open[request_id] = future
+        try:
+            write(line)
+            return await future
+        finally:
+            self._open.pop(request_id, None)
+
+    def answer(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """The inbox's ``approval`` command: end the open request it names."""
+
+        request_id = payload.get("request")
+        future = self._open.get(request_id) if isinstance(request_id, str) else None
+        if future is None or future.done():
+            raise ValueError(f"no approval {request_id!r} is pending")
+        decision = payload.get("decision")
+        if decision not in APPROVAL_DECISIONS:
+            raise ValueError(f"{decision!r} is not an approval decision")
+        reason = payload.get("reason")
+        future.set_result((decision, reason if isinstance(reason, str) and reason else None))
+        return {"taken": True}
+
 
 @dataclass
 class CommandInbox:
@@ -101,6 +213,8 @@ class CommandInbox:
     closed its end. Set by the pump before it aborts the turn and never by
     :func:`end_inbox`; print mode reads it where the abort does not reach
     (``modes/print_mode.py``, ``_inbox_ended``)."""
+    approvals: ParentApprovals | None = None
+    """Version 2's approval back-channel (#612, ADR-0308); ``None`` on version 1."""
 
 
 Writer = Callable[[str], None]
@@ -124,6 +238,8 @@ async def end_inbox(pump: asyncio.Task[None]) -> None:
 async def _serve(runtime_host: Any, inbox: CommandInbox | None, write: Writer) -> None:
     if inbox is None:
         return
+    if inbox.approvals is not None:
+        inbox.approvals.bind(write)
     dispatches: set[asyncio.Task[None]] = set()
 
     def on_line(line: str) -> None:
@@ -277,11 +393,28 @@ async def _set_permission_mode(
     return {"mode": inbox.posture.get().value}
 
 
+async def _approval(_runtime_host: Any, inbox: CommandInbox, payload: Mapping[str, Any]) -> dict[str, Any]:
+    if inbox.approvals is None:
+        raise ValueError("unknown inbox command 'approval'")  # a version-1 inbox
+    return inbox.approvals.answer(payload)
+
+
 _HANDLERS: dict[str, Handler] = {
     "steer": _steer,
     "follow_up": _follow_up,
     "set_permission_mode": _set_permission_mode,
+    "approval": _approval,
 }
 
 
-__all__ = ["RESPONSE_TYPE", "CommandInbox", "end_inbox", "serve_inbox"]
+__all__ = [
+    "APPROVAL_DECISIONS",
+    "APPROVAL_REQUEST_MAX_BYTES",
+    "APPROVAL_REQUEST_TYPE",
+    "RESPONSE_TYPE",
+    "ApprovalTooLarge",
+    "CommandInbox",
+    "ParentApprovals",
+    "end_inbox",
+    "serve_inbox",
+]

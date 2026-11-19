@@ -916,6 +916,13 @@ class AelixChrome:
         # (width → text, or ``None``), drawn ahead of the footer line.
         self.on_modal_change: Callable[[], None] | None = None
         self.jobs_segment: Callable[[int], str | None] | None = None
+        # #612 (fix round 1, V-F3) — who waits for the modal slot to be empty
+        # (:meth:`until_no_modal`): a delegated child's approval dialog.
+        self._no_modal_waiters: list[asyncio.Future[None]] = []
+        # #612 (fix round 2, F2) — raised each time the modal on screen changes
+        # (:meth:`modal_generation`): a child's dialog holds approving keys again
+        # when it is back on top after a modal mounted over it closed.
+        self._modal_generation = 0
         # Issue #81 — pasted-text collapse. ``_paste_registry`` maps a live
         # ``[Pasted text #N +M lines]`` placeholder → its original text; the
         # placeholder is what the editor shows, and ``_expand_pastes`` substitutes
@@ -2717,17 +2724,54 @@ class AelixChrome:
         self.invalidate()
 
     def _modal_changed(self) -> None:
-        """#722 — tell the notice waker a dialog opened or closed."""
+        """#722 — tell the notice waker a dialog opened or closed; #612 — wake
+        :meth:`until_no_modal` once none is open."""
 
+        self._modal_generation += 1
+        if self._modal is None:
+            for waiter in self._no_modal_waiters:
+                if not waiter.done():
+                    waiter.set_result(None)
         callback = self.on_modal_change
         if callback is not None:
             with contextlib.suppress(Exception):  # never breaks a modal
                 callback()
 
+    def modal_generation(self) -> int:
+        """A number that changes each time the modal on screen changes — mounted over, closed, or none (#612).
+
+        A delegated child's approval dialog reads it when it is drawn: one it
+        has not been drawn at since is a dialog that was covered and is on top
+        again, not yet repainted, and it holds approving keys until it has been
+        on screen for its hold (fix round 2, F2). A modal that leaves from under
+        the one on screen changes nothing on screen, and does not change it.
+        """
+
+        return self._modal_generation
+
     def is_modal_open(self) -> bool:
         """Whether an in-flow modal is currently mounted (ADR-0159)."""
 
         return self._modal is not None
+
+    async def until_no_modal(self) -> None:
+        """Return once no in-flow modal is mounted — at once when none is (#612, V-F3).
+
+        A delegated child's approval dialog waits here behind any dialog, panel
+        or consent prompt (the issue's "열린 대화창이 없으면 즉시 열고, 있으면 그 뒤에
+        줄을 선다"; the lead's call, fix round 1). Each wake re-checks the slot, and
+        nothing awaits between the check that finds it empty and the return, so a
+        caller that mounts with no await after this mounts into an empty slot.
+        """
+
+        while self._modal is not None:
+            waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            self._no_modal_waiters.append(waiter)
+            try:
+                await waiter
+            finally:
+                with contextlib.suppress(ValueError):
+                    self._no_modal_waiters.remove(waiter)
 
     def modal_on_top(self, content: AnyContainer) -> bool:
         """Whether ``content`` — the container mounted, or the window it focuses — is the

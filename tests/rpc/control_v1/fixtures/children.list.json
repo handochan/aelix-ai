@@ -1,0 +1,738 @@
+{
+  "contract": "control-v1",
+  "method": "children/list",
+  "since": "#612",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {},
+  "consumers": [],
+  "cases": [
+    {
+      "name": "lists running, finished and not-started children",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "epoch",
+          "children"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "profile",
+                "state",
+                "end",
+                "currentTool",
+                "elapsedMs",
+                "tokens",
+                "cost",
+                "model",
+                "provider",
+                "activity",
+                "lastText",
+                "stuck",
+                "wrappingUp",
+                "approval",
+                "seq",
+                "lowSeq",
+                "sessionId",
+                "jobId",
+                "parentToolCallId",
+                "background"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "done",
+                    "error",
+                    "running",
+                    "starting",
+                    "stopped"
+                  ]
+                },
+                "end": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "stopped",
+                    "wrapped_up",
+                    null
+                  ]
+                },
+                "currentTool": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "elapsedMs": {
+                  "type": "integer"
+                },
+                "tokens": {
+                  "type": "integer"
+                },
+                "cost": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "activity": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "args",
+                      "status"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "args": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "no_result",
+                          "ok",
+                          "failed",
+                          "running"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "lastText": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stuck": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "error loop",
+                    "repeat",
+                    null
+                  ],
+                  "open": true
+                },
+                "wrappingUp": {
+                  "type": "boolean"
+                },
+                "approval": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "lowSeq": {
+                  "type": "integer"
+                },
+                "sessionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "jobId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parentToolCallId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "background": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "const": "sub-running"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "running"
+                    },
+                    "end": {
+                      "type": "null",
+                      "const": null
+                    },
+                    "activity": {
+                      "type": "array",
+                      "minItems": 2
+                    },
+                    "lastText": {
+                      "type": "string",
+                      "const": "looking at a.py"
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "const": "sub-done"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "done"
+                    },
+                    "end": {
+                      "type": "string",
+                      "const": "completed"
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "const": "sub-starting"
+                    },
+                    "state": {
+                      "type": "string",
+                      "const": "starting"
+                    },
+                    "end": {
+                      "type": "null",
+                      "const": null
+                    }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "const": "sub-job"
+                    },
+                    "background": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "jobId": {
+                      "type": "string",
+                      "const": "job-rig-1"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "lists no child when none ran",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "epoch",
+          "children"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "const": []
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn does not refuse children/list",
+      "since": "#612",
+      "rig": "turn",
+      "replay": false,
+      "params": {},
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "epoch",
+          "children"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "profile",
+                "state",
+                "end",
+                "currentTool",
+                "elapsedMs",
+                "tokens",
+                "cost",
+                "model",
+                "provider",
+                "activity",
+                "lastText",
+                "stuck",
+                "wrappingUp",
+                "approval",
+                "seq",
+                "lowSeq",
+                "sessionId",
+                "jobId",
+                "parentToolCallId",
+                "background"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "done",
+                    "error",
+                    "running",
+                    "starting",
+                    "stopped"
+                  ]
+                },
+                "end": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "stopped",
+                    "wrapped_up",
+                    null
+                  ]
+                },
+                "currentTool": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "elapsedMs": {
+                  "type": "integer"
+                },
+                "tokens": {
+                  "type": "integer"
+                },
+                "cost": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "activity": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "args",
+                      "status"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "args": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "no_result",
+                          "ok",
+                          "failed",
+                          "running"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "lastText": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stuck": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "error loop",
+                    "repeat",
+                    null
+                  ],
+                  "open": true
+                },
+                "wrappingUp": {
+                  "type": "boolean"
+                },
+                "approval": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "lowSeq": {
+                  "type": "integer"
+                },
+                "sessionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "jobId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parentToolCallId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "background": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "a child awaiting approval lists its call",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "setup": "children",
+      "data": {
+        "type": "object",
+        "required": [
+          "epoch",
+          "children"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "profile",
+                "state",
+                "end",
+                "currentTool",
+                "elapsedMs",
+                "tokens",
+                "cost",
+                "model",
+                "provider",
+                "activity",
+                "lastText",
+                "stuck",
+                "wrappingUp",
+                "approval",
+                "seq",
+                "lowSeq",
+                "sessionId",
+                "jobId",
+                "parentToolCallId",
+                "background"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "done",
+                    "error",
+                    "running",
+                    "starting",
+                    "stopped"
+                  ]
+                },
+                "end": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "stopped",
+                    "wrapped_up",
+                    null
+                  ]
+                },
+                "currentTool": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "elapsedMs": {
+                  "type": "integer"
+                },
+                "tokens": {
+                  "type": "integer"
+                },
+                "cost": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "activity": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "args",
+                      "status"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "args": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "no_result",
+                          "ok",
+                          "failed",
+                          "running"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "lastText": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stuck": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "error loop",
+                    "repeat",
+                    null
+                  ],
+                  "open": true
+                },
+                "wrappingUp": {
+                  "type": "boolean"
+                },
+                "approval": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "lowSeq": {
+                  "type": "integer"
+                },
+                "sessionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "jobId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parentToolCallId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "background": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "const": "sub-asking"
+                    },
+                    "approval": {
+                      "type": "object",
+                      "required": [
+                        "callId",
+                        "toolName"
+                      ],
+                      "properties": {
+                        "callId": {
+                          "type": "string",
+                          "const": "call-7"
+                        },
+                        "toolName": {
+                          "type": "string",
+                          "const": "bash"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a host with no delegated agents refuses children/list",
+      "since": "#612",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "no delegated agents"
+      }
+    }
+  ]
+}

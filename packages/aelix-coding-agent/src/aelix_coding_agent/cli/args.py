@@ -363,7 +363,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:748-765``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:758-775``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -420,7 +420,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1543-1586``) resolves
+    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1553-1596``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -525,8 +525,17 @@ COMMAND_INBOX_FLAG = "--command-inbox"
 """The hidden flag a delegation parent passes (#123, ADR-0306); ``=<version>``."""
 
 COMMAND_INBOX_VERSION = "1"
-"""The one inbox version this build serves. The parent renders it into the flag
-(``aelix_agents.print_channel.build_child_argv``) and the child refuses any other."""
+"""ADR-0306's inbox version. The parent renders it into the flag for a row that does
+not ask it about approvals (``aelix_agents.print_channel.build_child_argv``)."""
+
+COMMAND_INBOX_APPROVALS = "2"
+"""ADR-0306's inbox plus the approval back-channel (#612, ADR-0308): the child writes
+an ``approval_request`` line where its gate would ask, and serves ``approval``. The
+parent renders it for a row that asks it (``SpawnPlan.asks_parent``); with no
+fallback to ``1`` (K10)."""
+
+COMMAND_INBOX_VERSIONS = (COMMAND_INBOX_VERSION, COMMAND_INBOX_APPROVALS)
+"""Every inbox version this build serves; the child refuses any other at launch."""
 
 
 def _take_command_inbox(argv: list[str], parsed: Args) -> list[str]:
@@ -547,13 +556,14 @@ def _take_command_inbox(argv: list[str], parsed: Args) -> list[str]:
         if name != COMMAND_INBOX_FLAG:
             kept.append(arg)
             continue
-        if not sep or value != COMMAND_INBOX_VERSION:
+        if not sep or value not in COMMAND_INBOX_VERSIONS:
             parsed.diagnostics.append(
                 {
                     "type": "error",
                     "message": (
                         f"{COMMAND_INBOX_FLAG}={value or ''} names a command inbox "
-                        f"version this aelix does not serve; it serves {COMMAND_INBOX_VERSION}"
+                        f"version this aelix does not serve; it serves "
+                        f"{' and '.join(COMMAND_INBOX_VERSIONS)}"
                     ),
                 }
             )
@@ -774,7 +784,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:748-764): warn + drop, never
+                    # Mirrors --thinking (args.py:758-774): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -1052,8 +1062,10 @@ File arguments:
 
 
 __all__ = [
+    "COMMAND_INBOX_APPROVALS",
     "COMMAND_INBOX_FLAG",
     "COMMAND_INBOX_VERSION",
+    "COMMAND_INBOX_VERSIONS",
     "Args",
     "ModeLiteral",
     "VALID_MODES",

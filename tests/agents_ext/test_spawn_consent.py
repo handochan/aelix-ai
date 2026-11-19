@@ -1072,7 +1072,7 @@ async def test_a_decline_does_not_poison_the_next_spawn() -> None:
 async def test_concurrent_requests_are_serialized() -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:971``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:978``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn
     hangs until Ctrl+C (until #701, which stacks it; two dialogs at once stay
     wrong). The kernel already serialises the ``tool_call`` hook
@@ -1198,7 +1198,11 @@ def test_request_spawn_consent_takes_no_memo_parameter() -> None:
     # It is the OPPOSITE shape to the removed rung: it adds a fact the human is
     # told, and can only ever add one — no caller can shorten the dialog with it,
     # and nothing it carries reaches the grant.
-    assert set(params) == {"ctx", "resolved", "task", "parent", "cwd", "model"}
+    # ``asks_parent`` (#612, ADR-0308) is not the removed rung's shape either:
+    # BOTH doors pass it (the model door's ``_grant_for`` and ``/agents run``'s
+    # ``runtime.spawn``), it is fixed on the grant, and a door that omitted it
+    # would get the TIGHTER clamp (``plan``, not ``default``), never a looser one.
+    assert set(params) == {"ctx", "resolved", "task", "parent", "cwd", "model", "asks_parent"}
 
 
 def test_build_options_takes_no_remember_flag() -> None:
@@ -1247,7 +1251,7 @@ async def test_approving_one_spawn_never_suppresses_the_next(
 # earlier draft of that work re-typed THIS function's ``task`` parameter to
 # ``Sequence[str]`` instead of adding a second entry point — and ``str``
 # SATISFIES ``Sequence[str]``, so ``/agents run scout "review the auth module"``
-# (``runtime.py:1066-1071`` passes a bare ``str``) would have type-checked green
+# (``runtime.py:1096-1101`` passes a bare ``str``) would have type-checked green
 # while the renderer iterated the string: *"Delegate 23 tasks to agent 'scout'?"*
 # with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
 # typed, past the height budget, with ``Cancel`` clipped off the bottom by
@@ -1280,7 +1284,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
     """THE USER-TYPED DOOR, driven end to end — the one nothing covered.
 
     ``runtime.spawn`` passes a bare ``str`` to :func:`request_spawn_consent`
-    (``runtime.py:1066-1071``). This test renders that dialog through the real
+    (``runtime.py:1096-1101``). This test renders that dialog through the real
     runtime with a live UI and a widenable profile — the case P3's batch work had
     to leave untouched — and answers ``Cancel``, so no child process is created:
     the assertion is about what was on SCREEN, not about a spawn.
@@ -1316,7 +1320,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
 # (``tui/context.py:150-228``); and ``resolve_child_cwd``
-# (``print_channel.py:741``) validated only containment and is-a-directory,
+# (``print_channel.py:775``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a
 # wholly fabricated dialog. This door has no fit check at all, so there is

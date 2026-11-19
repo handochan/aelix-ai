@@ -373,7 +373,7 @@ async def test_an_empty_live_grant_hands_the_child_no_tools_not_every_tool(
     the obvious tidy-up reverses the fix. ``return list(...) or None``, or any
     ``if not tools: return None``, reads as harmless and is not: ``None`` on
     :attr:`SubagentHost.active_tools` means "the parent holds every built-in"
-    (``print_channel.py:414-416``), so it would hand a parent running
+    (``print_channel.py:442-444``), so it would hand a parent running
     ``--no-tools`` a child running EVERY tool. That is the fail-open hole #304
     closed, re-opened from the other end.
 
@@ -457,7 +457,7 @@ async def test_has_ui_is_true_when_the_live_context_has_a_ui_bound(
     answers ``False`` for a getter that is merely broken just as quietly as for
     one that is correctly saying "no UI". So the negatives alone cannot tell the
     two apart, and ``has_ui`` is the ONE input deciding what
-    ``approval_mode: "ask"`` clamps to (``posture.py:198-201``): stuck on
+    ``approval_mode: "ask"`` clamps to (``posture.py:211-216``): stuck on
     ``False`` it costs a human the dialog they were owed and pins their batch to
     ``PLAN``, with nothing red anywhere to say so.
 
@@ -466,7 +466,7 @@ async def test_has_ui_is_true_when_the_live_context_has_a_ui_bound(
     singleton, so any concrete binding is the real signal and a stand-in is a
     faithful one. ``tui/shell.py`` installs the real ``AelixTUIContext`` at
     run-start and re-binds it onto the new runtime after every ``/new``,
-    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:3553-3555``) — which is
+    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:3599-3601``) — which is
     why this is time-varying and why it is a getter.
     """
 

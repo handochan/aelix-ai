@@ -680,6 +680,205 @@
           }
         }
       }
+    },
+    {
+      "name": "lists the children methods with delegated agents and jobs",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/list"
+                }
+              },
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/events"
+                }
+              },
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/steer"
+                }
+              },
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/wrap_up"
+                }
+              },
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/stop"
+                }
+              },
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/notices"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "lists children/notices without delegated agents",
+      "since": "#612",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "setup": "jobs_only",
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "type": "string",
+                  "const": "children/notices"
+                }
+              }
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/list"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/events"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/steer"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/wrap_up"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/stop"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "lists no children method on a v1-only runtime",
+      "since": "#612",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/list"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/events"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/steer"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/wrap_up"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/stop"
+                  }
+                },
+                {
+                  "contains": {
+                    "type": "string",
+                    "const": "children/notices"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
     }
   ]
 }

@@ -457,6 +457,29 @@ class _StreamState:
     different ones project the same there (Codex M12). :func:`stuck_of` reads
     this and nothing else."""
 
+    transitions: deque[Transition] = field(
+        default_factory=lambda: deque(maxlen=TRANSITIONS_KEPT), repr=False
+    )
+    """Every tool call's start and end, IMMUTABLE and in stream order, for the
+    host's ``aelix_child`` events (#612, contract r5 §4.2): ``("start", call_id,
+    name, args, turn)`` and ``("end", call_id, "ok" | "failed")``, appended by
+    :func:`_open_trail_entry` / :func:`_close_trail_entry` before
+    :func:`_trim_recent` can drop the call from :attr:`recent`, whose
+    :class:`ToolCall` objects are mutable and trimmed. The sole producer
+    (``runtime._publish``) drains it into the build's event hub with each
+    snapshot. Bounded: a stream that is not drained keeps the latest
+    :data:`TRANSITIONS_KEPT`; a start lost that way is never emitted, and an end
+    lost that way is closed ``no_result`` at its turn's end, so a host still sees
+    exactly one end for every start it saw."""
+
+
+Transition = tuple[Any, ...]
+"""One entry of :attr:`_StreamState.transitions` (#612)."""
+
+TRANSITIONS_KEPT = 2048
+"""Bound on undrained transitions (#612). The producer drains after every
+reduced line, so a live row holds at most a line's worth."""
+
 
 USER_TEXT_HEAD_CHARS = 200
 """How much of a ``user`` message :attr:`_StreamState.user_texts` keeps (#123)."""
@@ -828,6 +851,9 @@ def _open_trail_entry(state: _StreamState, tool_name: str, event: dict[str, Any]
         turn=state.turn_starts,
         args_hash=_sha256(event.get("args")),
     )
+    # #612 (contract r5 §4.2): the host's record of the start, before anything
+    # below can turn the entry away or trim it.
+    state.transitions.append(("start", entry.call_id, entry.name, entry.args, entry.turn))
     if len(state.recent) < _RECENT_MAX:
         state.recent.append(entry)
         _trim_recent(state)
@@ -855,6 +881,8 @@ def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
     if not isinstance(call_id, str) or not call_id:
         return
     failed = bool(event.get("is_error"))
+    # #612 (contract r5 §4.2): the end, whether or not either record still holds its start.
+    state.transitions.append(("end", call_id, "failed" if failed else "ok"))
     matched: ToolCall | None = None
     for entry in reversed(state.recent):
         if entry.call_id == call_id:

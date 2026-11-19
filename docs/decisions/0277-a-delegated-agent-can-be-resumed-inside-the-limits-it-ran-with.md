@@ -29,6 +29,7 @@ holding either does not parse, and the runtime's own doors refuse such a task,
 instruction, `cwd` or built profile too; a chain's `{previous}` carrying either
 is made sendable (U+FFFD) instead. See `## Amendment (2026-10-31, #627)`.**
 Amended 2026-11-17 by ADR-0304 (#795, #796): a resume of a profile the session may not delegate to now has its own refusal, and D7's listing leaves such agents out (dated note at the end).
+Noted 2026-11-19 (ADR-0307, #612): #612 exposes delegated children to an RPC host and still adds no host door that resumes (owner r3 Q1); D16 and limit 8 stand (dated note at the end).
 Date: 2026-10-30
 Issue: #610 (phase 1 of the #604 delegation track). Design:
 `.omc/specs/610-design-2026-10-30.md` (rev 2), with its critique
@@ -1962,3 +1963,15 @@ those settings or that identity rule out now and ends with one count line; an un
 project profile's agent is listed as before, and with no policy in force the listing is
 byte-identical and takes no discovery
 (`tests/agents_ext/test_delegation_filter_795_796.py`, resume rows; live R4 in ADR-0304).
+
+## Note (2026-11-19, ADR-0307, #612)
+
+#612 gives an RPC host the `children/` family ([ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D4–D8): list, events, steer, wrap-up, stop
+and the notice wake. It adds **no host door that resumes**: owner, 2026-11-18, r3 Q1, "#612에서 빼기
+(권장)". D16 ("the model's `agent` tool is the only door") and limit 8 ("no human command and no
+host surface resumes") stand, and the Relates line's "#612 (resume through RPC, ACP …)" moves to a
+follow-up, `children/resume`, drafted in contract r5's Appendix A.1 and not yet filed. Until then a
+host resumes through the model: `agent(action="resume", id=<child session id>, profile=…, task=…)`,
+with the child session id from the result's `Session:` line or `children/list`'s `sessionId`.
+ADR-0307 D7 lists what "resumable" means for a child a session change or a quit stopped: the
+runtime's checks, in order, with nothing inferred from a free lock.

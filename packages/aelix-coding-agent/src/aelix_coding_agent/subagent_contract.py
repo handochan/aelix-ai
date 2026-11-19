@@ -22,6 +22,7 @@ contract never drags in the profile/discovery/resolver chain. Pinned by
 
 from __future__ import annotations
 
+import os.path
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, runtime_checkable
 
@@ -367,6 +368,175 @@ class SubagentProgress:
     is queued or consumed, and the run ends after one more model call. Additive
     + defaulted: does NOT bump :data:`CONTRACT_VERSION`."""
 
+    approval: str | None = None
+    """What the child's approval request is doing, on one line (#612, ADR-0308):
+    ``awaiting approval: <tool>`` while its parent asks a human, or why it is
+    held — an answer whose delivery is unknown, one that was not sent, a request
+    that could not be read. ``/jobs`` and its panel show it. :data:`None` with no
+    request. Additive + defaulted: does NOT bump :data:`CONTRACT_VERSION`."""
+
+
+# === What a host sees of the delegated children (#612, ADR-0307) =============
+#
+# The vocabulary of the RPC ``children/`` family and of the ``aelix_child``
+# event, declared here (not in ``aelix_agents``) so product core can type the
+# wire and the control-v1 floor can read each closed set (``CODE_VALUES``)
+# without importing the orchestration engine.
+
+ChildEnd = Literal["completed", "wrapped_up", "stopped", "cancelled", "failed"]
+"""How a delegated child's run ended, on its terminal ``aelix_child`` ``state``
+frame and its ``children/list`` row (#612, contract r5 §4.3). Closed.
+
+``completed`` — the envelope is ``ok``; ``wrapped_up`` — the ``aborted`` a
+consumed wrap-up made of a run that ended on its own; ``stopped`` — a stop door
+ran on the row; ``cancelled`` — the parent's turn was cancelled; ``failed`` —
+every other end (an error, a decline, the child's own abort, a run that left no
+envelope)."""
+
+ToolEndStatus = Literal["ok", "failed", "no_result"]
+"""``aelix_child`` ``tool_end``'s ``status``: :data:`SubagentToolStatus` less
+``running`` (#612). ``no_result`` closes a call whose end can no longer come (its
+turn or its run ended), so every emitted ``tool_start`` has exactly one end."""
+
+StuckPattern = Literal["repeat", "error loop"]
+"""The stuck patterns a child's row can carry (#123, ADR-0306 §5). OPEN on the
+wire: a later pattern is an addition, and a client shows an unknown one as text."""
+
+ApprovalStep = Literal["asked", "allowed", "denied", "withdrawn"]
+"""``aelix_child`` ``approval``'s ``step`` (#612, ADR-0308): a child's approval
+request opened, or ended with the decision sent, or was withdrawn unanswered."""
+
+DeliveryOutcome = Literal["queued", "refused", "unknown", "not_sent"]
+"""What an intervention door answers (ADR-0306 §3.3). On the RPC wire a
+``refused`` one is an error response, so ``children/steer`` and
+``children/wrap_up`` answer the other three."""
+
+CHILD_EVENTS: tuple[str, ...] = (
+    "state",
+    "tool_start",
+    "tool_end",
+    "text",
+    "stuck",
+    "wrap_up",
+    "approval",
+)
+"""``aelix_child``'s ``event`` values (#612, contract r5 §4.3). Closed: a later
+value is a change of control v1, so every kind a host may ever see is here."""
+
+
+@dataclass(frozen=True)
+class ChildApprovalRequest:
+    """One delegated child's approval request, as its parent asks a human about it (#612, ADR-0308).
+
+    Built by the bundled extension's router from the child's ``approval_request``
+    line and the row it came from; read by the parent's arbiter
+    (``PermissionExtension.decide_for_child``) and by whoever answers — the TUI's
+    dialog or an RPC host's ``childApproval`` dialog (``rpc/control_ui.py``). The
+    tool's fields are the child gate's own ``ApprovalRequest`` (``args`` whole);
+    the rest names the child, so a human knows who asks, and where it runs.
+    """
+
+    request_id: str
+    child_id: str
+    profile: str
+    tool_name: str
+    kind: str
+    args: dict[str, Any]
+    call_id: str
+    """The child's tool call id as the host's events carry it (``wire_call_id``)."""
+    yes_label: str | None = None
+    redirect_label: str | None = None
+    session_id: str | None = None
+    job_id: str | None = None
+    parent_tool_call_id: str | None = None
+    """The parent's ``agent`` call id, in the ``wire_call_id`` form ``aelix_child`` carries."""
+    background: bool = False
+    cwd: str = ""
+    """The child's working directory; commands and relative paths are judged against it."""
+    parent_cwd: str = ""
+    epoch: str | None = None
+    """The hub generation the row belongs to (ADR-0307): a host voids a dialog of an older one."""
+
+    @property
+    def elsewhere(self) -> str | None:
+        """The child's directory relative to its parent's, when the two differ; else :data:`None`."""
+
+        if not self.cwd or not self.parent_cwd or self.cwd == self.parent_cwd:
+            return None
+        try:
+            relative = os.path.relpath(self.cwd, self.parent_cwd)
+        except ValueError:  # another drive on win32
+            return self.cwd
+        return None if relative == "." else relative
+
+    @property
+    def requester(self) -> str:
+        """``<profile> agent <id> asks`` (+ `` · background job <id>``) (+ `` · in <dir>``)."""
+
+        parts = [f"{self.profile} agent {self.child_id} asks"]
+        if self.job_id:
+            parts.append(f"background job {self.job_id}")
+        elsewhere = self.elsewhere
+        if elsewhere is not None:
+            parts.append(f"in {elsewhere}")
+        return " · ".join(parts)
+
+
+@runtime_checkable
+class SubagentControls(Protocol):
+    """What an RPC host reaches of a build's delegated children (#612, ADR-0307).
+
+    An OPTIONAL member of the seam, read as ``getattr(runtime, "controls", None)``
+    off the bound :class:`SubagentRuntime`: no member is added to that Protocol,
+    so a third-party runtime that implements only it still binds and
+    :data:`CONTRACT_VERSION` does not move. The bundled ``aelix_agents`` binds one
+    per harness build (``aelix_agents.host_controls``).
+
+    Every answer is plain JSON-ready data in the wire's own words (camelCase),
+    because product core forwards it and may not import the engine. A request
+    the controls cannot serve raises :class:`ValueError` with the sentence the
+    host reads. :meth:`steer` and :meth:`wrap_up` answer a ``Delivery`` mapping
+    (``outcome``, ``phase``, ``verb``, ``ended``, ``reason``) whose ``outcome``
+    may be ``refused``; the caller decides how a refusal reaches its host.
+    """
+
+    @property
+    def epoch(self) -> str:
+        """The build's generation: a host keys every row and frame by ``(epoch, id, seq)``."""
+        ...
+
+    def list(self) -> list[dict[str, Any]]:
+        """Every live child and the ended ones still kept, as ``children/list`` rows."""
+        ...
+
+    def events(self, id: str, after_seq: int | None) -> dict[str, Any]:  # noqa: A002
+        """``children/events``' answer: the kept events after ``after_seq``."""
+        ...
+
+    async def steer(self, id: str, text: str, mode: str) -> dict[str, Any]:  # noqa: A002
+        """Write a ``steer`` or ``follow_up`` line to the child's inbox."""
+        ...
+
+    async def wrap_up(self, id: str) -> dict[str, Any]:  # noqa: A002
+        """Ask the child to finish now (the final steer).
+
+        Cancelled before the final steer's write began, it raises a
+        ``CancelledError`` whose ``not_sent`` attribute is ``True``, the request
+        taken back, so a host can answer "not sent" (#612 fix round 1, V-F1)."""
+        ...
+
+    async def stop(self, id: str) -> dict[str, Any]:  # noqa: A002
+        """Stop the child; ``{"state": …}``, the state observed when the call returns."""
+        ...
+
+    def subscribe(self, callback: Callable[[str, dict[str, Any]], None]) -> Callable[[], None]:
+        """Call ``callback(event, data)`` for every ``aelix_child`` frame; the unsubscribe."""
+        ...
+
+    def close(self) -> None:
+        """Retire: every later intervention refuses. Reads and the subscription go on."""
+        ...
+
 
 @dataclass(frozen=True)
 class ResolvedProfile:
@@ -555,6 +725,7 @@ def subagent_depth(env: dict[str, str] | Any | None = None) -> int:
 
 
 __all__ = [
+    "CHILD_EVENTS",
     "CONTRACT_VERSION",
     "DEPTH_ENV_VAR",
     "MAX_SUBAGENT_DEPTH",
@@ -562,7 +733,11 @@ __all__ = [
     "SUBAGENT_END",
     "SUBAGENT_START",
     "SUBAGENT_TOOL",
+    "ApprovalStep",
+    "ChildApprovalRequest",
+    "ChildEnd",
     "DelegationNotAllowed",
+    "DeliveryOutcome",
     "ModelDelegation",
     "ProjectScopeRefused",
     "ResolvedProfile",
@@ -574,7 +749,10 @@ __all__ = [
     "SubagentState",
     "SubagentStatus",
     "SubagentToolActivity",
+    "StuckPattern",
+    "SubagentControls",
     "SubagentToolStatus",
     "SubagentUsage",
+    "ToolEndStatus",
     "subagent_depth",
 ]

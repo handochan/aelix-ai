@@ -448,7 +448,7 @@ async def _read_piped_stdin(*, required: bool = True, inbox: bool = False) -> st
     return stripped or None
 
 
-async def _command_inbox(parsed: Args, posture: PermissionPosture) -> Any:
+async def _command_inbox(parsed: Args, posture: PermissionPosture, permissions: Any = None) -> Any:
     """The command inbox a delegation parent asked this process to serve, or :data:`None` (#123, ADR-0306).
 
     One call from ``_async_main`` for every print/json launch, so that function
@@ -459,15 +459,25 @@ async def _command_inbox(parsed: Args, posture: PermissionPosture) -> Any:
     :class:`~aelix_coding_agent.modes.print_inbox.CommandInbox` carries the
     reader and the ONE ``PermissionPosture`` the gate reads, so the child's
     ``set_permission_mode`` tightens what its own approvals consult.
+
+    Version 2 (#612, ADR-0308) adds the approval back-channel: the gate's
+    ``ask_parent`` (``permissions``, the one ``PermissionExtension``) is bound to
+    the inbox's :class:`~aelix_coding_agent.modes.print_inbox.ParentApprovals`, so
+    a call this child's gate would ask about is asked of its parent.
     """
 
     if parsed.command_inbox is None:
         return None
-    from aelix_coding_agent.modes.print_inbox import CommandInbox
+    from aelix_coding_agent.cli.args import COMMAND_INBOX_APPROVALS
+    from aelix_coding_agent.modes.print_inbox import CommandInbox, ParentApprovals
     from aelix_coding_agent.rpc.rpc_mode import _open_stdin_reader
 
     reader, pump_thread = await _open_stdin_reader()
-    return CommandInbox(reader=reader, posture=posture, pump_thread=pump_thread)
+    inbox = CommandInbox(reader=reader, posture=posture, pump_thread=pump_thread)
+    if parsed.command_inbox == COMMAND_INBOX_APPROVALS and permissions is not None:
+        inbox.approvals = ParentApprovals()
+        permissions.ask_parent = inbox.approvals.ask
+    return inbox
 
 
 async def _resolve_session_metadata(
@@ -3478,7 +3488,9 @@ async def _async_main(argv: list[str]) -> int:
             warn=lambda text: print(f"Warning: {text}", file=sys.stderr),
         )
         jobs_activation.install_service(_with_bash_kind(jobs_service))
-        jobs_ext = JobsExtension(jobs_service, tools=app_mode in ("interactive", "print", "json"))  # #779 R9: not RPC/ACP (#612)
+        # #612 (owner Q4, 2026-11-18): every host that builds the service, RPC (and
+        # ACP over it) included; the WebSocket host builds none.
+        jobs_ext = JobsExtension(jobs_service, tools=app_mode in ("interactive", "print", "json", "rpc"))
 
     # #795 (ADR-0304 D3) — the APPLIED ``agents`` lists, read at launch, by a
     # ``/reload`` build and by the /agents panel's apply; and #796 (D4) — the
@@ -3525,6 +3537,13 @@ async def _async_main(argv: list[str]) -> int:
                 # inert: the clamp would read DEFAULT, whose child mode is
                 # ``plan``, so every delegation would be silently read-only.
                 posture=permission_posture,
+                # #612 (ADR-0308) — beside the posture, the approval back-channel:
+                # whether someone here answers a child (the TUI's dialog, or an
+                # RPC host that turned child approvals on), and the arbiter. One
+                # ``PermissionExtension`` serves every rebuild, so a binding
+                # survives ``/reload``.
+                asks_parent=lambda: permission_ext.child_approver is not None,
+                decide_for_child=permission_ext.decide_for_child,
                 # The remaining three are PRE-HOOK fallbacks only: an
                 # ``ExtensionContext`` reaches the extension via HOOKS, and
                 # ``/agents run`` can be the very first thing a user types. A live
@@ -3569,9 +3588,10 @@ async def _async_main(argv: list[str]) -> int:
                 # what its ``defaultTools`` keeps off (owner decision B), read
                 # LIVE off the harness's policy: ``/tool`` and RPC move it.
                 exclude_tools=lambda: _live_child_exclusions(session_host, parsed),
-                # #611 S1c — RPC (and ACP over it) refuses the background
-                # actions until #612. Read only while background jobs are on.
-                background_host=lambda: app_mode != "rpc",
+                # #611 S1c, #612 (owner Q4, 2026-11-18) — every host carries the
+                # background actions while background jobs are on, RPC (and ACP
+                # over it) included. Read only while they are on.
+                background_host=lambda: True,
                 # #775 (ADR-0298) — Ctrl+B is the TUI's: only there is a running
                 # ``run``/``resume`` awaited through the delegate that can move it.
                 detach_host=lambda: app_mode == "interactive",
@@ -5035,12 +5055,17 @@ async def _async_main(argv: list[str]) -> int:
         start_record.clear()
         if deferred.get("harness") is rebuilt and deferred.get("created_empty"):
             await _record_session_start_model(rebuilt, created_empty=True)
-        # #722 — the rebuilt harness is the job service's now (only while jobs are on).
-        if jobs_service is not None:
-            await jobs_service.bind(rebuilt, reason=reason)
 
     runtime.set_after_session_start(_after_session_start)
     if jobs_service is not None:
+        # #722 — the rebuilt harness is the job service's now (only while jobs
+        # are on). #612 fix round 2: bound BEFORE the rebuild's ``session_start``
+        # handlers, so a job an extension starts from one runs for the session
+        # that is starting; bound after them, it was refused as the ended
+        # session's (fix round 1's entry check) or owned by it (before that).
+        runtime.set_before_session_start(
+            lambda rebuilt, reason: jobs_service.bind(rebuilt, reason=reason)
+        )
         await jobs_service.bind(runtime.harness, reason="startup")
     startup_model = harness.current_model
     # #367 Codex pass 7, C-P3 — the resolver's line describes the LAUNCH ROUTE;
@@ -5389,6 +5414,10 @@ async def _async_main(argv: list[str]) -> int:
                 agent_service=agent_service,
                 extension_errors=discovered_extension_errors,
                 selections=rpc_controls.by_kind(),
+                # #612 — the wake (``children/notices``) and the approval
+                # back-channel's permission extension (ADR-0308).
+                jobs=jobs_service,
+                permissions=permission_ext,
             )
             return 0
 
@@ -5448,7 +5477,7 @@ async def _async_main(argv: list[str]) -> int:
             **({"jobs": jobs_service} if jobs_service is not None else {}),
             # #123 — the parent's command inbox on stdin, or ``None`` (one call,
             # no branch: ``_async_main`` is baseline-listed).
-            inbox=await _command_inbox(parsed, permission_posture),
+            inbox=await _command_inbox(parsed, permission_posture, permission_ext),
         )
     finally:
         # run_print_mode already disposes the runtime, but we also dispose
@@ -6041,9 +6070,9 @@ def _ctrl_c_in_an_extension(
 def _tool_options_for(app_mode: str | None) -> dict[str, dict[str, Any]]:
     """:func:`_tool_options_from_env`, plus what the ``bash`` tool learns of its host (#760, ADR-0297).
 
-    ``background_host`` is fail-closed (Codex #14): true only for the TUI,
-    ``-p`` and json, so RPC — and ACP, which drives aelix over it — never
-    offers ``run_in_background`` until #612, and an unknown mode offers nothing.
+    ``background_host`` is fail-closed (Codex #14): true for the TUI, ``-p``,
+    json and RPC — and so ACP, which drives aelix over it (#612, owner Q4) —
+    and an unknown mode offers nothing.
     ``unattended`` is true unless a person watches the run (the TUI): there a
     background command gets no default time limit (owner OQ-B, 2026-11-10).
     Both are read through the bash tool only while background jobs are on, on
@@ -6053,7 +6082,7 @@ def _tool_options_for(app_mode: str | None) -> dict[str, dict[str, Any]]:
     options: dict[str, dict[str, Any]] = dict(_tool_options_from_env())
     options["bash"] = {
         **options.get("bash", {}),
-        "background_host": lambda: app_mode in ("interactive", "print", "json"),
+        "background_host": lambda: app_mode in ("interactive", "print", "json", "rpc"),
         "unattended": lambda: app_mode != "interactive",
     }
     return options

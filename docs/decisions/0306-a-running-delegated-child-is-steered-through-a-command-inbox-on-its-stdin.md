@@ -7,6 +7,11 @@ and ACP exposure) follows in ADR-0307 and changes nothing a host sees until it l
 Amended 2026-11-19 (#822, #826, #828, #829): a refused wrap-up names no text and `/jobs wrap` on an
 ended agent says what the model is told; plan mode's refusal in a child names its way out; what
 aelix spawns with live stdio does not read the inbox; see the note of that date.
+Amended 2026-11-19 (#612, ADR-0307, ADR-0308): a row that asks its parent is launched
+`--command-inbox=2`, whose inbox serves a fourth command (`approval`) and whose child writes
+`approval_request` lines; D8's `default` is `plan` only for a child without that channel; an idle
+RPC `permissions/set` now reaches running background children; lane B is ADR-0307 D4–D8; see the
+note "(2026-11-19, #612)".
 Date: 2026-11-18
 Issue: #123 (intervening in a running delegated child; #604 stage 3).
 Design: `.omc/specs/123-612-contract-r2-2026-11-18.md` (contract r2, Part A and §12's Lane A block),
@@ -541,3 +546,52 @@ line for the notice is `◆ background notice: <brief>`, a result's stays `◆ b
   (`tests/tools/test_run_cancellable_stdin_828.py`; ADR-0238's note of this date).
 - **Windows (#829).** `SLICE-STATUS.md` records the win32 `os.read` pump under every child's inbox
   and that the real-child inbox tests are POSIX only.
+
+## Note (2026-11-19, #612)
+
+Lane B of the two-lane contract landed as #612's lane L2: the RPC exposure is
+[ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md)
+D4–D8, and the approval back-channel
+[ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md). What
+changes here:
+
+- **D1** ("appends `--command-inbox=1` for every row"): `=1`, or `=2` for a row that asks its
+  parent (ADR-0308 D1, D3). Only those rows change: every other argv is byte for byte the base's
+  (`tests/agents_ext/test_approval_clamp_612.py::test_a_row_that_asks_is_launched_on_inbox_version_2_and_every_other_is_byte_for_byte`).
+- **D2** ("dispatches three commands … Nothing else"): a version-2 inbox dispatches a fourth,
+  `approval`, and the child writes `approval_request` lines on its stdout, which the parent's pump
+  diverts before the reducer (ADR-0308 D1, D4). A version-1 inbox answers `approval` as an unknown
+  command.
+- **D8** ("`default` is `plan` for a child"): for a child without the channel. A row that asks its
+  parent has `default` under a `default` parent, and `tighten_all` takes each row's own floor
+  (ADR-0308 D3; `tests/agents_ext/test_approval_clamp_612.py::test_tighten_all_takes_each_rows_own_floor`).
+  A tighten to `plan` answers an open approval request `no`, "the parent is in plan mode", before
+  the child's own `set_permission_mode` on the same wire (ADR-0308 D4).
+- **D8's measured RPC rows.** "An idle RPC parent has no background agent job to reach" no longer
+  holds: owner Q4 opened `spawn` on RPC (ADR-0307 D7), and an idle `permissions/set` reaches a
+  running background child, asynchronously (`tests/rpc/test_rpc_background_612.py`; in the live
+  RPC run an idle `permissions/set plan` answered a background child's open approval request `no`,
+  `.omc/probes/612/impl/C/live/rpc/approvals2-1/`). The other two rows stand:
+  `permissions/set` is refused during a turn and answered after an `agents/run`. "A tighten a host
+  can send mid-run" is not in #612 (contract r5's follow-up F6, `permissions/set {tighten: true}`).
+- **D9 and "Consequences"** ("Over RPC and ACP the agent kind is not registered (#612), so no
+  delegated agent posts one there"; "Delegation posts none there"): the kind is registered on RPC
+  now (ADR-0307 D7), so a background agent marked stuck there posts its notice, which is placed
+  ahead of the host's next prompt as before and, by reading, raises an `aelix_notice` frame like any
+  queued notice (ADR-0307 D5; not measured for this notice).
+- **"Lane A adds no RPC method, no ACP method and no event shape"** stays true of lane A; the host
+  surface is ADR-0307's `children/` family, whose `children/steer`, `children/wrap_up` and
+  `children/stop` reach this ADR's doors with `origin="user"`.
+- **`CommandWire.request`** drops its correlation entry when cancelled, and drains its write under
+  `asyncio.wait` (on Python 3.11 `asyncio.wait_for` kept a cancel that landed in the drain's last
+  turn, CPython gh-86296) — ADR-0307 D4.
+- **The inbox's bounds** carry an approval answer as they carry a steer: one `CommandWire.request`,
+  5 s write and 30 s acknowledgement; an answer that cannot be delivered does not stop the child
+  (ADR-0308 D4).
+- **D7** ("consumed, on a run that ended on its own, the envelope is `status="aborted"`"): "ended
+  on its own" means the run's own verdict is `ok`. `build_result` now weighs the wrap-up after the
+  stream, the exit code and the process layer, so a consumed wrap-up on a run whose stream ended
+  `aborted` or `error`, or that exited non-zero, keeps that verdict and its reason (#612 fix round
+  1, Codex C-M8; ADR-0307 D5). D7's taking back of a `not_sent` request also covers a wrap-up
+  cancelled while the `cancel` of an open approval request waits for its acknowledgement, before
+  the final steer was written (ADR-0307, "Where the build differs", item 2).

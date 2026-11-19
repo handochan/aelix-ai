@@ -17,7 +17,7 @@ values, and per case its request (``sends``), its ``digest`` (:func:`case_digest
 the whole case as written) and ``facts``: every execution step
 (:func:`execution_facts`: ``before``, ``during``, ``setup``, ``check``,
 ``trigger``, ``replay``, ``sensitive``), every required path with its type, and
-every type, ``const``, enum, key set, ``contains``, ``allOf``/``anyOf``/``not``
+every type, ``const``, enum, key set, ``contains``, ``allOf``/``anyOf``/``not``/``prefixItems``
 and bound the case's schemas state. A schema keyword or a case key the floor
 does not read is refused, never dropped (:data:`SCHEMA_KEYWORDS`,
 :data:`CASE_KEYS`). ``withdrawals`` records the only accepted shrinkage
@@ -108,6 +108,7 @@ SCHEMA_KEYWORDS = frozenset(
         "anyOf",
         "not",
         "propertyNames",
+        "prefixItems",
         *BOUND_KEYS,
     }
 )
@@ -248,7 +249,7 @@ def _uncaptured(node: dict[str, Any], where: str) -> None:
     for key, kind in (("properties", dict), ("items", dict), ("contains", dict), ("not", dict)):
         if key in node and not isinstance(node[key], kind):
             raise FloorError(f"{key!r} at {where} is not a schema object the floor reads")
-    for key in ("allOf", "anyOf", "required"):
+    for key in ("allOf", "anyOf", "required", "prefixItems"):
         if key in node and not isinstance(node[key], list):
             raise FloorError(f"{key!r} at {where} is not a list")
 
@@ -274,9 +275,10 @@ def schema_facts(node: Any, path: str, facts: set[str], required: bool = True) -
     client may rely on; ``reqif`` names every required member wherever it sits
     (required whenever its object is there), ``type`` every declared type, and
     ``const``, enums, ``contains``, the key set and bounds are facts wherever
-    they sit (a value present there must meet them). ``allOf``, ``anyOf`` and
-    ``not`` are kept whole, so no part of one can go without a fact going. A
-    keyword outside :data:`SCHEMA_KEYWORDS` is refused (CX-6).
+    they sit (a value present there must meet them). ``allOf``, ``anyOf``,
+    ``not`` and ``prefixItems`` (an array's ordered head, #612 fix round 1) are
+    kept whole, so no part of one can go without a fact going. A keyword
+    outside :data:`SCHEMA_KEYWORDS` is refused (CX-6).
     """
 
     if not isinstance(node, dict):
@@ -299,7 +301,7 @@ def schema_facts(node: Any, path: str, facts: set[str], required: bool = True) -
     for sub in node.get("allOf", []):
         facts.add(f"allOf {where} {_dump(sub)}")
         schema_facts(sub, path, facts, required=False)
-    for key in ("anyOf", "not"):
+    for key in ("anyOf", "not", "prefixItems"):
         if key in node:
             facts.add(f"{key} {where} {_dump(node[key])}")
     contained = node.get("contains")

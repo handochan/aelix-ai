@@ -70,7 +70,7 @@ def test_the_flag_parses_to_a_version_and_stays_out_of_help() -> None:
     assert COMMAND_INBOX_FLAG not in out.getvalue(), "hidden: a parent's request, never a user's"
 
 
-@pytest.mark.parametrize("spelling", [f"{COMMAND_INBOX_FLAG}=2", COMMAND_INBOX_FLAG, f"{COMMAND_INBOX_FLAG}="])
+@pytest.mark.parametrize("spelling", [f"{COMMAND_INBOX_FLAG}=3", COMMAND_INBOX_FLAG, f"{COMMAND_INBOX_FLAG}="])
 def test_an_unknown_inbox_version_is_an_error_diagnostic(spelling: str) -> None:
     """Refused at launch: ``_async_main`` prints every error diagnostic and returns 1."""
 
@@ -869,7 +869,8 @@ async def test_a_real_child_refuses_an_inbox_version_it_does_not_serve(tmp_path:
         cwd, env = _child_setup(tmp_path, server)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-P", "-m", "aelix_coding_agent",
-            "--mode", "json", "-p", f"{COMMAND_INBOX_FLAG}=2",
+            # ``3``: since #612 the child serves ``1`` and ``2`` (ADR-0308).
+            "--mode", "json", "-p", f"{COMMAND_INBOX_FLAG}=3",
             "--model", "mockm", "--provider", "mockp", "--no-session", "--no-extensions", "Task: x",
             cwd=str(cwd), env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

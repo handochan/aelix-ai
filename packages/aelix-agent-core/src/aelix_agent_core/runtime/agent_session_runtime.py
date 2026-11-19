@@ -160,6 +160,10 @@ CLOSING_MESSAGE = "the session is being closed"
 _SETTLES: set[asyncio.Future[None]] = set()
 
 
+async def _nothing_before_session_start(_harness: AgentHarness, _reason: str) -> None:
+    """:meth:`AgentSessionRuntime.set_before_session_start`'s callback when none is set (#612)."""
+
+
 def _settled(settle: asyncio.Future[None]) -> None:
     _SETTLES.discard(settle)
     if not settle.cancelled() and settle.exception() is not None:
@@ -335,6 +339,9 @@ class AgentSessionRuntime:
             Callable[[AgentHarness, str], Awaitable[None]] | None
         ) = None
         self._before_session_invalidate: Callable[[], None] | None = None
+        self._before_session_start: Callable[[AgentHarness, str], Awaitable[None]] = (
+            _nothing_before_session_start
+        )
         self._after_session_start: Callable[[AgentHarness, str], Awaitable[None]] | None = None
         # #137 / ADR-0244. Injected, never constructed here — the CLI takes
         # the startup lock before any runtime exists (it has to: a session
@@ -489,6 +496,27 @@ class AgentSessionRuntime:
         Pi signature is sync (``() => void``). Aelix mirrors.
         """
         self._before_session_invalidate = cb
+
+    def set_before_session_start(
+        self, cb: Callable[[AgentHarness, str], Awaitable[None]] | None
+    ) -> None:
+        """Aelix-additive (#612): a callback run before every replacement's ``session_start``.
+
+        Awaited after the rebind (:meth:`set_rebind_session`) and right before
+        the ``session_start`` emit of each ``/new``, ``/fork``, ``/resume``,
+        ``/import`` and ``/reload``, whether or not any handler is bound, with
+        the NEW harness and the replace ``reason``. A service that serves the
+        current session is handed the new one here, so what a ``session_start``
+        handler asks of it is done for the session that is starting, not for
+        the one that ended. The CLI's job service is the user: an extension's
+        job start from ``session_start`` runs under the new session's owner on
+        every replacement (#612 fix round 2; before it, the bind came after the
+        handlers, and such a start was refused or owned by the ended session).
+        A raising callback propagates, as :meth:`set_after_session_start`'s
+        does. The startup ``session_start`` is not covered, for the same reason.
+        ``None`` sets none.
+        """
+        self._before_session_start = cb or _nothing_before_session_start
 
     def set_after_session_start(
         self, cb: Callable[[AgentHarness, str], Awaitable[None]] | None
@@ -1458,6 +1486,7 @@ class AgentSessionRuntime:
 
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, reason)
+        await self._before_session_start(self._harness, reason)
 
         # P-343 — emit session_start on the NEW harness's runner. The OLD
         # runner is disposed by step 1; reading ``_harness`` here picks up
@@ -1933,6 +1962,7 @@ class AgentSessionRuntime:
             await self._rebind_session(self._harness, "reload")
         if track_phase:
             self._reload_phase = "session_start"
+        await self._before_session_start(self._harness, "reload")
 
         # 9. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
         #    was disposed in step 4). pi :2407.
