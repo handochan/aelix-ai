@@ -1094,8 +1094,8 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
 ) -> None:
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
-    ``_host_posture()`` is a live getter (``extension.py:746-752``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:1511``), and baked into
+    ``_host_posture()`` is a live getter (``extension.py:810-816``) but it is read
+    once per call, inside ``_grant_for`` (``extension.py:1717``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
     self.is_modal_open())`` (``chrome.py:1648-1651``). Under P2 the resulting window

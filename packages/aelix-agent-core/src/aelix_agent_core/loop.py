@@ -476,8 +476,12 @@ async def _stream_assistant_response(
 
 # What the model reads for a call a cancel cut, when the tool had nothing of its own
 # to say (#673, ADR-0290). "No result provided" now means that a call never began, or
-# that a hook failed on it.
-_CUT_TEXT = "Cancelled: the user stopped the turn while this tool ran, so it may have partly run."
+# that a hook failed on it. Public since #800 (ADR-0307 D2): it is how an extension
+# reading a committed session tells "this call's own result did not land" (the loop
+# wrote this sentence in its place) from "a hook rewrote that result". ``_CUT_TEXT``
+# stays as an alias for the code that imported it before.
+CUT_TEXT = "Cancelled: the user stopped the turn while this tool ran, so it may have partly run."
+_CUT_TEXT = CUT_TEXT
 
 # How long a second cancel leaves the calls of a parallel batch to end before the
 # batch stops waiting for them (ADR-0290 §5). It is what a tool stuck in its cleanup
@@ -644,10 +648,10 @@ async def _execute_and_finalize(
     A cancel reaching this call is not raised here (#673, ADR-0290), so that the caller
     can emit the end event and commit first, and then raise it. A cut call's result is
     what the tool said in
-    :class:`~aelix_ai.tools.ToolCancelled`, or :data:`_CUT_TEXT`. It goes through
+    :class:`~aelix_ai.tools.ToolCancelled`, or :data:`CUT_TEXT`. It goes through
     ``after_tool_call`` like any other, already an error, because a redaction hook must
     see partial output before it reaches the context. If that hook raises or is
-    cancelled, the result is :data:`_CUT_TEXT` and carries no tool output, never the
+    cancelled, the result is :data:`CUT_TEXT` and carries no tool output, never the
     unredacted one.
 
     "A cancel reached this call" is this task's count having risen across ``execute``,
@@ -1159,7 +1163,7 @@ async def _execute_tool_calls_parallel(
 
 
 def _cut_result() -> ToolResult:
-    return ToolResult(content=[TextContent(text=_CUT_TEXT)], is_error=True)
+    return ToolResult(content=[TextContent(text=CUT_TEXT)], is_error=True)
 
 
 def _cancel_pending(requested: Callable[[], bool] | None) -> bool:
@@ -1476,6 +1480,7 @@ def _with_message_start(emit: AgentEventSink) -> AgentEventSink:
 
 
 __all__ = [
+    "CUT_TEXT",
     "AgentEventSink",
     "agent_loop",
     "agent_loop_continue",

@@ -1,7 +1,8 @@
 # 0290. A cancelled turn keeps what ran
 
 Status: Accepted (2026-11-04, #672, #673). **Corrected 2026-11-06 by #698:** a raised cancel count alone stops
-nothing (§1, §3, limits 14, 15, 17, 19, 20, 21, 22).
+nothing (§1, §3, limits 14, 15, 17, 19, 20, 21, 22). Amended 2026-11-19 by ADR-0307 (#800): the `agent` tool
+raises `ToolCancelled` with its report (§8, limit 8), and the cut sentence is public as `loop.CUT_TEXT`.
 Date: 2026-11-04
 Issue: #672, #673, one site. Design and the owner's decision (2026-11-04):
 `.omc/specs/672-673-design-2026-11-04.md`. Batch B6, P1.
@@ -248,6 +249,17 @@ did, and is the only one of the two that holds the children's text. Stopping a d
 SIGKILL (`print_channel._eager_abort`, `abort_child`), so its file ends as it did: a call with no
 result, `No result provided` on its resume (ADR-0277 D14), which is why `RESUME_PREAMBLE` stays.
 
+*Amended 2026-11-19 by [ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) (#800): the `agent` tool now raises `ToolCancelled`
+with the report, so the cancelled call's result holds the children's text and is written to the session
+(`tests/agents_ext/test_stopped_child_reports_604.py::test_esc_during_a_delegation_makes_its_report_the_calls_result`,
+`tests/rpc/test_cancelled_delegation_reopen_800.py`) when that write succeeds. A user-role copy at the
+next prompt is only for a call whose result did not carry it — a `tool_result` hook that raises, a
+second cancel in its `tool_result` hooks, its pre-commit `message_end` or its append, or an append that
+fails before its bytes (told at DEBUG and, with no UI, in one stderr line), or a harness with no session (ADR-0307 D2, K1). With no child that had a process it still re-raises the
+bare cancel and the call gets the default text. The cut sentence is public as `loop.CUT_TEXT`
+(`_CUT_TEXT` is its alias): it is how ADR-0307's owed record tells a result that did not land from one a
+hook rewrote. The child's own file is unchanged by this.*
+
 ## Limits
 
 1. **A tool that ignores cancellation holds a parallel turn for one Esc, and a sequential turn for all
@@ -274,6 +286,8 @@ result, `No result provided` on its resume (ADR-0277 D14), which is why `RESUME_
    everywhere else; a hook reading only that list does not see them.
 8. **Only `bash` says what it printed.** `grep`, `find`, an MCP tool and an extension's get the default
    text unless they raise `ToolCancelled`, and output they had produced is gone.
+   *Amended 2026-11-19 by ADR-0307 (#800): `bash` and `agent` say what they did — `agent` the report
+   of what its children had done.*
 9. **A `tool_result` hook registered with `error_mode="continue"` that raises leaves the output as it is,**
    as for a finished call. `HookBus` swallows the failure, so the loop never hears of it. The in-tree users of
    that mode on this event are subprocess hooks, which observe. A redactor must not register that way.

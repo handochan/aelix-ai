@@ -62,9 +62,10 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from aelix_agent_core.harness.hooks import ToolCallResult
-from aelix_ai.messages import TextContent
-from aelix_ai.tools import ToolResult
+from aelix_agent_core.harness.hooks import BeforeAgentStartResult, ToolCallResult
+from aelix_agent_core.loop import CUT_TEXT
+from aelix_ai.messages import TextContent, UserMessage
+from aelix_ai.tools import ToolCancelled, ToolResult
 from aelix_coding_agent.agents.resolver import child_model_id
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.extensions.api import ExtensionError
@@ -240,6 +241,57 @@ def _not_its_profile(recorded: str) -> str:
         f"under that profile only. Pass profile={name} with its id, or delegate "
         "the task anew."
     )
+
+
+@dataclass
+class _Copy:
+    """One user-role copy of an owed report that a prompt carried (#800, ADR-0307 D2).
+
+    Its identity is the session entry it was committed as, not its text, so a
+    ``message_end`` hook that rewrote it (a redaction) still places it (Codex review
+    C-5). ``before`` is the session's leaf at the copy's ``message_start``;
+    ``entry`` the leaf at the next ``message_start`` or ``agent_end``, when it
+    moved. Placed when both are on the committed branch, ``entry`` after ``before``
+    (an Esc that withdrew the copy moved the leaf back, off the branch).
+    """
+
+    message: Any
+    """The ``UserMessage`` injected, matched by identity at its ``message_start``."""
+    started: bool = False
+    known: bool = False
+    """Whether ``before`` was read; a copy whose read failed is never placed."""
+    before: str | None = None
+    entry: str | None = None
+
+
+@dataclass
+class OwedReport:
+    """A cancelled delegation's report the model may still be owed (#800, ADR-0307 D2).
+
+    Recorded when an ``agent`` call running in a session is cancelled with a
+    report, under the call's ``toolCallId``. The call's own result carries the
+    report (:class:`~aelix_ai.tools.ToolCancelled`); this record is for the case
+    where that result did not land — a ``tool_result`` hook that raises, a second
+    cancel in the call's ``tool_result`` hooks, in its result's ``message_end``
+    before the commit, or a JSONL append of the result that fails or is cancelled
+    before its bytes (ADR-0307 K1) — and it is retired only once the committed
+    session shows the report placed (:meth:`AgentsExtension._owed_messages`). A call
+    in a harness with no session records nothing: its report goes on the next-turn
+    queue, as before #800 (ADR-0307 K1).
+    """
+
+    call_id: str
+    """The cancelled call's ``toolCallId``: the result it is looked up by."""
+    session: Any
+    """The session the call ran in (``_host_session()`` when it began)."""
+    text: str
+    """The report as rendered: the call's result, and the copy a later prompt injects."""
+    origin: str | None = None
+    """The session's leaf when the call began; its result is the first one for
+    ``call_id`` after it (Codex review C-7: an earlier result under a reused id is
+    not this call's). ``None`` when it could not be read: the whole branch."""
+    copies: list[_Copy] = field(default_factory=list)
+    """The copies this record has injected as user messages, in order."""
 
 
 @dataclass
@@ -471,6 +523,14 @@ class AgentsExtension:
     (#719, #750): an older build's ``stop_all`` left any it could not finish
     within its bound in that runtime's registry, and :meth:`drain_cleanups`
     joins them again at the process's end."""
+    _owed: dict[str, OwedReport] = field(default_factory=dict, init=False)
+    """``toolCallId`` → the report a cancelled call may still owe the model (#800,
+    ADR-0307 D2), in the order the cancels happened. Kept across builds, as the
+    instance is; every check resolves each record it can, as the next-turn queue
+    the report sat on before #800 was drained."""
+    _capturing: tuple[OwedReport, _Copy] | None = field(default=None, init=False)
+    """The copy whose ``message_start`` was seen and whose commit the next
+    ``message_start`` or ``agent_end`` reads (:class:`_Copy`)."""
 
     # ── setup ─────────────────────────────────────────────────────
 
@@ -532,6 +592,10 @@ class AgentsExtension:
         aelix.on("tool_call", self._on_tool_call)
         aelix.on("before_agent_start", self._on_before_agent_start)
         aelix.on("session_shutdown", self._on_session_shutdown)
+        # #800 (ADR-0307 D2) — where an owed report's copy is committed, and a
+        # cancelled call's result that did not land is told (Codex review C-5, C-9).
+        aelix.on("message_start", self._on_message_start)
+        aelix.on("agent_end", self._on_agent_end)
         if background:
             # #611 S1c (Codex #8): a call this hook approved and another
             # extension's hook then blocked never reaches ``execute()``; its end
@@ -1109,9 +1173,11 @@ class AgentsExtension:
 
     async def _on_before_agent_start(
         self, event: BeforeAgentStartHookEvent, ctx: ExtensionContext
-    ) -> None:
+    ) -> BeforeAgentStartResult | None:
         """Refresh the roster, reset the delegation budget, drop stale grants,
-        and take down a panel a cancelled call left on screen (ADR-0278 D7).
+        take down a panel a cancelled call left on screen (ADR-0278 D7), and
+        hand the model a cancelled delegation's report its call's result did
+        not carry (#800, ADR-0307 D2; :meth:`_owed_messages`).
 
         ``before_agent_start`` (``harness/core.py:1713``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:5759-5763``), so a
@@ -1158,6 +1224,13 @@ class AgentsExtension:
             # method must not cost the parent its prompt.
             with contextlib.suppress(Exception):
                 runtime.reset_delegation_budget()
+        self._restamp_tool()
+        owed = await self._owed_messages()
+        return BeforeAgentStartResult(messages=owed) if owed else None
+
+    def _restamp_tool(self) -> None:
+        """The ``agent`` tool with this prompt's roster, registered again only when its text changed."""
+
         api, tool = self._api, self._tool
         if api is None or tool is None:
             return
@@ -1171,6 +1244,139 @@ class AgentsExtension:
         with contextlib.suppress(Exception):
             api.register_tool(self._tool)
 
+    async def _owed_messages(self) -> list[Any]:
+        """The cancelled delegations' reports this turn still owes the model (#800, ADR-0307 D2).
+
+        Each record (:class:`OwedReport`), in the order of the cancels, is
+        checked against the session's COMMITTED branch — what the next request
+        is built from:
+
+        1. the record's session is not the live one (the call ran in a session
+           since replaced): retired, nothing sent — the report is in that
+           session's file (ADR-0307 D3), and the queue lost it here too;
+        2. the first ``toolResult`` for the call after its ``origin`` is not
+           :data:`~aelix_agent_core.loop.CUT_TEXT`: the carrier landed,
+           whatever a ``tool_result`` or ``message_end`` hook made of it
+           (annotated, redacted), so it is retired and never sent again;
+        3. a copy this record injected is on the branch, by its entry
+           (:class:`_Copy`), whatever a ``message_end`` hook made of its text:
+           placed, retired;
+        4. otherwise the report goes out as a user message ahead of the
+           prompt, as the queue sent it, and the record STAYS: a later
+           ``before_agent_start`` handler that raises, a copy whose append
+           fails, or an Esc that withdraws it leaves it for the next check.
+
+        Only 1–3 retire a record. The copy is the report as rendered (ADR-0307
+        K2): a hook's rewrite of the call's result is not applied to it.
+        Returns at once when nothing is owed, so the session read is paid only
+        by a turn that follows a cancelled delegation. A branch that cannot be
+        read FAILS this prompt (Codex review C-8): the request would be built
+        from a read that may show the carrier the check could not see, so the
+        prompt raises before anything is sent and every record stays.
+        """
+
+        if not self._owed:
+            return []
+        live = None
+        with contextlib.suppress(Exception):
+            live = self._host_session()
+        # A copy whose commit nothing read yet belongs to a prompt that is over.
+        self._capturing = None
+        branch: list[Any] | None = None
+        out: list[Any] = []
+        for call_id, record in list(self._owed.items()):
+            if record.session is not live:
+                self._owed.pop(call_id, None)
+                continue
+            if branch is None:
+                branch = await _committed_branch(live)
+            if _placed(branch, record):
+                self._owed.pop(call_id, None)
+                continue
+            message = _report_message(record.text)
+            record.copies.append(_Copy(message))
+            out.append(message)
+        return out
+
+    async def _on_message_start(self, event: Any, _ctx: ExtensionContext) -> None:
+        """Read where an owed report's copy is committed (#800, ADR-0307 D2; :class:`_Copy`).
+
+        At the copy's own ``message_start`` the session's leaf is its parent; at
+        the next ``message_start`` (the prompt's next input, or the answer) the
+        copy's ``message_end`` has committed it or not. Returns at once when
+        nothing is owed.
+        """
+
+        if self._capturing is not None:
+            await self._settle_capture()
+        if not self._owed:
+            return
+        message = getattr(event, "message", None)
+        for record in self._owed.values():
+            for copy in record.copies:
+                if copy.started or copy.message is not message:
+                    continue
+                copy.started = True
+                self._capturing = (record, copy)
+                try:
+                    copy.before = await record.session.get_leaf_id()
+                    copy.known = True
+                except Exception:  # noqa: BLE001 — unread: never placed, sent again
+                    logger.debug("could not read the session at a report copy", exc_info=True)
+                return
+
+    async def _settle_capture(self) -> None:
+        capturing, self._capturing = self._capturing, None
+        if capturing is None:
+            return
+        record, copy = capturing
+        if not copy.known:
+            return
+        try:
+            after = await record.session.get_leaf_id()
+        except Exception:  # noqa: BLE001 — unread: never placed, sent again
+            logger.debug("could not read the session after a report copy", exc_info=True)
+            return
+        if after is not None:
+            copy.entry = after
+
+    async def _on_agent_end(self, _event: Any, ctx: ExtensionContext) -> None:
+        """Say when a cancelled call's report did not land as its result (#800, ADR-0307 D2).
+
+        At the end of every run that leaves a record: the copy a prompt carried
+        is read (:meth:`_settle_capture`; a cancel right after its commit leaves
+        no next ``message_start``), and each record of the live session whose
+        report is not placed — neither its call's own result nor a copy carried
+        it — is told (Codex review C-9; :func:`_tell`: DEBUG, and one stderr line
+        with no UI): it reaches the model at the next prompt in this process, and
+        a reopen before that has none. Nothing is retired here; the next check
+        does that. A branch that cannot be read is left to the next check.
+        """
+
+        if self._capturing is not None:
+            await self._settle_capture()
+        if not self._owed:
+            return
+        live = None
+        with contextlib.suppress(Exception):
+            live = self._host_session()
+        unchecked = [record for record in self._owed.values() if record.session is live]
+        if not unchecked:
+            return
+        try:
+            branch = await _committed_branch(live)
+        except Exception:  # noqa: BLE001 — the next prompt's check decides
+            return
+        for record in unchecked:
+            if not _placed(branch, record):
+                _tell(  # not a WARNING, which paints over a live TUI (verify round 2 F3)
+                    f"aelix: the report of the cancelled delegation {record.call_id} did not "
+                    "land as its call's result in the session file (ADR-0307 K1); it goes to "
+                    "the model at the next prompt in this process as a user message, and a "
+                    "reopen before that has no report",
+                    ctx,
+                )
+
     async def _on_tool_call(
         self, event: ToolCallHookEvent, ctx: ExtensionContext
     ) -> ToolCallResult | None:
@@ -1178,7 +1384,7 @@ class AgentsExtension:
 
         Everything that can refuse a delegation refuses HERE, where the kernel
         renders the refusal as a model-readable blocked tool call
-        (``loop.py:604-617``) and where no process has been created yet. On
+        (``loop.py:608-621``) and where no process has been created yet. On
         success the approval is filed under ``event.tool_call_id`` and the hook
         returns ``None`` — observationally identical to not having run.
         """
@@ -1579,7 +1785,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1618-1627``).
+        seam is released on teardown, ``extension.py:1824-1833``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1665,10 +1871,10 @@ class AgentsExtension:
         rather than a second ``end_group`` loop here: ``clear`` ends every open
         group — a lingering Esc frame and every scheduled redraw included —
         before dropping the remaining rows, which is the only ordering that also
-        blanks the widget panel. It is also why a turn this teardown cancels
-        leaves no frame behind: ``session_shutdown`` runs before the harness
-        aborts the turn, so the ``linger`` in ``_execute`` finds its group
-        already gone and draws nothing on the next session's screen.
+        blanks the widget panel. It is also why a turn a session change cancels
+        leaves no frame behind: the runtime aborts and settles that turn before
+        ``session_shutdown`` (ADR-0307 D3), so the Esc frame its ``linger``
+        drew is ended here, before the next session's screen.
         """
 
         self._drop_pending()
@@ -1687,17 +1893,18 @@ class AgentsExtension:
         pending: PendingSpawn,
         envelopes: CallEnvelopes,
         snapshot: dict[int, Any] | None = None,
-    ) -> None:
-        """Queue what a cancelled call's children had done for the next turn (D14).
+    ) -> str | None:
+        """What a cancelled call's children had done, as the call's result (D14, #800).
 
-        THE NEXT-TURN QUEUE, because it is the one place a message survives the
-        cancel that is happening right now: ``AgentHarness.abort()`` clears the
-        steer and follow-up queues and leaves this one alone, and the next
-        ``prompt()`` drains it and puts its messages ahead of the user's own
-        (``harness/core.py``). ``send_message`` with ``trigger_turn=False``
-        appends to it and does nothing else — no turn is started on the user's
-        behalf, and the call is SYNCHRONOUS, because this runs in a task that is
-        being cancelled and an ``await`` here would invite the second cancel in.
+        The caller raises it as :class:`~aelix_ai.tools.ToolCancelled`, so the
+        loop writes it as the cancelled call's result — to the session file,
+        where a reopen finds it — and records it as owed (:class:`OwedReport`)
+        for the case where that result does not land (ADR-0307 D1–D2). Until
+        #800 it went on the next-turn queue (``send_message(trigger_turn=False)``),
+        which lived in memory only and which a session change handed back as
+        withdrawn input; a call in a harness with no session still goes there
+        (:meth:`_queue_report`, ADR-0307 K1). SYNCHRONOUS, because this runs in a task that is being
+        cancelled and an ``await`` here would invite the second cancel in.
 
         The collector is SNAPSHOTTED here (:meth:`CallEnvelopes.snapshot`): a
         batch member still on its way out of its own cancellation is built from
@@ -1713,34 +1920,69 @@ class AgentsExtension:
         frame (ADR-0278 D7) is drawn from the same one, so the panel and the
         report cannot disagree about what a member did.
 
-        Nothing is queued when no child had started (``render_cancel_report``
-        returns ``None``). NEVER RAISES: the cancel must leave this frame as
-        the cancel, and a report is never worth replacing it. A session switched
-        under the turn is the case that needs the breadth: the runner
-        invalidates this extension's runtime before ``dispose()`` aborts the
-        turn, so ``send_message`` raises ``ExtensionError`` — the report is lost
-        (the session it was for is gone) and the cancel goes on.
-
-        In memory only: a session closed and reopened with ``--continue``, or
-        replaced by ``/reload``, before another prompt does not carry it. The
-        settle records the runtime wrote for each child are in the session file
-        either way (ADR-0243), and #610's resume reads those.
+        ``None`` when no child had started (``render_cancel_report`` returns
+        ``None``): the call then gets the loop's default cut text. NEVER RAISES:
+        a renderer that fails is ``None`` too, and the cancel goes on as the
+        bare cancel — a report is never worth replacing it.
         """
 
         try:
-            text = render_cancel_report(
+            return render_cancel_report(
                 pending.resolved.name,
                 pending.call.mode,
                 len(pending.call.tasks),
                 envelopes.snapshot() if snapshot is None else snapshot,
                 lost=envelopes.lost(),
             )
-            api = self._api
-            if text is None or api is None:
-                return
+        except Exception:  # noqa: BLE001 — the cancel must propagate as the cancel
+            logger.debug("could not render the cancelled delegation's report", exc_info=True)
+            return None
+
+    def _owe(self, key: str, text: str, session: Any, origin: str | None) -> None:
+        """Record ``text`` as owed to the cancelled call ``key`` (#800, ADR-0307 D2).
+
+        Synchronous, for :meth:`_report_cancelled`'s reason. ``session`` and
+        ``origin`` were read when the call began (:meth:`_call_origin`): a session
+        change aborts the turn before it replaces the session (ADR-0307 D3), so
+        the session is still the outgoing one.
+        """
+
+        self._owed[key] = OwedReport(call_id=key, session=session, text=text, origin=origin)
+
+    def _queue_report(self, text: str) -> None:
+        """A session-less harness's report: the next-turn queue, as before #800 (ADR-0307 K1).
+
+        Synchronous (``send_message`` with ``trigger_turn=False`` appends and
+        does nothing else) and never raising, for :meth:`_report_cancelled`'s
+        reason: the cancel goes on as the cancel.
+        """
+
+        api = self._api
+        if api is None:
+            return
+        try:
             api.send_message(text, trigger_turn=False)
         except Exception:  # noqa: BLE001 — the cancel must propagate as the cancel
             logger.debug("could not queue the cancelled delegation's report", exc_info=True)
+
+    async def _call_origin(self) -> tuple[Any | None, str | None]:
+        """The session an ``agent`` call runs in, and its leaf as the call begins (#800).
+
+        The call's result is committed after that leaf (Codex review C-7).
+        ``(None, None)`` for a harness with no session; the leaf is ``None`` when
+        it could not be read.
+        """
+
+        session = None
+        with contextlib.suppress(Exception):
+            session = self._host_session()
+        if session is None:
+            return None, None
+        try:
+            return session, await session.get_leaf_id()
+        except Exception:  # noqa: BLE001 — no origin: the whole branch is read
+            logger.debug("could not read the session's leaf for a delegation", exc_info=True)
+            return session, None
 
     async def _execute(
         self, args: dict[str, Any], ctx: ToolExecutionContext
@@ -1868,6 +2110,8 @@ class AgentsExtension:
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
         # every snapshot arrives already knowing which task it belongs to.
         key = ctx.tool_call_id
+        # #800 (ADR-0307 D2) — read here, not in the cancel, where nothing may await.
+        owner, origin = await self._call_origin()
         total = len(pending.call.tasks)
         # ``expected=total`` from the first frame, so members still parked on the
         # batch semaphore render as ``queued`` instead of appearing one by one —
@@ -2045,27 +2289,37 @@ class AgentsExtension:
                 not_run=outcome.not_run,
                 wall_ms=outcome.wall_ms,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancel:
             # ESC TELLS THE MODEL ONLY THAT IT STOPPED without this (design
-            # critique 1). The cancel goes up through the tool and the loop answers
-            # the call with its default cut result (#673, ADR-0290), which says the
+            # critique 1). The loop's default cut result (#673, ADR-0290) says the
             # call was stopped and may have partly run and nothing about what it
             # did — so the model is likely to delegate the work it paid for again
             # from scratch, the outcome #604 exists to prevent. What the children
-            # had done is queued for that next turn, then the cancel goes on
-            # exactly as before.
+            # had done is the call's own result instead (#800, ADR-0307 D1):
+            # raised as ``ToolCancelled`` (ADR-0290 §2's door), which is still a
+            # cancel, so the turn ends exactly as before and the loop writes the
+            # report to the session, where a host and a reopen find it.
             #
             # ONE snapshot of the envelopes for both: the report the model gets
             # and the frame the user sees (ADR-0278 D7) cannot disagree about
             # what a member did. ``snapshot`` is synchronous and total, and
-            # nothing on this path awaits (D14's rule).
+            # nothing on this path awaits (D14's rule). Render, linger, record,
+            # raise: the frame is drawn before the cancel leaves this frame.
             built: dict[int, Any] | None = None
             with contextlib.suppress(Exception):
                 built = envelopes.snapshot()
-            self._report_cancelled(pending, envelopes, built)
+            text = self._report_cancelled(pending, envelopes, built)
             if bridge is not None and built is not None:
                 lingering = bridge.linger(key, built)
-            raise
+            if text is None:
+                raise
+            if owner is None:
+                # No session to write the result to or check it against (Codex
+                # review C-6): the next-turn queue, as before #800 (ADR-0307 K1).
+                self._queue_report(text)
+                raise
+            self._owe(key, text, owner, origin)
+            raise ToolCancelled(ToolResult(content=[TextContent(text=text)])) from cancel
         finally:
             if bridge is not None and not lingering:
                 bridge.end_group(key)
@@ -2558,3 +2812,81 @@ def _monotonic() -> float:
 __all__ = [
     "AgentsExtension",
 ]
+
+
+def _report_message(text: str) -> UserMessage:
+    """The user-role message a report copy is: the one ``send_message`` queued before #800."""
+
+    return UserMessage(content=[TextContent(text=text)])
+
+
+def _message_text(message: Any) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    return "".join(getattr(block, "text", "") or "" for block in content or [])
+
+
+async def _committed_branch(session: Any) -> list[Any]:
+    """The session's entries from the root to its leaf: the branch the next request is built from.
+
+    Raises when it cannot be read, with a message that says why the prompt
+    stopped (:meth:`AgentsExtension._owed_messages`, Codex review C-8).
+    """
+
+    try:
+        return list(await session.get_branch())
+    except Exception as exc:
+        raise RuntimeError(
+            "could not read the session to check a cancelled delegation's report "
+            f"(the prompt was not sent; it is checked again at the next): {exc}"
+        ) from exc
+
+
+def _placed(branch: list[Any], record: OwedReport) -> bool:
+    """Rules 2 and 3 of :meth:`AgentsExtension._owed_messages`: the report is on ``branch``."""
+
+    where = {getattr(entry, "id", None): index for index, entry in enumerate(branch)}
+    start = where.get(record.origin) if record.origin is not None else -1
+    if start is not None:
+        for entry in branch[start + 1 :]:
+            message = getattr(entry, "message", None)
+            if (
+                getattr(message, "role", None) == "toolResult"
+                and getattr(message, "tool_call_id", None) == record.call_id
+                and getattr(message, "tool_name", None) == AGENT_TOOL_NAME
+            ):
+                if _message_text(message) != CUT_TEXT:
+                    return True
+                break
+    for copy in record.copies:
+        if not copy.known or copy.entry not in where:
+            continue
+        # A copy that is the branch's first entry had no leaf before it (the leaf was
+        # moved to the root, verify round 2 F1): its ``before`` is before everything.
+        start = -1 if copy.before is None else where.get(copy.before)
+        if start is not None and start < where[copy.entry]:
+            return True
+    return False
+
+
+def _tell(line: str, ctx: Any) -> None:
+    """ONE line on stderr with no UI; nothing on a live TUI's terminal (#800, verify round 2 F3).
+
+    The log gets it at DEBUG either way. Not a WARNING: the tree installs no logging
+    handler, so a WARNING reaches ``logging.lastResort`` - stderr - and paints over a
+    live TUI (#546), the rule ``loop.py``, ``harness/core.py`` and ``runtime.py``'s
+    ``_report_unfinished`` follow. ``ctx.has_ui`` is read when told; a context that
+    cannot answer (a stale one) is a headless one here.
+    """
+
+    import sys
+
+    logger.debug("%s", line)
+    try:
+        ui = bool(getattr(ctx, "has_ui", False))
+    except Exception:  # noqa: BLE001 — a stale context is a headless one here
+        ui = False
+    if not ui:
+        with contextlib.suppress(Exception):
+            print(line, file=sys.stderr)

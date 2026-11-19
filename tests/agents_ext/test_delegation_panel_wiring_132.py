@@ -26,6 +26,7 @@ from aelix_agent_core.harness.hooks import (
     SessionShutdownHookEvent,
     ToolCallHookEvent,
 )
+from aelix_agents.aggregate import CANCEL_REPORT_HEAD
 from aelix_agents.panel import PANEL_WIDGET_KEY
 from aelix_agents.progress import SubagentProgressBridge, group_status_key
 from aelix_agents.stream import reduce_event
@@ -37,8 +38,10 @@ from aelix_coding_agent.subagent_contract import SubagentResult
 from tests.agents_ext.test_agent_resume_tool_610 import _delegated, _resume
 from tests.agents_ext.test_child_session_records import _parent
 from tests.agents_ext.test_stopped_child_reports_604 import (
+    _call_result,
     _end,
     _message,
+    _message_text,
     _Parking,
     _scripted,
     _start,
@@ -228,7 +231,8 @@ async def test_esc_leaves_the_child_s_record_on_screen_until_the_next_prompt(
     # From the SAME envelopes the model's report was built from (D14).
     assert frame[3] == "│   changed: look.md"
     assert frame[4] == "│   Ask to continue it and the model can resume it."
-    assert len(harness._next_turn_queue) == 1, "the model's report was not queued"
+    # The model's report is the call's result since #800 (ADR-0307 D1).
+    assert _message_text(_call_result(harness)).startswith(CANCEL_REPORT_HEAD)
 
     await harness.prompt("what happened?")
     assert widgets[-1] == (PANEL_WIDGET_KEY, None), "the next prompt left the frame up"

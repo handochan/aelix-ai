@@ -48,11 +48,23 @@ quitting.
 | The tool | What the model reads |
 | --- | --- |
 | had finished | its result |
-| was running | an error saying it was stopped and may have partly run; `bash` adds what it had printed |
+| was running | an error saying it was stopped and may have partly run; `bash` adds what it had printed, `agent` what its agents had done |
 | had not started | `No result provided` |
 
 A process killed outright (`kill -9`) writes nothing. An extension's tool can say what it
 got done: see [Writing a tool that can be stopped](#writing-a-tool-that-can-be-stopped).
+
+For `agent` that result is the report of each agent it ran: what it wrote, its tool calls, the
+files it changed and its session, so you can ask the model to go on. It is in the session file,
+so a session you reopen and an RPC host's `get_messages` have it too (#800, ADR-0307). If that
+result is not written — an extension's `tool_result` hook raises, a second Esc lands while it is
+being written, or the write to the session file fails — the model gets the
+report with your next prompt instead, and only in that run of aelix; without the TUI, aelix says
+so in one line on stderr when the turn ends. An RPC `new_session` or
+`switch_session` during a turn, and an RPC host closing aelix's input, stop the turn first and wait
+up to 10 seconds for it to end, so what ran is saved in the session it ran in. In the TUI, `/quit`
+during an answer stops it the way Esc does, stops it again every 2 seconds up to four times while
+it has not ended, and closes once it has; then the same 10-second step finds nothing to wait for.
 
 Stopping `bash` ends the command and the processes it started in its group. One it put in a
 session of its own, with `setsid` or a daemon's double fork, keeps running. Past 4 MiB of output

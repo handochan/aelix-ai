@@ -280,7 +280,9 @@ injectable; with no running loop the bridge draws at once. Ending a group and
 
 On a cancel the extension hands the bridge each started member's envelope —
 the same `CallEnvelopes.snapshot()` the model's report (ADR-0276 D14) is built
-from — and the bridge draws a final frame at the group's height: a member still
+from (*amended 2026-11-19 by ADR-0307, #800: that report is now the cancelled
+call's result; the frame is drawn before the cancel leaves the tool, from the
+same snapshot*) — and the bridge draws a final frame at the group's height: a member still
 live reads stopped (`■`), and so does one whose envelope says the cancel ended
 it, its cut call reads `no result`, and its changed files are named.
 

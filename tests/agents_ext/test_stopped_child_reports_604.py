@@ -13,7 +13,8 @@ back as nothing at all. These tests pin each piece, at the level it lives at:
 * the two renderers: the D11 single template, the D12 member block, and D18 —
   every result that is not a started failure renders exactly as before;
 * D14 end to end, through a real ``AgentHarness``: Esc during a delegation
-  queues a report the next prompt carries.
+  makes the report the cancelled call's own result (#800, ADR-0307 D1), which
+  the session file keeps and the next prompt carries in the call's place.
 
 Platform-neutral throughout: the one real child is a stdlib-only script that
 ``stop_all`` ends the same way on every platform (its stderr line is written
@@ -34,6 +35,8 @@ from typing import Any
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.loop import CUT_TEXT
+from aelix_agent_core.session import JsonlSessionStorage, LocalFileSystem, Session
 from aelix_agents.aggregate import (
     BATCH_OUTPUT_BUDGET_BYTES,
     CANCEL_REPORT_FENCE_CLOSE,
@@ -1063,19 +1066,42 @@ def _message_text(message: Any) -> str:
     return "".join(getattr(block, "text", "") or "" for block in content or [])
 
 
+def _call_result(harness: AgentHarness, call_id: str = "call-1") -> Any:
+    """The one result the loop committed to live state for ``call_id``."""
+
+    (result,) = [
+        m
+        for m in harness.state.messages
+        if getattr(m, "role", None) == "toolResult" and m.tool_call_id == call_id
+    ]
+    return result
+
+
+async def _reopened_messages(path: Any) -> list[Any]:
+    """The session file's branch as a new process reads it."""
+
+    reopened = Session(await JsonlSessionStorage.open(LocalFileSystem(), str(path)))
+    return list((await reopened.build_context()).messages)
+
+
 async def _cancel_a_delegation(
     tmp_path: Path, channel: _Parking, args: dict[str, Any], *, parked: int
 ) -> tuple[AgentHarness, list[list[Any]], Any]:
-    """Prompt a real harness whose model delegates, then Esc while it runs."""
+    """Prompt a real harness whose model delegates, then Esc while it runs.
+
+    The harness writes to the session the extension's getter answers, as
+    ``cli/entry.py`` wires them (``_live_session_of``).
+    """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path, channel=channel)  # type: ignore[arg-type]
-    session, _repo, _path = await _parent(tmp_path)
+    session, _repo, path = await _parent(tmp_path)
     bench.ext.session = lambda: session
     seen: list[list[Any]] = []
     harness = AgentHarness(
         AgentHarnessOptions(
             model=Model(id="mock", provider="mock"),
+            session=session,
             extensions=[bench.extension],
             runtime=bench.runtime,
             stream_fn=_scripted(_tool_call(args), seen),
@@ -1090,27 +1116,30 @@ async def _cancel_a_delegation(
     assert not turn.done(), "the turn ended before it could be cancelled"
     await harness.abort()
     await asyncio.wait_for(turn, 30)
-    return harness, seen, session
+    return harness, seen, path
 
 
-async def test_esc_during_a_delegation_queues_its_report_for_the_next_prompt(
+async def test_esc_during_a_delegation_makes_its_report_the_calls_result(
     tmp_path: Path,
 ) -> None:
-    """Design test 13, single mode, through the real harness and extension.
+    """Design test 13, single mode, through the real harness and extension;
+    #800 (ADR-0307 D1, contract r5 §12.3 test 1).
 
-    ``abort()`` clears the steer and follow-up queues and NOT the next-turn
-    queue, and the next ``prompt()`` puts what that queue holds AHEAD of the
-    user's own message — both asserted against the harness itself, not
-    assumed."""
+    The report is the cancelled call's own result — an error, written to the
+    session file, where a reopen reads it — and the next prompt carries it in
+    the call's place and injects no copy. Nothing goes on the next-turn queue.
+    On 6dd682cd the result is the loop's cut text and the report is a queued
+    user message the next request carries ahead of the prompt."""
 
     channel = _Parking()
-    harness, seen, _session = await _cancel_a_delegation(
+    harness, seen, path = await _cancel_a_delegation(
         tmp_path, channel, {"profile": "scout", "task": "look"}, parked=1
     )
 
-    queued = list(harness._next_turn_queue)
-    assert len(queued) == 1, queued
-    report = _message_text(queued[0])
+    assert harness._next_turn_queue == []
+    result = _call_result(harness)
+    assert result.is_error is True
+    report = _message_text(result)
     # The head first and outside; everything the child produced fenced as DATA.
     assert report.startswith(f"{CANCEL_REPORT_HEAD}\n\n{CANCEL_REPORT_FENCE_OPEN}\n")
     assert report.endswith(f"\n{CANCEL_REPORT_FENCE_CLOSE}\n{CANCEL_REPORT_FENCE_NOTE}")
@@ -1122,13 +1151,17 @@ async def test_esc_during_a_delegation_queues_its_report_for_the_next_prompt(
     # #610 D4: the single-mode report is the single-mode template, so it names
     # the resume call too.
     assert 'if it should go on, continue it with agent(action="resume", profile="scout", id="' in report
+    reopened = [m for m in await _reopened_messages(path) if CANCEL_REPORT_HEAD in _message_text(m)]
+    assert [(m.role, m.tool_call_id, _message_text(m)) for m in reopened] == [
+        ("toolResult", "call-1", report)
+    ]
 
     await harness.prompt("what happened?")
 
+    carriers = [m for m in seen[1] if CANCEL_REPORT_HEAD in _message_text(m)]
+    assert [m.role for m in carriers] == ["toolResult"], "one report, the call's result"
     texts = [_message_text(message) for message in seen[1]]
-    report_at = next(i for i, text in enumerate(texts) if text.startswith(CANCEL_REPORT_HEAD))
-    prompt_at = next(i for i, text in enumerate(texts) if text == "what happened?")
-    assert report_at < prompt_at
+    assert texts.index(report) < texts.index("what happened?")
     assert harness._next_turn_queue == []
 
 
@@ -1137,15 +1170,15 @@ async def test_esc_during_a_batch_reports_each_member_that_had_a_child(tmp_path:
     before the cancel AND the one that was running — under its own position."""
 
     channel = _Parking()
-    harness, _seen, _session = await _cancel_a_delegation(
+    harness, seen, _path = await _cancel_a_delegation(
         tmp_path,
         channel,
         {"profile": "scout", "mode": "parallel", "tasks": ["finish", "park"]},
         parked=1,
     )
 
-    (queued,) = harness._next_turn_queue
-    report = _message_text(queued)
+    assert harness._next_turn_queue == []
+    report = _message_text(_call_result(harness))
     assert report.startswith(
         f"{CANCEL_REPORT_HEAD}\n\n{CANCEL_REPORT_FENCE_OPEN}\nagent scout · parallel · 2 tasks"
     )
@@ -1156,17 +1189,24 @@ async def test_esc_during_a_batch_reports_each_member_that_had_a_child(tmp_path:
     assert "Partial result: park: halfway" in report
     assert "had no agent running" not in report
 
+    await harness.prompt("what happened?")
+
+    carriers = [m for m in seen[1] if CANCEL_REPORT_HEAD in _message_text(m)]
+    assert [m.role for m in carriers] == ["toolResult"], "one report, the call's result"
+
 
 async def test_nothing_is_queued_when_no_child_had_started(tmp_path: Path) -> None:
     """A cancel that landed before any process existed cancelled nothing that
-    did work, and a report would describe work that never happened."""
+    did work, and a report would describe work that never happened: the call
+    gets the loop's default cut text and nothing is owed (a guard of #800)."""
 
     channel = _Parking(spawn=False)
-    harness, _seen, _session = await _cancel_a_delegation(
+    harness, _seen, _path = await _cancel_a_delegation(
         tmp_path, channel, {"profile": "scout", "task": "look"}, parked=1
     )
 
     assert harness._next_turn_queue == []
+    assert _message_text(_call_result(harness)) == CUT_TEXT
 
 
 async def test_a_call_that_returns_leaves_no_report(tmp_path: Path) -> None:

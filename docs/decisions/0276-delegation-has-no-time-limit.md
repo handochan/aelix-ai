@@ -608,6 +608,20 @@ This report is still what tells the model what the call did: nothing here change
 (measured on a real delegation, ADR-0290 Verification). The Verification below is what was measured
 on 2026-10-28.*
 
+*Amended 2026-11-19 by [ADR-0307](0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) ([#800](https://github.com/handochan/aelix-ai/issues/800)):
+items 2 and 3 change where the report goes, not what it says. `_execute_pending` renders it, draws the
+Esc frame from the same snapshot, records it as owed under the call's `toolCallId` and raises it as
+`ToolCancelled`, so it is the cancelled call's result, written to the session file; nothing is queued
+with `send_message` any more, except by a harness with no session, which keeps item 2's queue
+(ADR-0307 D1). Memory holds only the owed record, for a call whose result did not carry the report — a
+`tool_result` hook that raised (one Esc is enough), a second cancel in its hooks or its append, or an
+append that failed before its bytes, which is told at DEBUG and, with no UI, in one stderr line: a prompt injects the report as a
+user message only while the committed session shows neither the call's own result nor an earlier copy
+(ADR-0307 D2, K1). With no child that had a process nothing is recorded and
+the call gets the cut text, as item 3 said. The stale-runtime case of item 2 no longer costs the report:
+the carrier needs no live extension API
+(`tests/agents_ext/test_stopped_child_review_604.py::test_a_session_switched_under_a_delegation_still_ends_the_turn_as_a_cancel`).*
+
 Refined in review round 2 — **a member that ran and then failed is not "never
 started".** A member whose run had a process and then ended on an exception
 other than the cancel (a channel that raised; the batch turns it into a
@@ -814,7 +828,14 @@ render byte for byte as before.*
   [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md) (D7): that copy is
   the panel's Esc frame — drawn from the same `CallEnvelopes.snapshot()` the
   report is built from, so each member's cut call and changed files agree with
-  it — and it stays on screen until the next prompt.*
+  it — and it stays on screen until the next prompt.* *Amended 2026-11-19 by
+  ADR-0307 (#800): this limit holds only in ADR-0307 K1's cases — a
+  `tool_result` hook that raises, a second cancel, a write of the result that
+  fails, a harness with no session. Otherwise the report is the cancelled
+  call's result, in the session file once that write is confirmed: `--session`
+  and a host's `get_messages` read it, a swap or a quit settles the
+  turn into the outgoing session first (ADR-0307 D3; `/fork` and `/clone` copy
+  the branch before that, K3), and the TUI draws it as the call's error card.*
 - **The RPC channel has gaps of its own**, found in review, all pre-existing or
   RpcChannel-only. No product door selects `RpcChannel` (the bundled runtime
   uses `PrintChannel` everywhere); #123, which puts it into production, owns

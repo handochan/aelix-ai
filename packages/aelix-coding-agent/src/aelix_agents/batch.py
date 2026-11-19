@@ -33,7 +33,7 @@ CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
 argument (``harness/core.py:6155-6161``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:117``) and is threaded unchanged into
-``ToolExecutionContext(signal=signal)`` (``loop.py:726-728``). Abort is
+``ToolExecutionContext(signal=signal)`` (``loop.py:730-732``). Abort is
 ``turn_task.cancel()`` (``core.py:2178-2181``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.
@@ -505,8 +505,8 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:746-752``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1511``), and baked into ``grant.mode``, which
+    (``extension.py:810-816``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:1717``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
     (``runtime.py:1935``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:

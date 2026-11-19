@@ -645,7 +645,7 @@ class SpawnRecordMeta:
     envelope when one came back, one built from the live stream when the spawn
     was cancelled, and a way to build that one while the member is still
     running — and the extension's ``except asyncio.CancelledError`` reports
-    what it holds on the next turn. One collector per call: ``batch._member``
+    what it holds as the call's result. One collector per call: ``batch._member``
     copies the record with ``dataclasses.replace``, which shares it, so every
     member lands in the same one under its own index.
 

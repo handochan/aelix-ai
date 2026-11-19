@@ -988,7 +988,7 @@ def test_the_agent_card_footer_is_inside_the_capped_body() -> None:
     footer is therefore the first thing the cap eats. The threshold is
     CONDITIONAL, and each of the three rows below can invert while the others
     hold — measured through the real ``EventRenderer`` at width 80, with the
-    event's ``is_error`` wired off ``result.is_error`` exactly as ``loop.py:1045``
+    event's ``is_error`` wired off ``result.is_error`` exactly as ``loop.py:1049``
     wires it:
 
     | case | footer survives a summary of | @ the old cap of 12 |

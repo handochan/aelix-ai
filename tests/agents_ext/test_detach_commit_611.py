@@ -228,7 +228,12 @@ async def test_esc_and_ctrl_b_in_one_loop_turn_esc_wins(tmp_path: Path, first: s
         assert not rig.jobs_ui.request_detach()
     with pytest.raises(asyncio.CancelledError):
         await within(turn)
-    assert rig.jobs() == [] and len(queued) == 1, "today's Esc: cancelled, one D14 report"
+    # Today's Esc: cancelled, with one D14 report — the call's result and an
+    # owed record since #800 (ADR-0307 D1-D2), nothing on the next-turn queue.
+    # ``getattr``: on the base, which has no owed table, this fails on the
+    # assertion (the report sits on the queue), not on an ``AttributeError``.
+    owed = getattr(rig.ext, "_owed", {})
+    assert rig.jobs() == [] and len(owed) == 1 and queued == [], "today's Esc"
     assert rig.service.admission.count(KIND) == 0
     gate.write_text("go")
     await finish(rig)

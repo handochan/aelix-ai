@@ -487,7 +487,7 @@ cannot tell them apart — so it names none of them.
 
 Never produced by :func:`build_result` on its own: a cancel builds no envelope
 through a channel. ``runtime._run`` passes it as ``reason=`` when it builds the
-one envelope a cancelled spawn gets, for the report the next turn carries."""
+one envelope a cancelled spawn gets, for the cancelled call's report."""
 
 REASON_OWN_ABORT = "the agent's own run was aborted"
 """Why a run is ``aborted`` when nobody on the parent's side stopped it: the

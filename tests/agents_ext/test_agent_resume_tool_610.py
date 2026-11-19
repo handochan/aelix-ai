@@ -113,6 +113,7 @@ from tests.agents_ext.test_spawn_consent import (
 )
 from tests.agents_ext.test_spawn_consent import _resolved as _consent_resolved
 from tests.agents_ext.test_stopped_child_reports_604 import (
+    _call_result,
     _end,
     _message,
     _message_text,
@@ -1161,8 +1162,9 @@ class _ParkOnResume(_RecordingChannel):
 
 async def test_esc_during_a_resume_reports_it_as_a_single_run(tmp_path: Path) -> None:
     """ADR-0276 D14 for a resume, through the real harness: the report Esc
-    queues for the next turn is the single-mode template — so it names the
-    agent's session and the resume call that continues it (D4) — and no path."""
+    leaves — the cancelled call's result since #800 (ADR-0307 D1) — is the
+    single-mode template, so it names the agent's session and the resume call
+    that continues it (D4), and no path."""
 
     channel = _ParkOnResume()
     scene = await _delegated(tmp_path, channel=channel)
@@ -1186,8 +1188,8 @@ async def test_esc_during_a_resume_reports_it_as_a_single_run(tmp_path: Path) ->
     await harness.abort()
     await asyncio.wait_for(turn, 30)
 
-    (queued,) = harness._next_turn_queue
-    report = _message_text(queued)
+    assert harness._next_turn_queue == []
+    report = _message_text(_call_result(harness))
     assert f"The delegated agent did not finish: {REASON_CANCELLED}" in report
     assert (
         f'continue it with agent(action="resume", profile="scout", id="{scene.child_id}", task=…).'

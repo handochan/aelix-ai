@@ -26,9 +26,9 @@ run. The gate has to live here, keyed on what actually varies.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:596-617``, driven
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:600-621``, driven
 from ``:1012-1049``) while ``execute()`` runs in a task per call
-(``loop.py:1055-1058``) with ``tool_execution = "parallel"`` by default
+(``loop.py:1059-1062``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:323``). Two modals from one batch would collide on
 ``tui/chrome.py:971``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1530-1542``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1736-1748``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""

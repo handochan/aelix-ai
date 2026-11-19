@@ -84,6 +84,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
+from aelix_agent_core.harness.core import TurnSeal
 from aelix_agent_core.harness.hooks import SessionStartHookEvent
 from aelix_agent_core.runtime._types import (
     NESTED_TRANSITION_MESSAGE,
@@ -141,6 +142,43 @@ _DISCARD_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.3, 0.35)
 _IN_TRANSITION: contextvars.ContextVar[object | None] = contextvars.ContextVar(
     "aelix_runtime_transition", default=None
 )
+
+#: #800 (ADR-0307 D3) — how long a session change or a quit waits for the outgoing
+#: harness's turn to settle before it goes on in the order it had before: the first
+#: abort, the four re-aborts ``abort_until_idle`` makes 2 s apart
+#: (``harness/core.py`` ``_REABORTS``, ``_REABORT_GRACE_SECONDS``), and margin. Past
+#: it the settle is left running (it only aborts that harness) and the teardown goes
+#: on; ``harness.dispose()`` then waits as it always did (ADR-0307 K4).
+SWAP_SETTLE_SECONDS = 10.0
+
+#: The reason a sealed outgoing harness refuses a turn with, while it settles.
+REPLACING_MESSAGE = "the session is being replaced"
+CLOSING_MESSAGE = "the session is being closed"
+
+#: Settles left running past :data:`SWAP_SETTLE_SECONDS`, held so that nothing
+#: collects a running task and so that what one raises in the end is read.
+_SETTLES: set[asyncio.Future[None]] = set()
+
+
+def _settled(settle: asyncio.Future[None]) -> None:
+    _SETTLES.discard(settle)
+    if not settle.cancelled() and settle.exception() is not None:
+        _log.debug("the outgoing harness's settle raised", exc_info=settle.exception())
+
+
+@dataclass
+class _Seal:
+    """#800 (ADR-0307 D3) — step 0's hold on the outgoing harness, and what undoes it.
+
+    ``previous`` is the turn gate the harness had before ``gate``, the seal; ``settle``
+    settles its turn. A swap or quit interrupted before the invalidation did not
+    happen: :meth:`AgentSessionRuntime._abandon` stops ``settle``, puts ``previous`` back.
+    """
+
+    harness: Any
+    previous: str | None
+    gate: TurnSeal | None = None
+    settle: asyncio.Future[None] | None = None
 
 
 async def _emit_session_shutdown_event(
@@ -220,6 +258,14 @@ def _extract_user_message_text(content: Any) -> str:
             if isinstance(text, str):
                 parts.append(text)
     return "".join(parts)
+
+
+def _same_file(target: str | None, outgoing: str | None) -> bool:
+    """#800 — ``target`` is the file the outgoing session is on, compared resolved."""
+
+    if not target or not outgoing:
+        return False
+    return resolve_session_path(target) == resolve_session_path(outgoing)
 
 
 class AgentSessionRuntime:
@@ -659,6 +705,33 @@ class AgentSessionRuntime:
             previous.release()
         self._writer_lock = lock
 
+    def _reopen_same_file(
+        self,
+        target: str,
+        outgoing: str | None,
+        lock: SessionWriterLock | None,
+        open_again: Callable[[], Awaitable[Session]],
+    ) -> Callable[[], Awaitable[Session]] | None:
+        """#800 (ADR-0307 D3) — ``open_again`` when the swap's target is the outgoing session's file.
+
+        The outgoing harness writes to that file in step 0 and ``dispose()``, after
+        the target was opened, so the swap opens it again after the teardown.
+        Only when this process may write it: a runtime that manages writer locks
+        must hold ``lock`` and ``lock`` must be that file's (Codex review C-1). A
+        contended target's "read only" answer has no lock and its "fork and
+        continue" answer holds the fork's, so neither is ever replaced by a
+        writable open of the file another writer holds. ``None`` for every other
+        target.
+        """
+
+        if not _same_file(target, outgoing):
+            return None
+        if self._manages_writer_lock and (
+            lock is None or lock.resolved_path != resolve_session_path(target)
+        ):
+            return None
+        return open_again
+
     async def _resolve_contended_target(
         self,
         path: str,
@@ -768,6 +841,78 @@ class AgentSessionRuntime:
         )
         return isinstance(result, SessionBeforeForkResult) and result.cancel is True
 
+    async def _seal_and_settle(self, reason: str) -> _Seal | None:
+        """Step 0 of a session change or a quit (#800, ADR-0307 D3; pi ``teardownCurrent``).
+
+        pi begins ``teardownCurrent`` and ``dispose`` with ``await
+        this.session.abort()`` "so the aborted turn (including tool results) is
+        persisted to the outgoing session before it is replaced". Here, when the
+        outgoing harness is not idle:
+
+        * **seal** it (:meth:`AgentHarness.hold_turns` with ``reason`` as a
+          :class:`~aelix_agent_core.harness.core.TurnSeal`): from here no
+          prompt and no notice turn starts on
+          it, so nothing between the settle and its ``dispose()`` starts a turn
+          the teardown would only abort; a ``session_shutdown`` handler's
+          ``send_message(trigger_turn=True)`` is queued, as it was while the
+          turn ran; a swap hands it back after the teardown (#681), a quit does not;
+        * **settle** its turn — :meth:`AgentHarness.abort_until_idle`, which
+          keeps the input (a resume has it) — waited for at most
+          :data:`SWAP_SETTLE_SECONDS`. The first ``abort()`` awaits the
+          ``abort`` hook and the queue listeners, so the wait is outside it;
+          past the bound the settle is left running and the teardown goes on.
+
+        A cancelled delegation's report is then the ``agent`` call's result in
+        the outgoing session's file, and its Esc frame was drawn before
+        ``session_shutdown`` ends it. Returns the seal, or ``None`` for an idle
+        harness, which is left as it is. An interruption here, or later before
+        the invalidation (the caller's :meth:`_abandon`), undoes the seal: the
+        swap did not happen, and the harness it leaves installed must still take
+        turns, once the settle has ended.
+        """
+
+        harness = self._harness
+        if getattr(harness, "phase", "idle") == "idle":
+            return None
+        hold: Callable[..., None] | None = getattr(harness, "hold_turns", None)
+        abort_until_idle: Callable[[], Awaitable[None]] | None = getattr(
+            harness, "abort_until_idle", None
+        )
+        if hold is None or abort_until_idle is None:
+            return None
+        seal = _Seal(harness, getattr(harness, "_turn_gate", None), TurnSeal(reason))
+        hold(seal.gate)
+        try:
+            settle = seal.settle = asyncio.ensure_future(abort_until_idle())
+            _SETTLES.add(settle)
+            settle.add_done_callback(_settled)
+            await asyncio.wait({settle}, timeout=SWAP_SETTLE_SECONDS)
+        except BaseException:
+            await self._abandon(seal)
+            raise
+        return seal
+
+    async def _abandon(self, seal: _Seal | None) -> None:
+        """#800 (ADR-0307 D3) — undo step 0 for a swap or quit interrupted before the invalidation.
+
+        The settle is stopped and joined first, so none of its re-aborts can
+        reach a prompt the harness takes afterwards; then the turn gate the
+        harness had before the seal is put back. The join is bounded by
+        :data:`SWAP_SETTLE_SECONDS`; a settle still alive past it (an ``abort``
+        handler that swallows its cancel) keeps the seal until it ends, and the
+        gate goes back then (:func:`_unseal_when_settled`, verify round 2 F2).
+        """
+
+        if seal is None:
+            return
+        settle = seal.settle
+        try:
+            if settle is not None and not settle.done():
+                settle.cancel()
+                await asyncio.wait({settle}, timeout=SWAP_SETTLE_SECONDS)
+        finally:
+            _unseal_when_settled(seal)
+
     async def _teardown_current(
         self,
         reason: Literal["quit", "reload", "new", "resume", "fork"] = "quit",
@@ -789,8 +934,15 @@ class AgentSessionRuntime:
         captured at the TOP of the method BEFORE
         ``harness.dispose()`` is awaited (dispose tears down the
         HookBus → bridge becomes a no-op after).
+
+        #800 (ADR-0307 D3) — a step 0 comes first for every reason but
+        ``reload`` (which waits for idle before it gets here): pi's
+        ``teardownCurrent`` begins with ``await this.session.abort()``, and
+        :meth:`_seal_and_settle` seals the outgoing harness and settles its
+        turn, bounded by :data:`SWAP_SETTLE_SECONDS`.
         """
 
+        seal = await self._seal_and_settle(REPLACING_MESSAGE) if reason != "reload" else None
         # CRITICAL — capture runner BEFORE invalidate/dispose tears it
         # down. ``harness.dispose()`` clears the HookBus, after which
         # the runner bridge callables become no-ops.
@@ -799,6 +951,12 @@ class AgentSessionRuntime:
             await _emit_session_shutdown_event(runner, reason, target_session_file)
         except Exception:
             _log.exception("AgentSessionRuntime.session_shutdown emit raised")
+        except BaseException:
+            # #800 — interrupted before the invalidation (a cancel inside an
+            # awaited ``session_shutdown`` handler): this harness stays
+            # installed, so it takes turns again and its settle is stopped.
+            await self._abandon(seal)
+            raise
 
         # #663 (ADR-0289, Codex R02) — from here the harness is being taken
         # apart. Each step logs an ``Exception`` and goes on; an interruption
@@ -1118,8 +1276,18 @@ class AgentSessionRuntime:
         target_session_file: str | None = None,
         setup: Callable[[Any], Awaitable[None]] | None = None,
         writer_lock: SessionWriterLock | None = None,
+        reopen: Callable[[], Awaitable[Session]] | None = None,
     ) -> None:
         """Pi parity: ``finishSessionReplacement`` (``agent-session-runtime.ts:166-173``).
+
+        ``reopen`` (#800, ADR-0307 D3) opens the target again after the
+        teardown: a :meth:`switch_session` or :meth:`import_from_jsonl` to the
+        file the outgoing session is on.
+        ``new_session`` was opened before the teardown, and its leaf is the
+        file's as it was then; opened again, what step 0 and ``dispose()`` wrote
+        is on the branch it continues. It is the caller's own way of opening the
+        target (:meth:`_reopen_same_file` decides when there is one); one that
+        fails is logged and the swap goes on with ``new_session``, as before #800.
 
         ``writer_lock`` (#137, Aelix-additive) is the lock the caller took for
         ``new_session``; it is adopted immediately after ``_apply`` — see the
@@ -1172,8 +1340,8 @@ class AgentSessionRuntime:
         # working at.
         previous_level = self._harness._state.thinking_level
         # #663 (ADR-0289) — and what a failed build puts back: the session this
-        # one is leaving, with the settings it ran on.
-        point = self._restore_point()
+        # one is leaving, with the settings it ran on; #800, whether it has a UI.
+        point, ui = self._restore_point(), reopen is not None and _has_ui(self._harness)
 
         await self._teardown_current(reason, target_session_file)
         # #681 — and what the teardown queued there after that: a
@@ -1181,6 +1349,15 @@ class AgentSessionRuntime:
         # cancelled before it committed (requeued for the next turn, #320).
         await self._give_back_queued()
         try:
+            if reopen is not None:
+                try:
+                    new_session = await reopen()
+                except Exception:
+                    _tell(  # not a WARNING, which paints over a live TUI (verify round 2 F3)
+                        "aelix: opening the session file again after the teardown failed; "
+                        "the swap goes on with the copy opened before it",
+                        ui,
+                    )
             await self._apply(new_session)
         except Exception as exc:
             # The old harness is torn down and the new one was never installed:
@@ -1405,12 +1582,24 @@ class AgentSessionRuntime:
                     if target_session_file != path:
                         forked = target_session_file
 
+                async def open_again() -> Session:
+                    return await self._repo.open(
+                        await load_jsonl_session_metadata(self._fs, path)
+                    )
+
                 await self._finish_session_replacement(
                     new_session,
                     reason="resume",
                     previous_session_file=previous_session_file,
                     target_session_file=target_session_file,
                     writer_lock=target_lock,
+                    # #800 (ADR-0307 D3) — the file this session is on, opened
+                    # again after the teardown, which writes to it: only the
+                    # writable open under this process's lock, never a read-only
+                    # or forked answer (``_reopen_same_file``).
+                    reopen=self._reopen_same_file(
+                        path, previous_session_file, target_lock, open_again
+                    ),
                 )
             except BaseException:
                 # The swap never adopted the lock, so this process is still on the
@@ -2005,6 +2194,14 @@ class AgentSessionRuntime:
                     new_session, fallback_cwd=current_cwd, fs=self._fs
                 )
 
+                async def open_again() -> Session:
+                    again = await load_jsonl_session_metadata(self._fs, destination_path)
+                    if cwd is not None:
+                        again = replace(again, cwd=cwd)
+                    return await self._repo.open(
+                        again, cwd_override=cwd if cwd is not None else None
+                    )
+
                 # Step 9 — finish replacement (Pi: no with_session for import).
                 await self._finish_session_replacement(
                     new_session,
@@ -2012,6 +2209,14 @@ class AgentSessionRuntime:
                     previous_session_file=previous_session_file,
                     target_session_file=destination_path,
                     writer_lock=import_lock,
+                    # #800 (ADR-0307 D3) — an import of the file this session is
+                    # on (no copy made) is opened again after the teardown, as
+                    # :meth:`switch_session` opens its own file again.
+                    reopen=self._reopen_same_file(
+                        destination_path, previous_session_file, import_lock, open_again
+                    )
+                    if resolved_path == destination_path
+                    else None,
                 )
             except BaseException:
                 try:
@@ -2054,6 +2259,9 @@ class AgentSessionRuntime:
         no-op after).
         """
 
+        # #800 (ADR-0307 D3) — pi's ``dispose`` begins with ``await
+        # this.session.abort()``: the turn settles, bounded, before the emit.
+        seal = await self._seal_and_settle(CLOSING_MESSAGE)
         # Capture runner BEFORE invalidate/dispose — see P-340 race note.
         runner = self._harness.extension_runner
 
@@ -2062,6 +2270,10 @@ class AgentSessionRuntime:
             await _emit_session_shutdown_event(runner, "quit", None)
         except Exception:
             _log.exception("AgentSessionRuntime.session_shutdown emit raised")
+        except BaseException:
+            # #800 — interrupted before the invalidation: undo step 0.
+            await self._abandon(seal)
+            raise
 
         # Sprint 6h₅b (Phase 4.15, ADR-0083, P-363) — invalidate the runner
         # between EMIT and ``before_session_invalidate`` (same insertion
@@ -2181,3 +2393,47 @@ async def create_agent_session_runtime(
 
 
 __all__ = ["AgentSessionRuntime", "create_agent_session_runtime"]
+
+
+def _unseal_when_settled(seal: _Seal) -> None:
+    """#800 (ADR-0307 D3) — put back the gate ``seal`` replaced, now or when its settle ends.
+
+    A settle that outlived :meth:`AgentSessionRuntime._abandon`'s join (an ``abort``
+    handler that swallows its cancel) would abort, with its re-aborts, a prompt the
+    harness took meanwhile (verify round 2 F2), so the seal stays until the settle
+    ends. The gate goes back only while it is still the seal: a hold set since (the
+    CLI's, a ``stop``) is kept.
+    """
+
+    settle = seal.settle
+    if settle is not None and not settle.done():
+        settle.add_done_callback(lambda _settle: _unseal_when_settled(seal))
+        return
+    if seal.harness.turns_held is seal.gate:
+        seal.harness.hold_turns(seal.previous)
+
+
+def _has_ui(harness: Any) -> bool:
+    """#800 — whether a live UI is bound to ``harness``; ``False`` when it cannot say.
+
+    Read before the teardown: a context made after it is stale and cannot answer.
+    """
+
+    try:
+        return bool(harness._make_context().has_ui)
+    except Exception:  # noqa: BLE001 — a harness that cannot say is a headless one here
+        return False
+
+
+def _tell(line: str, ui: bool) -> None:
+    """#800 (verify round 2 F3) — ``line`` at DEBUG, and once on stderr when there is no UI.
+
+    Called in an ``except`` block, so the log has the exception. Not a WARNING: the
+    tree installs no logging handler, so a WARNING reaches ``logging.lastResort`` -
+    stderr - and paints over a live TUI (#546; ``loop.py``, ``harness/core.py``).
+    """
+
+    _log.debug("%s", line, exc_info=True)
+    if not ui:
+        with contextlib.suppress(Exception):
+            print(line, file=sys.stderr)

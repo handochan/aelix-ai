@@ -457,7 +457,7 @@
    "skills: list[Skill] = field(default_factory=list)",
    "diagnostics: list[SkillDiagnostic] = field(default_factory=list)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1012-1049": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1016-1053": [
    "# Phase 1 — sequential preparation (Pi agent-loop.ts:456-489).",
    "for tc in tool_calls:",
    "# A cancel a hook or listener swallowed: the rest of the batch stays",
@@ -467,10 +467,10 @@
    "ToolExecutionStartEvent(",
    "tool_call_id=tc.tool_call_id,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1045-1045": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1049-1049": [
    "is_error=prepared.result.is_error,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1055-1058": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:1059-1062": [
    "tasks = [",
    "asyncio.ensure_future(_run(entry)) if isinstance(entry, _Prepared) else None",
    "for entry in pending",
@@ -533,7 +533,7 @@
    "context.messages[partial_index] = replacement",
    "elif context.messages and context.messages[-1] is final:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:596-617": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:600-621": [
    "if config.before_tool_call is not None:",
    "before_ctx = BeforeToolCallContext(",
    "assistant_message=assistant_message,",
@@ -543,7 +543,7 @@
    ")",
    "decision = await _maybe_await(config.before_tool_call(before_ctx))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:604-617": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:608-621": [
    "if isinstance(decision, BeforeToolCallResult) and decision.block:",
    "return _Immediate(",
    "tool_call=tc,",
@@ -553,18 +553,18 @@
    "TextContent(",
    "text=decision.reason"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:689-689": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:693-693": [
    "update_events: list[asyncio.Future[AgentMessage | None]] = []"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:724-724": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:728-728": [
    "update_events.append(asyncio.ensure_future(coro, loop=loop_ref))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:726-728": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:730-732": [
    "exec_ctx = ToolExecutionContext(",
    "tool_call_id=prepared.tool_call.tool_call_id,",
    "signal=signal,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:848-858": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:852-862": [
    "has_sequential = any(",
    "(",
    "tool_map.get(tc.tool_name) is not None",
@@ -574,7 +574,7 @@
    ")",
    "if config.tool_execution == \"sequential\" or has_sequential:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:889-897": [
+  "packages/aelix-agent-core/src/aelix_agent_core/loop.py:893-901": [
    "for tc in tool_calls:",
    "await emit(",
    "ToolExecutionStartEvent(",
@@ -594,10 +594,10 @@
    "EVERY persisting ``message_end`` site (prompt, follow-up, tool-result, and",
    "the two assistant sites) so a replacement is never silently dropped — pi's"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1178-1178": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1346-1346": [
    "await self._teardown_current(reason, target_session_file)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1658-1703": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1847-1892": [
    "# 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).",
    "# Restore the user's pre-reload active filter over the rebuilt",
    "# registry, unioned with the current extension tools — pi ``reload``",
@@ -607,7 +607,7 @@
    "# registry lacks (a REMOVED extension's) drop out, and the factory",
    "# installed a fresh policy, so the commit clamps the union: under"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:386-396": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:432-442": [
    "@property",
    "def cwd(self) -> str | None:",
    "\"\"\"Pi parity (``:87-89``). Reads through harness session metadata.\"\"\"",
@@ -617,7 +617,7 @@
    "if session is None:",
    "return None"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:394-396": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:440-442": [
    "storage = session.get_storage()",
    "metadata = getattr(storage, \"_metadata\", None)",
    "return getattr(metadata, \"cwd\", None) if metadata is not None else None"
@@ -1086,27 +1086,27 @@
    "(``index.ts:413``) and discards every partial the child streamed before it, so",
    "the user loses the work AND the diagnosis. Aelix keeps both."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1210-1213": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1416-1419": [
    "try:",
    "call = parse_agent_call(event.args, background=background)",
    "except AgentCallError as exc:",
    "return ToolCallResult(block=True, reason=str(exc))"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1295-1298": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1501-1504": [
    "# one code path here; ``request_spawn_consent_batch`` delegates a",
    "# one-member tuple to the P2 dialog byte-for-byte.",
    "try:",
    "grant = await self._grant_for("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1316-1318": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1522-1524": [
    "# THE WHOLE CALL IS FROZEN HERE, and ``_execute`` reads nothing else.",
    "# ``event.args`` stays the mutable dict the tool will receive.",
    "self._pending[event.tool_call_id] = PendingSpawn("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1511-1511": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1717-1717": [
    "parent = self._host_posture()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1530-1542": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1736-1748": [
    "return SpawnGrant(",
    "profile=resolved.name,",
    "source_path=resolved.source_path,",
@@ -1116,7 +1116,7 @@
    "consented=True,",
    "disclosure=("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1618-1627": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1824-1833": [
    "self, event: SessionShutdownHookEvent, ctx: ExtensionContext",
    ") -> None:",
    "\"\"\"Kill the children, drop any un-spent grant, clear the statusline.",
@@ -1126,10 +1126,10 @@
    ":attr:`_pending` — grants taken in the hook for a tool call whose",
    "``execute()`` never ran — needs clearing; nothing else survives a spawn,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:531-531": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:591-591": [
    "aelix.register_tool(self._tool)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:746-752": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:810-816": [
    "return self.cwd or os.getcwd()",
    "",
    "def _host_posture(self) -> PermissionMode:",
@@ -1491,7 +1491,7 @@
    "one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The",
    "kernel's ``_execute_tool_calls``",
    "downgrades the WHOLE BATCH to sequential when any tool in it declares this",
-   "(kernel ``types.py:47-56``; ``loop.py:848-858``), which closes the",
+   "(kernel ``types.py:47-56``; ``loop.py:852-862``), which closes the",
    "concurrent-modal hazard described in the module docstring at zero",
    "product-core cost. It is belt-and-braces with the hook location and with",
    "``consent.py``'s process-wide lock — and because the description is"

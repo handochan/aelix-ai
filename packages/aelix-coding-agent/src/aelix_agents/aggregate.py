@@ -671,13 +671,13 @@ CANCEL_REPORT_HEAD = (
     "stopped when the turn was cancelled. The stop was intended: resume or "
     "repeat that work only if the user asks you to. What it had done:"
 )
-"""The first line of the report a cancelled ``agent`` call leaves for the next
-turn (ADR-0276 D14).
+"""The first line of the report a cancelled ``agent`` call leaves (ADR-0276 D14):
+since #800 the call's own result (ADR-0307 D1).
 
-It arrives as a user-role message — the harness's next-turn queue carries
-messages, and that is the role a queued one takes — so it says in its first
-words that the user did not write it. Without that, a model reads a block of
-tool output under the user's name as something the user typed.
+It says in its first words that the user did not write it. After a second
+cancel the report arrives as a user-role message instead (ADR-0307 K1), and
+without that a model reads a block of tool output under the user's name as
+something the user typed; in a tool result it is true as well.
 
 Only aelix's own lines stand outside the fence — this head, and the trailing
 list of positions that had no child; everything the children produced follows
@@ -748,7 +748,7 @@ def render_cancel_report(
     *,
     lost: Collection[int] = (),
 ) -> str | None:
-    """What a cancelled ``agent`` call had done, for the next turn (ADR-0276 D14).
+    """What a cancelled ``agent`` call had done, as its result (ADR-0276 D14, ADR-0307 D1).
 
     ``envelopes`` is a snapshot of the call's collector
     (``runtime.CallEnvelopes.snapshot``): every member that had a child, keyed

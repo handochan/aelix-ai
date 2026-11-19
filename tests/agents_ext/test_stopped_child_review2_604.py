@@ -68,6 +68,7 @@ from aelix_coding_agent.subagent_contract import SubagentResult
 from tests.agents_ext.test_child_session_records import _parent
 from tests.agents_ext.test_stopped_child_reports_604 import (
     _batch_text,
+    _call_result,
     _end,
     _message_text,
     _reduced,
@@ -625,8 +626,7 @@ async def test_a_member_that_raised_after_it_ran_is_not_called_never_started(
     await harness.abort()
     await asyncio.wait_for(turn, 30)
 
-    (queued,) = harness._next_turn_queue
-    report = _message_text(queued)
+    report = _message_text(_call_result(harness))
     assert "Task 1 of 3 had an agent running that ended on an internal error" in report
     assert "had no agent running" not in report and "broken.md" not in report
     assert f"[2/3 aborted] did not finish: {REASON_CANCELLED}" in report

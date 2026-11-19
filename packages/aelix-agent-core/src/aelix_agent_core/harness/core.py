@@ -5279,7 +5279,7 @@ class AgentHarness:
             task = loop.create_task(self.prompt(text))
             self._pin_task(task)
             return
-        if trigger_turn and self._phase == "idle" and self._turn_gate is not None:
+        if trigger_turn and self._phase == "idle" and _refuses_a_trigger(self._turn_gate):
             # #367 verify round 5 — decided HERE, when the handler asks, not
             # when the task would start: the gate may be lifted by then. A
             # REFUSED turn, not a queued message: a handler awaiting its
@@ -7840,3 +7840,32 @@ def _as_described(harness: AgentHarness, message: Any) -> Any:
     if message.error_message is record.text:
         return message
     return replace(message, error_message=record.text)
+
+
+class TurnSeal(str):
+    """A turn gate under which a triggered send is queued (#800, ADR-0307 D3).
+
+    ``AgentSessionRuntime``'s step 0 holds the outgoing harness's turns with one
+    (:meth:`AgentHarness.hold_turns`). It refuses :meth:`AgentHarness.prompt`, a
+    manual compaction and a notice turn as any gate does, but an extension's
+    ``send_message(..., trigger_turn=True)`` under it is queued on the
+    ``next_turn`` queue, as it was while that harness's turn still ran, and a
+    session change hands what is queued back after the teardown (#681; a quit
+    leaves it): it claims no prompt and runs no ``before_agent_start`` handler
+    (Codex review C-3 of #800; verify round 2 F6 of #800 for the quit).
+    The refused turn of :meth:`AgentHarness.hold_turns` is for the CLI's holds,
+    whose ``session_start`` handlers may await their turn. Defined here, after the
+    code the repository's line citations point at, so that none of them moves.
+    """
+
+    __slots__ = ()
+
+
+def _refuses_a_trigger(gate: str | None) -> bool:
+    """Whether a ``trigger_turn`` send to an idle harness held by ``gate`` is a refused turn.
+
+    #367 verify round 5: yes for a gate; #800: not for a :class:`TurnSeal`,
+    under which it is queued instead.
+    """
+
+    return gate is not None and not isinstance(gate, TurnSeal)

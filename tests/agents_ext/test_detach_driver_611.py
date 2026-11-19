@@ -123,11 +123,17 @@ async def _observe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: st
         slot_back_at_return = rig.service.admission.count(KIND) == 0
         await runtime.stop_all()
         await runtime.drain_cleanups()
+    owed = getattr(rig.ext, "_owed", {})
     observed = {
         "outcome": outcome,
         "result_text": _timeless(result_text),
-        "d14_count": len(queued),
-        "d14_text": _timeless(queued[0][0]) if queued else None,
+        # The D14 report is the cancelled call's result since #800, and owed
+        # under its id until a prompt finds it placed (ADR-0307 D1-D2); nothing
+        # goes on the next-turn queue any more.
+        # ``getattr``: on the base (no owed table) this fails on the assertion.
+        "queued": len(queued),
+        "d14_count": len(owed),
+        "d14_text": _timeless(next(iter(owed.values())).text) if owed else None,
         "rows_left": len(runtime._children),
         "cleanups_left": len(runtime._cleanups),
         "records_at_return": records_at_return,
@@ -163,6 +169,7 @@ async def test_each_scenario_ends_as_today(
     observed = await _observe(tmp_path, monkeypatch, scenario, shape)
     outcome, reports = _EXPECTED[scenario]
     assert observed["outcome"] == outcome, observed
+    assert observed["queued"] == 0, observed
     assert observed["d14_count"] == reports, observed
     if reports:
         assert "halfway" in observed["d14_text"] and "late output arrived" not in observed["d14_text"]

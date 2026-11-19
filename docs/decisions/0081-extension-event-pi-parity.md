@@ -111,6 +111,14 @@ Sprint 6h₅a W6 applied all of them.
   the TOP of the method BEFORE `harness.dispose()` is awaited (dispose
   tears down the HookBus → bridge becomes a no-op after).
 
+  *Amended 2026-11-19 by ADR-0307 D3 (#800): a step 0 now precedes this order
+  in `_teardown_current` (every reason but `reload`) and in `dispose`, when the
+  harness is not idle — seal the harness's turns and abort and settle the live
+  turn, waiting at most `SWAP_SETTLE_SECONDS` (10 s). pi's `teardownCurrent` and
+  `dispose` begin with `await this.session.abort()` (`origin/main` `5a14e69c0`,
+  `agent-session-runtime.ts:186-197`, `:434-443`). `switch_session` to the
+  outgoing session's own file opens it again after the teardown.*
+
 - **P-341 — `dispose` adds missing `session_shutdown` emit with
   `reason="quit"`.** Pi `agent-session-runtime.ts:366-373` — Pi calls
   `emitSessionShutdownEvent` BEFORE `beforeSessionInvalidate` BEFORE

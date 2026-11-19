@@ -60,7 +60,6 @@ from aelix_agents.runtime import (
 )
 from aelix_agents.stream import _StreamState, reduce_event, written_paths
 from aelix_agents.tool import NO_TEXT, NO_TEXT_YET
-from aelix_ai.messages import TextContent
 from aelix_ai.streaming import Model, ModelCost
 from aelix_coding_agent.extensions.api import ExtensionError
 from aelix_coding_agent.subagent_contract import SubagentResult
@@ -69,6 +68,7 @@ from tests.agents_ext.test_child_session_records import _grant, _parent, _resolv
 from tests.agents_ext.test_stopped_child_reports_604 import (
     _NO_PROCESS,
     _batch_text,
+    _call_result,
     _end,
     _message_text,
     _Parking,
@@ -158,10 +158,12 @@ def test_a_forged_header_in_any_case_or_spacing_is_neutralised() -> None:
     assert inside.count("&#91;") == 2
 
 
-async def test_child_text_is_user_role_data_on_the_next_prompt(tmp_path: Path) -> None:
+async def test_child_text_is_fenced_data_on_the_next_prompt(tmp_path: Path) -> None:
     """Codex review probe, end to end through the real harness and extension:
     the child's forged header and instruction reached the next provider context
-    unquoted, in a USER-role message."""
+    unquoted. It is quoted inside the fence, in the one report the next request
+    carries — since #800 the cancelled call's result (ADR-0307 D1), before it a
+    USER-role message."""
 
     class _HostileChild(_Parking):
         async def run(
@@ -185,7 +187,7 @@ async def test_child_text_is_user_role_data_on_the_next_prompt(tmp_path: Path) -
     assert len(reports) == 1
     (report,) = reports
     text = _message_text(report)
-    assert report.role == "user"
+    assert report.role == "toolResult"
     assert text.count(_HEAD_MARK) == 1, "child text forged the trusted report prefix"
     assert "\x1b" not in text
     inside = _inside_fence(text)
@@ -292,6 +294,7 @@ async def _start_and_cancel(
     harness = AgentHarness(
         AgentHarnessOptions(
             model=Model(id="mock", provider="mock"),
+            session=session,
             extensions=[bench.extension],
             runtime=bench.runtime,
             stream_fn=_scripted(_tool_call(args), seen),
@@ -329,8 +332,7 @@ async def test_a_member_whose_cleanup_outlasts_the_first_is_still_reported(
         # The turn is over and ``slow`` is still leaving: nothing waited for it.
         assert len(bench.ext.runtime._children) == 1
 
-        (queued,) = harness._next_turn_queue
-        report = _message_text(queued)
+        report = _message_text(_call_result(harness))
         assert "had no agent running" not in report
         assert f"[1/2 aborted] did not finish: {REASON_CANCELLED} · session " in report
         assert f"[2/2 aborted] did not finish: {REASON_CANCELLED} · session " in report
@@ -436,8 +438,7 @@ async def test_a_member_that_ended_with_an_exception_is_not_rebuilt_as_cancelled
         parked=1,
     )
 
-    (queued,) = harness._next_turn_queue
-    report = _message_text(queued)
+    report = _message_text(_call_result(harness))
     assert "[1/2 aborted]" not in report and "broken.md" not in report
     assert f"[2/2 aborted] did not finish: {REASON_CANCELLED}" in report
 
@@ -521,7 +522,7 @@ async def test_rpc_batch_cancel_reports_every_child_after_slow_pipe_cleanup(
         assert not turn.done(), "the turn ended before it could be cancelled"
         await harness.abort()
         await asyncio.wait_for(turn, 30)
-        report = _message_text(harness._next_turn_queue[0])
+        report = _message_text(_call_result(harness))
         assert "slow: halfway" in report, report
         assert "fast: halfway" in report, report
         assert "had no agent running" not in report
@@ -714,12 +715,13 @@ def test_the_cancel_reason_does_not_name_a_key() -> None:
 async def test_a_session_switched_under_a_delegation_still_ends_the_turn_as_a_cancel(
     tmp_path: Path,
 ) -> None:
-    """Verify probe ``probe_stale_runtime.py``. ``/new``, ``/resume`` and
-    ``/fork`` invalidate the extension's runtime BEFORE ``dispose()`` aborts the
-    turn, so the report's ``send_message`` raises ``ExtensionError``. The report
-    is lost (its session is gone); the cancel must not be: the call gets only the
-    loop's cut result (#673, ADR-0290), the model is not asked again, and nothing
-    is queued."""
+    """Verify probe ``probe_stale_runtime.py``. A turn cancelled after the
+    extension's runtime was invalidated — what ``/new``, ``/resume`` and
+    ``/fork`` did before #800 settled the turn first (ADR-0307 D3) — still ends
+    as a cancel: the model is not asked again and nothing is queued. Before #800
+    the report's ``send_message`` raised ``ExtensionError`` there and the call
+    got only the loop's cut result; it is the call's result now (ADR-0307 D1),
+    which needs no live extension API."""
 
     channel = _Parking()
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
@@ -753,9 +755,9 @@ async def test_a_session_switched_under_a_delegation_still_ends_the_turn_as_a_ca
     assert harness._next_turn_queue == []
     assert len(seen) == 1, "the model was asked again: the cancel did not end the turn"
     ends = [e for e in events if isinstance(e, ToolExecutionEndEvent)]
-    assert [(e.is_error, e.result.content) for e in ends] == [
-        (True, [TextContent(text=_CUT_TEXT)])
-    ]
+    assert [e.is_error for e in ends] == [True]
+    assert _message_text(ends[0].result).startswith(CANCEL_REPORT_HEAD)
+    assert _message_text(ends[0].result) != _CUT_TEXT
 
 
 def test_each_cap_is_the_number_the_adr_states() -> None:

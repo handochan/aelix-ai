@@ -988,6 +988,54 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A delegation you stop with Esc reports what its agents did as the `agent` call's own result,
+  which a session you reopen and an RPC host have, and aelix-acp shows as the call's last update
+  (#800, ADR-0307 D1–D2).** Before,
+  the call's result was only "Cancelled: the user stopped the turn while this tool ran, so it may
+  have partly run." and the report waited in memory for your next prompt: a reopened session, an
+  RPC `get_messages` and aelix-acp's tool call never had it, and Esc followed by `/new` put the
+  report in the TUI's input box. Now the report is the call's error result, written to the session
+  file (`tests/rpc/test_cancelled_delegation_reopen_800.py`: a real `--mode rpc` parent and child,
+  `get_messages` before and after a relaunch with `--session`; aelix-acp `16d6555b` unchanged sends
+  it as the call's last `tool_call_update` and replays it on `session/load`, measured live), and
+  nothing comes back as input after a swap
+  (`tests/runtime/test_swap_settles_first_800.py::test_esc_then_new_gives_no_report_back_as_input`).
+  When that result is not written — a `tool_result` hook that raises (one Esc is enough), a second
+  Esc while it is being written, or a write to the session file that fails before its bytes — the
+  report reaches the model as a user message with your next prompt, in that process, as before (K1),
+  and aelix says so in one line on stderr when it runs without the TUI (in the TUI it is logged at
+  DEBUG and not drawn over the screen, fix round 2's pty capture, except after a swap whose teardown
+  outlives its 10 s bound, K4); so does a harness with
+  no session (an embedder's; the CLI's `--no-session` has an in-memory one), and so, once, does a
+  session whose leaf an extension moved off that result before the next prompt (`navigate_tree`;
+  `test_a_copy_after_the_leaf_moved_off_the_carrier_is_placed_once`). After one Esc, a hook that
+  rewrote the call's result is
+  not followed by a raw copy of it, and a hook that rewrites that user message does not bring it back
+  with every prompt (`tests/agents_ext/test_cancelled_report_owed_800.py`). aelix-acp replays the
+  report on `session/load` from its own record only (K6).
+  `aelix_agent_core.loop.CUT_TEXT` is the cut sentence's public name.
+- **A new session, a session switch or a quit during a turn stops that turn first, waiting up to
+  10 s, as pi does (#800, ADR-0307 D3).** The turn's tool results — a cancelled delegation's report
+  among them — are written to the session it ran in, the old harness asks its model nothing more,
+  and no prompt or notice turn starts on it while it is being replaced; then `session_shutdown`
+  runs as before. The 10 s is the runtime's step (a session change, an RPC host closing aelix's
+  input); the TUI's `/quit`
+  during an answer stops the answer itself, as Esc does, and closes once it has ended. Before,
+  `session_shutdown` came first, the stopped delegation returned an
+  ordinary result and the old harness asked its model again before it was torn down
+  (`tests/runtime/test_swap_settles_first_800.py`). `switch_session` to the file you are on, and
+  `import_from_jsonl` of it, keep what the turn wrote on the branch — on the copy this process may
+  write only: a file another terminal holds stays read only, or forked, as you answered. A
+  `session_shutdown` handler's `send_message(trigger_turn=True)` there is queued, as before, and
+  starts no turn: a session change hands it back, and a quit leaves it unsent, as before. A swap or
+  quit interrupted before the old session is torn down leaves it taking prompts once its turn has
+  stopped; an `abort` handler that swallows that stop keeps it refusing them until then
+  (`test_an_abort_hook_that_swallows_the_cancel_keeps_the_seal_until_the_settle_ends`), or, if a hold
+  that saves and restores the gate spans that end, until the next swap (K4). A swap an
+  extension vetoes aborts nothing; `/reload` still waits for the turn
+  to end. `/fork` and `/clone` copy the branch before the turn settles (K3), and a prompt still
+  inside a `before_agent_start` handler holds a swap as before (K4).
+
 - **`SLICE-STATUS.md` records the win32 stdin pump under every delegated child's command inbox
   (#829).** Since #123 the RPC thread pump (W4) also reads a child's inbox on Windows, and the
   real-child inbox tests are POSIX only; both are now written there, with their sources.

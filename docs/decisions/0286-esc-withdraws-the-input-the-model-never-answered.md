@@ -400,6 +400,17 @@ removes it nor gives its text back to the user
 (`::test_a_notice_placed_after_an_answer_is_never_withdrawn_or_given_back`); and a notice turn has
 no typed input, so an Esc there withdraws nothing.
 
+## Note (2026-11-19, ADR-0307, #800)
+
+A cancelled delegation's report is no longer one of the user messages a swap gives back. It was queued
+on the next-turn queue (ADR-0276 D14), so Esc and then `/new` put it in the TUI's input box — measured
+at `6dd682cd`: one `input_withdrawn` event carrying it, and the real TUI's box read
+`[Pasted text #1 +23 lines]`. It is the cancelled call's result now (ADR-0307 D1), and nothing of it
+comes back (`tests/runtime/test_swap_settles_first_800.py::test_esc_then_new_gives_no_report_back_as_input`;
+the TUI's box stays empty in a pty capture, `.omc/probes/800/impl/live/`). A swap or a quit now settles
+a running turn before `session_shutdown`, with `withdraw_unanswered` false, so the input stays for a
+resume, as `dispose()` kept it (ADR-0307 D3).
+
 ## Amendment (2026-11-18, ADR-0306, #123)
 
 *Limit 6 is chosen: the cooperative `abort` is not sent to a child.* #123's inbox carries `steer`,
