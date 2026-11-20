@@ -734,11 +734,8 @@ async def test_integration_untrusted_headless_skips_project_mcp(
         def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
-        async def connect_all(self):
-            return []
-
-        async def collect_agent_tools(self):
-            return []
+        async def start(self):
+            return [], []
 
         async def disconnect_all(self):
             return None
@@ -774,11 +771,8 @@ async def test_integration_approve_connects_project_mcp(
         def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
-        async def connect_all(self):
-            return []
-
-        async def collect_agent_tools(self):
-            return []
+        async def start(self):
+            return [], []
 
         async def disconnect_all(self):
             return None
@@ -817,11 +811,8 @@ async def test_integration_env_mcp_not_gated_in_untrusted_dir(
         def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
-        async def connect_all(self):
-            return []
-
-        async def collect_agent_tools(self):
-            return []
+        async def start(self):
+            return [], []
 
         async def disconnect_all(self):
             return None

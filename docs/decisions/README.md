@@ -36,6 +36,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0101 — MCP Client](0101-sprint-6h9d-mcp-client.md) (Amended 2026-11-20,
+  #834.) Launch tests cover typed HTTP/SSE connection diagnostics, bounded
+  JSON-RPC warnings, SDK metadata filtering, and tool discovery failure isolation
+  in the CLI and the real RPC child.
+
 - [0309 — A stored message has one session-scoped identity across RPC replay and live output](0309-stored-message-identity-and-transcript.md)
   (Accepted 2026-11-20, #655.) A writer-owned CLI-RPC binding serves a pinned, paged projection of its stored user, assistant and tool-result rows. The new live occurrence link joins stored receipts to replay coordinates. Control-v1 fixtures cover reply variants and the four receipt outcomes.
 

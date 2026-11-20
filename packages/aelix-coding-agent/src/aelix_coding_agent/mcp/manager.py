@@ -36,7 +36,7 @@ class McpClientManager:
     """Multi-server MCP manager (connect-all / collect-tools / disconnect-all).
 
     One bad server never aborts the others (Harlequin pattern):
-    :meth:`connect_all` returns the per-server errors instead of raising.
+    :meth:`connect_all` and :meth:`start` return per-server errors.
 
     #512 (ADR-0282): it is also the session's server INVENTORY, which is what
     ``/mcp`` and ``/extension`` read through ``core.mcp_servers.runtime_statuses``.
@@ -45,7 +45,7 @@ class McpClientManager:
     contribution that shares a disabled name is not given a connection either
     (a disabled ``mcp.json`` entry keeps a same-name manifest server off, as an
     enabled one already won the name). ``failed`` are the names whose
-    :meth:`connect_all` attempt raised.
+    most recent connection or startup discovery failed.
     """
 
     def __init__(
@@ -97,16 +97,35 @@ class McpClientManager:
         underneath as a ``CancelledError`` (#125). A cancellation that reaches
         this loop is therefore our caller's, and must keep travelling.
         """
+        _, errors = await self._connect_all(discover_tools=False)
+        return errors
+
+    async def start(self) -> tuple[list[AgentTool], list[McpConnectionError]]:
+        """Connect and discover tools one server at a time at launch."""
+        return await self._connect_all(discover_tools=True)
+
+    async def _connect_all(
+        self, *, discover_tools: bool
+    ) -> tuple[list[AgentTool], list[McpConnectionError]]:
         errors: list[McpConnectionError] = []
+        by_server: dict[str, tuple[AgentTool, ...]] = {}
         for name, conn in self._connections.items():
             try:
                 await conn.connect()
+                # Finish discovery while this server's transport is the
+                # innermost anyio cancel scope and can be closed on failure.
+                if discover_tools:
+                    by_server[name] = tuple(
+                        mcp_tools_to_agent_tools(conn, await conn.discover_tools(), name_prefix=name)
+                    )
             except McpConnectionError as exc:
                 self._failed.add(name)
                 errors.append(exc)
             else:
                 self._failed.discard(name)
-        return errors
+        if discover_tools:
+            self._tools_by_server = by_server
+        return [tool for tools in by_server.values() for tool in tools], errors
 
     async def collect_agent_tools(self) -> list[AgentTool]:
         """``list_tools()`` across all connected servers as ``AgentTool``.

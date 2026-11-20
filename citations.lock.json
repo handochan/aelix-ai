@@ -2592,7 +2592,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/subprocess_hooks.py:178-178": [
    "proc = await asyncio.create_subprocess_shell("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/mcp/client.py:232-232": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/mcp/client.py:347-347": [
    "stdio_client(params)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:111-120": [

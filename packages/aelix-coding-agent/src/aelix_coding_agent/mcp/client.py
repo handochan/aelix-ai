@@ -21,12 +21,21 @@ yields a 3-tuple ``(read, write, get_session_id)``; stdio/sse yield a
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, suppress
+import logging
+import socket
+import ssl
+from collections.abc import Iterator
+from contextlib import AsyncExitStack, contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
+from http import HTTPStatus
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 import mcp.types as mcp_types
 from aelix_agent_core.contracts import McpServerContrib
+from aelix_ai.utils.terminal_text import Controls, safe_for_terminal
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.stdio import (
@@ -35,10 +44,111 @@ from mcp.client.stdio import (
     stdio_client,
 )
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared.exceptions import McpError
 
 
 class McpConnectionError(Exception):
     """Raised on MCP server connect / handshake / transport failure."""
+
+
+class McpToolDiscoveryError(McpConnectionError):
+    """Startup tools/list failed after a successful handshake."""
+
+
+_aelix_transport = ContextVar("aelix_mcp_transport", default=False)
+
+
+def _allow_sdk_transport_record(_record: logging.LogRecord) -> bool:
+    return not _aelix_transport.get()
+
+
+@contextmanager
+def _quiet_sdk_transport() -> Iterator[None]:
+    # MCP 1.27.1 logs peer responses and exception text in these transports.
+    # The SDK's reader and writer tasks inherit this context when they start.
+    # Other users of those loggers in the host keep their own logging behavior.
+    for name in ("mcp.client.streamable_http", "mcp.client.sse"):
+        logging.getLogger(name).addFilter(_allow_sdk_transport_record)
+    token = _aelix_transport.set(True)
+    try:
+        yield
+    finally:
+        _aelix_transport.reset(token)
+
+
+def validate_mcp_endpoint(url: str, *, allow_credentials: bool = True) -> str:
+    """Validate before HTTPX can normalize spaces or pass an invalid port to DNS."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port  # Also rejects non-numeric and out-of-range ports.
+    except ValueError:
+        raise httpx.InvalidURL("invalid MCP endpoint") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or port == 0
+        or (not allow_credentials and (parsed.username or parsed.password))
+        or any(ord(char) <= 0x20 or char == "\x7f" for char in url)
+    ):
+        raise httpx.InvalidURL("invalid MCP endpoint")
+    return url
+
+
+def _failure_causes(error: BaseException) -> Iterator[BaseException]:
+    """Walk SDK task groups and HTTPX/httpcore's typed wrappers."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        cause = pending.pop()
+        if id(cause) in seen:
+            continue
+        seen.add(id(cause))
+        if isinstance(cause, BaseExceptionGroup):
+            pending.extend(reversed(cause.exceptions))
+            continue
+        yield cause
+        # httpcore can carry the original error as an argument even after
+        # re-raising its wrapper with "from None".
+        pending.extend(arg for arg in cause.args if isinstance(arg, BaseException))
+        if cause.__cause__ is not None:
+            pending.append(cause.__cause__)
+        elif cause.__context__ is not None and not cause.__suppress_context__:
+            pending.append(cause.__context__)
+
+
+def _connect_failure_reason(transport: str, error: BaseException) -> str:
+    """Format a one-line diagnostic without quoting transport exception text."""
+    if isinstance(error, asyncio.CancelledError):
+        if transport == "stdio":
+            return "the server exited during the initialize handshake"
+        return "initialize handshake cancelled"
+
+    causes = list(_failure_causes(error))
+    for cause in causes:
+        if isinstance(cause, McpError):
+            return safe_for_terminal(cause.error.message, controls=Controls.SPACE, max_chars=200)
+        if transport == "stdio" and isinstance(cause, OSError):
+            return safe_for_terminal(str(cause), controls=Controls.SPACE, max_chars=200)
+        if isinstance(cause, httpx.HTTPStatusError):
+            code = cause.response.status_code
+            try:
+                return f"HTTP {code} {HTTPStatus(code).phrase}"
+            except ValueError:
+                return f"HTTP {code}"
+        if isinstance(cause, (httpx.InvalidURL, httpx.UnsupportedProtocol)):
+            return "invalid URL"
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return "TLS certificate verification failed"
+        if isinstance(cause, socket.gaierror):
+            return "DNS resolution failed (ConnectError)"
+        if isinstance(cause, ConnectionRefusedError):
+            return "connection refused (ConnectError)"
+        if type(cause) is RuntimeError and str(cause).startswith(
+            "Unsupported protocol version from the server: "
+        ):
+            # The pinned SDK has no typed protocol-version exception.
+            return "unsupported MCP protocol version"
+    return type(causes[0] if causes else error).__name__
 
 
 class McpServerConnection:
@@ -109,11 +219,12 @@ class McpServerConnection:
         task = asyncio.current_task()
         cancelling_before = task.cancelling() if task is not None else 0
         try:
-            read, write = await self._open_transport()
-            session = await self._exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            init = await session.initialize()
+            with _quiet_sdk_transport():
+                read, write = await self._open_transport()
+                session = await self._exit_stack.enter_async_context(
+                    ClientSession(read, write)
+                )
+                init = await session.initialize()
             self._session = session
             # SDK 1.27.1 uses camelCase attributes on InitializeResult.
             self._server_info = init.serverInfo
@@ -138,7 +249,7 @@ class McpServerConnection:
             # Unwinding is what fixes it, because exiting the scope is what lets
             # anyio absorb the cancellation it raised. That also tells us whose
             # cancellation it was, which is the thing we must not get wrong.
-            await self._reset_transport()
+            teardown_error = await self._reset_transport()
             cancelling_after = task.cancelling() if task is not None else 0
             if cancelling_after > cancelling_before:
                 # anyio declined to absorb it: this cancellation is not the
@@ -147,36 +258,40 @@ class McpServerConnection:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 raise asyncio.CancelledError from exc
-            if isinstance(exc, asyncio.CancelledError):
-                # Absorbed on unwind, so it belonged to the child transport.
-                # It described a dead server, not a cancelled caller.
-                raise McpConnectionError(
-                    f"MCP server {self._contrib.name!r} "
-                    f"({self._contrib.transport}) connect failed: the server "
-                    f"exited during the initialize handshake"
-                ) from exc
             if isinstance(exc, McpConnectionError):
                 raise
+            transport = self._contrib.transport
+            # Streamable HTTP's background request cancels initialize, then
+            # surfaces its actual failure when the transport context exits.
+            failure = exc
+            if (
+                transport != "stdio"
+                and isinstance(exc, asyncio.CancelledError)
+                and isinstance(teardown_error, Exception)
+            ):
+                failure = teardown_error
+            reason = _connect_failure_reason(transport, failure)
             raise McpConnectionError(
-                f"MCP server {self._contrib.name!r} ({self._contrib.transport}) "
-                f"connect failed: {exc}"
-            ) from exc
+                f"MCP server {self._contrib.name!r} ({transport}) connect failed: {reason}"
+            ) from failure
 
-    async def _reset_transport(self) -> None:
+    async def _reset_transport(self) -> BaseException | None:
         """Unwind the transport and return to the never-connected state.
 
-        Teardown errors are dropped on purpose. This runs while a connect
-        failure is already being reported, and a transport whose child just
-        died raises plenty of secondary noise on the way out (broken pipes,
-        ``ExceptionGroup`` from the task group). The connect failure is the
-        one the caller needs; a broken-pipe from the corpse is not.
+        Return the teardown error so a cancelled remote handshake can recover
+        its request failure. A direct handshake error takes precedence.
         """
-        with suppress(BaseException):
-            await self._exit_stack.aclose()
-        self._exit_stack = AsyncExitStack()
-        self._session = None
-        self._server_info = None
-        self._protocol_version = None
+        try:
+            with _quiet_sdk_transport():
+                await self._exit_stack.aclose()
+        except BaseException as error:
+            return error
+        finally:
+            self._exit_stack = AsyncExitStack()
+            self._session = None
+            self._server_info = None
+            self._protocol_version = None
+        return None
 
     async def _open_transport(self) -> tuple[Any, Any]:
         """Select + open the transport per ``McpServerContrib.transport``.
@@ -237,9 +352,9 @@ class McpServerConnection:
                 raise McpConnectionError(
                     f"MCP server {self._contrib.name!r}: transport=http requires url"
                 )
+            url = validate_mcp_endpoint(self._contrib.url)
             read, write, _get_session_id = await self._exit_stack.enter_async_context(
-                streamablehttp_client(url=self._contrib.url, headers=self._contrib.headers)
-                 if self._contrib.headers else streamablehttp_client(url=self._contrib.url)
+                streamablehttp_client(url=url, headers=self._contrib.headers or None)
             )
             return read, write
         if t == "sse":
@@ -248,9 +363,9 @@ class McpServerConnection:
                     f"MCP server {self._contrib.name!r}: transport=sse requires url"
                 )
             # SSE is deprecated (MCP spec) — supported for legacy servers only.
+            url = validate_mcp_endpoint(self._contrib.url)
             read, write = await self._exit_stack.enter_async_context(
-                sse_client(url=self._contrib.url, headers=self._contrib.headers)
-                 if self._contrib.headers else sse_client(url=self._contrib.url)
+                sse_client(url=url, headers=self._contrib.headers or None)
             )
             return read, write
         raise McpConnectionError(
@@ -262,6 +377,26 @@ class McpServerConnection:
             raise McpConnectionError(f"{self._contrib.name!r} not connected")
         result = await self._session.list_tools()
         return list(result.tools)
+
+    async def discover_tools(self) -> list[mcp_types.Tool]:
+        """Discover startup tools while this transport can still be unwound."""
+        task = asyncio.current_task()
+        cancelling_before = task.cancelling() if task is not None else 0
+        try:
+            return await self.list_tools()
+        except (Exception, asyncio.CancelledError) as exc:
+            teardown_error = await self._reset_transport()
+            if task is not None and task.cancelling() > cancelling_before:
+                raise asyncio.CancelledError from exc
+            failure = teardown_error if isinstance(exc, asyncio.CancelledError) else exc
+            reason = (
+                _connect_failure_reason(self.transport, failure)
+                if isinstance(failure, Exception)
+                else "connection closed during tool discovery"
+            )
+            raise McpToolDiscoveryError(
+                f"MCP server {self.name!r} ({self.transport}) tools/list failed: {reason}"
+            ) from (failure or exc)
 
     async def call_tool(
         self,
@@ -285,7 +420,8 @@ class McpServerConnection:
         )
 
     async def disconnect(self) -> None:
-        await self._exit_stack.aclose()
+        with _quiet_sdk_transport():
+            await self._exit_stack.aclose()
         self._exit_stack = AsyncExitStack()
         self._session = None
         self._server_info = None

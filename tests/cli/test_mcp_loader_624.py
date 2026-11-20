@@ -112,11 +112,8 @@ class _Spy:
     def __init__(self, contribs: Any, *, disabled: Any = ()) -> None:
         self.names = [c.name for c in contribs]
 
-    async def connect_all(self) -> list[Any]:
-        return []
-
-    async def collect_agent_tools(self) -> list[Any]:
-        return []
+    async def start(self) -> tuple[list[Any], list[Any]]:
+        return [], []
 
     async def disconnect_all(self) -> None:
         return None

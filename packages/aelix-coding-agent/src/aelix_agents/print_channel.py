@@ -1395,7 +1395,7 @@ def pipe_holder_pids(links: set[str]) -> list[int]:
     case that walk cannot serve: the child has already exited, so everything it
     left behind has been reparented and no ``PPid`` chain leads back to it — yet
     something is still holding fd 1 or fd 2, which is precisely why we are
-    asking. ``mcp/client.py:232`` calls ``stdio_client`` with no ``errlog`` and
+    asking. ``mcp/client.py:347`` calls ``stdio_client`` with no ``errlog`` and
     the SDK defaults to ``sys.stderr``, so every stdio MCP server a child
     launches is one of these.
 
@@ -2527,7 +2527,7 @@ class PrintChannel:
         writer holds fd 1/2 any more". Anything the child leaves behind that
         inherited its stdio keeps those pipes open long after the child is dead —
         every stdio MCP server the child launches does, because
-        ``mcp/client.py:232`` passes no ``errlog`` and the SDK defaults to
+        ``mcp/client.py:347`` passes no ``errlog`` and the SDK defaults to
         ``sys.stderr``. Measured with a stub child that forks such a descendant,
         answers correctly and exits 0 in ~50 ms, at ``timeout_ms=3000``::
 
