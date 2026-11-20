@@ -2605,7 +2605,7 @@ async def _wait_for_shutdown(shutdown: asyncio.Event, eof: asyncio.Event) -> Non
     finally:
         for waiter in waiters:
             waiter.cancel()
-        await asyncio.gather(*waiters, return_exceptions=True)
+        await asyncio.wait(waiters)  # Preserve the caller's cancellation reason.
 
 
 def _write_event(

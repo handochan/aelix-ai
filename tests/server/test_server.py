@@ -13,19 +13,22 @@ Covers the 8 spec scenarios:
    ``get_state`` response path — the bridge forwards a server-emitted
    frame back over the socket).
 
-``asyncio_mode = "auto"`` is set project-wide, but :class:`TestClient`
-drives the app on its own portal — these are plain sync ``def test_*``.
+:class:`TestClient` drives the sync tests from its own portal.
+The disconnect regression runs the endpoint in the test's event loop.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
+import anyio
 import pytest
 from aelix_server import ServerConfig, create_app
+from aelix_server.rpc_ws import rpc_websocket
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from tests.env_sandbox import sandbox_home
 
@@ -174,6 +177,46 @@ def test_rpc_active_flag_reset_after_close(
             ws2.send_text(json.dumps({"type": "get_state", "id": "second"}))
             second = json.loads(ws2.receive_text())
     assert second["success"] is True
+
+
+async def test_rpc_disconnect_cancels_shutdown_wait_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox_home(monkeypatch, tmp_path)
+    app = create_app(_make_config(tmp_path))
+    messages = iter(
+        (
+            {"type": "websocket.connect"},
+            {"type": "websocket.disconnect", "code": 1000},
+        )
+    )
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        assert message["type"] == "websocket.accept"
+
+    websocket = WebSocket({"type": "websocket", "app": app}, receive, send)
+    original_wait = asyncio.wait
+    connection_task = asyncio.current_task()
+    client_scope = anyio.CancelScope()
+
+    async def wait_and_disconnect(fs, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        done, pending = await original_wait(fs, timeout=timeout, return_when=return_when)
+        if asyncio.current_task() is connection_task and return_when == asyncio.FIRST_COMPLETED:
+            assert len(done) == len(pending) == 1
+            # As in TestClient exit, cancel just after disconnect feeds EOF.
+            # The next loop turn puts cancellation inside the waiter cleanup.
+            asyncio.get_running_loop().call_soon(client_scope.cancel)
+        return done, pending
+
+    monkeypatch.setattr(asyncio, "wait", wait_and_disconnect)
+    async with app.router.lifespan_context(app):
+        with anyio.fail_after(5), client_scope:
+            await rpc_websocket(websocket)
+    assert client_scope.cancel_called
+    assert app.state.rpc_active is False
 
 
 # === 7. ServerConfig.from_env / create_app ===================================
