@@ -420,9 +420,6 @@ async def test_after_a_restart_an_agent_with_two_runs_names_its_newer_run(tmp_pa
 
     gate = tmp_path / "gate"
     rig = await tui_rig(tmp_path, channel=_resumable(gate))
-    # The rig's 0.3 s exit grace failed the moved run under load (verify r3 R3-F1:
-    # 4 of 73 at load 25-42); the product gives 45 s, test_detach_acceptance_777 30 s.
-    rig.service._exit_grace = 30.0
     try:
         turn = await parked_call(rig)
         row = row_of(rig)

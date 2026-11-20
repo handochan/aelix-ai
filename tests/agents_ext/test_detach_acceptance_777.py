@@ -136,9 +136,9 @@ async def test_a_moved_run_that_outlasts_reloads_bound_is_unresolved_then_ends_s
 ) -> None:
     gate = tmp_path / "gate"
     rig = await tui_rig(tmp_path, script=script("never said", gate=gate, partial="halfway"))
-    # The bound short, and the service's own escalation and liveness cancel later than the
-    # release, so what ends the run is its own late end (the product: 10 s, 2 s, 45 s).
-    rig.service._cleanup_bound, rig.service._stop_grace, rig.service._exit_grace = 0.5, 30.0, 30.0
+    # The short cleanup bound makes reload time out. The stop grace and the
+    # fixture's exit grace let the run report on its own after release.
+    rig.service._cleanup_bound, rig.service._stop_grace = 0.5, 30.0
     release = asyncio.Event()
     held: list[int | None] = []
     real_release_pipes = print_channel._release_pipes
