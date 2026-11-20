@@ -1870,6 +1870,12 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Shell commands run by a delegated agent inherit the user's `PYTHONPATH`
+  (#803, ADR-0197).** In the macOS CLI probe, delegated `bash` passed through
+  the two user-supplied paths unchanged and left the variable unset when it
+  was unset in the parent. The child still received the runtime path during
+  interpreter startup.
+
 - **The `agent` tool is offered on an install without the `tui` extra (#797).** `aelix_agents`
   imported `rich` and `wcwidth` at module top, so `pip install aelix-coding-agent` and Aelix
   Studio's bundle had no `agent` tool, and only stderr said why. Cell widths now resolve those

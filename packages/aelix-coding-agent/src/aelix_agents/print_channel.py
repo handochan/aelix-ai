@@ -1174,15 +1174,15 @@ def build_child_env(
     # from a source tree that is on ITS ``sys.path`` only because of how it was
     # launched, and ``sys.executable -m aelix_coding_agent`` in a fresh process
     # would then fail to import at all.
+    from aelix_coding_agent.util.child_pythonpath import save_original_pythonpath
+
     root = str(Path(aelix_coding_agent.__file__).resolve().parents[1])
-    existing = env.get("PYTHONPATH", "")
-    parts = [p for p in existing.split(os.pathsep) if p]
+    existing = save_original_pythonpath(env)
+    parts = [p for p in (existing or "").split(os.pathsep) if p]
     if root not in parts:
         parts.insert(0, root)
-    # Rebuilt from ``parts`` EVERY time, also when the root was already listed:
-    # an empty segment (``'<root>:'``) is the cwd — the project — on the child's
-    # ``sys.path`` even under ``-P``, and a project ``sitecustomize.py`` then ran
-    # at the child's startup (#641 verify V4).
+    # Rebuild even when the root was already listed. An empty segment puts
+    # the child's cwd on sys.path even under -P (#641 verify V4).
     env["PYTHONPATH"] = os.pathsep.join(parts)
 
     return env

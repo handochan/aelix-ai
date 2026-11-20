@@ -17,11 +17,14 @@ vacuous. The loader half (an in-process ``python -m`` ordering) is
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from aelix_agents.print_channel import build_child_argv, build_child_env
@@ -268,3 +271,171 @@ def test_a_delegated_child_imports_the_installed_extension_modules(tmp_path: Pat
         ("aelix_t641_voter", "installed"),
     ], result.stderr
     assert all(r["safe_path"] for r in records)
+
+
+_PYTHONPATH_PROBE = """
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from aelix_agents.print_channel import build_child_env
+from aelix_coding_agent.agents.profile import AgentProfile
+from aelix_coding_agent.util.shell_env import get_shell_env
+
+carrier = "AELIX_CHILD_ORIGINAL_PYTHONPATH"
+cwd = Path.cwd()
+shell_env = get_shell_env()
+native = subprocess.check_output(
+    [sys.executable, "-c", "import os; print(repr(os.environ.get('PYTHONPATH')))"],
+    encoding="utf-8",
+    errors="replace",
+).strip()
+(cwd / "observed.json").write_text(
+    json.dumps([shell_env.get("PYTHONPATH"), carrier in shell_env, native]),
+    encoding="utf-8",
+)
+
+def setup(api):
+    grandchild = cwd / "grandchild"
+    if not grandchild.is_dir():
+        return
+    profile = AgentProfile(
+        name="probe", description="Probe", body="Probe", file_path=__file__, scope="user"
+    )
+    env = build_child_env(profile)
+    (cwd / "grandchild-bootstrap.json").write_text(
+        json.dumps(env["PYTHONPATH"].split(os.pathsep)), encoding="utf-8"
+    )
+    subprocess.run(
+        [sys.executable, "-P", "-m", "aelix_coding_agent", "--offline",
+         "--no-session", "--no-extensions", "-e", __file__, "-p", "probe"],
+        cwd=grandchild, env=env, stdin=subprocess.DEVNULL, timeout=40,
+    )
+"""
+
+
+@pytest.mark.parametrize("shape", ["absent", "empty", "user", "user-with-root", "windows-key"])
+def test_delegated_pythonpath_is_restored_before_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Read both the shell environment and an implicitly inherited process at import time."""
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    extension = tmp_path / "probe.py"
+    extension.write_text(_PYTHONPATH_PROBE, encoding="utf-8")
+    base = child_env(
+        tmp_path / "home", AELIX_CODING_AGENT_DIR=str(tmp_path / "agent"), PI_OFFLINE="1"
+    )
+    base.pop("PYTHONPATH", None)
+    user_path = str(tmp_path / "user")
+    root = _source_root()
+    original = {
+        "absent": None,
+        "empty": "",
+        "user": os.pathsep.join([user_path, str(tmp_path / "second")]),
+        # The startup path drops empty segments. The user's value keeps them and its order.
+        "user-with-root": os.pathsep.join([user_path, "", root]),
+        "windows-key": user_path,
+    }[shape]
+    with monkeypatch.context() as patch:
+        if shape == "windows-key":
+            patch.setattr(sys, "platform", "win32")
+            base["PythonPath"] = user_path
+        elif original is not None:
+            base["PYTHONPATH"] = original
+        env = build_child_env(_profile(), base=base)
+    if shape == "absent":
+        (cwd / "grandchild").mkdir()
+
+    result = _run(
+        [
+            *_print_argv(cwd)[:4],
+            "--offline",
+            "--no-session",
+            "--no-extensions",
+            "-e",
+            str(extension),
+            "-p",
+            "probe",
+        ],
+        cwd,
+        env,
+    )
+
+    observed = cwd / "observed.json"
+    assert observed.is_file(), result.stderr
+    assert json.loads(observed.read_text(encoding="utf-8")) == [
+        original,
+        False,
+        repr(original),
+    ]
+    if shape == "absent":
+        # The public depth gate is still one. The extension drives the launch seam directly.
+        assert json.loads((cwd / "grandchild-bootstrap.json").read_text(encoding="utf-8")) == [root]
+        grandchild = cwd / "grandchild" / "observed.json"
+        assert grandchild.is_file(), result.stderr
+        assert json.loads(grandchild.read_text(encoding="utf-8")) == [None, False, "None"]
+
+
+def test_standalone_module_launch_preserves_pythonpath_with_stray_carrier(tmp_path: Path) -> None:
+    caller_path = str(tmp_path / "original")
+    env = child_env(
+        tmp_path / "home",
+        AELIX_CODING_AGENT_DIR=str(tmp_path / "agent"),
+        PI_OFFLINE="1",
+        PYTHONPATH=caller_path,
+        AELIX_CHILD_ORIGINAL_PYTHONPATH=f"={tmp_path / 'alternate'}",
+    )
+    extension = tmp_path / "probe.py"
+    extension.write_text(_PYTHONPATH_PROBE, encoding="utf-8")
+    result = _run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "aelix_coding_agent",
+            "--offline",
+            "--no-agents",
+            "--no-session",
+            "--no-extensions",
+            "-e",
+            str(extension),
+            "-p",
+            "probe",
+        ],
+        tmp_path,
+        env,
+    )
+
+    observed = tmp_path / "observed.json"
+    assert observed.is_file(), result.stderr
+    assert json.loads(observed.read_text(encoding="utf-8")) == [
+        caller_path,
+        True,
+        repr(caller_path),
+    ]
+
+
+def test_windows_empty_pythonpath_is_written_to_the_native_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_coding_agent.util import child_pythonpath
+
+    env = {
+        "AELIX_SUBAGENT_DEPTH": "1",
+        "AELIX_CHILD_ORIGINAL_PYTHONPATH": "=",
+        "PYTHONPATH": "bootstrap",
+    }
+    set_variable = Mock(return_value=True)
+    win_dll = Mock(return_value=SimpleNamespace(SetEnvironmentVariableW=set_variable))
+    with monkeypatch.context() as patch:
+        patch.setattr(child_pythonpath, "os", SimpleNamespace(environ=env))
+        patch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+        patch.setattr(sys, "platform", "win32")
+        child_pythonpath.restore_child_pythonpath()
+
+    assert env == {"AELIX_SUBAGENT_DEPTH": "1", "PYTHONPATH": ""}
+    win_dll.assert_called_once_with("kernel32", use_last_error=True)
+    set_variable.assert_called_once_with("PYTHONPATH", "")
