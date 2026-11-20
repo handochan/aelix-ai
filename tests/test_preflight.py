@@ -1261,7 +1261,7 @@ def test_the_size_gate_shows_only_its_own_line() -> None:
 
     step = pf.Step(shown="x")
     out = (
-        "  x.py:9: UserWarning: diagnostic sample: the published sdist is 1 B (example only)\n"
+        "  (a file, a line): UserWarning: diagnostic sample: the published sdist is 1 B (example only)\n"
         '>       f"[preflight] the published sdist is {size:,} B"\n'
         "[preflight] the published sdist is 5 B, 5 B (50%) under the 10 B cap\n"
     )
@@ -1312,7 +1312,7 @@ def test_the_size_verdict_compares_the_report_with_its_cap(
         (4, "ERROR: file or directory not found: x", "pytest exited 4 and the test wrote no report; its output above says why"),
         (
             1,
-            "    def f():\nE   first: an earlier frame\n\nx.py:3: in f\n"
+            "    def f():\nE   first: an earlier frame\n\n(a file, a line): in f\n"
             "E   subprocess.CalledProcessError: Command 'tar' returned 1.\nE   more of it\n"
             "ERROR tests/x.py::test_y\n1 error in 3.2s",
             "pytest exited 1 with an error before it measured one: subprocess.CalledProcessError: Command 'tar' returned 1.",
