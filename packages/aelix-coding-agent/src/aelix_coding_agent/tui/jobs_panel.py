@@ -354,7 +354,7 @@ class JobsPanel:
             self.note = "nothing to message"
             return
         if snap.state in TERMINAL_STATES:
-            self._ended(snap.job_id, "steer")
+            self._ended(snap.job_id, "wrap_up")  # no typed text here: no "with this text" (#848)
             return
         registration = self.service.registry.get(snap.kind)
         caps = registration.adapter.capabilities if registration is not None else None

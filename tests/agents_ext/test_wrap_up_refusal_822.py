@@ -163,7 +163,7 @@ async def test_the_panels_w_w_and_m_on_a_finished_agent_say_what_jobs_wrap_and_s
         panel.list.press("m")
         with contextlib.suppress(AssertionError):
             await wait_for(lambda: panel.note not in ("", f"{short} has ended"), timeout=2.0)
-        assert panel.note == steer_said
+        assert panel.note == wrap_said  # #848: m with no typed text names no "with this text"
         assert not panel.list._result.done()  # a note, not a close with "/jobs steer <id> "
     finally:
         await finish(rig)
