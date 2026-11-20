@@ -21,7 +21,7 @@ from aelix_agent_core.session.jsonl_storage import JsonlSessionStorage
 from aelix_agent_core.session.storage import SessionError
 from aelix_agent_core.session.transcript import StoredMessage, TranscriptSnapshot
 
-from aelix_coding_agent.rpc._jsonl import serialize_json_line
+from aelix_coding_agent.rpc._jsonl import encode_json_line
 from aelix_coding_agent.rpc.rpc_types import RpcSuccessResponse
 
 METHOD = "transcript/list"
@@ -106,7 +106,7 @@ class _Selector:
 
 
 def _wire_size(data: Any) -> int:
-    return len(serialize_json_line(data).encode("utf-8"))
+    return len(encode_json_line(data, strict_utf8=True))
 
 
 def _recovery_key(snapshot: TranscriptSnapshot) -> bytes:

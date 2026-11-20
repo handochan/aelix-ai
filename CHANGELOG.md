@@ -1875,6 +1875,15 @@ unwritten. Add them with the next release.
   the two user-supplied paths unchanged and left the variable unset when it
   was unset in the parent. The child still received the runtime path during
   interpreter startup.
+- **RPC resource lists and events carry text containing lone surrogates (#844, ADR-0302).**
+  In a stdio launch with a failing user extension, `resources/list` and
+  `selections/list {kind: "extension"}` retain healthy inventory and the load error.
+  `tests/rpc/test_reply_encoding_797.py` checks U+FFFD replacement in RPC reply and
+  event text and exact UTF-8 bytes for ordinary Hangul, emoji, and U+2028.
+- **Legacy RPC subagent progress carries valid JSON when usage is non-finite (#856, ADR-0302).**
+  `aelix_subagent` writes `null` for non-finite `tokens` or `cost`.
+  `test_legacy_subagent_usage_is_strict_json_at_the_wire` checks all three progress
+  channels and the exact bytes for a finite sibling field and existing nulls.
 
 - **The `agent` tool is offered on an install without the `tui` extra (#797).** `aelix_agents`
   imported `rich` and `wcwidth` at module top, so `pip install aelix-coding-agent` and Aelix
@@ -1884,10 +1893,8 @@ unwritten. Add them with the next release.
   `extensionErrors` and as a `failed to load` row of the `/extension` Installed tab and RPC
   `selections/list`, across a `/reload` (`tests/agents_ext/test_cells_without_tui_797.py`, a
   real `--mode rpc` child that refuses all three TUI libraries and the in-process RPC loop; a
-  wheel install without extras, run once on macOS). An error whose text holds a lone surrogate
-  no longer leaves those two lists unanswered: the text gets U+FFFD, and an RPC reply UTF-8
-  cannot encode is answered by its id with an error (`tests/rpc/test_reply_encoding_797.py`). A
-  delegated child at the depth limit, which never registers the extension, no longer imports it
+  wheel install without extras, run once on macOS). The bundled load-error text uses U+FFFD for lone
+  surrogates. A delegated child at the depth limit, which never registers the extension, no longer imports it
   and lists its failure.
 - **A background job whose title holds a lone surrogate ends with its outcome and its notice
   (#810).** The notice's UTF-8 cuts raised `UnicodeEncodeError` and the job's drive task died;

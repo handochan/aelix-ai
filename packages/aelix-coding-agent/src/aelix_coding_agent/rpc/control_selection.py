@@ -146,12 +146,36 @@ def serialize_snapshot(snapshot: Snapshot, effect: str) -> dict[str, Any]:
             for scope in SCOPES
             if (status := snapshot.scopes.get(scope)) is not None
         },
-        "items": [serialize_row(state) for state in snapshot.states],
+        "items": _serialize_rows(snapshot),
         "problems": [rpc_words(p) for p in snapshot.problems],
         "notices": [rpc_words(n) for n in snapshot.notices],
         "unreadable": [rpc_words(u) for u in snapshot.unreadable],
         "policyPending": snapshot.policy_pending,
     }
+
+
+def _serialize_rows(snapshot: Snapshot) -> list[dict[str, Any]]:
+    rows = [serialize_row(state) for state in snapshot.states]
+    keys = {row["key"] for row in rows}
+    for row in rows:
+        key = row["key"]
+        try:
+            key.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            if snapshot.kind == "mcp" or row["role"] == "item":
+                raise ValueError(
+                    f"Cannot list {snapshot.kind}: a selection key is not valid UTF-8"
+                ) from exc
+            # Read-only rows still need distinct keys for display. Retain all
+            # source bytes and reserve the keys of the real rows in this snapshot.
+            display_key = "readonly:" + key.encode("utf-8", "surrogatepass").hex()
+            if display_key in keys:
+                raise ValueError(f"Cannot list {snapshot.kind}: a display key collides") from exc
+            keys.add(display_key)
+            row["key"] = display_key
+        for identity in row["identities"]:
+            identity.encode("utf-8")
+    return rows
 
 
 def serialize_save(save: SaveResult | None) -> dict[str, Any]:

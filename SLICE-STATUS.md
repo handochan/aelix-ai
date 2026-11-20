@@ -79,6 +79,13 @@ platform mark, so the `windows-latest` legs collect it; their logs were not read
 for it. Nobody has watched a steer, a wrap-up or the inbox's EOF on a Windows desk.
 The post-EOF path of a delegated child on Windows is the open #729.
 
+The Windows RPC host uses the shared JSONL writer. In the macOS stdio probe, #844
+replies with healthy inventory and the failed import, writing U+FFFD for lone
+surrogates in ordinary text. The ACP replay at `16d6555b` and `369df478` forwards
+the captured progress events and resolves the following reply. In the native probe
+and `test_legacy_subagent_usage_is_strict_json_at_the_wire`, #856 writes JSON null for
+non-finite `aelix_subagent` `tokens` and `cost`. Native Windows execution awaits CI.
+
 **W4 since #612 (recorded 2026-11-19).** A delegated child its parent answers is launched with
 `--command-inbox=2` (ADR-0308): its `approval_request` lines go out on its stdout and the parent's
 `approval` answers come in on the same inbox, through the same win32 `os.read` pump. The tests that

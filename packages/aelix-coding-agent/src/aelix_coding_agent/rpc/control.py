@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -988,11 +989,16 @@ class RpcControlPlane:
         for channel in ("subagent_start", "subagent_tool", "subagent_end"):
 
             def receive(value: Any, event: str = channel) -> None:
+                data = {key: getattr(value, key, None) for key in fields}
+                for key in ("tokens", "cost"):
+                    usage = data[key]
+                    if isinstance(usage, float) and not math.isfinite(usage):
+                        data[key] = None
                 self.emit(
                     {
                         "type": "aelix_subagent",
                         "event": event,
-                        "data": {key: getattr(value, key, None) for key in fields},
+                        "data": data,
                     }
                 )
 

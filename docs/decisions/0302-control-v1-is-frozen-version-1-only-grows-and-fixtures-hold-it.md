@@ -9,6 +9,8 @@ failed to import is in `resources/list`'s `extensionErrors` and `selections/list
 rows, a compatible correction (the lead's call); see the note of that date.
 Noted 2026-11-19 (#612, ADR-0307, ADR-0308): #612 is the first lane added under D9; see the note
 "(2026-11-19, #612)".
+Amended 2026-11-20 (#844): ordinary RPC text writes U+FFFD for lone surrogates.
+Amended 2026-11-20 (#856): non-finite `aelix_subagent` `tokens` and `cost` are written as JSON null.
 Date: 2026-11-18
 Issue: #623. Lands in one commit with #624 (ADR-0305). Lead's call: one lane and one PR,
 because #624's done-conditions include #623's contract tests and both change `rpc/control.py`.
@@ -766,3 +768,64 @@ U+FFFD first, so that launch still answers both lists. The floor check (`scripts
 fixture exercises the correlated envelope and optional `transcript` object
 on the six classic lifecycle frames. The v1 fixtures retain their existing
 digests.
+
+
+## Note (2026-11-20, #844): ordinary RPC text replaces lone surrogates
+
+The lead chose U+FFFD for each lone surrogate in ordinary RPC text. The native stdio
+probe with a failing user extension decodes strictly as UTF-8 JSON and returns the
+load error beside healthy `resources/list` and `selections/list {kind: "extension"}`
+inventory. `tests/rpc/test_reply_encoding_797.py` checks replacement in a path, classic
+and control replies, harness and legacy subagent events, extension UI, and RPC client
+stdin. It checks exact UTF-8 bytes for Hangul, emoji, and U+2028 and preserves
+literal escape text. A request ID containing a surrogate still receives the
+correlated encoding-error fallback with the exact ID, as checked in the control
+reply test. #655's transcript sizing and bounded reply checks use strict UTF-8,
+as exercised by `tests/rpc/test_transcript_655.py`.
+
+The lane classifies #844's ordinary-text replacement as a compatible v1 correction
+under D3. The offline extension probe recovers inventory replies that previously
+returned an encoding error. The MCP selection regression test keeps an
+unrepresentable selection key on the correlated error path and passes a genuine
+U+FFFD key back to `selections/set` unchanged. The `get_messages` regression test
+keeps an unrepresentable JSON member name on the correlated error path, including
+when replacing it would hide a valid sibling. The control-v1 floor and ordinary
+wire-byte comparisons cover the existing contract.
+
+Two known limits affect read-only tool placeholders for failed extensions whose
+filename contains a lone surrogate. The round-three verifier ran
+`readonly_roundtrip.py` against an offline macOS RPC child. In `odd`, listing tools
+with the missing extension `absent-\udcff.py` returned a row with a projected
+`readonly:` key and an unavailable refusal. Sending that exact key to
+`selections/set` on the same connection returned `Unknown tool row` instead of
+the listed refusal, so the key failed the round trip specified by ADR-0305 D3.
+In `pair`, listing `absent-\udcff.py` and `absent-\ufffd.py` returned two distinct
+row keys and one shared `group`, `ext-failed:absent-�.py`. Base `b7e9827b` refused
+the whole tool listing with a UTF-8 encoding error in both cases.
+
+Native wire validity and downstream delivery were measured separately. Replaying the
+captured `aelix_subagent` stdout through the ACP reader and writer at `16d6555b` and
+`369df478` forwarded both surrounding events and the event with U+FFFD and resolved the
+following correlated reply. The lossless escape variant had passed native parsing,
+then failed ACP's strict UTF-8 writer after decoding the escape. Pi's
+`serializeJsonLine` at `e5d93ea0ab3747293dca5d12280361d04142eeb2` uses
+`JSON.stringify`, which escapes lone surrogates. Aelix uses replacement for the
+ordinary text on this path so the tested ACP writers can forward it.
+
+## Note (2026-11-20, #856): legacy subagent usage stays within JSON
+
+The lane chose JSON `null` for each non-finite floating-point `tokens` or `cost` in
+`aelix_subagent`. `test_legacy_subagent_usage_is_strict_json_at_the_wire` exercises
+`subagent_start`, `subagent_tool`, and `subagent_end`. It compares exact bytes for the
+finite sibling in `(7, NaN)` and `(+Infinity, 0.25)`, an existing null pair, and a
+400-digit integer paired with a finite cost.
+
+The lane treats the mapping as a v1 correction under D3 and ADR-0275 for these
+non-finite inputs. The strict native decoder rejected the base frames and reads the
+repaired frames with the existing event names and keys. Null conveys unavailable usage
+in the nullable fields recorded by `event.aelix_subagent.json`. The control-v1 floor
+and frozen fixture replay cover the v1 shape. The #623 consumer list records a tracker
+and a whole-frame passthrough at ACP `16d6555b`. In the two-revision usage replay the
+tracker reads `null, null` as `0, 0.0` and the unparented notification forwards both
+nulls. The 400-digit sample measures native bytes. Large-integer policy is deferred
+under #856.
