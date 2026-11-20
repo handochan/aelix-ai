@@ -2,7 +2,7 @@
 
 Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C). Amended 2026-11-19
 (#797): §(a)'s guarded import needs no `tui` extra, and a bundled import that fails is a listed
-load error; see the note of that date.
+load error. Amended 2026-11-20 (#803) in §(l) for the delegated interpreter's `PYTHONPATH`.
 **Superseded in part 2026-11-08 (ADR-0295, #723): the prohibition of background delegation —
 "a background child has no owner to reap it and no channel to report through" — is superseded
 by [ADR-0295](0295-a-delegated-agent-can-run-in-the-background-as-a-job-of-its-session.md): a
@@ -589,6 +589,8 @@ its own MCP subprocesses); `PYTHONPATH` prepended with the product-core parent
 directory when absent. Deliberately inherited and documented as such:
 `AELIX_CODING_AGENT_DIR`, `AELIX_SETTINGS_PATH`, `AELIX_AUTH_PATH`,
 `XDG_CONFIG_HOME`, `PI_OFFLINE`, and every provider API key.
+
+The #803 note below records when the launcher restores that `PYTHONPATH`.
 
 cwd is the tool's `cwd` argument when supplied **and**
 `Path.resolve().is_relative_to(parent_cwd)`; an out-of-tree `cwd` is a tool
@@ -1606,3 +1608,26 @@ The child→parent approval back-channel this ADR deferred is [ADR-0308](0308-a-
 - **The kernel** is still free of delegation: the gate's `ask_parent` and `decide_for_child` are
   product core (`builtin/permission.py`), the router is the bundled extension's
   (`aelix_agents/child_approvals.py`).
+
+## Note (2026-11-20, #803)
+
+The owner's choice on 2026-11-20 was “자식이 원래 값으로 복원 (권장)”.
+Both delegation channels use `build_child_env` and start via
+`python -P -m aelix_coding_agent`. The launcher carries the original
+`PYTHONPATH` in a private environment entry for the interpreter to consume
+after its startup imports, before CLI setup can load extensions or launch
+tools. The child removes the carrier and restores the exact original value,
+including an absent key, an empty value, or a list containing the runtime
+root. The interpreter keeps its startup `sys.path` for subsequent imports.
+
+`test_delegated_pythonpath_is_restored_before_extensions` checks the
+environment at extension import and in a fresh interpreter that inherited
+it. In the macOS CLI probe, both the child and the grandchild's `bash`
+commands saw the original unset value after the fix. An extension drove the
+second launch with the production launcher builders, which supplied the
+runtime path again at interpreter startup. The public delegation limit is
+one level (§(c)).
+
+At pi `e5d93ea0ab3747293dca5d12280361d04142eeb2`, the coding-agent subagent
+example's subprocess launch inherits its environment through Node's
+`spawn`. The Aelix launcher adds its own import root for the Python bootstrap.

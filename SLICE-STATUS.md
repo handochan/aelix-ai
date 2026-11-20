@@ -35,6 +35,12 @@
 
 Branch: `feat/windows-experimental-slice` (Scenario C — parallel, tag-optional).
 
+**Delegated interpreter environment (#803, ADR-0197).** The startup handoff
+accepts the original `PYTHONPATH` key in any Windows spelling and restores
+its value before extension loading. The #803 regression test exercises a
+mixed-case input through the Windows builder branch on macOS. Native Windows
+inheritance of an empty value and the Windows shell path await a Windows run.
+
 **When this slice was written, Windows was not a supported platform** (see the
 amendment above for where that stands now). It lands the parts that are
 verifiable on Linux and writes the first Windows-**asserting** tests, so that a
