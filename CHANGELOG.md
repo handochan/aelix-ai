@@ -4573,6 +4573,15 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **MCP launch warnings identify connection and tool discovery failures (#834,
+  ADR-0101).** The loopback launch tests show HTTP and SSE 401, Streamable HTTP
+  499, connection refusal and invalid endpoints without echoing the endpoint.
+  The HTTP and stdio initialize error fixtures and the stdio `tools/list`
+  rejection produce a bounded, single-line warning. Launch still discovers
+  tools from the next server. The incomplete HTTP initialize fixture keeps
+  peer metadata out of stderr, and the RPC discovery fixture gets the server
+  name, phase and error class (`tests/mcp_client/test_connect_warning_834.py`).
+
 - **`auto` reads six more commands as the shells read them (#784, #785, #786, #787, #788, #789;
   ADR-0158 #784–#789 note, ADR-0288 #788 note).** Each was allowed on `52bc607a` and, run with
   `<shell> -c` in a scratch directory (macOS bash 3.2.57, zsh, dash and ksh93u+; Linux bash 5.2.37,

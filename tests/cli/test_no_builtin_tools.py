@@ -98,11 +98,8 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         def __init__(self, contribs: Any, **_kwargs: Any) -> None:
             self.contribs = contribs
 
-        async def connect_all(self) -> list[str]:
-            return []
-
-        async def collect_agent_tools(self) -> list[AgentTool]:
-            return [AgentTool(name=_MCP_TOOL, description="fake mcp tool")]
+        async def start(self) -> tuple[list[AgentTool], list[Any]]:
+            return [AgentTool(name=_MCP_TOOL, description="fake mcp tool")], []
 
         async def disconnect_all(self) -> None:
             return None

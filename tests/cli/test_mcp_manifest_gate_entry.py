@@ -111,11 +111,8 @@ async def _run(
         def __init__(self, contribs, **_kwargs):
             seen.extend(c.name for c in contribs)
 
-        async def connect_all(self):
-            return []
-
-        async def collect_agent_tools(self):
-            return []
+        async def start(self):
+            return [], []
 
         async def disconnect_all(self):
             return None

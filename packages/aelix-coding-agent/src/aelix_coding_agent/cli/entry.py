@@ -4102,9 +4102,9 @@ async def _async_main(argv: list[str]) -> int:
         # A manager with only disabled entries connects nothing; it exists so
         # /mcp lists them instead of saying no server is configured.
         mcp_manager = McpClientManager(mcp_contribs, disabled=mcp_disabled)
-        for conn_err in await mcp_manager.connect_all():
+        mcp_tools, startup_errors = await mcp_manager.start()
+        for conn_err in startup_errors:
             print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
-        mcp_tools = await mcp_manager.collect_agent_tools()
     # #25 (Codex F11) — who declared each manifest server, and which the launch
     # started: fixed for the process. ``/reload`` hides the tools of a started
     # server whose plugin is off now (its connection stays until restart), and

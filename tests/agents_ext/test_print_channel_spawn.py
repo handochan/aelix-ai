@@ -408,7 +408,7 @@ def _pipe_holding_stub(marker: Path) -> str:
     """A child that leaks a descendant holding its stdout AND stderr.
 
     Deliberately does NOT redirect the grandchild's stdio, so it inherits fd 1
-    and fd 2 — the exact shape ``mcp/client.py:232``'s ``stdio_client(params)``
+    and fd 2 — the exact shape ``mcp/client.py:347``'s ``stdio_client(params)``
     produces for every stdio MCP server a child launches (the SDK's ``errlog``
     defaults to ``sys.stderr``). The child answers and exits 0 immediately; the
     pipes stay open regardless.
@@ -1092,7 +1092,7 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
     ``_stream_and_reap`` awaited both pumps and only then ``proc.wait()``, which
     silently redefined "the child finished" as "no writer holds fd 1/2 any
     more". Every stdio MCP server a child launches holds them:
-    ``mcp/client.py:232`` calls ``stdio_client`` with no ``errlog`` and the SDK
+    ``mcp/client.py:347`` calls ``stdio_client`` with no ``errlog`` and the SDK
     defaults to ``sys.stderr``. Measured before the fix, with a child that
     answers correctly and exits 0 in ~50 ms at ``timeout_ms=3000``::
 

@@ -1,6 +1,6 @@
 # 0101. Sprint 6h₉d — MCP Client (Tier 4a)
 
-Status: Accepted (Sprint 6h₉d / Phase 5b-foundation / W6 shipped)
+Status: Accepted (Sprint 6h₉d / Phase 5b-foundation / W6 shipped). Amended 2026-11-20 (#834) for launch connection and tool discovery diagnostics.
 Date: 2026-05-25
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -238,3 +238,47 @@ hooks (Tier 4b).
 http/sse entry with no `url` are reported at load instead of failing at connect.
 The one-file resolution is unchanged. `McpClientManager` also holds the disabled
 entries (no connection) and the names whose `connect_all` raised (D4).
+
+## Note (2026-11-20, #834): MCP launch connection and tool discovery diagnostics
+
+`test_connect_warning_834.py` exercises connection failures at the SDK
+boundary and through CLI launch. When Streamable HTTP cancels its own
+initialize handshake, the connection takes the underlying error from
+transport teardown after checking for caller cancellation. The formatter
+walks task groups and their causes. In the loopback launch test, refused
+connections, invalid endpoints, HTTP and SSE 401, and Streamable HTTP 499
+have distinct diagnostics. HTTP status phrases come from the standard library
+when it recognizes the code. The DNS and certificate checks
+use typed causes in the nested-group tests. The stdio transport-cancellation
+test checks the existing initialize-exit diagnostic.
+
+The RPC controller uses the same endpoint validation when a host configures
+servers. The malformed-host regression test checks that the request error
+does not quote the supplied host. Connection failures on that RPC path still
+report the server name and error class. The real RPC child test checks that
+a rejected `tools/list` adds the discovery phase to the reply and preserves the
+previously registered tools.
+
+When initialize returns a JSON-RPC error, the launch test checks both HTTP
+and stdio for one logical warning line and a bounded excerpt. The shared
+`safe_for_terminal` helper replaces steering characters with spaces, then
+limits the excerpt to 200 code points plus a truncation marker. Server
+messages remain attributable to the server and can contain its own data.
+The stdio discovery fixture checks the same bound and verifies that Aelix
+continues to the healthy server. Startup finishes each server's discovery while
+its transport is the innermost cancel scope, so Aelix can close a failed server
+before it starts the next.
+
+The incomplete HTTP initialize fixture checks that the SDK's validation dump
+and raw response stay out of stderr and Aelix still reports `ValidationError`.
+The SDK Streamable HTTP and SSE transport loggers filter records produced in
+Aelix's transport context, including the tasks that inherit it. The stdio
+protocol-version fixture checks a fixed unsupported-version diagnosis.
+
+At pi `e5d93ea0ab3747293dca5d12280361d04142eeb2`, the Streamable HTTP
+transport attaches a bounded body snippet on HTTP failure. The MCP runtime
+enters the sign-in flow for HTTP 401 when an auth provider is configured and
+can append the stdio stderr tail. Pi includes tool discovery in connection
+setup for servers that advertise the tools capability. This amendment uses
+local status phrases for transport errors and the terminal text bound above
+for JSON-RPC diagnostics. Refs #550.

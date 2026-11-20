@@ -171,11 +171,8 @@ class _Spy:
     def __init__(self, contribs, *, disabled=()):
         _Spy.calls.append(([c.name for c in contribs], [d.contrib.name for d in disabled]))
 
-    async def connect_all(self):
-        return []
-
-    async def collect_agent_tools(self):
-        return []
+    async def start(self):
+        return [], []
 
     async def disconnect_all(self):
         return None

@@ -19,11 +19,12 @@ import re
 import sys
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit
 
+import httpx
 from aelix_agent_core.contracts import McpServerContrib
 
 from aelix_coding_agent.mcp import McpClientManager
+from aelix_coding_agent.mcp.client import McpToolDiscoveryError, validate_mcp_endpoint
 
 CLIENT_PREFIX = "acp_"
 # Provider tool names are ``^[a-zA-Z0-9_-]{1,64}$`` at the strictest provider
@@ -112,14 +113,12 @@ def contributions(servers: Any) -> list[McpServerContrib]:
             url = server.get("url")
             if not isinstance(url, str):
                 raise ValueError("MCP HTTP URL is required")
-            parsed = urlsplit(url)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-            ):
-                raise ValueError("MCP HTTP URL must use http(s) without embedded credentials")
+            try:
+                validate_mcp_endpoint(url, allow_credentials=False)
+            except httpx.InvalidURL:
+                raise ValueError(
+                    "Invalid MCP HTTP URL. Use http(s) without embedded credentials."
+                ) from None
             headers = server.get("headers", [])
             if not isinstance(headers, list) or len(headers) > 64:
                 raise ValueError("Invalid MCP headers")
@@ -166,13 +165,14 @@ def provider_safe_tools(tools: list[Any]) -> tuple[list[Any], list[dict[str, str
 def _connect_failures(
     manager: McpClientManager, errors: list[Exception], client_names: dict[str, str]
 ) -> str:
-    # connect_all reports one error per failed server, in declaration order. Name
-    # the server and the error class only: the message can carry a URL.
+    # Startup reports one error per failed server in declaration order. Report
+    # the name, startup phase if applicable, and class. Peer text stays out.
     failed = [name for name, connection in manager.connections.items() if not connection.connected]
     parts = []
     for name, error in zip(failed, errors, strict=False):
         cause = error.__cause__ or error
-        parts.append(f"{client_names.get(name, name)!r} ({type(cause).__name__})")
+        phase = "tools/list: " if isinstance(error, McpToolDiscoveryError) else ""
+        parts.append(f"{client_names.get(name, name)!r} ({phase}{type(cause).__name__})")
     return "MCP server(s) failed to connect: " + ", ".join(parts or ["unknown"])
 
 
@@ -215,10 +215,9 @@ class RpcMcpController:
 
         async def own() -> None:
             try:
-                errors = await manager.connect_all()
+                tools, errors = await manager.start()
                 if errors:
                     raise ValueError(_connect_failures(manager, list(errors), client_names))
-                tools = await manager.collect_agent_tools()
                 ready.set_result(tools)
                 await stop.wait()
             except BaseException as error:

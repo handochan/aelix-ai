@@ -76,11 +76,8 @@ class _Manager:
     def tools_by_server(self) -> dict[str, tuple[AgentTool, ...]]:
         return dict(self._tools)
 
-    async def connect_all(self) -> list[Any]:
-        return []
-
-    async def collect_agent_tools(self) -> list[AgentTool]:
-        return [t for ts in self._tools.values() for t in ts]
+    async def start(self) -> tuple[list[AgentTool], list[Any]]:
+        return [t for ts in self._tools.values() for t in ts], []
 
     async def disconnect_all(self) -> None:
         return None
