@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
@@ -17,6 +18,8 @@ from aelix_coding_agent.rpc.control import RpcControlPlane
 from aelix_coding_agent.rpc.control_mcp import RpcMcpController, contributions
 from aelix_coding_agent.rpc.control_ui import RpcCommandUI
 from aelix_coding_agent.rpc.rpc_mode import _make_passthrough_runtime, run_rpc_mode
+
+from tests.rpc.test_runtime_control_lifecycle_594 import Wire
 
 
 def make_harness(extensions=None):
@@ -224,6 +227,59 @@ async def test_native_rpc_roster_and_additive_control_coexist():
         assert responses["classic"]["success"] is True
         assert responses["control"]["data"]["version"] == 1
     finally:
+        await harness.dispose()
+
+
+@pytest.mark.parametrize("channel", ["subagent_start", "subagent_tool", "subagent_end"])
+async def test_legacy_subagent_usage_is_strict_json_at_the_wire(channel: str) -> None:
+    def reject_constant(value: str) -> NoReturn:
+        raise ValueError(f"invalid JSON constant {value}")
+
+    harness = make_harness()
+    wire = Wire()
+    output: list[bytes] = []
+
+    def write(data: bytes) -> None:
+        output.append(data)
+        wire.write(data)
+
+    run = asyncio.create_task(
+        run_rpc_mode(harness, stdin=wire.reader, stdout_write=write, install_signal_handlers=False)
+    )
+    big = 10**400 - 1
+    cases = [
+        (float("inf"), float("nan"), None, None),
+        (float("nan"), float("-inf"), None, None),
+        (float("-inf"), float("inf"), None, None),
+        (7, float("nan"), 7, None),
+        (float("inf"), 0.25, None, 0.25),
+        (big, 0.25, big, 0.25),
+        (None, None, None, None),
+    ]
+    try:
+        wire.send({"type": "get_state", "id": "ready"})
+        await asyncio.wait_for(wire.response("ready"), 5)
+        output.clear()
+        for tokens, cost, _, _ in cases:
+            harness.runtime.event_bus.emit(
+                channel, SimpleNamespace(id="child-1", tokens=tokens, cost=cost)
+            )
+        assert len(output) == len(cases)
+        for raw, (_, _, tokens, cost) in zip(output, cases, strict=True):
+            expected = {
+                "type": "aelix_subagent",
+                "event": channel,
+                "data": {
+                    "id": "child-1", "profile": None, "state": None, "current_tool": None,
+                    "elapsed_ms": None, "tokens": tokens, "cost": cost, "model": None,
+                    "provider": None,
+                },
+            }
+            assert json.loads(raw.decode("utf-8", errors="strict"), parse_constant=reject_constant) == expected
+            assert raw == (json.dumps(expected, ensure_ascii=False) + "\n").encode("utf-8")
+    finally:
+        wire.send(eof=True)
+        await asyncio.wait_for(run, 10)
         await harness.dispose()
 
 

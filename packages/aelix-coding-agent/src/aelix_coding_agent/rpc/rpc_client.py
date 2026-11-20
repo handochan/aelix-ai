@@ -133,8 +133,8 @@ from aelix_ai.utils._process_tree import (
 
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
+    encode_json_line,
     pump_jsonl_lines,
-    serialize_json_line,
 )
 from aelix_coding_agent.rpc.rpc_types import (
     RpcErrorResponse,
@@ -1551,7 +1551,7 @@ class RpcClient:
         ] = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
 
-        line = serialize_json_line(payload).encode("utf-8")
+        line = encode_json_line(payload)
         try:
             stdin.write(line)
             await stdin.drain()

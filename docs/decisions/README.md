@@ -118,7 +118,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   from shrinking against the merge base, with every `since: "v1"` case frozen as written
   (`scripts/check_control_v1.py`). The classic roster is recorded, not frozen.
   Amends ADR-0275 (the rule, in a dated note) and ADR-0198 ("Partial fulfilment").
-  Amended 2026-11-19 (#797): a bundled package's failed import in `extensionErrors` and `selections/list` is a compatible correction (the lead's call); a reply UTF-8 cannot carry is answered by its id with an error. Noted 2026-11-19 (#612, ADR-0307, ADR-0308): #612 is the first lane added under D9 — six `children/*` methods, two event types, `ui/enable.childApprovals` and the `childApproval` dialog method, and `CONCURRENT_METHODS` admitted before the lock.
+  Amended 2026-11-19 (#797): a bundled package's failed import in `extensionErrors` and `selections/list` is a compatible correction (the lead's call); the #797 encoding-error fallback kept replies correlated. Noted 2026-11-19 (#612, ADR-0307, ADR-0308): #612 is the first lane added under D9 — six `children/*` methods, two event types, `ui/enable.childApprovals` and the `childApproval` dialog method, and `CONCURRENT_METHODS` admitted before the lock.
+  Amended 2026-11-20 (#844): ordinary RPC text replaces lone surrogates with U+FFFD. The note records native strict parsing and the two-revision ACP replay of the events and following reply.
+  Amended 2026-11-20 (#856): non-finite `aelix_subagent` `tokens` and `cost` are written as JSON null using the frozen event's nullable fields.
 - [0300 — A function's complexity only goes down: Ruff C901 over 20 is listed by name and score, and the list only shrinks](0300-a-functions-complexity-only-goes-down.md)
   (Accepted 2026-11-09; #293). The owner's 2026-09-19 decision was recorded as using the C901 "already
   in CI"; it was not there. Now CI's `Complexity ratchet (ruff C901)` step runs

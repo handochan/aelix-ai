@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import re
 from collections.abc import Callable
 
 
@@ -22,10 +23,9 @@ def serialize_json_line(value: object) -> str:
     LF-only framing. Payload strings MAY contain U+2028/U+2029 (valid
     inside JSON); clients MUST split records on ``\\n`` only.
 
-    Aelix uses ``ensure_ascii=False`` so Pi-emitted Korean/Hangul (and any
-    non-ASCII string content) round-trips identically. Pi's
-    ``JSON.stringify`` is ASCII-safe by default but the JSON spec does not
-    require escaping non-ASCII; the LF-only invariant is what matters.
+    Like Pi, Aelix leaves encodable Unicode in the JSON text. Use
+    :func:`encode_json_line` to turn this text, which can contain
+    surrogates, into a UTF-8 wire frame.
     """
 
     return json.dumps(value, ensure_ascii=False) + "\n"
@@ -215,6 +215,35 @@ async def attach_jsonl_line_reader(
     """
 
     await pump_jsonl_lines(stream, JsonlLineReader(on_line, max_line_bytes=max_line_bytes))
+
+
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def _require_utf8_member_names(value: object) -> None:
+    """Leave JSON member names intact, including nested user dictionaries."""
+
+    if isinstance(value, dict):
+        for key, member in value.items():
+            if isinstance(key, str):
+                key.encode("utf-8")
+            _require_utf8_member_names(member)
+    elif isinstance(value, (list, tuple)):
+        for member in value:
+            _require_utf8_member_names(member)
+
+
+def encode_json_line(value: object, *, strict_utf8: bool = False) -> bytes:
+    """Encode an RPC frame, replacing surrogates with U+FFFD in ordinary text."""
+
+    line = serialize_json_line(value)
+    try:
+        return line.encode("utf-8")
+    except UnicodeEncodeError:
+        if strict_utf8:
+            raise
+        _require_utf8_member_names(value)
+        return _SURROGATE.sub("\ufffd", line).encode("utf-8")
 
 
 __all__ = [

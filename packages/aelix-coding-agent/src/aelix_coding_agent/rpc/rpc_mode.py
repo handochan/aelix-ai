@@ -157,7 +157,7 @@ from aelix_ai.utils._child_output import decode_child_output
 
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
-    serialize_json_line,
+    encode_json_line,
 )
 from aelix_coding_agent.rpc.control_transcript import (
     BINDING_CHANGING,
@@ -2269,7 +2269,7 @@ async def run_rpc_mode(
     write_sink = _CloseOnBrokenPipe(stdout_write, shutdown_event.set).write
 
     def _output(obj: Any) -> None:
-        write_sink(serialize_json_line(obj).encode("utf-8"))
+        write_sink(encode_json_line(obj))
 
     # Connect stdin if not supplied.
     if stdin is None:
@@ -2621,13 +2621,7 @@ def _write_event(
             json.dumps(payload, ensure_ascii=False)
         except (TypeError, ValueError):
             payload = {"type": getattr(event, "type", "unknown")}
-        try:
-            output(payload)
-        except UnicodeEncodeError:
-            if transcript is None or "transcript" not in payload:
-                raise
-            del payload["transcript"]
-            output(payload)
+        output(payload)
     except Exception:  # noqa: BLE001 — classic listener delivery is best effort
         pass
 
@@ -2643,7 +2637,7 @@ async def _control_response(
         data = await control.handle(method, payload.get("params", {}), request_id)
         # Transcript replies are checked by the final byte writer.
         if method != TRANSCRIPT_METHOD:
-            json.dumps(data, ensure_ascii=False).encode("utf-8")
+            json.dumps(data, ensure_ascii=False)
         return RpcSuccessResponse(id=request_id, command="aelix_control", data=data)
     except asyncio.CancelledError:
         error = "Command cancelled"
@@ -2658,18 +2652,14 @@ async def _control_response(
 def _reply_bytes(
     response: RpcSuccessResponse | RpcErrorResponse, *, bounded: bool = False
 ) -> bytes:
-    """One correlated reply as the bytes the wire carries; never lost to its encoding.
-
-    A reply whose text UTF-8 cannot encode (a lone surrogate: a str any JSON
-    or ``ImportError`` can hold) raised in the write, after the dispatch guard,
-    so its id was never answered (Codex review of #797, H1: ``resources/list``
-    and ``selections/list``). It is answered instead with an error naming the
-    encode failure, written ASCII-escaped because its id and command came
-    from the request and may hold the same character.
-    """
+    """Encode a correlated reply and enforce the transcript reply bound (#655)."""
 
     try:
-        wire = serialize_json_line(response.to_json()).encode("utf-8")
+        # IDs must echo the request exactly. Keep the correlated encoding-error
+        # fallback for an ID that UTF-8 cannot carry.
+        if isinstance(response.id, str):
+            response.id.encode("utf-8")
+        wire = encode_json_line(response.to_json(), strict_utf8=bounded)
         if not bounded or len(wire) <= TRANSCRIPT_REPLY_MAX_BYTES:
             return wire
         error = "Transcript reply exceeds reply bound"
