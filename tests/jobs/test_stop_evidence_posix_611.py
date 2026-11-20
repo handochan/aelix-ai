@@ -60,7 +60,8 @@ class _Runner:
         )
         tree = ProcessTree.attach(self.proc.pid) if self.use_tree else None
         ctx.register_process(self.proc, pgid=self.proc.pid, tree=tree)
-        while not self.marker.exists():
+        # The root's write_text creates the file before it writes the pid (#863): wait for the pid.
+        while not self.marker.exists() or not self.marker.read_text():
             await asyncio.sleep(0.005)
         ctx.launched()
         await self.stopped.wait()

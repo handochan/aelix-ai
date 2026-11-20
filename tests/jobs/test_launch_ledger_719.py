@@ -936,7 +936,7 @@ _EXIT_STANDIN = textwrap.dedent(
         "time.sleep(300)\\n"
     )
     subprocess.run([sys.executable, "-c", escaped, escaped_file], check=True)
-    while not os.path.exists(escaped_file):
+    while not (os.path.exists(escaped_file) and open(escaped_file).read().strip()):  # the pid, #863
         pass
     asyncio.run(ll.exit_cleanup())
     print("done", flush=True)

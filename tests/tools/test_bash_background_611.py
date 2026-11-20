@@ -169,6 +169,15 @@ def _alive(pid: int) -> bool:
     return pid_is_zombie(pid) is not True
 
 
+def _written(marker: Path) -> bool:
+    """The marker holds a pid: a shell redirection creates the file before it writes (#863)."""
+
+    try:
+        return bool(marker.read_text().strip())
+    except FileNotFoundError:
+        return False
+
+
 def _kill(*pids: int) -> None:
     for pid in pids:
         with contextlib.suppress(OSError):
@@ -1626,7 +1635,8 @@ async def test_a_launch_failing_after_the_command_forked_stops_its_whole_group(
 
     def late_failure(self: Any) -> None:
         deadline = time.monotonic() + 5.0
-        while not (work / "member").exists() and time.monotonic() < deadline:
+        # `echo $! > member` creates the file before it writes the pid (#863): wait for the pid.
+        while not _written(work / "member") and time.monotonic() < deadline:
             time.sleep(0.02)
         raise RuntimeError("can't start new thread")
 
@@ -1935,7 +1945,8 @@ async def test_a_launch_whose_record_cannot_be_made_stops_its_whole_group(
 
     def refuse(*a: Any, **k: Any) -> Any:
         deadline = time.monotonic() + 5.0
-        while not (work / "member").exists() and time.monotonic() < deadline:
+        # `echo $! > member` creates the file before it writes the pid (#863): wait for the pid.
+        while not _written(work / "member") and time.monotonic() < deadline:
             time.sleep(0.02)
         raise RuntimeError("register refused")
 
