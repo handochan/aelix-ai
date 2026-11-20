@@ -4895,12 +4895,15 @@ async def test_a_cancelled_delegation_awaits_its_killed_child(tmp_path: Path) ->
     row = RunningChild(id="sub-750", profile="scout")
     run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     holder: int | None = None
+    holder_started: float | None = None
     try:
         await wait_until(
             lambda: row.stream.summary == "left a holder" and _announced_pid(marker) is not None,
             what="the stub to leave its holder",
         )
         holder = _announced_pid(marker)
+        if holder is not None:
+            holder_started = _process_identity.process_started(holder)
         proc = row.proc
         run.cancel()
         with contextlib.suppress(BaseException):
@@ -4910,12 +4913,24 @@ async def test_a_cancelled_delegation_awaits_its_killed_child(tmp_path: Path) ->
             timeout=10,
             what="the killed child's transport to close",
         )
-        assert holder is not None and not _alive(holder)
+        assert holder is not None
+        # The pipes can close while the holder is still exiting. Its reaper
+        # can also leave it as a zombie after it has stopped.
+        await wait_until(
+            lambda: _process_identity.pid_is_zombie(holder) is True or not _alive(holder),
+            timeout=10,
+            what=f"the escaped holder (pid {holder}) to stop",
+            detail=lambda: f"sweep={row.cleanup.answer if row.cleanup else None!r}",
+            interval=0.02,
+        )
     finally:
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
-        if holder is not None:
+        # Signal the holder only if its number still named it when checked: once
+        # it is gone the number can belong to an unrelated process. The check and
+        # the signal are two calls, so this narrows that window, it does not close it.
+        if holder is not None and _process_identity.same_process(holder, holder_started) is True:
             with contextlib.suppress(Exception):
                 os.kill(holder, _SIGKILL)
         await _join_the_runs_cleanup(row)
