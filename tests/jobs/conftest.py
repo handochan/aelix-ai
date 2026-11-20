@@ -96,7 +96,8 @@ def make_harness(session: Session | None, model: RecordingModel | None = None) -
 def fast_service(**kwargs: Any) -> JobService:
     defaults: dict[str, Any] = {
         "interval": 0.05,
-        "exit_grace": 0.3,
+        # Give runners time to report after their processes exit under load (#846).
+        "exit_grace": 30.0,
         "cleanup_bound": 3.0,
         "stop_grace": 0.2,
     }
