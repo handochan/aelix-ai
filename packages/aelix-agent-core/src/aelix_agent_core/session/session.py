@@ -48,6 +48,7 @@ from aelix_agent_core.session.storage import (
     SessionError,
     SessionStorage,
 )
+from aelix_agent_core.session.transcript import MessageAppend
 from aelix_agent_core.types import AgentMessage
 
 
@@ -133,7 +134,7 @@ class Session:
 
         Mirrors the cached-metadata access pattern used by
         :attr:`AgentSessionRuntime.cwd`
-        (``runtime/agent_session_runtime.py:439-449``).
+        (``runtime/agent_session_runtime.py:473-483``).
         """
 
         storage = self._storage
@@ -225,15 +226,22 @@ class Session:
         entry = await self._storage.append_to_leaf(build)
         return entry.id
 
-    async def append_message(self, message: AgentMessage) -> str:
-        return await self._append_to_leaf(
-            lambda entry_id, parent_id: MessageEntry(
-                id=entry_id,
-                parent_id=parent_id,
-                timestamp=_iso_now(),
-                message=message,
-            )
+    @staticmethod
+    def _message_builder(message: AgentMessage) -> Callable[[str, str | None], MessageEntry]:
+        return lambda entry_id, parent_id: MessageEntry(
+            id=entry_id, parent_id=parent_id, timestamp=_iso_now(), message=message
         )
+
+    async def append_message(self, message: AgentMessage) -> str:
+        return await self._append_to_leaf(self._message_builder(message))
+
+    async def append_message_receipt(self, message: AgentMessage) -> MessageAppend:
+        from aelix_agent_core.session.jsonl_storage import JsonlSessionStorage
+
+        storage = self._storage
+        if isinstance(storage, JsonlSessionStorage):
+            return await storage.append_message_receipt(self._message_builder(message))
+        return MessageAppend(await self.append_message(message), None)
 
     async def append_thinking_level_change(self, thinking_level: str) -> str:
         return await self._append_to_leaf(

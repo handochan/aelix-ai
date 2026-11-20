@@ -758,3 +758,11 @@ U+FFFD first, so that launch still answers both lists. The floor check (`scripts
   a reversed slice `[5, 4, 3, 2]` and a stale-cursor slice `[46, 301]` in place of 256 frames were
   accepted (`tests/rpc/control_v1/test_replay_order_612.py`). `--update` changed only those four
   cases' facts; the v1 digest is unchanged.
+
+## Note (2026-11-20, #655)
+
+[ADR-0309](0309-stored-message-identity-and-transcript.md) adds the read-only
+`transcript/list` method on a writer-owned CLI-RPC binding. Its control-v1
+fixture exercises the correlated envelope and optional `transcript` object
+on the six classic lifecycle frames. The v1 fixtures retain their existing
+digests.

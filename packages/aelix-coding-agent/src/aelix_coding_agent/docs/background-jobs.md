@@ -365,3 +365,8 @@ under your extension's name, starts, lists and stops only jobs of your kinds in 
 session, and refuses every call once a `/reload` or a session change has replaced that
 runtime. A job's runner must not keep `aelix` or a context past its start for the same reason.
 Your jobs stop at `/new`, `/resume`, `/fork`, quitting and `/reload`, as every job does.
+
+When a CLI-RPC end reports `status:"stored"`, use its entry coordinates to
+read back the `agent` result on that entry's own path after writer settlement. Placed job notices retain their
+custom entries outside the three message roles in the projection (ADR-0309 D1,
+D3 and D4).

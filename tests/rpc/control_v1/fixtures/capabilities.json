@@ -879,6 +879,58 @@
           }
         }
       }
+    },
+    {
+      "name": "advertises transcript on the owned CLI binding",
+      "since": "#655",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "contains": {
+              "const": "transcript/list"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "omits transcript on the sessionless host",
+      "since": "#655",
+      "rig": "bare",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "not": {
+              "contains": {
+                "const": "transcript/list"
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

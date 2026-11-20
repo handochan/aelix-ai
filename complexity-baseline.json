@@ -3,8 +3,7 @@
   "ruff": "0.15.13",
   "functions": {
     "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._make_stream_fn": 21,
-    "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._run": 50,
-    "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._run.<locals>.emit": 25,
+    "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._run": 42,
     "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._try_overflow_recovery": 21,
     "packages/aelix-agent-core/src/aelix_agent_core/loop.py::_execute_tool_calls_parallel": 23,
     "packages/aelix-agent-core/src/aelix_agent_core/loop.py::_stream_assistant_response": 23,
@@ -42,7 +41,7 @@
     "packages/aelix-coding-agent/src/aelix_coding_agent/jobs/records.py::fold": 21,
     "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py::run_print_mode": 58,
     "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/control.py::RpcControlPlane._dispatch": 25,
-    "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py::run_rpc_mode": 45,
+    "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py::run_rpc_mode": 40,
     "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py::_LocalBashOperations.exec": 26,
     "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py::AelixChrome._build_key_bindings": 52,
     "packages/aelix-coding-agent/src/aelix_coding_agent/tui/completion.py::DescriptorCommandCompleter._rows": 25,

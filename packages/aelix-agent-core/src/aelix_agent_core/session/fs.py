@@ -181,7 +181,7 @@ class FileSystem(Protocol):
     async def join_path(self, parts: list[str]) -> str: ...
     async def read_text_file(self, path: str) -> str: ...
     async def read_text_lines(
-        self, path: str, *, max_lines: int | None = None
+        self, path: str, *, max_lines: int | None = None, skip_blank: bool = False
     ) -> list[str]: ...
     async def write_file(self, path: str, content: str) -> None: ...
     async def append_file(self, path: str, content: str) -> None: ...
@@ -227,11 +227,8 @@ class LocalFileSystem:
         return Path(path).read_text(encoding="utf-8")
 
     async def read_text_lines(
-        self, path: str, *, max_lines: int | None = None
+        self, path: str, *, max_lines: int | None = None, skip_blank: bool = False
     ) -> list[str]:
-        if max_lines is None:
-            with open(path, encoding="utf-8") as f:
-                return [line.rstrip("\n") for line in f]
         # #709: stop once the last wanted line is in, before the next is read.
         # Asking for the line after it first read that whole line, however
         # long — the second line of a session (2 MiB, measured) to return its
@@ -241,12 +238,14 @@ class LocalFileSystem:
         # the first buffer, or a cut multibyte character), the lines asked for
         # come back now, and ``max_lines <= 0`` opens nothing.
         out: list[str] = []
-        if max_lines <= 0:
+        if max_lines is not None and max_lines <= 0:
             return out
         with open(path, encoding="utf-8") as f:
             for line in f:
+                if skip_blank and not line.strip():
+                    continue
                 out.append(line.rstrip("\n"))
-                if len(out) >= max_lines:
+                if max_lines is not None and len(out) >= max_lines:
                     break
         return out
 

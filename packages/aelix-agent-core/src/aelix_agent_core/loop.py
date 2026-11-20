@@ -29,6 +29,7 @@ import contextlib
 import inspect
 import logging
 import time
+import uuid
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -85,6 +86,28 @@ _log = logging.getLogger(__name__)
 AgentEventSink = Callable[[AgentEvent], Awaitable[AgentMessage | None]]
 
 
+class _OccurrenceSink:
+    """Route a single occurrence without changing the public event dataclasses."""
+
+    def __init__(
+        self,
+        emit: Callable[[AgentEvent, str | None], Awaitable[AgentMessage | None]],
+        stream_id: str | None = None,
+    ) -> None:
+        self.emit = emit
+        self.stream_id = stream_id
+
+    def __call__(self, event: AgentEvent) -> Awaitable[AgentMessage | None]:
+        return self.emit(event, self.stream_id)
+
+    def occurrence(self) -> _OccurrenceSink:
+        return _OccurrenceSink(self.emit, uuid.uuid4().hex)
+
+
+def _occurrence_sink(emit: AgentEventSink) -> AgentEventSink:
+    return emit.occurrence() if isinstance(emit, _OccurrenceSink) else emit
+
+
 def _is_replacement(
     replacement: AgentMessage | None, original: AgentMessage
 ) -> TypeGuard[AgentMessage]:
@@ -137,8 +160,9 @@ async def agent_loop(
     # ``current_context.messages[len(context.messages) + i]``.
     base = len(context.messages)
     for i, prompt in enumerate(prompts):
-        await emit(MessageStartEvent(message=prompt))
-        replacement = await emit(MessageEndEvent(message=prompt))
+        occurrence = _occurrence_sink(emit)
+        await occurrence(MessageStartEvent(message=prompt))
+        replacement = await occurrence(MessageEndEvent(message=prompt))
         if _is_replacement(replacement, prompt):
             new_messages[i] = replacement
             ctx_index = base + i
@@ -232,14 +256,15 @@ async def _run_turns(
 
             if pending_messages:
                 for msg in pending_messages:
-                    await emit(MessageStartEvent(message=msg))
+                    occurrence = _occurrence_sink(emit)
+                    await occurrence(MessageStartEvent(message=msg))
                     # P0 #7 Wave 3 (ADR-0145): apply a ``message_end``
                     # replacement to the steering/follow-up message BEFORE it is
                     # appended, so the REPLACEMENT (not the original) lands in
                     # both ``current_context.messages`` and ``new_messages`` →
                     # persisted via ``_state.messages``. pi applies
                     # ``_replaceMessageInPlace`` at every message_end event.
-                    replacement = await emit(MessageEndEvent(message=msg))
+                    replacement = await occurrence(MessageEndEvent(message=msg))
                     if _is_replacement(replacement, msg):
                         msg = replacement
                     current_context.messages.append(msg)
@@ -356,7 +381,7 @@ async def _stream_assistant_response(
     )
 
     fn = stream_fn or _resolve_stream_simple()
-    emit = _with_message_start(emit)  # a message its stream never started gets one (#414)
+    emit = _with_message_start(_occurrence_sink(emit))  # a message its stream never started gets one (#414)
     # #672, #673 (ADR-0290): a cancel a hook or listener caught and swallowed on the
     # way here must not send the next request.
     _raise_if_cancel_pending(config.cancel_requested)
@@ -550,6 +575,7 @@ class _Finalized:
     tool_call: ToolCallContent
     tool_name: str
     result: ToolResult
+    emit: AgentEventSink
 
 
 async def _prepare_tool_call(
@@ -891,7 +917,8 @@ async def _execute_tool_calls_sequential(
     requested = config.cancel_requested
 
     for tc in tool_calls:
-        await emit(
+        tool_emit = _occurrence_sink(emit)
+        await tool_emit(
             ToolExecutionStartEvent(
                 tool_call_id=tc.tool_call_id,
                 tool_name=tc.tool_name,
@@ -910,10 +937,10 @@ async def _execute_tool_calls_sequential(
             # ordering appended the message BEFORE the end event and never
             # emitted ``message_start`` / ``message_end`` at all.
             await _emit_tool_end(
-                tc.tool_call_id, prepared.tool_name, prepared.result, emit, requested
+                tc.tool_call_id, prepared.tool_name, prepared.result, tool_emit, requested
             )
             msg = await _commit_tool_result(
-                tc.tool_call_id, tc.tool_name, prepared.result, emit, requested
+                tc.tool_call_id, tc.tool_name, prepared.result, tool_emit, requested
             )
             if msg is not None:
                 result_messages.append(msg)
@@ -924,7 +951,7 @@ async def _execute_tool_calls_sequential(
         # The start event or ``before_tool_call`` swallowed a cancel: nothing began.
         _raise_if_cancel_pending(requested)
         result = await _execute_and_finalize(
-            context, assistant_message, config, signal, prepared, emit
+            context, assistant_message, config, signal, prepared, tool_emit
         )
 
         if not result.terminate:
@@ -934,8 +961,8 @@ async def _execute_tool_calls_sequential(
         # 3-step order as the immediate branch — end event fires first,
         # then the tool-result message ``message_start`` / ``message_end``
         # pair via the shared helper, then we append to the batch list.
-        await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, emit, requested)
-        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, emit, requested)
+        await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, tool_emit, requested)
+        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, tool_emit, requested)
         if msg is not None:
             result_messages.append(msg)
         # What stops the batch: a cut call's, or one a tool or a sink swallowed.
@@ -987,20 +1014,20 @@ async def _execute_tool_calls_parallel(
     # Each entry is either an immediate _Finalized (no execute path) or a
     # prepared call awaiting Phase-2 execution. ``tasks`` runs parallel to it
     # once Phase 2 starts, so what each call ended with is read off its own task.
-    pending: list[_Finalized | _Prepared] = []
+    pending: list[tuple[_Finalized | _Prepared, AgentEventSink]] = []
     tasks: list[asyncio.Task[_Finalized] | None] = []
     turn = asyncio.current_task()
     turn_cancels = 0
     requested = config.cancel_requested
 
-    async def _run(prep: _Prepared) -> _Finalized:
+    async def _run(prep: _Prepared, tool_emit: AgentEventSink) -> _Finalized:
         # A cancel that came ahead of this first step: the call never begins. The
         # batch hands a cancel on only when it next runs, a loop turn behind this.
         if (turn is not None and turn.cancelling() > turn_cancels) or _cancel_pending(requested):
             raise asyncio.CancelledError()
 
         async def sink(event: AgentEvent) -> AgentMessage | None:
-            return None if prep.abandoned else await emit(event)
+            return None if prep.abandoned else await tool_emit(event)
 
         result = await _execute_and_finalize(
             context, assistant_message, config, signal, prep, sink
@@ -1008,7 +1035,7 @@ async def _execute_tool_calls_parallel(
         prep.ended_with = result
         # tool_execution_end fires in COMPLETION order (§E row 4).
         await _emit_tool_end(prep.tool_call.tool_call_id, prep.tool.name, result, sink, requested)
-        return _Finalized(tool_call=prep.tool_call, tool_name=prep.tool.name, result=result)
+        return _Finalized(prep.tool_call, prep.tool.name, result, tool_emit)
 
     cancelled = False
     failure: BaseException | None = None
@@ -1018,7 +1045,8 @@ async def _execute_tool_calls_parallel(
             # A cancel a hook or listener swallowed: the rest of the batch stays
             # unstarted, as it does for one that got through.
             _raise_if_cancel_pending(requested)
-            await emit(
+            tool_emit = _occurrence_sink(emit)
+            await tool_emit(
                 ToolExecutionStartEvent(
                     tool_call_id=tc.tool_call_id,
                     tool_name=tc.tool_name,
@@ -1032,16 +1060,12 @@ async def _execute_tool_calls_parallel(
                 # In the list BEFORE the await: a cancel landing in the end
                 # event must not cost a result that already exists (#672).
                 pending.append(
-                    _Finalized(
-                        tool_call=tc,
-                        tool_name=prepared.tool_name,
-                        result=prepared.result,
-                    )
+                    (_Finalized(tc, prepared.tool_name, prepared.result, tool_emit), tool_emit)
                 )
                 # §E.1: immediates emit tool_execution_end in the prep loop so
                 # their end events stay in source order alongside their start
                 # events. Pi parity: synchronous resolution path during prep.
-                await emit(
+                await tool_emit(
                     ToolExecutionEndEvent(
                         tool_call_id=tc.tool_call_id,
                         result=prepared.result,
@@ -1050,15 +1074,15 @@ async def _execute_tool_calls_parallel(
                     )
                 )
             else:
-                pending.append(prepared)
+                pending.append((prepared, tool_emit))
 
         # Phase 2 — parallel execution (Pi agent-loop.ts:491-493, P-7 reversal). With no
         # await from here to the wait, in which the turn is parked: what its count stands
         # at now can be stale, and a rise from now on is somebody cancelling it (#698).
         turn_cancels = turn.cancelling() if turn is not None else 0
         tasks = [
-            asyncio.ensure_future(_run(entry)) if isinstance(entry, _Prepared) else None
-            for entry in pending
+            asyncio.ensure_future(_run(entry, sink)) if isinstance(entry, _Prepared) else None
+            for entry, sink in pending
         ]
     except asyncio.CancelledError:
         cancelled = True
@@ -1071,14 +1095,14 @@ async def _execute_tool_calls_parallel(
 
     # In one pass with no await, ahead of the end events below, in which any of them
     # could otherwise finish and speak after all.
-    for entry, task in zip(pending, tasks, strict=False):
+    for (entry, _), task in zip(pending, tasks, strict=False):
         if isinstance(entry, _Prepared) and task is not None and not task.done():
             entry.abandoned = True
             _STRAGGLERS.add(task)
             task.add_done_callback(_forget_straggler)
 
     finalized_entries: list[_Finalized] = []
-    for index, entry in enumerate(pending):
+    for index, (entry, tool_emit) in enumerate(pending):
         if isinstance(entry, _Finalized):
             finalized_entries.append(entry)
             continue
@@ -1087,10 +1111,10 @@ async def _execute_tool_calls_parallel(
             if result is None:
                 result = _cut_result()
                 await _emit_tool_end(
-                    entry.tool_call.tool_call_id, entry.tool.name, result, emit, requested
+                    entry.tool_call.tool_call_id, entry.tool.name, result, tool_emit, requested
                 )
             finalized_entries.append(
-                _Finalized(tool_call=entry.tool_call, tool_name=entry.tool.name, result=result)
+                _Finalized(entry.tool_call, entry.tool.name, result, tool_emit)
             )
             continue
         task = tasks[index] if tasks else None
@@ -1132,7 +1156,7 @@ async def _execute_tool_calls_parallel(
                 finalized.tool_call.tool_call_id,
                 finalized.tool_call.tool_name,
                 finalized.result,
-                emit,
+                finalized.emit,
                 requested,
             )
         except Exception:

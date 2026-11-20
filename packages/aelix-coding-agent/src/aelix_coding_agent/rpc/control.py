@@ -55,6 +55,13 @@ from aelix_coding_agent.rpc.control_children import (
     intervene,
 )
 from aelix_coding_agent.rpc.control_mcp import RpcMcpController
+from aelix_coding_agent.rpc.control_transcript import (
+    BINDING_CHANGING,
+    BINDING_UNAVAILABLE,
+    TranscriptError,
+    TranscriptService,
+)
+from aelix_coding_agent.rpc.control_transcript import METHOD as TRANSCRIPT_METHOD
 from aelix_coding_agent.rpc.control_ui import RpcCommandUI
 
 if TYPE_CHECKING:
@@ -99,6 +106,7 @@ RESOURCE_LIST_KEYS: dict[str, str] = {
 READ_ONLY_METHODS = frozenset(
     {
         "capabilities",
+        TRANSCRIPT_METHOD,
         "resources/list",
         "settings/get",
         "permissions/get",
@@ -263,8 +271,11 @@ class RpcControlPlane:
         selections: Mapping[str, Any] | None = None,
         jobs: Any = None,
         permissions: Any = None,
+        transcript: TranscriptService | None = None,
     ) -> None:
         self.runtime = runtime_host
+        self.transcript = transcript
+        self._transcript_epoch = 0
         self.posture = permission_posture
         self.settings = settings_manager
         self.auth = auth_storage
@@ -314,6 +325,8 @@ class RpcControlPlane:
         if method == "commands/cancel":
             return self.cancel(params)
         if method in READ_ONLY_METHODS:
+            if method == TRANSCRIPT_METHOD:
+                return await self._dispatch(method, params, request_id)
             return await self._dispatch(method, params)
         if method in CONCURRENT_METHODS:
             return await self._concurrent(method, params)
@@ -355,6 +368,7 @@ class RpcControlPlane:
                 "A classic RPC command is still running; retry the session change when it has answered"
             )
         self.transitioning += 1
+        self._transcript_epoch += 1
         try:
             return await _finish_uncancelled(self._settled_then(start))
         finally:
@@ -440,6 +454,7 @@ class RpcControlPlane:
         self.classic_inflight += 1
         if command_type in CLASSIC_SWAPS:
             self.classic_swapping += 1
+            self._transcript_epoch += 1
         return None, True
 
     def classic_done(self, command_type: object = None) -> None:
@@ -510,6 +525,32 @@ class RpcControlPlane:
 
     # === Methods ==============================================================
 
+    @property
+    def transcript_available(self) -> bool:
+        return (
+            self.transcript is not None
+            and self.transcript.available
+            and not (self.closing or self.transitioning or self.classic_swapping)
+        )
+
+    @property
+    def transcript_fence(self) -> tuple[int, tuple[int, str | None] | None]:
+        return self._transcript_epoch, self.transcript.fence if self.transcript else None
+
+    async def transcript_action(
+        self, method: str, params: dict[str, Any], request_id: object
+    ) -> dict[str, Any]:
+        service = self.transcript
+        if method != TRANSCRIPT_METHOD or service is None or self.closing:
+            raise TranscriptError(BINDING_UNAVAILABLE)
+        if self.transitioning or self.classic_swapping or service.runtime.transcript_transitioning:
+            raise TranscriptError(BINDING_CHANGING)
+        fence = self.transcript_fence
+        result = await service.list(params, request_id)
+        if not self.transcript_available or self.transcript_fence != fence:
+            raise TranscriptError(BINDING_CHANGING)
+        return result
+
     def capabilities(self) -> dict[str, Any]:
         methods = [
             "commands/run",
@@ -548,6 +589,8 @@ class RpcControlPlane:
             ]
         if self.jobs is not None:
             methods.append("children/notices")
+        if self.transcript_available:
+            methods.append(TRANSCRIPT_METHOD)
         model = self.harness.current_model
         return {
             "version": 1,
@@ -559,10 +602,12 @@ class RpcControlPlane:
             "selectionKinds": sorted(self.selections),
         }
 
-    async def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _dispatch(
+        self, method: str, params: dict[str, Any], request_id: object = None
+    ) -> dict[str, Any]:
         if method == "capabilities":
             return self.capabilities()
-        family = self._families().get(method.partition("/")[0])
+        family = self._families(request_id).get(method.partition("/")[0])
         if family is not None:
             return await family(method, params)
         if method == "permissions/evaluate":
@@ -1216,7 +1261,9 @@ class RpcControlPlane:
 
     # === Method families (#624, ADR-0305 D10) ==================================
 
-    def _families(self) -> dict[str, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]]:
+    def _families(
+        self, request_id: object = None
+    ) -> dict[str, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]]:
         """A method's first segment -> its handler, called with ``(method, params)``.
 
         Routing only: what is admitted, and under which lock, is decided before
@@ -1231,6 +1278,7 @@ class RpcControlPlane:
             "agents": self.agent_action,
             "selections": self.selection_action,
             "children": self.children_action,
+            "transcript": lambda method, params: self.transcript_action(method, params, request_id),
             "ui": self.ui_action,
         }
 

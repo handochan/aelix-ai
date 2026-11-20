@@ -52,7 +52,7 @@ _SPAWN_ALLOWLIST = (
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
 # six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1694``,
-# ``rpc/rpc_mode.py:1645``, ``extensions/command_context.py:116``), so a
+# ``rpc/rpc_mode.py:1654``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -136,6 +136,10 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         # bound on what the model reads, of the same category as the RPC
         # framing budgets ADR-0201 discusses below, applied to every kind alike.
         "NOTICE_MAX_BYTES",  # jobs/notice.py
+        # ADR-0309 D4 (#655): framing bounds for a CLI-RPC transcript reply
+        # and the raw bytes of its one optional message fragment.
+        "TRANSCRIPT_REPLY_MAX_BYTES",  # rpc/control_transcript.py
+        "TRANSCRIPT_PART_MAX_BYTES",  # rpc/control_transcript.py
         # ADR-0201 added NO entry here, deliberately. The RPC sprint needed a
         # per-line framing budget and a reader limit, and every idiomatic name
         # for either trips ``_CAP_NAME_RE``. Both workarounds are wrong: a name
@@ -719,6 +723,10 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # unobserved. A user cancelling created the requirement; delegation did
         # not, and a stopped child keeps its task because it never passes True —
         # ``test_kernel_has_no_subagent_surface`` still passes.
+        # ADR-0309 D1–D4 (#655): the JSONL projector, read-only snapshot,
+        # commit coordinates, per-occurrence sink and outgoing writer
+        # settlement are native session mechanics used by the RPC reader.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/transcript.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/session.py",
         # ADR-0289, #663. ``runtime/__init__.py`` is NEW to this list, for three
         # re-exports: ``RebuildFailedError``, ``RebuildState`` and

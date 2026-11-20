@@ -104,6 +104,31 @@ def _user(text: str) -> UserMessage:
     return UserMessage(content=[TextContent(text=text)])
 
 
+async def test_entry_id_fallback_skips_reserved_full_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from aelix_agent_core.session import jsonl_storage
+
+    short = "abcdabcd"
+    reserved = "b" * 32
+    fresh = "c" * 32
+    stamp = "2026-11-20T00:00:00Z"
+    storage = await JsonlSessionStorage.create(
+        LocalFileSystem(), str(tmp_path / "fallback.jsonl"), cwd=str(tmp_path), session_id="fallback",
+    )
+    for entry_id in (short, reserved):
+        await storage.append_entry(
+            CustomEntry(id=entry_id, parent_id=None, timestamp=stamp, custom_type="fixture")
+        )
+    candidates = iter([short * 4] * 100 + [reserved, fresh])
+    monkeypatch.setattr(jsonl_storage, "uuid", SimpleNamespace(
+        uuid4=lambda: SimpleNamespace(hex=next(candidates)),
+    ))
+    assert await storage.create_entry_id() == fresh
+
+
 def _text(entry: Any) -> str | None:
     message = getattr(entry, "message", None)
     if message is None:
@@ -633,60 +658,23 @@ async def test_a_placement_that_landed_and_raised_is_adopted_as_a_copy(tmp_path:
     assert (await reopened.get_entry("nt-ffffffffffff")).details == {"k": 1}  # type: ignore[union-attr]
 
 
-async def test_a_reused_id_whose_line_landed_is_taken_in_as_the_newer_line(
-    tmp_path: Path,
-) -> None:
-    """``append_entry`` with an id already stored lands its line and raises, and the
-    caller then changes the payload. The settle takes the entry from the file, and
-    it is the NEWER line, as the loader resolves the id. Taking the first line
-    with the id (the verify round's mutant R2) put the older payload in memory."""
-
+async def test_a_duplicate_raw_append_is_refused_before_file_io(tmp_path: Path) -> None:
     session, fs, path, seed = await _seeded(tmp_path)
     storage = session.get_storage()
     stamp = "2026-11-08T00:00:00.000Z"
     await storage.append_entry(
         CustomEntry(id="dup", parent_id=seed, timestamp=stamp, custom_type="x.r", data={"v": 1})
     )
-    data = {"v": 2}
+    before = path.read_bytes()
     fs.arm(_whole, _enospc())
-    with pytest.raises(SessionError):
+    with pytest.raises(SessionError) as refusal:
         await storage.append_entry(
-            CustomEntry(id="dup", parent_id=seed, timestamp=stamp, custom_type="x.r", data=data)
+            CustomEntry(id="dup", parent_id=seed, timestamp=stamp, custom_type="x.r", data={"v": 2})
         )
-    data["v"] = 3
-
-    await storage.resolve_pending()
-
+    assert refusal.value.code == "invalidTree"
+    assert path.read_bytes() == before
     reopened = await JsonlSessionStorage.open(LocalFileSystem(), str(path))
-    assert (await reopened.get_entry("dup")).data == {"v": 2}  # type: ignore[union-attr]
-    assert (await storage.get_entry("dup")).data == {"v": 2}  # type: ignore[union-attr]
-
-
-async def test_an_append_that_reused_a_stored_id_and_did_not_land_is_not_adopted(
-    tmp_path: Path,
-) -> None:
-    """The verify round's ``dupid.py``: ``append_entry`` with an id already stored,
-    half a line lands. On ``ed76ea76`` the store found the id in the file — the
-    OLD line's — and adopted the new entry: memory gained an entry a reload does
-    not have (``same: false``). The line written is matched now, not the id."""
-
-    from dataclasses import replace
-
-    session, fs, path, _seed = await _seeded(tmp_path)
-    storage = session.get_storage()
-    first = await session.append_message(_user("a"))
-    second = await session.append_message(_user("b"))
-    entry = await storage.get_entry(first)
-    fs.arm(_half, OSError(errno.EIO, "partial (injected)"))
-    with pytest.raises(SessionError):
-        await storage.append_entry(replace(entry, parent_id=second))  # type: ignore[type-var]
-
-    await session.append_message(_user("c"))
-
-    reopened = await JsonlSessionStorage.open(LocalFileSystem(), str(path))
-    memory = [(e.id, e.parent_id) for e in await storage.get_entries()]
-    assert memory == [(e.id, e.parent_id) for e in await reopened.get_entries()]
-    assert await storage.get_leaf_id() == await reopened.get_leaf_id()
+    assert (await reopened.get_entry("dup")).data == {"v": 1}  # type: ignore[union-attr]
 
 
 # === readers take the settled leaf (Codex review of #721, finding 5) ===============

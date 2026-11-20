@@ -277,3 +277,11 @@ Validation gains `tests/rpc/control_v1/`, `tests/rpc/test_selections_rpc_624.py`
 - **aelix-acp**: reaching the five pre-lock methods through `_aelix/manage` before its session lock,
   with `children/notices` under it, is the aelix-acp PR's proposal (lane L3, ADR-0307 D8), not in
   this repository; aelix-acp `16d6555b` sends none of them.
+
+## Note (2026-11-20, #655)
+
+[ADR-0309](0309-stored-message-identity-and-transcript.md) adds the read-only
+`transcript/list` method on a writer-owned CLI-RPC binding. Its control-v1
+fixture exercises the correlated envelope and optional `transcript` object
+on the six classic lifecycle frames. The v1 fixtures retain their existing
+digests.

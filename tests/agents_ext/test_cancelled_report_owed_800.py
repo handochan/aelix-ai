@@ -126,6 +126,8 @@ async def _cancelled(
     prior: list[Any] | None = None,
     replies: list[AssistantMessage] | None = None,
     before_abort: Any = None,
+    before_prompt: Any = None,
+    abort_with: Any = None,
 ) -> _Run:
     """Delegate, Esc while the child runs, and (``second``) abort again where it parks.
 
@@ -193,12 +195,17 @@ async def _cancelled(
             await park()
         await append(fs, target, text)
 
+    if before_prompt is not None:
+        await before_prompt(run)
     with patch.object(LocalFileSystem, "append_file", gated_append):
         turn = asyncio.ensure_future(harness.prompt("delegate"))
         await asyncio.wait_for(channel.arrived.wait(), 10)
         if before_abort is not None:
             before_abort(run)
-        await harness.abort(withdraw_unanswered=True)
+        if abort_with is None:
+            await harness.abort(withdraw_unanswered=True)
+        else:
+            await abort_with(run)
         if second is not None:
             await asyncio.wait_for(run.gated.wait(), 10)
             await harness.abort()
@@ -799,3 +806,200 @@ async def test_a_renderer_that_raises_is_the_bare_cancel(tmp_path: Path) -> None
 def test_the_cut_sentence_is_public_and_the_private_name_is_its_alias() -> None:
     assert core_loop._CUT_TEXT is core_loop.CUT_TEXT
     assert "CUT_TEXT" in core_loop.__all__
+
+
+async def _open_receipt_wire(run: _Run, *, factory=None, repo=None, write=None):
+    from aelix_coding_agent.rpc.rpc_mode import _make_passthrough_runtime, run_rpc_mode
+
+    from tests.rpc.control_v1.rigs import hold_session_writer, request
+    from tests.rpc.test_runtime_control_lifecycle_594 import Wire
+
+    runtime = _make_passthrough_runtime(run.harness, factory, repo=repo)
+    hold_session_writer(runtime)
+    wire = Wire()
+    task = asyncio.create_task(
+        run_rpc_mode(
+            run.harness, runtime_host=runtime, stdin=wire.reader,
+            stdout_write=wire.write if write is None else lambda data: write(wire, data),
+            install_signal_handlers=False,
+        )
+    )
+    ready = await request(wire, "ready", "capabilities", {})
+    assert ready["success"], ready
+    return runtime, wire, task
+
+
+async def _directed_receipt(wire, receipt, request_id):
+    from tests.rpc.control_v1.rigs import request
+
+    answer = await request(wire, request_id, "transcript/list", {
+        "leafId": receipt["entryId"], "firstSequence": receipt["sequence"], "limit": 1,
+    })
+    assert answer["success"], answer
+    assert answer["data"]["nativeSessionId"] == receipt["nativeSessionId"]
+    row, = answer["data"]["entries"]
+    for coordinate in ("entryId", "parentEntryId", "sequence"):
+        assert row[coordinate] == receipt[coordinate]
+    return row
+
+
+@pytest.mark.parametrize("second", [None, "message_end", "append"])
+async def test_report_carriers_have_distinct_live_keys_and_directed_readback(
+    tmp_path: Path, second: str | None,
+) -> None:
+    wire = None
+    rpc = None
+
+    async def observe(run):
+        nonlocal wire, rpc
+        _, wire, rpc = await _open_receipt_wire(run)
+
+    try:
+        run = await _cancelled(tmp_path, second=second, before_prompt=observe)
+        assert wire is not None
+        execution = next(
+            frame for frame in wire.records if frame["type"] == "tool_execution_end"
+            and frame.get("tool_name") == "agent"
+        )
+        assert "transcript" in execution, execution
+        result_stream = execution["transcript"]["streamId"]
+        carrier_events = [
+            frame for frame in wire.records
+            if frame.get("transcript", {}).get("streamId") == result_stream
+        ]
+        assert carrier_events[-2 if second is None else -1]["type"] == "message_start"
+        if second is None:
+            receipt = carrier_events[-1]["transcript"]
+            assert receipt["status"] == "stored" and receipt["sequence"] == 3
+            carrier = await _directed_receipt(wire, receipt, "carrier")
+            assert carrier["message"]["role"] == "toolResult"
+            assert CANCEL_REPORT_HEAD in carrier["message"]["content"][0]["text"]
+        else:
+            assert all(frame["type"] != "message_end" for frame in carrier_events)
+
+        await run.harness.prompt("after the cancel")
+        user_ends = [
+            frame for frame in wire.records
+            if frame["type"] == "message_end" and frame["message"]["role"] == "user"
+        ]
+        assert len(user_ends) == (2 if second is None else 3)
+        streams = [frame["transcript"]["streamId"] for frame in user_ends]
+        assert len(set([result_stream, *streams])) == 1 + len(streams)
+        for index, frame in enumerate(user_ends):
+            receipt = frame["transcript"]
+            assert receipt["status"] == "stored"
+            row = await _directed_receipt(wire, receipt, f"user-{index}")
+            assert row["message"]["role"] == "user"
+        if second is not None:
+            assert CANCEL_REPORT_HEAD in user_ends[-2]["message"]["content"][0]["text"]
+            assert user_ends[-1]["transcript"]["parentEntryId"] == user_ends[-2]["transcript"]["entryId"]
+    finally:
+        if wire is not None and rpc is not None:
+            wire.send(eof=True)
+            await asyncio.wait_for(rpc, 10)
+
+
+@pytest.mark.parametrize("boundary", ["eof", "new_session", "broken"])
+async def test_outgoing_report_receipt_is_delivered_during_disposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str,
+) -> None:
+    import json
+
+    from aelix_agent_core.runtime import agent_session_runtime
+    from aelix_agent_core.session import JsonlSessionRepo
+
+    from tests.rpc.control_v1.rigs import request
+
+    monkeypatch.setattr(agent_session_runtime, "SWAP_SETTLE_SECONDS", 0)
+    wire = None
+    rpc = None
+    settling = asyncio.Event()
+    disposed = asyncio.Event()
+    release = asyncio.Event()
+    broken = False
+    attempts: list[str] = []
+
+    def write(output, data: bytes) -> None:
+        if broken:
+            attempts.append(json.loads(data)["type"])
+            raise BrokenPipeError("fixture consumer closed")
+        output.write(data)
+
+    async def factory(session, **_):
+        return AgentHarness(AgentHarnessOptions(session=session, cwd=str(tmp_path)))
+
+    async def observe(run):
+        nonlocal wire, rpc
+        _, wire, rpc = await _open_receipt_wire(
+            run, factory=factory, repo=JsonlSessionRepo(sessions_root=str(tmp_path / "sessions")),
+            write=write,
+        )
+
+        async def hold_report(event, _ctx):
+            if event.message.role == "toolResult":
+                settling.set()
+                await release.wait()
+
+        run.harness.hooks.on("message_end", hold_report)
+        original_dispose = run.harness.dispose
+
+        async def mark_dispose():
+            disposed.set()
+            await release.wait()
+            await original_dispose()
+
+        monkeypatch.setattr(run.harness, "dispose", mark_dispose)
+
+    async def abort_at_boundary(run):
+        nonlocal broken
+        assert wire is not None
+        if boundary == "broken":
+            broken = True
+            wire.send({"type": "get_state", "id": "wake"})
+        elif boundary == "eof":
+            wire.send(eof=True)
+        else:
+            wire.send({"type": "new_session", "id": "swap"})
+
+        try:
+            await asyncio.wait_for(settling.wait(), 10)
+            await asyncio.wait_for(disposed.wait(), 10)
+            if boundary == "new_session":
+                fenced = await request(wire, "fenced", "transcript/list", {})
+                assert not fenced["success"]
+        finally:
+            release.set()
+
+    try:
+        run = await _cancelled(tmp_path, before_prompt=observe, abort_with=abort_at_boundary)
+        assert wire is not None and rpc is not None and run.path is not None
+        if boundary == "new_session":
+            reply = await asyncio.wait_for(wire.response("swap"), 10)
+            assert reply["success"], reply
+            wire.send(eof=True)
+        await asyncio.wait_for(rpc, 10)
+        if boundary == "broken":
+            assert attempts == ["response"]
+            execution = next(frame for frame in wire.records if frame["type"] == "tool_execution_start")
+            assert "transcript" in execution, execution
+            return
+        terminals = [
+            frame for frame in wire.records if frame["type"] == "message_end"
+            and frame["message"]["role"] == "toolResult"
+        ]
+        receipts = [frame.get("transcript") for frame in terminals]
+        assert len(receipts) == 1 and receipts[0] is not None, terminals
+        (terminal,) = terminals
+        (receipt,) = receipts
+        assert receipt["status"] == "stored"
+        if boundary == "new_session":
+            assert wire.records.index(terminal) < wire.records.index(reply)
+        reopened = await JsonlSessionStorage.open(LocalFileSystem(), str(run.path))
+        snapshot = await reopened.transcript_snapshot()
+        matches = snapshot.messages(receipt["entryId"])
+        assert matches[-1].id == receipt["entryId"] and len(matches) == receipt["sequence"]
+    finally:
+        release.set()
+        if rpc is not None and not rpc.done():
+            rpc.cancel()
+            await asyncio.gather(rpc, return_exceptions=True)

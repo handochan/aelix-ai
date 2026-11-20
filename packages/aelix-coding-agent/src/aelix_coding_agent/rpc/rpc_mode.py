@@ -159,6 +159,14 @@ from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
     serialize_json_line,
 )
+from aelix_coding_agent.rpc.control_transcript import (
+    BINDING_CHANGING,
+    TRANSCRIPT_REPLY_MAX_BYTES,
+    TranscriptError,
+    TranscriptService,
+    request_id_valid,
+)
+from aelix_coding_agent.rpc.control_transcript import METHOD as TRANSCRIPT_METHOD
 from aelix_coding_agent.rpc.rpc_types import (
     RpcCommand,
     RpcCommandBash,
@@ -181,6 +189,7 @@ if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
 
     from aelix_coding_agent.model_registry import ModelRegistry
+    from aelix_coding_agent.rpc.control import RpcControlPlane
 
 # Sprint 6h₄b (ADR-0077, P-302~P-310): import the runtime layer for the
 # new ``runtime_host`` optional parameter on :func:`run_rpc_mode` +
@@ -361,7 +370,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1563-1568``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1598-1603``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -369,7 +378,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1545-1547``).
+        # enqueue-only regardless of phase (``core.py:1580-1582``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -2256,7 +2265,8 @@ async def run_rpc_mode(
 
         stdout_write = _write
 
-    write_sink: Callable[[bytes], None] = stdout_write
+    shutdown_event = asyncio.Event()
+    write_sink = _CloseOnBrokenPipe(stdout_write, shutdown_event.set).write
 
     def _output(obj: Any) -> None:
         write_sink(serialize_json_line(obj).encode("utf-8"))
@@ -2265,7 +2275,6 @@ async def run_rpc_mode(
     if stdin is None:
         stdin, _stdin_pump = await _open_stdin_reader()
 
-    shutdown_event = asyncio.Event()
 
     # === Sprint 6h₄b (ADR-0077, P-309): runtime host construction =============
     # When the caller passes no explicit ``runtime_host``, construct a
@@ -2297,94 +2306,41 @@ async def run_rpc_mode(
         model_registry, runtime_host=runtime_host
     )
 
-    from aelix_coding_agent.rpc.control import RpcControlPlane, control_error_message
-    control = RpcControlPlane(runtime_host, permission_posture=permission_posture,
-                              settings_manager=settings_manager, auth_storage=auth_storage,
-                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output, selections=selections,
-                              jobs=jobs, permissions=permissions)
+    from aelix_coding_agent.rpc.control import RpcControlPlane
 
-    # === Event pipe ===========================================================
-    # Pi parity: session.subscribe((event) => output(event)). The Aelix
-    # harness exposes ``subscribe`` with the same signature.
+    def _on_agent_event(event: Any, transcript: dict[str, Any] | None) -> None:
+        _write_event(event, transcript, _output)
 
-    def _on_agent_event(event: Any) -> None:
-        try:
-            payload = _event_to_dict(event)
-            # Best-effort JSON-serializable check.
-            try:
-                json.dumps(payload, ensure_ascii=False)
-            except (TypeError, ValueError):
-                payload = {"type": getattr(event, "type", "unknown")}
-            _output(payload)
-        except BrokenPipeError:
-            # Issue #57: stdout consumer went away — the JSONL transport is
-            # dead, so ask the main loop to shut down gracefully instead of
-            # silently dropping every subsequent event forever.
-            shutdown_event.set()
-        except Exception:  # noqa: BLE001
-            # Pi swallows listener errors; matches.
-            pass
+    transcript = TranscriptService(runtime_host, _on_agent_event)
+    await transcript.start()
+    control = RpcControlPlane(
+        runtime_host,
+        permission_posture=permission_posture,
+        settings_manager=settings_manager,
+        auth_storage=auth_storage,
+        model_registry=model_registry,
+        agent_service=agent_service,
+        extension_errors=extension_errors,
+        emit=_output,
+        selections=selections,
+        jobs=jobs,
+        permissions=permissions,
+        transcript=transcript,
+    )
 
-    # === Sprint 6h₄b (ADR-0077, P-303) — ``rebind_session`` closure =========
-    # Pi parity: ``rpc-mode.ts:310-349``. Pi closes over outer ``let
-    # session`` + ``let unsubscribe`` variables; Python closures can read
-    # but not rebind enclosing names, so we attach them to a lightweight
-    # container (``_Capture``) that both the rebind closure and the
-    # dispatch loop read through.
-    #
-    # Sprint 6h₄b ships the FOUNDATION subset: reassign capture + tear
-    # down old subscription + re-subscribe to the new harness's
-    # ``subscribe()``. The Pi ``bindExtensions`` /
-    # ``commandContextActions`` waveform (Pi ``:315-345``) is NOT wired
-    # in 6h₄b — Aelix's ``_runtime.bind_core`` already ran during the
-    # NEW harness's ``__init__`` (P-302). Sprint 6h₄c wires the
-    # explicit action surface when the 3 DEFERRED RPC handlers move.
+    # The transcript service tracks the producer through disposal. This
+    # capture follows the harness used by classic handlers and #612 controls.
+    dispatch_harness = runtime_host.harness
 
-    class _Capture:
-        """6h₄b — mutable cell for the ``rebind_session`` closure (P-303).
-
-        Pi closes over outer ``let session`` + ``let unsubscribe``
-        variables (``rpc-mode.ts:310-349``); Python closures can read
-        but not rebind enclosing names, so we attach them to a
-        lightweight container.
-        """
-
-        harness: AgentHarness
-        unsubscribe: Callable[[], None]
-
-    capture = _Capture()
-    capture.harness = runtime_host.harness
-    capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
-
-    async def rebind_session(
-        new_harness: AgentHarness, reason: str = "resume"
-    ) -> None:
-        """Pi parity: ``rebindSession`` closure (``rpc-mode.ts:310-349``).
-
-        Sprint 6h₄b — FOUNDATION subset (P-303). Reassigns the captured
-        harness, tears down the previous subscription, and re-subscribes
-        to the new harness's event stream. The ``bindExtensions`` /
-        ``commandContextActions`` waveform (Pi ``:315-345``) is NOT
-        wired in 6h₄b — Aelix's ``_runtime.bind_core`` already ran
-        during the NEW harness's ``__init__`` (P-302). Sprint 6h₄c
-        wires the explicit action surface.
-
-        Issue #24 — ``reason`` (``new``/``resume``/``fork``/``reload``) is part of
-        the widened rebind-callback contract; headless RPC re-subscribes the same
-        way for every reason.
-        """
-        previous_harness = capture.harness
-        capture.harness = new_harness
-        # #594: client MCP tools follow the native selection rules — a reload
-        # keeps the user's selection, any other replacement starts from launch.
-        # A failure here must not abort a replacement that has already swapped.
+    async def rebind_session(new_harness: AgentHarness, reason: str = "resume") -> None:
+        nonlocal dispatch_harness
+        previous_harness, dispatch_harness = dispatch_harness, new_harness
+        # #594: client MCP tools follow the native selection rules.
         try:
             await control.mcp.attach(new_harness, previous_harness, reason)
         except Exception as exc:  # noqa: BLE001
             print(f"[rpc] client MCP tools were not reattached: {exc!r}", file=sys.stderr, flush=True)
         control.bind_progress(new_harness)
-        capture.unsubscribe()
-        capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
 
     # Pi parity: ``rpc-mode.ts:306-308`` registration site.
     runtime_host.set_rebind_session(rebind_session)
@@ -2468,24 +2424,16 @@ async def run_rpc_mode(
             # Sprint 6h₄b (P-309): read the LIVE harness through the
             # capture cell so dispatch always sees the most recent
             # rebind result. When no replace has occurred,
-            # ``capture.harness`` is identical to the original ``harness``
+            # ``dispatch_harness`` is identical to the original ``harness``
             # argument — zero behavior change for the 26 wired handlers.
+            fence = control.transcript_fence
+            bounded = (
+                payload.get("type") == "aelix_control"
+                and payload.get("method") == TRANSCRIPT_METHOD
+                and request_id_valid(payload.get("id"))
+            )
             if payload.get("type") == "aelix_control":
-                try:
-                    data = await control.handle(
-                        payload.get("method"), payload.get("params", {}), payload.get("id")
-                    )
-                    # Serialise and encode here, inside the guard: a result the
-                    # wire cannot carry must still answer its id (#594), and a
-                    # lone surrogate fails only the UTF-8 encode (Codex, #797 H1).
-                    json.dumps(data, ensure_ascii=False).encode("utf-8")
-                    response = RpcSuccessResponse(id=payload.get("id"), command="aelix_control", data=data)
-                except asyncio.CancelledError:
-                    response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error="Command cancelled")
-                except Exception as exc:  # noqa: BLE001 — one correlated error, never model fallthrough
-                    response = RpcErrorResponse(
-                        id=payload.get("id"), command="aelix_control", error=control_error_message(exc)
-                    )
+                response = await _control_response(control, payload)
             else:
                 # #594: a classic command that starts a turn or replaces the
                 # session waits out a control mutation; a lifecycle transition
@@ -2500,20 +2448,18 @@ async def run_rpc_mode(
                         # #612 — a classic session swap settles the children's
                         # interventions first, as a control transition does.
                         await control.settle_classic(payload.get("type"))
-                        response = await _handle_command(capture.harness, payload, dispatch)
+                        response = await _handle_command(dispatch_harness, payload, dispatch)
                     finally:
                         if counted:
                             control.classic_done(payload.get("type"))
-            try:
-                write_sink(_reply_bytes(response))
-            except BrokenPipeError:
-                # Issue #57 (review MEDIUM): the response write is the ONLY
-                # stdout touch for event-less commands (get_state-style), so
-                # without this the EPIPE killed the fire-and-forget task
-                # unretrieved ("Task exception was never retrieved" noise)
-                # and the dead transport hung until stdin EOF. Mirror the
-                # event-pipe handling: request a graceful shutdown.
-                shutdown_event.set()
+            if bounded and response.success and (
+                not control.transcript_available or control.transcript_fence != fence
+            ):
+                response = RpcErrorResponse(
+                    id=response.id, command="aelix_control", error=BINDING_CHANGING
+                )
+            with contextlib.suppress(BrokenPipeError):
+                write_sink(_reply_bytes(response, bounded=bounded))
 
         task = asyncio.create_task(_dispatch())
         pending_command_tasks.add(task)
@@ -2550,22 +2496,16 @@ async def run_rpc_mode(
         start_background_refresh,
     )
 
-    catalog_unbind = bind_catalog_events(model_registry, lambda: capture.harness)
+    catalog_unbind = bind_catalog_events(model_registry, lambda: dispatch_harness)
     if model_registry is not None:
         start_background_refresh(
             model_registry, trigger="rpc-startup", settings_manager=settings_manager
         )
 
     # === Main loop ============================================================
-    try:
-        with stdout_redirect_cm:
-            await asyncio.wait(
-                [
-                    asyncio.create_task(shutdown_event.wait()),
-                    asyncio.create_task(stdin_eof.wait()),
-                ],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+    with stdout_redirect_cm:
+        try:
+            await _wait_for_shutdown(shutdown_event, stdin_eof)
             # #594: nothing new starts, nothing queued runs, open dialogs settle
             # as cancelled, and a running lifecycle transition finishes — all
             # before waiting for the command tasks.
@@ -2574,75 +2514,150 @@ async def run_rpc_mode(
             # for its summary: stop it first, or a signal or an EOF waits for that too.
             # A task, since an ``abort`` handler that parks must not hold the shutdown.
             shutdown_abort: asyncio.Future[None] | None = None
-            if capture.harness.phase in ("compaction", "branch_summary"):
-                shutdown_abort = asyncio.ensure_future(capture.harness.abort())
+            if dispatch_harness.phase in ("compaction", "branch_summary"):
+                shutdown_abort = asyncio.ensure_future(dispatch_harness.abort())
                 shutdown_abort.add_done_callback(
                     lambda done: None if done.cancelled() else done.exception()
                 )
             # Drain any in-flight command dispatches before tearing down.
             if pending_command_tasks:
                 await asyncio.gather(*pending_command_tasks, return_exceptions=True)
-    finally:
-        # #612 (contract r5 §3.4; Codex r4-2 9): every way out cancels the
-        # children's interventions — a ``run_rpc_mode`` cancelled before its main
-        # loop's call too. Idempotent: it sets ``closing``, closes the dialogs,
-        # cancels.
-        control.begin_shutdown()
-        pump_task.cancel()
-        with contextlib.suppress(BaseException):
-            await pump_task
-        # #434 — a catalog refresh still running is cancelled before it publishes.
-        with contextlib.suppress(Exception):
-            catalog_unbind()
-        with contextlib.suppress(BaseException):
-            await refresher().cancel_all()
-        # Sprint 6h₄b (P-303): the LIVE unsubscribe handle lives on the
-        # capture cell — rebinds replace it each time.
-        capture.unsubscribe()
-        # #612 fix round 1 (Codex C-M4): every channel but the children's ends
-        # here; that one ends after the disposal below (``control.retire``).
-        control.unbind_progress(children=False)
-        await control.mcp.close()
-        # Restore signal handlers.
-        if install_signal_handlers:
-            for sig, previous in installed_handlers:
-                # TWO suppressed steps, not one try around both. On win32
-                # ``remove_signal_handler`` raises ``NotImplementedError``
-                # BEFORE the restore, so a single try skipped the restore for
-                # every handler this run installed there (#202).
-                with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
-                    asyncio.get_running_loop().remove_signal_handler(sig)
-                # ``previous is not None``, not ``callable(previous)``:
-                # ``getsignal`` answers ``SIG_DFL`` for a signal nobody had
-                # installed a Python handler for — which is the ordinary case
-                # here — and that is an ``int``, so the old guard skipped the
-                # restore in exactly the runs that needed it. ``None`` is the
-                # one answer that means there is nothing to restore (the
-                # handler was not set from Python).
-                if previous is not None:
-                    with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
-                        signal.signal(sig, previous)
-        # Pi parity: ``await runtimeHost.dispose()`` (Pi
-        # ``rpc-mode.ts`` end-of-run teardown). Sprint 6h₄b routes
-        # through :meth:`AgentSessionRuntime.dispose` which fires
-        # ``beforeSessionInvalidate`` then disposes the LIVE harness.
-        try:
-            with contextlib.suppress(Exception):
-                await runtime_host.dispose()
         finally:
-            # The disposal's ``session_shutdown`` stopped the children; their terminal
-            # ``aelix_child`` frames went out above. Now the subscription ends and the
-            # controls are retired.
-            control.retire()
-        # Neither stdin arm needs teardown. On POSIX asyncio closes the pipe
-        # transport when the reader hits EOF. On Windows (#107) the pump
-        # thread is parked in a blocking ``readline`` that nothing can
-        # interrupt, so joining it would hang shutdown until the client
-        # happened to send another line — it is a daemon thread precisely so
-        # the interpreter can exit out from under it.
+            # #612 (contract r5 §3.4; Codex r4-2 9): every way out cancels the
+            # children's interventions — a ``run_rpc_mode`` cancelled before its main
+            # loop's call too. Idempotent: it sets ``closing``, closes the dialogs,
+            # cancels.
+            control.begin_shutdown()
+            pump_task.cancel()
+            with contextlib.suppress(BaseException):
+                await pump_task
+            # #434 — a catalog refresh still running is cancelled before it publishes.
+            with contextlib.suppress(Exception):
+                catalog_unbind()
+            with contextlib.suppress(BaseException):
+                await refresher().cancel_all()
+            transcript.end_classic_output()
+            # #612 fix round 1 (Codex C-M4): every channel but the children's ends
+            # here; that one ends after the disposal below (``control.retire``).
+            control.unbind_progress(children=False)
+            await control.mcp.close()
+            # Restore signal handlers.
+            if install_signal_handlers:
+                for sig, previous in installed_handlers:
+                    # TWO suppressed steps, not one try around both. On win32
+                    # ``remove_signal_handler`` raises ``NotImplementedError``
+                    # BEFORE the restore, so a single try skipped the restore for
+                    # every handler this run installed there (#202).
+                    with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                        asyncio.get_running_loop().remove_signal_handler(sig)
+                    # ``previous is not None``, not ``callable(previous)``:
+                    # ``getsignal`` answers ``SIG_DFL`` for a signal nobody had
+                    # installed a Python handler for — which is the ordinary case
+                    # here — and that is an ``int``, so the old guard skipped the
+                    # restore in exactly the runs that needed it. ``None`` is the
+                    # one answer that means there is nothing to restore (the
+                    # handler was not set from Python).
+                    if previous is not None:
+                        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                            signal.signal(sig, previous)
+            # Pi parity: ``await runtimeHost.dispose()`` (Pi
+            # ``rpc-mode.ts`` end-of-run teardown). Sprint 6h₄b routes
+            # through :meth:`AgentSessionRuntime.dispose` which fires
+            # ``beforeSessionInvalidate`` then disposes the LIVE harness.
+            try:
+                with contextlib.suppress(Exception):
+                    await runtime_host.dispose()
+            finally:
+                # The disposal's ``session_shutdown`` stopped the children; their terminal
+                # ``aelix_child`` frames went out above. Now the subscription ends and the
+                # controls are retired.
+                transcript.retire()
+                control.retire()
+            # Neither stdin arm needs teardown. On POSIX asyncio closes the pipe
+            # transport when the reader hits EOF. On Windows (#107) the pump
+            # thread is parked in a blocking ``readline`` that nothing can
+            # interrupt, so joining it would hang shutdown until the client
+            # happened to send another line — it is a daemon thread precisely so
+            # the interpreter can exit out from under it.
 
 
-def _reply_bytes(response: RpcSuccessResponse | RpcErrorResponse) -> bytes:
+class _CloseOnBrokenPipe:
+    def __init__(self, write: Callable[[bytes], None], close: Callable[[], None]) -> None:
+        self._write = write
+        self._close = close
+        self._closed = False
+
+    def write(self, data: bytes) -> None:
+        if self._closed:
+            return
+        try:
+            self._write(data)
+        except BrokenPipeError:
+            self._closed = True
+            self._close()
+            raise
+
+
+async def _wait_for_shutdown(shutdown: asyncio.Event, eof: asyncio.Event) -> None:
+    waiters = [asyncio.create_task(event.wait()) for event in (shutdown, eof)]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+
+
+def _write_event(
+    event: Any,
+    transcript: dict[str, Any] | None,
+    output: Callable[[Any], None],
+) -> None:
+    try:
+        payload = _event_to_dict(event)
+        if transcript is not None:
+            payload["transcript"] = transcript
+        try:
+            json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = {"type": getattr(event, "type", "unknown")}
+        try:
+            output(payload)
+        except UnicodeEncodeError:
+            if transcript is None or "transcript" not in payload:
+                raise
+            del payload["transcript"]
+            output(payload)
+    except Exception:  # noqa: BLE001 — classic listener delivery is best effort
+        pass
+
+
+async def _control_response(
+    control: RpcControlPlane, payload: dict[str, Any]
+) -> RpcSuccessResponse | RpcErrorResponse:
+    from aelix_coding_agent.rpc.control import control_error_message
+
+    request_id = payload.get("id")
+    method = payload.get("method")
+    try:
+        data = await control.handle(method, payload.get("params", {}), request_id)
+        # Transcript replies are checked by the final byte writer.
+        if method != TRANSCRIPT_METHOD:
+            json.dumps(data, ensure_ascii=False).encode("utf-8")
+        return RpcSuccessResponse(id=request_id, command="aelix_control", data=data)
+    except asyncio.CancelledError:
+        error = "Command cancelled"
+    except Exception as exc:
+        if method == TRANSCRIPT_METHOD and not isinstance(exc, TranscriptError):
+            error = "Transcript unavailable"
+        else:
+            error = control_error_message(exc)
+    return RpcErrorResponse(id=request_id, command="aelix_control", error=error)
+
+
+def _reply_bytes(
+    response: RpcSuccessResponse | RpcErrorResponse, *, bounded: bool = False
+) -> bytes:
     """One correlated reply as the bytes the wire carries; never lost to its encoding.
 
     A reply whose text UTF-8 cannot encode (a lone surrogate: a str any JSON
@@ -2654,14 +2669,20 @@ def _reply_bytes(response: RpcSuccessResponse | RpcErrorResponse) -> bytes:
     """
 
     try:
-        return serialize_json_line(response.to_json()).encode("utf-8")
-    except UnicodeEncodeError as exc:
-        fallback = RpcErrorResponse(
-            id=response.id,
-            command=response.command,
-            error=f"the reply could not be written as UTF-8: {exc}",
-        )
-        return (json.dumps(fallback.to_json()) + "\n").encode("ascii")
+        wire = serialize_json_line(response.to_json()).encode("utf-8")
+        if not bounded or len(wire) <= TRANSCRIPT_REPLY_MAX_BYTES:
+            return wire
+        error = "Transcript reply exceeds reply bound"
+    except (UnicodeEncodeError, TypeError, ValueError, RecursionError) as exc:
+        if not bounded and not isinstance(exc, UnicodeEncodeError):
+            raise
+        error = "Transcript reply unavailable" if bounded else f"the reply could not be written as UTF-8: {exc}"
+    fallback = RpcErrorResponse(
+        id=response.id,
+        command=response.command,
+        error=error,
+    )
+    return (json.dumps(fallback.to_json()) + "\n").encode("ascii")
 
 
 __all__ = [

@@ -23,6 +23,15 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **CLI-RPC can page stored messages and join live frames to their storage keys
+  (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
+  coordinates fit the reply bound, discover `transcript/list` to read stored
+  user, assistant and tool-result rows by branch. The native control-v1 fixtures
+  cover pinned selections, terminal receipt outcomes, fragments and unencodable
+  placeholders. A live `stored` receipt identifies a row the decoder can return
+  by directed read after settlement. `get_messages` continues to serve the
+  classic context.
+
 - **An RPC host sees and steers the delegated agents, and a delegated agent asks you before a
   change (#612, ADR-0307, ADR-0308).** Background jobs are on over the CLI's RPC host
   (`--mode rpc`), as in the TUI (owner, 2026-11-18: "전부 열기 (권장)"): the model can spawn a

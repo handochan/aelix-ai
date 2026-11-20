@@ -1076,7 +1076,7 @@ async def test_concurrent_requests_are_serialized() -> None:
     overwrites unconditionally, the first Future is orphaned, and the turn
     hangs until Ctrl+C (until #701, which stacks it; two dialogs at once stay
     wrong). The kernel already serialises the ``tool_call`` hook
-    (``loop.py:1016-1053``), and the tool additionally declares
+    (``loop.py:1043-1077``), and the tool additionally declares
     ``execution_mode="sequential"``, but the lock is what covers the
     ``/agents run`` door and any future caller.
     """
