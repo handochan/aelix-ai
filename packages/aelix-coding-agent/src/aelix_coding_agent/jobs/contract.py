@@ -265,6 +265,19 @@ class JobEndedControlAdapter(Protocol):
 
 
 @runtime_checkable
+class JobEndedMessageAdapter(Protocol):
+    """What a kind says for the panel's ``m`` on a job that has ended, when no text is typed (#848).
+
+    The panel's ``m`` opens a steer with no text yet, so the sentence must not
+    say "with this text". ``ended_message`` answers that sentence, or ``None`` to
+    fall back to the steer's own (``ended_control`` for ``steer``), which is what
+    a kind that does not implement this protocol gets.
+    """
+
+    def ended_message(self, job: JobSnapshot) -> str | None: ...
+
+
+@runtime_checkable
 class JobIdAdapter(Protocol):
     """The half a kind adds when its jobs are also named by ids of its own (#827).
 
@@ -404,6 +417,7 @@ __all__ = [
     "JobContext",
     "JobControlAdapter",
     "JobEndedControlAdapter",
+    "JobEndedMessageAdapter",
     "JobIdAdapter",
     "JobKindAdapter",
     "JobRunner",

@@ -530,7 +530,10 @@ line for the notice is `◆ background notice: <brief>`, a result's stays `◆ b
   and the panel's `w` `w` and `m` their own "<id> has ended", each before the kind was asked; the
   agent kind now words them, as its door does, and the panel asks the service's `control` as
   `/jobs wrap` and `/jobs steer` do (ADR-0293's `JobEndedControlAdapter`, note of this date;
-  Codex's review, M6; lane b7f verify round 2, V2-F1).
+  Codex's review, M6; lane b7f verify round 2, V2-F1). The panel's `m` on an ended job types no text,
+  so it says the wrap-up's sentence and not the steer's "with this text" (#848): the agent kind's
+  `ended_message` (`JobEndedMessageAdapter`) answers it, and a kind without one keeps the steer's
+  `ended_control` sentence. `/jobs steer <id> <text>` is unchanged.
   `tests/agents_ext/test_wrap_up_refusal_822.py`.
 - **Plan mode's refusal in a child (#826).** §6 tightens a child to `plan`, and the refusal it
   then read ended in "shift+tab to exit plan mode.". A `-p`/json run serving the command inbox

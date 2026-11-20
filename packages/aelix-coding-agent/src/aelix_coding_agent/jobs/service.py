@@ -103,6 +103,7 @@ from aelix_coding_agent.jobs.contract import (
     HelperCleanup,
     JobControlAdapter,
     JobEndedControlAdapter,
+    JobEndedMessageAdapter,
     JobIdAdapter,
     JobKindAdapter,
     JobRunner,
@@ -1327,6 +1328,27 @@ class JobService:
             _log.debug("control %s on job %s raised", verb, job_id, exc_info=True)
             return f"{verb} failed: {type(exc).__name__}"
         return str(answer)
+
+    def ended_message(self, job_id: str) -> str | None:
+        """The kind's sentence for the panel's ``m`` on an ended job, typed no text (#848), or ``None``.
+
+        ``None`` for a job that is live, unknown, another session's, or of a kind
+        without :class:`JobEndedMessageAdapter`; the caller then asks ``control``
+        for a steer, as it did before.
+        """
+
+        snap = self.snapshot(job_id)
+        if snap is None or snap.state not in TERMINAL_STATES:
+            return None
+        registration = self.registry.get(snap.kind)
+        adapter = registration.adapter if registration is not None else None
+        if not isinstance(adapter, JobEndedMessageAdapter):
+            return None
+        try:
+            return adapter.ended_message(snap)
+        except Exception:  # noqa: BLE001 — never a traceback on a surface
+            _log.debug("ended_message on job %s raised", job_id, exc_info=True)
+            return None
 
     def _ended_control(self, job: JobSnapshot, verb: str) -> str | None:
         """The kind's sentence for ``verb`` on an ended ``job``, or ``None`` (:class:`JobEndedControlAdapter`).
