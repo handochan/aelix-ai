@@ -251,8 +251,13 @@ async def test_the_failure_is_logged_at_debug_not_warning(caplog: pytest.LogCapt
     harness, _ = _rig(await _compactable())
     caplog.set_level(logging.DEBUG, logger="aelix_agent_core.harness.core")
     await harness.prompt("go")
-    records = [r for r in caplog.records if "compaction failed" in r.getMessage()]
-    assert [(r.levelno, r.exc_info is not None) for r in records] == [(logging.DEBUG, True)]
+    (record,) = [r for r in caplog.records if "compaction failed" in r.getMessage()]
+    assert record.levelno == logging.DEBUG
+    assert record.exc_info
+    exc_type, exc, traceback = record.exc_info
+    assert exc_type is AgentHarnessError
+    assert str(exc) == _400
+    assert traceback is not None
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 

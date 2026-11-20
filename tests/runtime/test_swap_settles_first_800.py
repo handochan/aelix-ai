@@ -845,10 +845,15 @@ async def test_a_failed_reopen_goes_on_with_the_first_open(
         assert result.cancelled is False and opened == 2
         assert host.session.session_file == str(path)
         assert host.harness is not _harness
-        told = [r for r in caplog.records if "opening the session file again" in r.getMessage()]
-        assert [(r.levelno, r.exc_info is not None) for r in told] == [(logging.DEBUG, True)]
+        (record,) = [r for r in caplog.records if "opening the session file again" in r.getMessage()]
+        assert record.levelno == logging.DEBUG
+        assert record.exc_info
+        exc_type, exc, traceback = record.exc_info
+        assert exc_type is OSError
+        assert str(exc) == "the second open failed"
+        assert traceback is not None
         stderr = [line for line in capsys.readouterr().err.splitlines() if line]
-        assert stderr == ([] if ui else [told[0].getMessage()])
+        assert stderr == ([] if ui else [record.getMessage()])
     finally:
         channel.stopped.set()
         await _finish(prompt)
