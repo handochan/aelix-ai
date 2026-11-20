@@ -8,8 +8,13 @@
 ``--frozen`` makes that one ``uv run`` use ``uv.lock`` as it is, which is the
 form that is safe in a checkout other sessions share.
 
-CI runs three gates on every leg (``CONTRIBUTING.md``, "The gates your PR has to
-pass"), and the full suite is one of them. Several others fail in files you
+CI's lint + test job runs ``ruff check``, the complexity ratchet, the control-v1
+floor, the type gate and the full suite on every leg
+(``.github/workflows/ci.yml``). This script runs ``ruff`` and the type gate
+always, each ratchet when a changed path matches its trigger in :data:`GATES`,
+and never the full suite. The control-v1 trigger does not name
+``scripts/check_control_v1.py`` or ``scripts/check_complexity.py``, which that
+script imports, so a change to either alone does not run it. Several others fail in files you
 never touched or only on a platform you are not on, and which ones your change
 can break depends on what it touched. This script reads the change and runs the
 gates that change can fail. The table is :data:`GATES`; a new gate is one row.
@@ -303,6 +308,8 @@ class Gate(NamedTuple):
     hint: str = ""
     opt_in: str | None = None
     """The flag that turns this gate on; it never runs without that flag or ``--only``."""
+    shows: str = ""
+    """A regular expression: what it matches in a passing gate's output is printed under its result."""
 
 
 def _py(ctx: Context, *args: str) -> Step:
@@ -535,6 +542,105 @@ def _windows_clock(ctx: Context) -> list[Step] | str:
     return _pytest(ctx, *ctx.tests, flags=("-p", "tests.plugins.coarse_clock", *TOUCHED_FLAGS))
 
 
+#: #831: the one packaging test that every shipped file can fail. The ``packaging`` gate
+#: deselects it, so it runs here, once.
+SDIST_SIZE_TEST = "tests/packaging_gate/test_build_hygiene.py::test_the_release_sdist_stays_under_the_size_cap"
+SDIST_SIZE_REPORT_ENV = "AELIX_SDIST_SIZE_REPORT"
+"""Names the file the size test writes ``{"size": N, "cap": C}`` to, right after it measures."""
+SDIST_SIZE_SHOWS = r"^\[preflight\] (the published sdist is .*)"
+"""The size and the headroom :func:`sdist_size_verdict` adds to a pass, shown under the gate's result."""
+SDIST_OVER_CAP_HINT = (
+    "Find what grew (`tar -tvzf` on it, sorted by size) and keep out what need not ship before raising "
+    "MAX_SDIST_BYTES in tests/packaging_gate/test_build_hygiene.py (#387 and #816 dropped files instead)."
+)
+
+
+def _joined(*parts: str) -> str:
+    return "\n".join(part.strip("\n") for part in parts if part.strip())
+
+
+def _pytest_error(out: str) -> str:
+    """The first line of the last ``E`` block in pytest's output: the exception it ended on, or ``""``.
+
+    Not the short summary's ``ERROR <id> - <exception>``: past 80 columns pytest drops
+    the exception from that line, and the size test's id alone is 91.
+    """
+
+    error, previous = "", ""
+    for line in out.splitlines():
+        if line.startswith("E ") and not previous.startswith("E "):
+            error = line[1:].strip()
+        previous = line
+    return error
+
+
+def sdist_size_verdict(rc: int | None, out: str, report: Path) -> tuple[int | None, str]:
+    """The ``sdist-size`` gate's result: pytest's exit status, then the size test's report (#831).
+
+    A pass needs both: pytest exited 0, and the report the test wrote right after it
+    measured holds a size at or under its cap, compared here as well as in the test. A
+    run that measured nothing writes no report, and a skip, a deselection that a plugin
+    turns into exit 0, ``--setup-only`` and ``--collect-only`` all exit 0 (Codex review
+    of #831). The line added last says which it was.
+    """
+
+    if rc is None:
+        return None, out
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        error = _pytest_error(out)
+        if error:
+            why = f"pytest exited {rc} with an error before it measured one: {error}"
+        elif rc == 0:
+            why = "pytest exited 0 and the test wrote no report (a skip, a deselection, --setup-only or --collect-only)"
+        else:
+            why = f"pytest exited {rc} and the test wrote no report; its output above says why"
+        return 1, _joined(out, f"[preflight] the size test did not measure an sdist: {why}")
+    except (OSError, ValueError) as exc:
+        return 1, _joined(out, f"[preflight] the size test's report did not read: {exc}")
+    size, cap = (data.get("size"), data.get("cap")) if isinstance(data, dict) else (None, None)
+    if not (type(size) is int and type(cap) is int and cap > 0):
+        return 1, _joined(out, f"[preflight] the size test's report is not a size and a cap: {data!r}")
+    if size > cap:
+        return 1, _joined(
+            out,
+            f"[preflight] the published sdist is {size:,} B, {size - cap:,} B over the {cap:,} B cap",
+            f"[preflight] {SDIST_OVER_CAP_HINT}",
+        )
+    if rc != 0:
+        return rc, _joined(out, f"[preflight] the size test measured {size:,} B, under the {cap:,} B cap, and pytest exited {rc}")
+    headroom = cap - size
+    return 0, _joined(
+        out, f"[preflight] the published sdist is {size:,} B, {headroom:,} B ({headroom / cap:.0%}) under the {cap:,} B cap"
+    )
+
+
+def _sdist_size(ctx: Context) -> list[Step] | str:
+    """The release sdist's size against its cap, built from the tracked files as they are on disk.
+
+    Tracked files deleted on disk are left out (``tracked_on_disk`` in the test file);
+    untracked files are not in it.
+    """
+
+    path = SDIST_SIZE_TEST.split("::", 1)[0]
+    if not (ctx.repo / path).is_file():
+        return f"{path} is not in this tree"
+    if shutil.which("uv") is None:
+        # The test skips itself without uv, and would write no report.
+        return "uv is not on PATH (the size test builds the sdist with `uv build`)"
+    argv = (*PYTEST, SDIST_SIZE_TEST)
+
+    def run(c: Context, timeout: float) -> tuple[int | None, str]:
+        with tempfile.TemporaryDirectory(prefix="aelix-preflight-sdist-") as tmp:
+            report = Path(tmp) / "size.json"
+            env = {**os.environ, SDIST_SIZE_REPORT_ENV: str(report)}
+            rc, out, _err = _spawn([c.python, *argv], c, timeout, env=env)
+            return sdist_size_verdict(rc, out, report)
+
+    return [Step(shown=" ".join((f"{SDIST_SIZE_REPORT_ENV}=<a temp file>", "python", *argv)), run=run)]
+
+
 def _packaging_path(path: str, changes: ChangeSet) -> bool:
     name = path.rsplit("/", 1)[-1]
     return (
@@ -558,6 +664,25 @@ def _docs(path: str, changes: ChangeSet) -> bool:
 
 def _package_or_src(path: str, changes: ChangeSet) -> bool:
     return (path.startswith("packages/") and path.endswith(".py")) or path.startswith("src/")
+
+
+RUFF_CONFIGS = frozenset({"pyproject.toml", "ruff.toml", ".ruff.toml"})
+#: What ``scripts/check_complexity.py --check`` reads outside ``packages/`` and ``src/``:
+#: the root's ruff configuration files, which it scans for an ignore naming C901, the
+#: baseline, the lock that pins the ruff whose version the baseline records, and itself.
+COMPLEXITY_INPUTS = RUFF_CONFIGS | {"complexity-baseline.json", "uv.lock", "scripts/check_complexity.py"}
+COMPLEXITY_TEXT = (
+    "a .py or .pyi under packages/ or src/, a ruff config there or at the root (pyproject.toml, "
+    "ruff.toml, .ruff.toml), complexity-baseline.json, uv.lock or scripts/check_complexity.py"
+)
+
+
+def _complexity_path(path: str, changes: ChangeSet) -> bool:
+    """#858: a change that can move what the complexity ratchet (#293, ADR-0300) measures or compares."""
+
+    if path.startswith(("packages/", "src/")):
+        return path.endswith((".py", ".pyi")) or path.rsplit("/", 1)[-1] in RUFF_CONFIGS
+    return path in COMPLEXITY_INPUTS
 
 
 def _windows_typed(path: str, changes: ChangeSet) -> bool:
@@ -632,9 +757,73 @@ def _control_v1_steps(ctx: Context) -> list[Step] | str:
     return steps + (tests if isinstance(tests, list) else [])
 
 
+COMPLEXITY_SCRIPT = "scripts/check_complexity.py"
+COMPLEXITY_TODO = "What to do:"
+"""The line that opens ``check_complexity.py``'s repair text, which :data:`COMPLEXITY_HINT` stands in for."""
+COMPLEXITY_SHOWS = r"^UNTRACKED .*"
+"""The ratchet's note that an untracked ``.py``/``.pyi`` was not measured; CI measures it once committed."""
+
+COMPLEXITY_HINT = (
+    "STALE (a listed score fell) or GONE (a listed function was removed): run `uv run python "
+    "scripts/check_complexity.py --update` and commit complexity-baseline.json with the change; a renamed or "
+    "moved one takes `--rename OLD NEW` instead. RAISED or NEW: make the function simpler, giving a "
+    "responsibility its own home rather than splitting it only to lower the number (ADR-0300, CONTRIBUTING.md "
+    "gate 5). HISTORY (the baseline gained an entry or a score against the merge base): restore those baseline "
+    "lines and make the function simpler; only a ruff upgrade's `--init` may raise one (ADR-0300 sections 5 "
+    "and 7). NOQA or CONFIG: remove the `# noqa: C901` or the ruff ignore naming C901. The script run alone "
+    "prints its full repair text."
+)
+
+
+def complexity_findings_last(out: str, err: str) -> str:
+    """``check_complexity.py``'s output with its findings last, where a gate's tail shows them.
+
+    The script writes its notes to stdout and, on a failure, the summary, a line per
+    finding and then a repair text of 14 lines to stderr. Read as one stream, its stdout
+    arrives after its stderr, and a gate shows only the last :data:`TAIL_LINES` lines of
+    its output: the repair text and a note, and no STALE or RAISED line (#858, measured
+    with ``jobs/records.py::fold`` lowered). The repair text, a line that starts with
+    :data:`COMPLEXITY_TODO` and the indented lines under it, is left out here, and the
+    gate's hint says it short. Nothing else is left out: a finding or a traceback that
+    holds those words inside a line is kept (Codex review of #858).
+    """
+
+    kept: list[str] = []
+    in_todo = False
+    for line in err.splitlines():
+        if line.startswith(COMPLEXITY_TODO):
+            in_todo = True
+        elif not (in_todo and line.startswith((" ", "\t"))):
+            in_todo = False
+            kept.append(line)
+    return _joined(out, "\n".join(kept))
+
+
+def _complexity(ctx: Context) -> list[Step] | str:
+    """#858: the ratchet CI runs on every leg, with its history check against this change's base.
+
+    CI's step adds ``--require-base --github-event``. Preflight has resolved its merge base
+    already, and a local run is no GitHub event. A change that deletes the script runs the
+    step too, and fails as CI's would.
+    """
+
+    if not (ctx.repo / COMPLEXITY_SCRIPT).is_file() and COMPLEXITY_SCRIPT not in ctx.changes.paths:
+        return f"{COMPLEXITY_SCRIPT} is not in this tree"
+    args = (COMPLEXITY_SCRIPT, "--check", "--base", ctx.changes.base_sha)
+
+    def run(c: Context, timeout: float) -> tuple[int | None, str]:
+        rc, out, err = _spawn([c.python, *args], c, timeout, merge=False)
+        if rc is None:
+            # What it printed last on stdout, then the kill note that ends `out`, close the tail.
+            return None, _joined(err, out)
+        return rc, complexity_findings_last(out, err)
+
+    return [Step(shown=" ".join(("python", *args)), run=run)]
+
+
 #: The gates, in the order they run. A new gate is one row: a name, the changed
 #: paths that make it run (``None`` = always), a builder for its command, and a
-#: timeout in seconds. #293's complexity ratchet joins as one row once it merges.
+#: timeout in seconds.
 GATES: tuple[Gate, ...] = (
     Gate("untracked-tests", None, "always", lambda c: [Step(
         shown="git ls-files --others --exclude-standard -- tests", run=_untracked_tests)], 60),
@@ -648,12 +837,15 @@ GATES: tuple[Gate, ...] = (
     Gate("import-direction", _package_or_src, "a .py under packages/, or anything under src/",
          lambda c: [_py(c, "scripts/check_import_direction.py")], 300,
          hint="Imports only go down (CONTRIBUTING.md gate 4, ADR-0015)."),
+    Gate("complexity", _complexity_path, COMPLEXITY_TEXT, _complexity, 300, hint=COMPLEXITY_HINT,
+         shows=COMPLEXITY_SHOWS),
     Gate("band", _product, "a product .py (packages/*/src, src)",
          lambda c: _pytest(c, "tests/agents/test_p2_band_boundaries.py"), 600),
     Gate("packaging", _packaging_path,
          ".gitignore, .gitattributes, a pyproject.toml, uv.lock, the installers, or a new top-level path",
-         lambda c: _pytest(c, "tests/packaging_gate"), 900,
+         lambda c: _pytest(c, "tests/packaging_gate", flags=("--deselect", SDIST_SIZE_TEST)), 900,
          hint=".gitignore and every pyproject exclude list move together (CONTRIBUTING.md gate 3)."),
+    Gate("sdist-size", None, "always", _sdist_size, 600, shows=SDIST_SIZE_SHOWS),
     Gate("pi-parity", _product, "a product .py (packages/*/src, src)",
          lambda c: _pytest(c, "tests/pi_parity"), 900),
     Gate("control-v1", _control_v1, CONTROL_V1_TEXT, _control_v1_steps, 900,
@@ -721,7 +913,7 @@ def _spawn(
         _kill_tree(proc)
         out, err = proc.communicate()
         note = f"\n[preflight] timed out after {timeout:.0f} s; its process group was killed"
-        return None, _text(out) + note, _text(err)
+        return None, _text(out).rstrip("\n") + note, _text(err)
     except BaseException:
         _kill_tree(proc)
         proc.communicate()
@@ -808,6 +1000,24 @@ def run_gate(gate: Gate, steps: list[Step], ctx: Context) -> list[tuple[Step, in
             rc, out = _execute(step.argv, ctx, remaining, env=step.env)
         done.append((step, rc, time.monotonic() - started, out))
     return done
+
+
+def shown_lines(pattern: str, results: list[tuple[Step, int | None, float, str]]) -> list[str]:
+    """What *pattern* matches in the steps' output, each once, in order (:attr:`Gate.shows`).
+
+    A pattern with a group shows the group's text, and one without the whole match.
+    """
+
+    found: list[str] = []
+    for _step, _rc, _took, out in results:
+        for line in out.splitlines():
+            match = re.search(pattern, line)
+            if match is None:
+                continue
+            shown = match.group(1 if match.re.groups else 0)
+            if shown not in found:
+                found.append(shown)
+    return found
 
 
 def _tail(text: str, n: int = TAIL_LINES) -> list[str]:
@@ -990,6 +1200,9 @@ def main(argv: list[str] | None = None) -> int:
         outcomes.append(Outcome(gate, status, why, results))
         took = sum(d for _s, _rc, d, _o in results)
         print(f"    {status} in {took:.1f} s", flush=True)
+        if status == "passed" and gate.shows:
+            for line in shown_lines(gate.shows, results):
+                print(f"    | {_scrub(line, ctx.repo)}")
         if status == "failed":
             for step, rc, _took, out in results:
                 if rc != 0:

@@ -83,12 +83,16 @@ directions, or the guard is worth nothing.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tomllib
 import unicodedata
+import warnings
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -826,6 +830,48 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
 # `docs/decisions/` (294 at a1606f58). The cap stays, for the same reasons.
 MAX_SDIST_BYTES = 6_000_000
 
+#: #831: when this names a file, the size test writes `{"size": N, "cap": C}` there
+#: right after it measures. `scripts/preflight.py`'s `sdist-size` gate names one and
+#: passes only on what it finds there, so a run whose size test never measured writes
+#: no report and cannot pass it (code that writes the report itself, a plugin say, can).
+SIZE_REPORT_ENV = "AELIX_SDIST_SIZE_REPORT"
+
+
+def tracked_on_disk(repo: Path) -> bytes:
+    """The paths `git ls-files` lists in *repo* that are on disk, NUL-terminated for `tar -T`.
+
+    A tracked file deleted or moved without `git rm` or `git mv` is still listed;
+    `tar` archives the rest but exits non-zero, which `release_tar`'s `check=True` raised
+    (#831: the `sdist-size` gate failed on a plain `rm` of a guide). Dropping those builds
+    the tracked files as they are on
+    disk; on a checkout with nothing deleted the list is `git ls-files` unchanged.
+    `lexists`, so a tracked symlink is kept even when its target is gone.
+    """
+    names = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout
+    root = os.fsencode(repo)
+    return b"".join(
+        name + b"\0"
+        for name in names.split(b"\0")
+        if name and os.path.lexists(os.path.join(root, name))
+    )
+
+
+def release_tar(repo: Path) -> bytes:
+    """The tar stream the release tree is seeded with: *repo*'s tracked files on disk (#831)."""
+
+    return subprocess.run(
+        ["tar", "--null", "-T", "-", "-cf", "-"],
+        cwd=repo,
+        input=tracked_on_disk(repo),
+        capture_output=True,
+        check=True,
+    ).stdout
+
 
 @pytest.fixture(scope="module")
 def release_sdist(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[str]]:
@@ -834,26 +880,15 @@ def release_sdist(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[
     Seeded with `git ls-files` piped through tar rather than `git archive HEAD`
     so that UNCOMMITTED edits to tracked files are measured. Otherwise this gate
     would only ever see the previous commit and could not fail on the change
-    that is being written.
+    that is being written. A tracked file missing on disk is left out
+    (`release_tar`, `tracked_on_disk`).
 
     `.gitignore` is deliberately KEPT here (unlike `build_tree`): the release
     build has it, so removing it would measure something the release never does.
     """
     root = tmp_path_factory.mktemp("release") / "repo"
     root.mkdir(parents=True)
-    names = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        check=True,
-    ).stdout
-    tar_out = subprocess.run(
-        ["tar", "--null", "-T", "-", "-cf", "-"],
-        cwd=REPO_ROOT,
-        input=names,
-        capture_output=True,
-        check=True,
-    ).stdout
+    tar_out = release_tar(REPO_ROOT)
     subprocess.run(
         ["tar", "-x", "-C", str(root)], input=tar_out, capture_output=True, check=True
     )
@@ -923,13 +958,157 @@ def test_the_release_sdist_stays_under_the_size_cap(
     PyPI never allows a filename to be re-uploaded, so the first `0.1.0` sdist
     is permanent. This is the cheapest possible check that nobody has quietly
     added a few megabytes to it.
+
+    #831: with `AELIX_SDIST_SIZE_REPORT` set, the size goes to that file before
+    it is compared, and `scripts/preflight.py`'s `sdist-size` gate reads it there:
+    #387 and #816 both reached the cap by ordinary growth, and nothing said how
+    close it was until a run failed. The comparison is `pytest.fail`, not an
+    `assert`, which `python -O` and `--assert=plain` together remove.
     """
     path, _ = release_sdist
     size = path.stat().st_size
-    assert size <= MAX_SDIST_BYTES, (
-        f"the published sdist is {size:,} B, over the {MAX_SDIST_BYTES:,} B cap. "
-        "Find what grew (`tar -tvzf` and sort by size) before raising this."
+    report = os.environ.get(SIZE_REPORT_ENV)
+    if report:
+        Path(report).write_text(
+            json.dumps({"size": size, "cap": MAX_SDIST_BYTES}), encoding="utf-8"
+        )
+    if size > MAX_SDIST_BYTES:
+        pytest.fail(
+            f"the published sdist is {size:,} B, over the {MAX_SDIST_BYTES:,} B cap. "
+            "Find what grew (`tar -tvzf` and sort by size) before raising this."
+        )
+
+
+# The size test called with a stand-in sdist of a chosen size (#831): what
+# preflight's `sdist-size` gate reads is the report, so the report and the cap are
+# pinned here without building anything.
+
+
+def _sdist_of(tmp_path: Path, size: int) -> tuple[Path, list[str]]:
+    path = tmp_path / "aelix-0.0.0.tar.gz"
+    with path.open("wb") as fh:
+        fh.truncate(size)
+    return path, []
+
+
+@pytest.mark.parametrize("size", [MAX_SDIST_BYTES - 2_040_336, MAX_SDIST_BYTES])
+def test_the_size_test_reports_the_size_and_the_cap_and_passes_up_to_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int
+) -> None:
+    report = tmp_path / "report.json"
+    monkeypatch.setenv(SIZE_REPORT_ENV, str(report))
+    with warnings.catch_warnings():
+        # A warning on a pass was #831's first way to report; `-W error` failed it.
+        warnings.simplefilter("error")
+        test_the_release_sdist_stays_under_the_size_cap(_sdist_of(tmp_path, size))
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "size": size,
+        "cap": MAX_SDIST_BYTES,
+    }
+
+
+def test_the_size_test_reports_before_it_fails_over_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "report.json"
+    monkeypatch.setenv(SIZE_REPORT_ENV, str(report))
+    over = MAX_SDIST_BYTES + 1
+    with pytest.raises(
+        pytest.fail.Exception,
+        match=r"^the published sdist is 6,000,001 B, over the 6,000,000 B cap\. ",
+    ):
+        test_the_release_sdist_stays_under_the_size_cap(_sdist_of(tmp_path, over))
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "size": over,
+        "cap": MAX_SDIST_BYTES,
+    }
+
+
+def test_the_size_test_writes_no_report_unless_one_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(SIZE_REPORT_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    sdist = _sdist_of(tmp_path, 10)
+    test_the_release_sdist_stays_under_the_size_cap(sdist)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [sdist[0].name]
+
+
+def test_the_cap_holds_under_python_O(tmp_path: Path) -> None:
+    """Codex C2: `PYTHONOPTIMIZE=1` with `--assert=plain` removed a bare `assert`, and an
+    oversize sdist passed. The size test is run under `python -O` here, where an
+    `assert` in it is gone (the control below proves the flag took)."""
+
+    script = tmp_path / "under_o.py"
+    script.write_text(
+        "import importlib.util, sys\n"
+        "from pathlib import Path\n"
+        "import pytest\n"
+        "try:\n"
+        "    assert False\n"
+        "except AssertionError:\n"
+        "    raise SystemExit(4)\n"
+        "spec = importlib.util.spec_from_file_location('hygiene_under_o', sys.argv[1])\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "try:\n"
+        "    module.test_the_release_sdist_stays_under_the_size_cap((Path(sys.argv[2]), []))\n"
+        "except pytest.fail.Exception as exc:\n"
+        "    print(exc)\n"
+        "    raise SystemExit(3)\n",
+        encoding="utf-8",
     )
+    sdist, _ = _sdist_of(tmp_path, MAX_SDIST_BYTES + 1)
+    env = {k: v for k, v in os.environ.items() if k != SIZE_REPORT_ENV}
+    proc = subprocess.run(
+        [sys.executable, "-O", str(script), __file__, str(sdist)],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "over the 6,000,000 B cap" in proc.stdout
+
+
+def test_a_tracked_file_missing_on_disk_is_left_out_of_the_release_tree(
+    tmp_path: Path,
+) -> None:
+    """#831 F1: an unstaged delete or a plain `mv` of a tracked file made the seeding `tar` exit non-zero."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=str(empty), GIT_CONFIG_NOSYSTEM="1", GIT_CEILING_DIRECTORIES=str(tmp_path))
+    for name in ("kept.md", "edited.md", "deleted.md", "moved.md"):
+        (repo / name).write_text(f"{name}\n", encoding="utf-8")
+    subprocess.run([*git, "init", "-q"], cwd=repo, env=env, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "base"], cwd=repo, env=env, check=True)
+    posix = sys.platform != "win32"
+    if posix:
+        # A tracked symlink whose target is gone is still on disk, and tar archives it.
+        os.symlink("nowhere.md", repo / "dangling.md")
+        subprocess.run([*git, "add", "-A"], cwd=repo, env=env, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "a link"], cwd=repo, env=env, check=True)
+    (repo / "edited.md").write_bytes(b"edited, not staged\n")  # bytes: write_text is CRLF on win32
+    (repo / "deleted.md").unlink()
+    (repo / "moved.md").rename(repo / "renamed.md")  # untracked now
+
+    names = tracked_on_disk(repo)
+    assert names == (b"dangling.md\0" if posix else b"") + b"edited.md\0kept.md\0"
+    tar_out = release_tar(repo)  # what the fixture seeds the release tree with
+    # Unpacked the way the fixture unpacks it (macOS tar adds `._` members for
+    # extended attributes and folds them back in on extraction).
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(["tar", "-x", "-C", str(out)], input=tar_out, capture_output=True, check=True)
+    assert sorted(p.name for p in out.iterdir()) == ["dangling.md"] * posix + ["edited.md", "kept.md"]
+    assert (out / "edited.md").read_bytes() == b"edited, not staged\n"
 
 
 def test_the_inventory_check_catches_a_stray(

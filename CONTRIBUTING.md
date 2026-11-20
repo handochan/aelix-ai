@@ -50,11 +50,13 @@ keep `>=3.11,<3.14` (#278, ADR-0265).
 
 ## The gates your PR has to pass
 
-CI runs exactly these four, in this order. Run them locally before pushing:
+CI runs exactly these five, in this order (`.github/workflows/ci.yml`, where the two
+ratchets also pass `--require-base --github-event`). Run them locally before pushing:
 
 ```bash
 uv run ruff check .                    # linter only — `ruff format` is NOT enforced
 uv run python scripts/check_complexity.py --check   # the complexity ratchet (gate 5 below)
+uv run python scripts/check_control_v1.py --check   # the control-v1 floor only grows (ADR-0302)
 uv run python scripts/check_types.py   # the pyright gate, not a bare `uv run pyright`
 uv run pytest -p no:cacheprovider -q   # the full suite, ~6 min on a laptop
 ```
@@ -64,11 +66,15 @@ hand-laid formatting that `ruff format` would collapse. Match the surrounding
 code; do not reformat files you are not changing.
 
 `uv run --frozen python scripts/preflight.py` runs the linter and the type gate
-above, then gates 1 to 4 below and the tests that the files you touched can fail.
-`--plan` shows which, and why, without running anything, and `--claims -` prints
-the block for the PR's "How it was verified". It does not run the complexity
-ratchet yet (gate 5; run it as above), and it never runs the full suite, so
-those two are still yours.
+above and checks the release sdist against its size cap, then each of gates 1 to
+5 below, and the control-v1 floor, when a changed path matches its trigger, and the
+tests that the files you touched can fail. `--plan` shows which, and why, without
+running anything; `--help` lists every trigger. A trigger can be narrower than what
+its gate reads: gate 4's is a `.py` under `packages/` or anything under `src/`, so a
+dependency declared in a package's `pyproject.toml` alone does not run it, though it
+can fail gate 4. Run gate 4 as below after such a change. `--claims -` prints the
+block for the PR's "How it was verified". Preflight never runs the full suite, so
+that is still yours.
 
 ### Five gates that are easy to miss
 

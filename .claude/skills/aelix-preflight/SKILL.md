@@ -1,15 +1,17 @@
 ---
 name: aelix-preflight
-description: Use before pushing a branch, opening or updating a pull request, or saying a change is done in the aelix-ai repository. Runs scripts/preflight.py, which picks the gates a diff needs (ruff, the pyright gate, the citation lock, the docs bundle, import direction, the band rule, packaging, pi parity, the control-v1 floor, the scans every test or product file must pass, the touched tests, Windows pyright) and writes a claims block for the PR. Also covers how to read each red gate, when to add Linux docker, Python 3.11 and 3.14, or the coarse Windows clock, and the full-suite run that is still owed at the end.
+description: Use before pushing a branch, opening or updating a pull request, or saying a change is done in the aelix-ai repository. Runs scripts/preflight.py, which picks the gates a diff needs (ruff, the pyright gate, the citation lock, the docs bundle, import direction, the complexity ratchet, the band rule, packaging, the sdist size cap, pi parity, the control-v1 floor, the scans every test or product file must pass, the touched tests, Windows pyright) and writes a claims block for the PR. Also covers how to read each red gate, when to add Linux docker, Python 3.11 and 3.14, or the coarse Windows clock, and the full-suite run that is still owed at the end.
 ---
 
 # aelix-preflight
 
 ## When to use
 
-Run this before every push and before you write "tests pass" anywhere. CI runs three
-commands (`ruff check`, `scripts/check_types.py`, the full pytest suite) on eight
-legs, two operating systems by four Pythons. Most red CI rounds in this repository
+Run this before every push and before you write "tests pass" anywhere. CI runs five
+commands (`ruff check`, `scripts/check_complexity.py --check`,
+`scripts/check_control_v1.py --check`, `scripts/check_types.py` and the full pytest
+suite) on eight legs, two operating systems by four Pythons
+(`.github/workflows/ci.yml`). Most red CI rounds in this repository
 came from gates a contributor did not know their diff needed. A round costs from
 15 minutes to over an hour of wall clock. `scripts/preflight.py` reads your diff and
 runs the gates that diff touches, so you find these failures locally.
@@ -116,6 +118,15 @@ gates that other checkout.
     dated note on ADR-0302;
   - an addition leaves `V1_SHA256` in `tests/rpc/control_v1/test_additive_only.py` alone. If
     it moved, a v1 case was edited.
+- **You changed a `.py` or `.pyi` under `packages/` or `src/`, a ruff config there or
+  at the root, `complexity-baseline.json`, `uv.lock` or `scripts/check_complexity.py`:**
+  the `complexity` gate runs `scripts/check_complexity.py --check --base <base>`, the
+  ratchet CI runs on every leg with `--require-base --github-event` added (ADR-0300). A
+  raised score fails it (RAISED), and so does a lowered one (STALE): run
+  `uv run python scripts/check_complexity.py --update` and commit
+  `complexity-baseline.json` with the change. It measures the files git tracks, so
+  `git add` a new module first: a pass with one untracked prints the script's
+  `UNTRACKED` note under the result.
 - **You edited `docs/guides/`:** run `uv run python scripts/sync_bundled_docs.py`.
   The wheel ships a byte-identical copy that `tests/test_docs_bundle_sync.py` gates
   in both directions (ADR-0218).
@@ -123,6 +134,12 @@ gates that other checkout.
   top-level path:** the packaging gate runs `tests/packaging_gate/`. Read the
   comments in `.gitignore` and the `exclude` blocks first. hatchling appends
   `.gitignore` to its exclude spec, so "ignored" does not mean "not shipped".
+- **Any change:** the `sdist-size` gate builds the release sdist from the tracked files
+  as they are on disk and checks it against its 6 MB cap. It passes only on the size
+  the test reports, so a run that measured nothing (a skip, a deselection,
+  `--setup-only`) fails it, and a pass prints the size and the headroom. Docs and code
+  alone reached the cap twice, #387 and #816; the second time only the full suite
+  caught it (#831).
 - **You are about to write a measurement down as a reason** (in an ADR, a CHANGELOG
   line or a comment): check that the command you measured is the one the product
   runs. Installer paths in particular diverge: by name from an index,
@@ -149,6 +166,12 @@ Details are in `references/reading-a-red-gate.md`. The two that cost the most:
 
 ## What bit this repo
 
+- #623/#624, branch `e2922307`: the release sdist was 6,059,123 B, over its 6,000,000 B
+  cap. Preflight skipped the packaging gate, which runs only on packaging inputs, and
+  only the full suite failed it (#831). The `sdist-size` gate now runs on every change.
+- PR #840 (#612): two listed scores fell, and CI's complexity step failed all 8 lint
+  + test jobs on STALE (runs 44600478328 and 44600556054). Preflight had no
+  complexity gate then (#858).
 - #733, 2026-11-10: a test that set `HOME` directly passed every gate preflight
   ran then, and only the full suite's `tests/test_env_sandbox_windows.py` failed it.
   A change to a file a whole-tree scan reads does not make `touched-tests` pick it.

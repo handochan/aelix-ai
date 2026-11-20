@@ -71,6 +71,49 @@ holds inside a function, under `TYPE_CHECKING` and through
 exactly. Do not add to it: pass a Protocol or a callback down, or move the shared
 type down. `--list` prints every reverse-import site.
 
+## complexity
+
+`scripts/check_complexity.py --check --base <base>` (ADR-0300, #293), the ratchet CI
+runs on every leg; CI's step adds `--require-base --github-event`. It scores every
+`.py` and `.pyi` git tracks under `packages/` and `src/` with Ruff's C901 and compares
+them with `complexity-baseline.json`.
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `NEW` | a function not listed scores over 20 | make it simpler |
+| `RAISED` | a listed function scores above its listed number | make it simpler |
+| `STALE ... fell` or `within the limit now` | a listed score went down | `--update`, and commit the baseline with the change |
+| `STALE ... same-named definitions` | a reorder or a stub renumbered same-named definitions | `--update`, and commit the baseline |
+| `GONE` | no function has a listed identity now | `--rename OLD NEW` for a rename or a move; `--update` for a removal |
+| `HISTORY` | the baseline gained an entry or a score against the merge base | restore those baseline lines and make the function simpler; only a ruff upgrade's `--init` raises one (ADR-0300 §5, §7) |
+| `NOQA` | a `# noqa` comment names C901 or a prefix of it | remove it; the measurement ignores it anyway |
+| `CONFIG` | a ruff config under `packages/`, `src/` or at the root has an ignore covering C901 (`ALL`, `C`, `C9`, `C90` or `C901`) | remove that ignore |
+| `RUFF` | the installed ruff is not the one the baseline was measured with | sync to `uv.lock`'s ruff; a ruff upgrade runs `--init` in a change of its own (ADR-0300 §7) |
+
+Make a function simpler by giving a responsibility its own home, not by splitting it
+only to lower the number. The gate shows the findings and leaves out the script's own
+14-line repair text, which with a note filled the 15 lines of output a failed gate
+shows; run the script alone to read it. It leaves out only a line that starts with
+`What to do:` and the indented lines under it, and a timed-out run ends with what the
+script last printed on stdout and the kill note
+(`tests/test_preflight.py::test_only_a_line_that_opens_the_repair_text_and_its_indented_lines_are_left_out`,
+`::test_a_complexity_timeout_ends_with_what_it_printed_last_and_the_kill_note`).
+
+An untracked file is not measured, and CI will measure it once it is committed: a
+pass prints the script's `UNTRACKED` note under the result
+(`::test_a_passing_complexity_gate_shows_the_untracked_note`), so `git add` it and
+rerun. A change that deletes the script runs the gate, and it fails as CI's step would
+(`::test_a_change_that_deletes_the_ratchet_runs_the_gate_and_fails_it`).
+
+Preflight compares the baseline with the merge base of `--base`, and CI's push to
+`main` compares it with that push's `before`: with a `--base` whose merge base
+already holds a raised score and its raised baseline entry (`--base HEAD` once both
+are committed, say), preflight passes and CI's push fails on `HISTORY` (Codex review
+of #858). Known limits of the trigger: a ruff config that is a symlink is read
+through the link, so a change to the file it points at alone leaves the gate skipped,
+and the script also scans ruff configs that git ignores, which preflight's change set
+does not list. Run the script alone after such a change.
+
 ## band
 
 `tests/agents/test_p2_band_boundaries.py` (ADR-0197). The kernel holds no
@@ -88,6 +131,41 @@ path that reaches a wheel or the sdist. With `.gitignore` gone, only the
 `pyproject.toml` `exclude` lists stand between them. `.gitignore` and every
 `exclude` list move together. Read both files' comments before you change either: they
 record real leaks, among them a whole `.claude/worktrees/` tree in an sdist.
+
+## sdist-size
+
+One test, `tests/packaging_gate/test_build_hygiene.py::test_the_release_sdist_stays_under_the_size_cap`,
+on every change: every file the root sdist ships adds to it, and `packaging` runs only on
+packaging inputs (#831). `packaging` deselects it, so it runs here only. It builds the
+release sdist with `uv build --sdist` from the files `git ls-files` lists that are on
+disk, as they are on disk: staged and unstaged edits are included, a tracked file
+deleted or moved without `git rm` or `git mv` is left out, and untracked files are not
+in it (`test_build_hygiene.py::test_a_tracked_file_missing_on_disk_is_left_out_of_the_release_tree`).
+
+The gate names a temporary file in `AELIX_SDIST_SIZE_REPORT`, and the test writes
+`{"size": N, "cap": C}` there as soon as it has measured. The gate passes only when
+pytest exits 0 and that report holds a size at or under its cap, compared by preflight
+itself, and then prints the size and the headroom under the result. What a failed
+gate's output ends with:
+
+| It ends with | What it means |
+|---|---|
+| `the published sdist is N B, X B over the C B cap`, then what to do | the sdist is too big |
+| `the size test did not measure an sdist: pytest exited 0 ...` | the test never ran its body: a skip, a deselection, `--setup-only` or `--collect-only` (in `PYTEST_ADDOPTS`, say) |
+| `... with an error before it measured one: <exception>` | building the sdist failed, `uv build` offline with an empty cache for one |
+| `the size test measured N B, under the C B cap, and pytest exited R` | something other than the size failed the run |
+| `... pytest exited R and the test wrote no report; its output above says why` | pytest stopped without a result for the test: exit 5 (a plain deselection) or 4 (a usage error) |
+| `the size test's report did not read: ...` or `... is not a size and a cap: ...` | the report file is unreadable or malformed; something other than the size test wrote it |
+
+(`tests/test_preflight.py::test_a_size_run_that_measured_nothing_fails_the_gate`,
+`::test_an_error_before_the_size_was_measured_is_named_not_called_over_the_cap`,
+`::test_the_size_verdict_compares_the_report_with_its_cap`.) The test fails over the
+cap with `pytest.fail`, which `python -O` and `--assert=plain` leave in place
+(`test_build_hygiene.py::test_the_cap_holds_under_python_O`). The cap is not a number to
+raise: list the tarball by size (`tar -tvzf`), and keep out what need not ship, as
+#387 (the demo recording) and #816 (`docs/decisions/`) did. The comment above
+`MAX_SDIST_BYTES` records both. Without `uv` the gate is skipped, because the test
+skips itself without it.
 
 ## pi-parity
 

@@ -23,6 +23,37 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Contributors: `scripts/preflight.py` checks the release sdist against its size cap on every
+  change (#831).** An `sdist-size` gate runs
+  `tests/packaging_gate/test_build_hygiene.py::test_the_release_sdist_stays_under_the_size_cap`
+  whatever the change touched (`tests/test_preflight.py::test_the_sdist_size_gate_runs_on_every_change`),
+  where before only the `packaging` gate ran it, on packaging inputs, and the #623/#624 branch,
+  which changed none, went over the 6,000,000 B cap with only its full suite saying so; `packaging`
+  now deselects it. The test writes the size and the cap to the file `AELIX_SDIST_SIZE_REPORT`
+  names, and the gate passes only when pytest exits 0 and that report is at or under the cap, so a
+  run that measured nothing (a skip, a deselection, `--setup-only`, `--collect-only`) fails it
+  (`::test_a_size_run_that_measured_nothing_fails_the_gate`). A pass prints the size and the
+  headroom (`::test_a_passing_sdist_size_gate_prints_the_size_and_the_headroom`, with warnings
+  ignored or made errors too); a tree over the cap fails the gate with the size and the cap
+  (measured with a large file staged under `docs/`). A tracked file deleted without `git rm` is left
+  out of the build instead of stopping it
+  (`test_build_hygiene.py::test_a_tracked_file_missing_on_disk_is_left_out_of_the_release_tree`).
+  On macOS with a warm uv cache a pass took 3.0 to 3.7 s in ten runs at a load average of about
+  9, and 7.9 to 10.5 s in four at about 21, with other sessions' suites running.
+
+- **Contributors: `scripts/preflight.py` runs the complexity ratchet (#858, ADR-0300).** A change
+  to a `.py` or `.pyi` under `packages/` or `src/`, a ruff configuration file there or at the root,
+  `complexity-baseline.json`, `uv.lock` or `scripts/check_complexity.py` starts a `complexity` gate
+  that runs `scripts/check_complexity.py --check --base <base>`, the ratchet CI runs on every leg
+  with `--require-base --github-event` added; a change only to other paths does not
+  (`tests/test_preflight.py::test_the_complexity_gate_runs_on_what_the_ratchet_reads`). A listed
+  score that fell without `--update` (STALE) or rose (RAISED) now fails locally and shows that line
+  (`::test_a_lowered_baselined_score_fails_the_complexity_gate_and_shows_stale`,
+  `::test_a_raised_score_fails_the_complexity_gate_with_raised`), where before it failed all 8
+  lint + test jobs of PR #840's first CI. A pass with an untracked `.py` or `.pyi` there prints the
+  ratchet's `UNTRACKED` note, since CI measures that file once it is committed
+  (`::test_a_passing_complexity_gate_shows_the_untracked_note`).
+
 - **CLI-RPC can page stored messages and join live frames to their storage keys
   (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
   coordinates fit the reply bound, discover `transcript/list` to read stored

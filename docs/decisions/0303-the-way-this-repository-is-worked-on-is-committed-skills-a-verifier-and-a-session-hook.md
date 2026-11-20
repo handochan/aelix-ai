@@ -310,3 +310,59 @@ untracked and local to a maintainer's checkout; the skills carry what other cont
   `tests/jobs/test_core_is_kind_agnostic_611.py`. The full suite catches both.
 - `--docker` builds from `git stash create` (tracked and staged changes) or `HEAD`, so an
   untracked file is not in the image; it says which touched tests it left out.
+
+## Note (2026-11-20, #858): preflight runs the complexity ratchet
+
+§4's table has the `complexity` row the Consequences above said #293's ratchet would take. It
+runs `scripts/check_complexity.py --check --base <the change's base>`, the ratchet CI runs on
+every leg (ADR-0300) with `--require-base --github-event` added, when a change touches a `.py`
+or `.pyi` under `packages/` or `src/`, a ruff configuration file there or at the root
+(`pyproject.toml`, `ruff.toml`, `.ruff.toml`, which the script scans for an ignore naming C901),
+`complexity-baseline.json`, `uv.lock` (it pins the ruff whose version the baseline records) or
+the script itself, and not when a change touches only other paths
+(`test_the_complexity_gate_runs_on_what_the_ratchet_reads`). The issue named the `.py` and
+`.pyi`; the other inputs are the lane's call. Before the row, PR #840's first CI failed all 8
+lint + test jobs on two listed scores that fell (STALE), a step preflight did not run. In a
+scratch repository with the real script, a lowered listed score fails the gate and shows its
+STALE line, and a raised one its RAISED line
+(`test_a_lowered_baselined_score_fails_the_complexity_gate_and_shows_stale`,
+`test_a_raised_score_fails_the_complexity_gate_with_raised`). On this tree on macOS,
+`jobs/records.py::fold` lowered from 21 to 20 and raised to 22 failed the gate in 1.9 s and 1.5
+s. A failed gate shows the last 15 lines of its output, and the script ends a failure with a
+14-line repair text that, read as one stream with its notes, filled those lines; the gate leaves
+that text out and its hint says it short
+(`test_the_ratchets_findings_come_last_and_its_repair_text_is_left_out`), and leaves out nothing
+else (`test_only_a_line_that_opens_the_repair_text_and_its_indented_lines_are_left_out`). The
+script measures only tracked files, so a pass with an untracked `.py` there prints its
+`UNTRACKED` note (`test_a_passing_complexity_gate_shows_the_untracked_note`). Preflight compares
+with the merge base of `--base`, and CI's push to `main` with that push's `before`, so a raised
+score committed with its raised baseline entry passes preflight run with `--base HEAD` and fails
+the push (Codex review of #858). §4's list of gates also leaves out `control-v1`, which #623
+added (ADR-0302 D8).
+
+## Note (2026-11-20, #831): preflight measures the release sdist on every change
+
+§4's table has an `sdist-size` row that runs one test,
+`tests/packaging_gate/test_build_hygiene.py::test_the_release_sdist_stays_under_the_size_cap`,
+on every change, with nothing changed included (`test_the_sdist_size_gate_runs_on_every_change`,
+`test_the_sdist_size_gate_runs_only_the_size_test_and_names_a_report_file`). `packaging` keeps
+its trigger and deselects the size test
+(`test_the_packaging_gate_leaves_the_size_test_to_sdist_size`). The #623/#624 branch `e2922307`
+built a 6,059,123 B sdist, over the 6,000,000 B cap, and only its full suite said so:
+`packaging`, the one gate that ran the test, starts only on packaging inputs, and #831's
+replanning of that change found none among its 127 paths. The test writes the size and the cap
+to the file `AELIX_SDIST_SIZE_REPORT` names, and the gate passes only when pytest exits 0 and
+that report is at or under the cap, compared by preflight as well. A skip, `--setup-only`,
+`--collect-only` and a deselection that a plugin turns into exit 0 all exit 0 and write no
+report, and fail it (`test_a_size_run_that_measured_nothing_fails_the_gate`). The first round's
+test reported the size as a warning on a pass: those runs passed the gate with nothing measured,
+`PYTHONWARNINGS=ignore` hid the line, and `-W error::UserWarning` failed `packaging` over an
+sdist under the cap (verify and Codex review of #831). A pass prints the size and the headroom
+under the gate's result (`test_a_passing_sdist_size_gate_prints_the_size_and_the_headroom`). In
+a clone of this branch with a 2,200,000-byte random file staged under `docs/`, `--plan` listed
+`sdist-size` under "would run" and `packaging` under "would skip", and the run failed
+`sdist-size` with "the published sdist is 6,160,810 B, over the 6,000,000 B cap". On this branch
+on macOS with a warm uv cache a pass took 3.0 to 3.7 s in ten runs at a load average of about 9,
+and 7.9 to 10.5 s in four at about 21 with other sessions' suites running, reporting about
+3.96 MB, 2.04 MB (34%) under the cap. Without `uv` on `PATH` the gate is skipped, because the test would skip itself and write no report
+(`test_without_uv_the_sdist_size_gate_is_skipped_not_passed`).
