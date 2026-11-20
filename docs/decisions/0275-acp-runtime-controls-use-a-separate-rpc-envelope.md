@@ -276,7 +276,9 @@ Validation gains `tests/rpc/control_v1/`, `tests/rpc/test_selections_rpc_624.py`
   request opens an `extension_ui_request` with `method: "childApproval"` ([ADR-0308](0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md) D5).
 - **aelix-acp**: reaching the five pre-lock methods through `_aelix/manage` before its session lock,
   with `children/notices` under it, is the aelix-acp PR's proposal (lane L3, ADR-0307 D8), not in
-  this repository; aelix-acp `16d6555b` sends none of them.
+  this repository; aelix-acp `16d6555b` sends none of them. *Amended 2026-11-20 (#612, lane L3):
+  aelix-acp PR #39 (`03b9e32`) sends them so, and `docs/contracts/control-v1.md` lists them as
+  consumed (ADR-0307's note of 2026-11-20).*
 
 ## Note (2026-11-20, #655)
 

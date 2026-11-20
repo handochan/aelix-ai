@@ -7,7 +7,35 @@
   ],
   "requires": "jobs",
   "params": {},
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:1404-1410"
+      ],
+      "sends": [],
+      "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:40-43",
+        "src/aelix_acp/server.py:462-463",
+        "src/aelix_acp/session.py:1388-1418"
+      ],
+      "via": [
+        "_aelix/manage, under the session lock, with the turn's stopReason"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
   "cases": [
     {
       "name": "nothing waits",

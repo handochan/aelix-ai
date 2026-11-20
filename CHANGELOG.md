@@ -37,8 +37,9 @@ unwritten. Add them with the next release.
   (`--mode rpc`), as in the TUI (owner, 2026-11-18: "전부 열기 (권장)"): the model can spawn a
   background agent, run a background `bash` command and use `job` and `job_stop`
   (`tests/cli/test_job_tools_builtin_779.py::test_rpc_and_acp_register_both_and_the_background_actions_across_rebuilds_612`).
-  Under ACP the model gets them only with a native that has #612 (aelix-acp `16d6555b` records
-  `e19ab55e`), and reads a background result at its next prompt; the WebSocket host has none.
+  Under ACP the model gets them with a native that has #612: aelix-acp PR #39 pins `83714045`,
+  while `16d6555b` records `e19ab55e`, which predates it (the ACP entry below); the WebSocket host
+  has none.
   A host gets six `aelix_control` methods: `children/list` and `children/events`, answered during
   a turn; `children/steer`, `children/wrap_up` and `children/stop`, answered while `agents/run`
   holds the session, refused while a session change runs, and ended `unknown` when one begins — but
@@ -51,8 +52,8 @@ unwritten. Add them with the next release.
   `seq` and replayable within one session build; every string capped, and the largest event
   measured with every string at its cap is under 5 KiB) and `aelix_notice` (a notice waits for
   the model) (`tests/rpc/test_children_family_612.py`, `tests/agents_ext/test_child_events_612.py`).
-  `aelix_subagent` is unchanged, and aelix-acp `16d6555b` drops both new types: ACP needs an
-  aelix-acp change to show them. An idle RPC `permissions/set` now reaches running background
+  `aelix_subagent` is unchanged. aelix-acp `16d6555b` drops both new types; aelix-acp PR #39 shows
+  them (the ACP entry below). An idle RPC `permissions/set` now reaches running background
   agents, and a job start that a session end overtook is refused, "the session ended before the
   job started", with a `failed` outcome written, as is one that a `session_shutdown` hook begins
   after the session's jobs were stopped, which writes nothing (`tests/jobs/test_ended_owner_epoch_612.py`).
@@ -79,8 +80,39 @@ unwritten. Add them with the next release.
   a delegated agent's argv is byte for byte the same, and a `default` parent's child is still
   read-only (`tests/agents_ext/test_approval_clamp_612.py`). Run live with `openai/gpt-4.1-mini`
   through OpenRouter in the TUI at 120x40 and against a real `--mode rpc` parent, on macOS only
-  (`.omc/probes/612/impl/C/live/`); not run under ACP. Guides: `agent-approvals.md`, and "Over RPC
-  and ACP" in `background-jobs.md`.
+  (`.omc/probes/612/impl/C/live/`); under ACP with aelix-acp PR #39, the ACP entry below. Guides:
+  `agent-approvals.md`, and "Over RPC and ACP" in `background-jobs.md`.
+- **An ACP client sees and steers the delegated agents, is told when a background result waits,
+  and is asked before a delegated agent's change, with aelix-acp PR #39 (Refs #612; ADR-0307,
+  ADR-0308).** aelix-acp PR #39 (`03b9e32`, in aelix-acp, not in this repository) pins this
+  native, `83714045`. Every ACP client sees each agent the model delegated to on the `agent` card
+  that started it — its last text, `stuck`, wrap-up, current tool and end — also after later
+  prompts; a client that declares `aelix/nestedToolCalls` also gets each agent's calls as nested
+  tool calls. `_aelix/manage children/list`, `children/events`, `children/steer`,
+  `children/wrap_up` and `children/stop` are answered while a prompt runs, refused (`-32000`,
+  `session_changing`) while the session's native is being replaced or ended, and one still
+  unanswered when its close begins is answered `-33002`, "its delivery is unknown". A client that
+  declares `aelix/notices` is sent `_aelix/notice` when a background result waits and places it
+  with `_aelix/manage children/notices`. An Ask session's agent asks before a change (owner,
+  2026-11-18: "default로 돌며 물어봄 (권장)"); over ACP only a client that declares
+  `aelix/clientActions` is asked (the lead's call; narrower than Q-A), as
+  `session/request_permission`: only a selected option approves, `session/cancel` refuses, and a
+  question aelix drops is taken back with `$/cancel_request`; for any other ACP client the agent
+  runs read-only, as before. One `session/cancel` sends one native abort at once (unit and native
+  tests; with a slow cut path, one abort where the adapter before sent two), and closing a native
+  that lists `children/list` or `children/notices` waits up to 45 s on POSIX (a native whose
+  session end takes 8 s ended in 8.08–8.63 s with a scripted model, where the adapter before killed
+  it at 5.01 s). Run live with `openai/gpt-4.1-mini` through OpenRouter and aelix-acp's test
+  client, on macOS only, during the lane and before its final commit (ADR-0307's and ADR-0308's
+  notes of 2026-11-20 name each row's lane checkpoint): the controls during a prompt, a notice
+  turn, the aborts (one abort per cancel and the 2 s cadence were already built) and a close,
+  before a fix round changed the fence, added the close's read-through and counted an abort the
+  turn's poll sent while `commands/cancel` waited as the cancel's one; allow-once, reject-once, a
+  `session/cancel` of an open question, and a `children/stop` and a restart with a question open;
+  and, on the final code (`03b9e32` minus aelix-acp #37's block and one docstring), the cancel and
+  the restart again. Not run: Windows and Linux natives under ACP, Studio, "Allow for
+  this agent", the 45 s deadline itself, a real 300 s or 330 s question wait, and a cancel during
+  `/compact` or before a question's task ran (unit tests only).
 - **An RPC host can list and turn on and off skills, tools, extensions, agent profiles and
   `mcp.json` servers, the way the TUI panels do (#624, ADR-0305).** `selections/list {kind}`
   returns a panel's rows (saved, applied, pending, the lock and, for every row that cannot

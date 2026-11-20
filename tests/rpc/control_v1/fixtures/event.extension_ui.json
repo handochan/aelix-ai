@@ -99,6 +99,35 @@
       ],
       "sends": [],
       "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:750",
+        "src/aelix_acp/session.py:871-878",
+        "src/aelix_acp/session.py:1020-1022",
+        "src/aelix_acp/session.py:1032-1092"
+      ],
+      "sends": [],
+      "reads": [
+        "id",
+        "title",
+        "child.id",
+        "child.epoch",
+        "child.cwd",
+        "child.parentToolCallId",
+        "child.profile",
+        "child.jobId",
+        "child.background",
+        "tool.callId",
+        "tool.name",
+        "tool.args",
+        "choices[].kind",
+        "choices[].id"
+      ]
     }
   ],
   "cases": [

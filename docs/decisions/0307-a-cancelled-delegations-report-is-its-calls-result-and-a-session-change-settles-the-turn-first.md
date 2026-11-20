@@ -8,7 +8,12 @@ family and its admission, the `aelix_child` and `aelix_notice` events and the hu
 replay within one hub generation, owner Q4's flips with the session lifetime and the ended-owner
 epoch, and the aelix-acp contract (whose half is the aelix-acp PR's, lane L3, not in this
 repository) — and K7–K9 are added. "Where the build differs from contract r5" lists what lane L2's
-implementation changed of r5, and the lead's calls on them (2026-11-19).
+implementation changed of r5, and the lead's calls on them (2026-11-19). Amended 2026-11-20 (#612,
+lane L3): D8 is built by aelix-acp PR #39 (`03b9e32`), with seven things r5 did not propose; a
+children control in flight is ended when the worker's close begins, not when a restart begins; K5
+and K7 are lowered, and parts of D4–D8 were run live through ACP on macOS during the lane, at
+three of its local checkpoints before its final commit — "Note (2026-11-20, #612)" says which row
+ran at which checkpoint, measured how, and what was not run.
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -255,7 +260,10 @@ Six `aelix_control` methods, one `_families()` entry (`"children"`, ADR-0302 D9)
 
 `aelix_subagent` is unchanged (its `event` is a closed enum, ADR-0302): every new kind of frame
 rides two new types, which aelix-acp `16d6555b` drops silently (its event chain has no branch for
-an unknown type), so a host on today's adapter sees what it saw.
+an unknown type), so a host on today's adapter sees what it saw. *Amended 2026-11-20 (#612, lane
+L3): aelix-acp PR #39 (`03b9e32`) reads both — `aelix_child` onto the parent card and, for a client
+that opts in, as nested tool calls; `aelix_notice` as `_aelix/notice` for a client that declares
+`aelix/notices` (Note (2026-11-20, #612)).*
 
 - **`{"type": "aelix_child", "event", "data": {id, seq, epoch, …}}`**, `event` closed to seven
   values (`subagent_contract.CHILD_EVENTS`): `state` (`state`, `profile`, `sessionId`, `jobId`,
@@ -368,7 +376,12 @@ and with jobs off the fixed `MAX_LIVE_CHILDREN = 4` admits. ACP drives aelix ove
 native that has #612 it gets the same tools; aelix-acp `16d6555b` records native `e19ab55e`
 (`runtime-reference.json`), which predates #612, and its client sees no `children/*` method or event
 (D8), so a result reaches the ACP model at its next prompt (verify V-F6, Codex L11; by reading the
-adapter at `16d6555b`, not run).
+adapter at `16d6555b`, not run). *Amended 2026-11-20 (#612, lane L3): aelix-acp PR #39 pins native
+`83714045`, which has #612; a client that declares `aelix/notices` is sent `_aelix/notice` and
+wakes the session with `children/notices` (live through ACP during the lane, before its final
+commit: one notice placed, `remaining: 0`, the model then read the background result; Note
+(2026-11-20, #612)). A client
+that does not declare it still gets the result at its next prompt.*
 
 - **Posture on a host.** An idle `permissions/set` fires the agents extension's posture listener
   over every live runtime, a background job's included, so a running background child is tightened
@@ -431,11 +444,16 @@ adapter at `16d6555b`, not run).
   resumable. #612's body, rule 2 ("`/new`·`/resume`·`/fork`·종료 때 자식은 멈추되, resume할 수
   있게 기록한다"), is met under those conditions. ACP `session/cancel` stops the turn, not the jobs.
 
-### D8. The aelix-acp contract (proposals for the aelix-acp PR, lane L3; not in this repository)
+### D8. The aelix-acp contract (built by aelix-acp PR #39, lane L3; not in this repository)
 
 aelix-acp `16d6555b`, unchanged, drops `aelix_child` and `aelix_notice`, sends no `children/*`
 method and never opts in to child approvals. The PR's proposals (contract r5 §8), which lane L3
 builds against this branch once the fixtures fix the wire:
+
+*Amended 2026-11-20 (#612, lane L3): built by aelix-acp PR #39, commit `03b9e32` (based on
+aelix-acp main `11fb4fe`), against native `83714045`. The list below is r5's proposals as
+written; what the build does beyond them, the fence's boundary, and K5 and K7 as measured are in
+"Note (2026-11-20, #612)".*
 
 - **Admission**: `children/list`, `children/events`, `children/steer`, `children/wrap_up` and
   `children/stop` go through `_aelix/manage` before its session-lock test, straight to the native,
@@ -443,7 +461,10 @@ builds against this branch once the fixtures fix the wire:
   lock. A counter raised inside `Session.restart()` and `Session.close()` fences them: one that
   arrives while it is up is refused "the session is changing" before anything is written; one
   already sent when it rises answers "the session changed while this request ran; its delivery is
-  unknown".
+  unknown". *Amended 2026-11-20 (#612, lane L3): as built, one already sent is ended only when the
+  worker's close begins (`raise_fence()`, the first step of `Session._close()`); a restart's earlier
+  raise of the counter only refuses new ones, and an answer native gave before the close began is
+  returned (verify round 2 F1; Note (2026-11-20, #612)).*
 - **Events**: for a client that declared `_meta["aelix/nestedToolCalls"]`, `tool_start`/`tool_end`
   become `tool_call`/`tool_call_update` with `toolCallId = <id>:<callId>` and the parent's call as
   `_meta.parentToolCallId` (a synthetic top-level `aelix-child:<id>` for an `agents/run` child); a
@@ -492,7 +513,11 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
   swaps while a turn runs (verify round 3 F2, `probes3/test_v3_stale_ctx.py`).
 - **K5 — ACP, one cancel, several aborts.** aelix-acp re-aborts a cancelled turn while the native
   streams (every 50 ms at `16d6555b`). A native whose cut path waits longer than that in a hook or its
-  append reaches K1, and the next prompt's copy is not in the adapter's table.
+  append reaches K1, and the next prompt's copy is not in the adapter's table. *Amended 2026-11-20
+  (#612, lane L3): with aelix-acp PR #39 one client `session/cancel` sends one native abort at once,
+  and a turn still streaming is aborted again only 2 s after the last abort (measured 0.0001 s and
+  2.0185 s, verify round 2). The case narrows to a cut path that waits longer than 2 s (by reading;
+  Note (2026-11-20, #612)).*
 - **K6 — ACP recovery.** aelix-acp's guarantee is the recorded terminal `tool_call_update`. A
   `session/load` from an empty table projects native user and assistant messages only, and one from a
   partial table replays without the report.
@@ -502,7 +527,12 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
   not yet written are reconciled at the next start (ADR-0293). Neither deadline was run here.
   aelix-acp `16d6555b`, unchanged, sends SIGTERM and SIGKILL 5 s later (`wire/process.py`
   `terminate_owned`), so D7's session-end stages (up to 10 s for a turn, then 10 s for the agents
-  and jobs) can be cut short under it (verify V-F6; by reading, not run).
+  and jobs) can be cut short under it (verify V-F6; by reading, not run). *Amended 2026-11-20 (#612,
+  lane L3): with aelix-acp PR #39 the POSIX deadline is 45 s for a native that lists `children/list`
+  or `children/notices`, and it was run: with a scripted model a close took 0.07–0.59 s idle, with a
+  spawned child in its model call or with a background `bash` job, and a native whose session end
+  takes 8 s ended in 8.08–8.63 s, where `a78db59` killed it at 5.01 s (macOS). No run reached the
+  45 s, and Windows was not run (Note (2026-11-20, #612)).*
 - **K8 — a slow host.** Each frame is written with a blocking write and flush; a host that stops
   reading stalls the native's event loop (its turn, its children's pumps, every handler) until it
   reads. This is how every RPC event is written; #612 adds no bound (by reading the plane's emit
@@ -512,7 +542,15 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
   replayable after it (D6).
 - **Not run for D4–D8**: ACP (lane L3), Windows and Linux live (the live runs were macOS only; the
   real-child tests are POSIX only), a reconnect, and the live refusals for a not-started, stopping
-  or broken-inbox child (in-process tests only).
+  or broken-inbox child (in-process tests only). *Amended 2026-11-20 (#612, lane L3): parts were
+  run live through ACP on macOS during the lane, at its local checkpoints before the final commit
+  `03b9e32` (the note below names them) — steer, wrap-up and stop during a prompt, a notice turn,
+  the aborts per cancel and close latency, before fix round 1 changed the fence, added the close
+  read-through and counted an abort the turn's poll sent while `commands/cancel` waited as the
+  cancel's one; a child's card after a second prompt, on fix round 1's code; ADR-0308's approval,
+  cancel, stop and restart rows, as its note says. Still not run through ACP: those first rows on
+  the final product code (the unit and native tests hold it), Windows and Linux natives, Studio and
+  the AionCore renderer, a reconnect, and the 45 s deadline itself (Note (2026-11-20, #612)).*
 
 ## Where the build differs from contract r5 (lane L2)
 
@@ -585,7 +623,8 @@ ADR-0308's.
   `get_messages` returns it live and after a relaunch with `--session`, and aelix-acp `16d6555b`,
   unchanged, sends it as the cancelled call's last `tool_call_update` and replays it on
   `session/load` (How it is held). #800 needs no aelix-acp change for this guarantee; K5 and K6 are
-  aelix-acp's to lower (#612's lane L3; follow-up F2 of contract r5).
+  aelix-acp's to lower (#612's lane L3; follow-up F2 of contract r5). *Amended 2026-11-20 (#612,
+  lane L3): aelix-acp PR #39 lowers K5; K6 stays (F2).*
 - After an Esc and then a session change, nothing from the report comes back as input.
 - A session change or a quit during a turn costs up to 10 s more before `session_shutdown` when the
   turn will not settle, and in the case K4 names it still waits in `dispose()` as before.
@@ -605,14 +644,17 @@ ADR-0308's.
 - (D4–D8) An RPC host given the CLI's services lists six more methods and receives two more event
   types; a host that does not call them, and aelix-acp `16d6555b`, see what they saw (the new types
   are dropped, `aelix_subagent` is unchanged). They are control-v1 additions under ADR-0302 D9, with
-  fixtures and floor entries of their own.
+  fixtures and floor entries of their own. *Amended 2026-11-20 (#612, lane L3): aelix-acp PR #39
+  (`03b9e32`) consumes them; `docs/contracts/control-v1.md` lists them in its consumed register.*
 - (D7) On the CLI's RPC host, and so under ACP with a native that has #612, the model can now spawn
   a background agent and run a background `bash` command, and has `job` and `job_stop` (under
   aelix-acp `16d6555b` the client sees none of the events, and a result reaches the model at its
   next prompt); a host learns that a result waits from an
   `aelix_notice` frame and places it with `children/notices` (or its next prompt). With background
   jobs on, the RPC session's delegated agents are bounded by `backgroundJobs.limits`, as in the TUI;
-  with them off, by the fixed `MAX_LIVE_CHILDREN = 4`, as before.
+  with them off, by the fixed `MAX_LIVE_CHILDREN = 4`, as before. *Amended 2026-11-20 (#612, lane
+  L3): under aelix-acp PR #39 the client sees the agents on the parent's card and, when it declares
+  `aelix/notices`, is told a result waits (D5's amendment).*
 - (D7) A job start that a session end overtakes now fails with an outcome written, where at the base
   it registered and ran for an ended session.
 - (D4) A host's `children/stop` on a job row ends the job with the job service's generic stop reason,
@@ -624,7 +666,9 @@ ADR-0308's.
   `before_agent_start` handlers (K4); F5 a writer task with a bounded queue for RPC events (K8); F6
   `permissions/set {tighten: true}`; F7 a host method to read a child's session file; F8 `/fork` and
   `/clone` settle before the copy (K3); F9 one native abort per client cancel (K5); F10 the approval
-  channel's version fallback (ADR-0308 K10).
+  channel's version fallback (ADR-0308 K10). *Amended 2026-11-20 (#612, lane L3): aelix-acp PR #39
+  builds F9 as one abort at once per cancel and a re-abort only 2 s later while the turn still
+  streams (K5's amendment).*
 - Complexity (ruff 0.15.13, `--isolated --select C901`; part A's `c901-diff.txt`, part B's): no
   listed score rose (`run_rpc_mode` 45, `RpcControlPlane._dispatch` 26 → 25, `runtime._run` 21,
   `_async_main` 156); `CommandWire.request` 9 → 10, `handle` 9 → 10, `capabilities` 7 → 9; no new
@@ -829,7 +873,10 @@ missing `RpcControlPlane(jobs=)`), and a behaviour probe answered every `childre
   `docs/contracts/control-v1.md` lists the six methods as served, not yet consumed, and both
   events as dropped by aelix-acp `16d6555b`. On `567753c0` every `children/*` case answers
   "Unsupported runtime control method" and no `aelix_child` or `aelix_notice` frame comes
-  (`.omc/probes/612/impl/C/onbase/base-fixture-answers.txt`).
+  (`.omc/probes/612/impl/C/onbase/base-fixture-answers.txt`). *Amended 2026-11-20 (#612, lane L3):
+  the register now lists them as consumed by aelix-acp PR #39 at `03b9e32` (each fixture's
+  `consumers`); the floor and `V1_SHA256` are unchanged, and `test_consumer_list.py` fails against
+  the register as it was.*
 - Mutants (`.agents/skills/aelix-tests-that-bite/scripts/mutants.py`): part A, 105 distinct over
   every product file it changed, 99 killed on the first pass and the six survivors killed by tests
   added for them (`.omc/probes/612/impl/A/spec-*.json`, `log-*.json`); part B's in ADR-0308.
@@ -851,3 +898,124 @@ missing `RpcControlPlane(jobs=)`), and a behaviour probe answered every `childre
   reason: "nothing", remaining: 0}`. One `children/notices` sent 0.05 s before a job posted its
   notice answered `nothing`, and the `aelix_notice` frame followed: a host that follows the frames
   calls again.
+
+## Note (2026-11-20, #612): aelix-acp PR #39 builds D8
+
+aelix-acp PR #39 (lane L3), commit `03b9e32` (based on aelix-acp main `11fb4fe`; merged 2026-11-20
+as aelix-acp main `2ff1959`), builds D8 against this repository's `83714045`, which its
+`runtime-reference.json` now pins. Lines below are `handochan/aelix-acp` at `03b9e32`. The other
+aelix-acp ids in this note, except the base `a78db59`, are the lane's local checkpoints, squashed
+into `03b9e32` and not published: `c824d83` and `5ca9ad5` (before both fix rounds), fix round 1's
+`3af0902`, `bb0c954`, `e47147b`, `8533b45`, `20f1d27` and `91c4ed1`, and `8e932ac` (after fix round
+2), whose product code is `03b9e32`'s minus aelix-acp #37's Studio extension block and one
+docstring. Every run named here was on macOS arm64 with a native at `83714045`: the adapter's unit
+suite (287 tests at `8e932ac`, OK on Python 3.11.15, 3.12.13, 3.13.13 and 3.14.5; at `03b9e32`, OK
+on 3.11 and 3.14), its native suite (`scripts/test_native.py --check-ref`: 292 tests OK at
+`03b9e32`, 1 Windows-only skip), three independent verify rounds and a Codex cross-review
+(`.omc/specs/612-l3-pr-body.md`, `.omc/specs/612-l3-verify-r1-report.md` to `-r3-report.md`,
+evidence under `.omc/probes/612/l3/`).
+
+**Built as D8 proposed.** `_aelix/manage` sends the five controls before its session lock and the
+activity lease (`server.py:228-231`, `Server.intervene` `:245-253`, `Session.intervene`
+`session.py:1218-1243`), so they are answered during `session/prompt` and `agents/run` and never
+mark a running turn dispatched; `children/notices` stays under the lock and runs as a prompt turn
+(`server.py:462-463`, `Session.notice_turn` `session.py:1388-1418`), whose `session/cancel` answers
+`{stopReason: "cancelled"}` alone. Nested calls, the synthetic `aelix-child:<id>` card, the
+`(epoch, id)` routes (64 live children, 8 retired epochs, dedupe by `(epoch, id, seq)`,
+`runtime/children.py:92-197`) and `_aelix/notice` for a client that declares `aelix/notices`
+(`session.py:734-741`) are as proposed; a child's end is the card's `end`, and ACP's `stopReason`
+stays `end_turn | cancelled`. Held by `tests/test_native_children.py` (17 tests, a real native and a
+scripted model), among them
+`::test_steer_and_wrap_up_reach_a_child_during_session_prompt`,
+`::test_steer_wrap_up_and_stop_during_agents_run_on_a_top_level_card` and
+`::test_children_notices_after_a_session_cancel_runs_its_tools`.
+
+**Beyond the proposals:**
+1. native's epoch is also learnt from `children/list` and `children/events` replies
+   (`session.py:1234-1235`, `observe_epoch` `:891-896`), so their questions of an older epoch are void
+   (approvals review LOW-1; `tests/test_children.py`
+   `VoidQuestionTests.test_a_children_list_reply_of_a_newer_epoch_voids_it`);
+2. a child's card fields are kept across prompts (`ChildRoutes.known`, `remember`): the first build
+   reset `profile` and `state` to `null` on the next frame after the user's next prompt (verify round 1
+   F1, Codex C-M5; `tests/test_native_children.py::test_a_spawned_childs_card_keeps_its_profile_and_state_after_the_next_prompt`);
+3. `currentTool` on the parent card's entry for every client, not only one that nests
+   (`session.py:840-844`, Codex C-L7);
+4. a parent call id native hashes (over 128 bytes as the wire writes it) is projected with native's
+   own `wire_call_id` rule (`runtime/children.py:52-68`, `ChildRoutes.call_started`), so its child
+   still finds the card (Codex C-L6; verify round 2 compared 34,320 random ids with native's, 0
+   mismatches);
+5. `session/load` replays a child's nested calls and the synthetic card only to a client that
+   declared `aelix/nestedToolCalls` (`server.py:324-327`, `nested_only`; Codex C-M4);
+6. native's stdout is read through the worker's shutdown, so its last `tool_end` and terminal
+   `state` reach the client and the record, and a child still live when the worker is gone gets its
+   open calls `failed` and its entry `stopped` with `_meta["aelix/child"].closedBy: "adapter"`
+   (`Session.end_children`, `session.py:1094-1124`; Codex C-M3;
+   `tests/test_children.py` `ShutdownTests`). With a real native, a restart's and a reload's cards
+   were closed by native's own frames, and the adapter's path was not needed (verify round 2);
+7. one native abort per client cancel (K5 below).
+
+**The fence's boundary.** A counter raised in `Session.restart()` (`session.py:1143`) and by
+`raise_fence()`, the first step of `Session._close()` (`:1201-1216`, `:1504-1511`), refuses a new
+children control while it is up: `-32000` "the session is changing", `data.kind:
+"session_changing"`. One already written is ended only when the worker's close begins:
+`raise_fence()` cancels each one native has not answered by then, which answers `-33002` "the
+session changed while this request ran; its delivery is unknown" (`data.cause.kind:
+"session_changed"`); one native answered before then returns that answer, also when it was read
+after a restart began; one whose worker died first answers `-32603`. D8's Admission bullet put the
+boundary at the counter's first rise; verify round 2 F1 measured it at the close (Codex's fence
+case on Python 3.11.15 and 3.12.13: trace `('adapter reads worker answer', 1, 0)`, reply `queued`;
+`tests/test_children.py` `FenceOrderTests` on 3.11 to 3.14). `session/close` (aelix-acp #35) and
+`sessions/close` go through the same `close()`.
+
+**K5.** One client `session/cancel` sends one native abort at once — its own, or the turn's poll's
+when that went first while `commands/cancel` waited — and a cancelled turn still streaming is aborted
+again only 2 s after the last abort (`REABORT_SECONDS`, `session.py:66`, `:1447-1495`). Verify round
+2 counted the aborts of one cancel over 3 s with a scripted worker: 0.0001 s and 2.0185 s (the build
+before: 0.0001 s, 0.0002 s and 2.02 s). A real native whose cut path waits in a hook got 1 abort
+where `a78db59` sent 2
+(`tests/test_native_children.py::test_one_session_cancel_sends_one_native_abort_in_the_first_two_seconds`).
+Live through ACP, three cancels mid-stream sent 1, 1 and 1 native aborts at `5ca9ad5`, which
+already sent one abort per cancel with the 2 s cadence (`REABORT_SECONDS`, `abort_due()`,
+`last_abort`, from `c824d83`), before fix round 1's change for an abort the turn's poll sent while
+`commands/cancel` waited (`bb0c954`), and the base `a78db59` also sent 1, 1 and 1 live: that
+model's cut path is fast, so the live row does not tell the two apart. The one-abort guarantee rests
+on the unit tests, the native tests and the slow-cut native test above (head 1, base 2). A cut path
+that waits longer than 2 s still gets the re-abort and can reach K1 (by reading; not run).
+
+**K7.** Between SIGTERM and SIGKILL the POSIX deadline is 45 s for a native whose
+`capabilities.methods` lists `children/list` or `children/notices`, 5 s otherwise; Windows's Job
+Object path is unchanged (`CHILDREN_CLOSE_SECONDS`, `session.py:71`, `:1544-1547`). Measured with
+a scripted model: idle, with a spawned child held in its model call and with a background `bash` job,
+the native was gone 0.07–0.59 s after `sessions/close`, `session/delete` or adapter shutdown, and a
+native whose session end takes 8 s ended in 8.08–8.63 s, where `a78db59` killed it at 5.01 s (verify
+round 2 at `91c4ed1`; the lane's own run at `20f1d27`: 0.08–0.55 s and 8.08–8.12 s). No run
+reached the 45 s, and `session/close` can now take that long.
+
+**Run live through ACP**, with `openai/gpt-4.1-mini` through OpenRouter, aelix-acp's black-box test
+client, scratch HOME, agent dir and cwd, each row at the lane's local checkpoint named
+(`commands.txt` in each directory):
+- at `5ca9ad5`, which already sent one abort per cancel with the 2 s cadence, before fix round 1
+  changed the fence (`3af0902`), counted an abort the turn's poll sent while `commands/cancel`
+  waited as the cancel's one (`bb0c954`) and added the close read-through (`e47147b`), the product
+  code changing by +378/−57 lines from it to `8e932ac` (`.omc/probes/612/l3/impl/live/`):
+  `children/steer`, `children/wrap_up` and `children/stop` during `session/prompt` (no "Session is
+  busy"); `_aelix/notice` and then
+  `children/notices` (`placed: 1, remaining: 0, stopReason: "end_turn"`, after which the model read
+  the background result); 1, 1 and 1 native aborts for three cancels (K5 above); `sessions/close`
+  with a child running `sleep 60` (0.68 s); and ADR-0308's approval and cancel rows;
+- at `8533b45`, fix round 1's product code before fix round 2 (`fix-r1/live/`): a spawned child's
+  card after a second prompt (no `null` `profile` or `state`), and ADR-0308's approval, cancel,
+  stop and restart rows;
+- at `8e932ac`, whose product code is `03b9e32`'s minus aelix-acp #37's block and one docstring
+  (`fix-r2/live/`): only ADR-0308's cancel and restart rows.
+
+The rows at `5ca9ad5` were not run again on the final product code; the unit and native tests hold
+what fix round 1 changed there. Not run through ACP: Windows and Linux natives (aelix-acp's CI runs
+them), Studio and the AionCore renderer, a reconnect, and the 45 s deadline itself.
+
+**Decisions.** Owner: r2 Q4, "전부 열기 (권장)" (2026-11-18). The lead's calls, not the owner's: the
+capability names `aelix/nestedToolCalls` and `aelix/notices`, `_aelix/notice`, the synthetic card,
+the 2 s cadence and the 45 s close (r5 §8's proposals); the 45 s also for a native that lists only
+`children/notices`, since background jobs need D7's session-end stages; the three answers
+`-33002`, `-32000 session_changing` and `-32603`; and the adapter's 330 s wait for a child's
+question, past native's 300 s (ADR-0308's note of the same date).

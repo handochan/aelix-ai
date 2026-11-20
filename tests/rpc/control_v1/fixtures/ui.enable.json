@@ -32,6 +32,21 @@
         "enabled"
       ],
       "reads": []
+    },
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:118-124",
+        "src/aelix_acp/session.py:399-400"
+      ],
+      "sends": [
+        "enabled",
+        "childApprovals"
+      ],
+      "reads": []
     }
   ],
   "cases": [

@@ -5,7 +5,17 @@ Status: Accepted (2026-11-19, #612). Decided and implemented in lane L2 of #612'
 `childApproval` to `session/request_permission`) is the aelix-acp PR's, lane L3, and is not in
 this repository. What holds each decision is in "How it is held", each with the condition it was
 measured under; where the build differs from r5, "Where the build differs from contract r5" says
-how, and which of those the lead accepted (the lead's calls after part B, 2026-11-19).
+how, and which of those the lead accepted (the lead's calls after part B, 2026-11-19). Amended
+2026-11-20 (#612, lane L3): the ACP half is built by aelix-acp PR #39 (`03b9e32`) for a client
+that declares `aelix/clientActions`. Run live through ACP on macOS during the lane, before its
+final commit: allow-once and reject-once, a `session/cancel` of an open question, a
+`children/stop` with a question open and a `workspace/trust` restart with one open; the cancel and
+the restart again on the final code (`03b9e32` minus aelix-acp #37's block and one docstring). The
+note below names the lane checkpoint of each row. Not run live: "Yes, for this agent", a real 300 s
+or 330 s wait, a cancel during `/compact` and one before the question's task ran (unit tests only),
+K13 (a native test with a scripted model), Windows, Linux and Studio.
+D5's ACP bullet, D6's void rule, K13, K16 and "Not run" carry dated marks, and "Note (2026-11-20,
+#612)" says what was built and measured.
 Date: 2026-11-19
 Issue: #612 (delegated children on RPC and ACP hosts). Owner, 2026-11-18, r3 Q2: **"자식 승인
 통로도 #612에"**; approval Q-A: **"default로 돌며 물어봄 (권장)"**; approval Q-B: **"즉시 대화창
@@ -233,6 +243,13 @@ call's arguments by reference after the gate, the same limit the parent's own ap
   its Yolo mode, and answer a `childApproval` whose `child.epoch` is older than the native's current
   epoch `{cancelled: true}` without asking. aelix-acp `16d6555b`, unchanged, sends `ui/enable
   {enabled: true}` only, so its children are launched without the channel and run as before.
+  *Amended 2026-11-20 (#612, lane L3): built by aelix-acp PR #39 (`03b9e32`), only for a client that
+  declared `aelix/clientActions` (the lead's call, narrower than Q-A: another Ask client's child runs
+  under `plan`, as before). Beyond these proposals, `session/cancel` also ends the open questions
+  during a manual `/compact`; a question whose task a `session/cancel` ended before it first ran is
+  answered `{cancelled: true}` once, where native had waited its 300 s; the adapter waits 330 s,
+  past native's 300 s (the lead's call); and a nesting client's request keeps its nested card's
+  title. The first three are held by unit tests and were not run live (Note (2026-11-20, #612)).*
 - **WebSocket** (`aelix-server`): no delegation seam, so `childApprovals: false`.
 - A grandchild cannot exist (`MAX_SUBAGENT_DEPTH = 1`; children run `--no-agents`); if the depth
   rises, one hop at a time.
@@ -251,7 +268,12 @@ host's latest `children/list` or `aelix_child` frame is void, and the host close
 compares no epoch: such a request's answer is ignored because the session change withdrew it first
 (`ChildApprovals.withdraw` cancels the arbiter's task, which drops the dialog's future, and
 `RpcCommandUI.respond` ignores an id that is no longer open) — the mechanism approvals review P-L5
-traced on every stop path.
+traced on every stop path. *Amended 2026-11-20 (#612, lane L3): on ACP, aelix-acp PR #39 is the host
+that closes it. On the child's end, a `withdrawn` or `denied` step, or a newer epoch (an
+`aelix_child` frame, or a `children/list` or `children/events` reply) it answers native
+`{cancelled: true}`, which native ignores, and sends ACP's `$/cancel_request {requestId}`. A client
+that ignores that notification keeps its dialog open, and an answer given in it has no effect; a
+question from an epoch the adapter never saw is still asked. Note (2026-11-20, #612).*
 
 ## Where the build differs from contract r5
 
@@ -307,7 +329,10 @@ the base's behaviour, and is stated).
   read: the child may run the call while the row says its delivery is unknown.
 - **K13 — concurrent requests on a host.** One dialog at a time per parent holds in the TUI only.
   On RPC and ACP a child's request and the parent's own approval can be open together (with the
-  aelix-acp PR, two `session/request_permission` requests in one session).
+  aelix-acp PR, two `session/request_permission` requests in one session). *Amended 2026-11-20
+  (#612, lane L3): built by aelix-acp PR #39 and tested with a real native: a parent's and a child's
+  request open together, both answered
+  (`tests/test_native_children.py::test_a_parents_and_a_childs_request_open_together_are_both_answered`).*
 - **K14 — hooks by reference.** Hooks see a call's arguments by reference after the gate, the same
   limit the parent's own approvals have.
 - **K15 — an unreadable request.** An `approval_request` line the parent cannot read and that
@@ -315,11 +340,24 @@ the base's behaviour, and is stated).
   the row says so until it is stopped.
 - **K16 — ACP outside a turn.** Whether ACP clients accept `session/request_permission` outside a
   prompt turn (a background child while the client is idle, owner Q-B) was not read; with the
-  aelix-acp PR a client error is answered `cancelled` (fail-closed).
+  aelix-acp PR a client error is answered `cancelled` (fail-closed). *Amended 2026-11-20 (#612, lane
+  L3): aelix-acp PR #39 waits 330 s (the lead's call), past native's 300 s, so a question nobody
+  answers ends at native's bound and the child reads "no answer from the host within 300 s", not
+  "the host cancelled the request" (read from native's source; a unit test with the bounds
+  shortened, a real 300 s or 330 s wait not run). Native asks one child question at a time, so the
+  next child's waits behind it; a question a `session/cancel` ended before its task ran is answered
+  at once and no longer holds the next one for 300 s (unit tests; not run live). Live, aelix-acp's
+  test client was asked while no prompt ran (the cancel row); whether Studio or AionCore accept
+  such a request is still not known.*
 - **Not run**: a typed `/jobs wrap` with a request open (the dialog is modal and takes the keys;
   the model's `agent(action="wrap_up")` was run instead), "Yes, for this agent" in a live run, the
   "host is gone" reason live, Windows and Linux live (macOS only; the real-child tests are POSIX
-  only), and ACP.
+  only), and ACP. *Amended 2026-11-20 (#612, lane L3): parts of ACP were run live with aelix-acp
+  PR #39 on macOS — allow-once, reject-once, a `session/cancel`, a `children/stop` and a
+  `workspace/trust` restart with a question open, each at the commits the note names. Still not
+  run live through ACP: "Yes, for this agent", a real 300 s or 330 s wait, a cancel during
+  `/compact` and one before the question's task ran (unit tests only), K13 (a native test with a
+  scripted model), and Windows, Linux and Studio (Note (2026-11-20, #612)).*
 
 ## Consequences
 
@@ -327,7 +365,9 @@ the base's behaviour, and is stated).
   `default` parent's child is no longer read-only: it runs `default` and asks a human before each
   change its gate would ask about. Under `-p`, json, an RPC host that did not opt in, and aelix-acp
   `16d6555b`, nothing changes: the argv is byte for byte the base's, and the child is clamped as
-  before.
+  before. *Amended 2026-11-20 (#612, lane L3): under aelix-acp PR #39, an Ask (`default`) session's
+  child asks too when the ACP client declared `aelix/clientActions`; for any other ACP client it is
+  clamped as before.*
 - A background child's question interrupts you at once in the TUI, between your own turns, without
   starting one (owner Q-B), unless another dialog or a panel is open, behind which it waits; for
   its first half second it takes no approving key.
@@ -475,3 +515,87 @@ pass, the 53 being the 50 base-table guards and three `tighten_all` rows
   then a second Enter 50 ms later, left the child's dialog open 0.4 s and 1.6 s later, `n` gave the
   child "denied" and no file was written; on `510b186c` the second Enter approved, the dialog was
   gone at 0.4 s and the child wrote the file (`.omc/probes/612/fix-r2/live/`, `head2/` and `prev1/`).
+
+## Note (2026-11-20, #612): aelix-acp PR #39 builds the ACP half
+
+aelix-acp PR #39 (lane L3), commit `03b9e32` (based on aelix-acp main `11fb4fe`), builds D5's ACP
+bullet against this repository's `83714045`. Lines below are `handochan/aelix-acp` at `03b9e32`;
+how it was tested and on what is in ADR-0307's note of the same date (macOS arm64 only).
+
+**Who is asked.** When the ACP client declared `clientCapabilities._meta["aelix/clientActions"]`
+and the native lists `ui/enable` and `children/list`, the adapter sends `ui/enable {enabled: true,
+childApprovals: true}` (`session.py:118-124`, `:399-400`; `tests/test_children.py`
+`UiEnableTests`). A child of an Ask (`default`) session then asks before each change, as Q-A has it
+(owner, 2026-11-18: "default로 돌며 물어봄 (권장)"), and a background child's question while the
+session is idle is sent at once (Q-B, "즉시 대화창 (권장)"). Keeping the questions to clients that
+declared client actions is the lead's call and narrower than Q-A: for any other ACP client an Ask
+session's child runs under `plan`, as before (approvals review p7, with a real native).
+
+**How it is asked.** Each `childApproval` becomes `session/request_permission` with `toolCallId`
+`<child id>:<callId>` and the offered kinds as `allow-once` "Allow once", `allow-always` "Allow for
+this agent" and `reject-once` "Reject", mapped back to the choice's own id (`session.py:77-79`,
+`Session.child_approval` `:1032-1092`). Only a selected, offered option approves; a cancelled
+outcome (also one naming an option), a client error, a question of a cancelled turn and one from
+an epoch the adapter has seen replaced are `{cancelled: true}`. The approvals review sent 11
+malformed or not-offered replies to real questions and none approved; the check behind it is
+pinned by a test since fix round 1 (verify round 1's surviving mutant M53, killed in round 2). It
+is answered outside the session lock, so the parent's own request (the bridge) and a child's can
+be open together (K13). The adapter asks
+whatever its own mode: with a question open, a switch to Yolo and back left it open, and Allow then
+wrote the file (approvals review p13).
+
+**Beyond D5's proposals:**
+- `session/cancel` ends every open child question also during a manual `/compact`, before its
+  early return (`Session.cancel` `:1471-1479`; approvals review LOW-3;
+  `VoidQuestionTests.test_session_cancel_during_a_manual_compaction_ends_it`);
+- a question, or an extension's dialog, whose task a `session/cancel` ended before it first ran is
+  answered `{cancelled: true}` once by the task's done-callback (`Session.answer_unstarted`
+  `:760-779`); before, native got no answer and waited its 300 s, with the next child's question
+  behind it (verify round 2 F2; `CancelBeforeTheDialogRanTests`, which fail on the build before,
+  and verify round 3's interleavings, none answered twice);
+- the adapter waits 330 s (`CHILD_QUESTION_SECONDS`, `session.py:76`; the lead's call), past
+  native's 300 s (`DIALOG_TIMEOUT_SECONDS`, `rpc/control_ui.py`), so native's own bound and reason
+  end an unanswered question (approvals review LOW-4;
+  `VoidQuestionTests.test_native_owns_a_questions_timeout_and_the_adapter_only_backs_it_up`,
+  with the bounds shortened; a real 300 s or 330 s wait was not run);
+- a client that declared `aelix/nestedToolCalls` keeps its nested card's title, the tool's name;
+  only a client without nesting gets native's descriptive title (`:1063-1067`; approvals review
+  NIT-5).
+
+**D6: the adapter closes a dropped question.** On the child's end, the question's `withdrawn` or
+`denied` step, or a newer epoch — an `aelix_child` frame, or a `children/list` or `children/events`
+reply — the adapter ends its wait, answers native `{cancelled: true}` (which native ignores) and
+sends `$/cancel_request {requestId}` (`server.py:70-89`, `Session.child_progress` `:811-818`,
+`observe_epoch` `:891-896`). ACP's `$/cancel_request` is a notification a client may ignore; its
+dialog then stays open and an answer given in it has no effect (verify round 2's reading of ACP v1;
+live, a late Allow sent after the `children/stop` and after the `workspace/trust` restart below
+wrote nothing — the two rows that sent one). A question from an epoch the adapter never saw is
+still asked (`VoidQuestionTests.test_a_question_from_an_epoch_never_seen_is_still_asked`).
+
+**K13** is built and tested with a real native and a scripted model, not run live:
+`tests/test_native_children.py::test_a_parents_and_a_childs_request_open_together_are_both_answered`.
+**K16:** native asks one child question at a time, so one nobody answers holds the next child's for
+up to native's 300 s, and a question a cancel ended before its task ran no longer does. Studio's and
+AionCore's handling of a request outside a turn, and of `$/cancel_request`, was not run.
+
+**Run live through ACP** on macOS with `openai/gpt-4.1-mini` through OpenRouter, aelix-acp's
+black-box test client and a native at `83714045`. Each row names the aelix-acp commits it ran at,
+which are the lane's local checkpoints, squashed into `03b9e32` and not published: `5ca9ad5`,
+before both fix rounds (`.omc/probes/612/l3/impl/live/`); `8533b45`, fix round 1's product code
+(`fix-r1/live/`); and `8e932ac`, whose product code is `03b9e32`'s minus aelix-acp #37's block and
+one docstring (`fix-r2/live/`):
+- allow-once and reject-once (`5ca9ad5`, `8533b45`): the parent's own `agent` call asked with two
+  options; a child's write asked under its nested id, allow-once wrote the file and reject-once did
+  not;
+- a `session/cancel` of an open question (`5ca9ad5`, `8533b45`, `8e932ac`): a background child's
+  question while no prompt ran, already opened by the client and held there; the child read that
+  the write was not approved and the file was absent, and at `8533b45` and `8e932ac`
+  `$/cancel_request` was sent (the `5ca9ad5` driver did not record it);
+- `children/stop` with a question open (`8533b45`): `$/cancel_request` at once, the nested card
+  `failed`, a late Allow wrote nothing;
+- a `workspace/trust` restart with a question open (`8533b45`, `8e932ac`): the restart took 1.0 s
+  and 1.88 s; `$/cancel_request`, the nested card `failed`, a late Allow wrote nothing.
+
+Not run live through ACP: "Yes, for this agent", a real 300 s or 330 s wait, a cancel during
+`/compact` and one before the question's task ran (unit tests only), K13 (a native test with a
+scripted model), and Windows, Linux and Studio.

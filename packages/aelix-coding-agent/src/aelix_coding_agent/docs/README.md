@@ -35,7 +35,8 @@ prints one. That is why every cross-directory link here is an absolute URL —
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [agent-approvals.md](agent-approvals.md) — when a delegated agent asks you before
   a change: what asks, the dialog and "Yes, for this agent", the answers given for
-  you, and RPC's `childApprovals`.
+  you, RPC's `childApprovals`, and ACP's `session/request_permission` (aelix-acp
+  PR #39).
 - [background-jobs.md](background-jobs.md) — work the model did not wait for: a
   background agent or `bash` command, the footer and `/jobs`, how a result comes
   back, the `backgroundJobs` settings, what is left when aelix is killed, and what

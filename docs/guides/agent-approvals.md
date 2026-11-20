@@ -4,9 +4,10 @@ Status: Accepted
 
 A delegated agent runs in its own process, behind its own permission gate. Before #612 a child
 of a parent in `default` mode had no one to ask, so it ran in `plan` mode: read-only. Now, in the
-TUI and on an RPC host that turned it on, that child runs in `default` mode and asks **you**,
-through its parent, before each change its gate would ask about (owner, 2026-11-18: "default로 돌며
-물어봄 (권장)"). The design is
+TUI, on an RPC host that turned it on, and through aelix-acp PR #39 for an ACP client that declared
+client actions (the lead's call; narrower than Q-A), that child runs in `default` mode and asks
+**you**, through its parent, before each change its gate would ask about (owner, 2026-11-18:
+"default로 돌며 물어봄 (권장)"). The design is
 [ADR-0308](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0308-a-delegated-child-asks-a-human-through-its-parent-before-each-change.md).
 How a child is started, and what it may do at all, is in [agent-profiles.md](agent-profiles.md).
 
@@ -30,6 +31,8 @@ of `plan` (the full table is ADR-0308 D3). A child never runs above its parent.
 - **The TUI** always has someone to ask: you.
 - **`--mode rpc`** asks only after the host sends `ui/enable {"enabled": true, "childApprovals": true}`
   ([below](#over-rpc)).
+- **ACP** asks, through aelix-acp PR #39, only a client that declared `aelix/clientActions`
+  ([below](#over-acp)); for any other ACP client a `default` parent's child runs `plan`, as before.
 - **`-p` and `--mode json`** have no one to ask: a `default` parent's child runs `plan`, as before.
 
 Whether a child asks is decided when it starts and kept for its whole run.
@@ -117,7 +120,8 @@ up as `aelix_child` `approval` events — `asked`, then `allowed`, `denied` or `
 when a dialog was withdrawn ([background-jobs.md](background-jobs.md#over-rpc-and-acp)). A dialog
 whose `child.epoch` is not the session's current epoch is stale: close it. aelix ignores its answer
 because the session change withdrew the question first, so the reply's `id` is no longer open;
-aelix does not compare epochs itself. A `ui/enable` that does not turn it on (anything but
+aelix does not compare epochs itself (over ACP the adapter closes such a dialog for you,
+[below](#over-acp)). A `ui/enable` that does not turn it on (anything but
 `{"enabled": true, "childApprovals": true}`) turns it off and ends the questions that are open, as
 "no one can answer approvals here"
 (`tests/rpc/test_child_approvals_rpc_612.py`; live with a real model, `.omc/probes/612/impl/C/live/`).
@@ -125,9 +129,36 @@ aelix does not compare epochs itself. A `ui/enable` that does not turn it on (an
 Over RPC your own approvals do not wait for an agent's: a question of yours and an agent's can be
 open together.
 
-**ACP** needs an aelix-acp change (`childApprovals`, and each question as a
-`session/request_permission`). aelix-acp `16d6555b` does not send it, so under it a child runs as
-before.
+## Over ACP
+
+With aelix-acp PR #39 (`03b9e32`, against aelix `83714045`), an ACP client that declares
+`clientCapabilities._meta["aelix/clientActions"]` is asked: the adapter sends `childApprovals:
+true`, and each question arrives as a standard `session/request_permission` whose `toolCallId` is
+`<agent id>:<call id>`, with the options Allow once, Allow for this agent and Reject. Only a
+selected option approves. A cancelled outcome, an error reply and `session/cancel` (also during a
+manual `/compact`, and also for a question that arrived with the cancel) refuse the call. Your own
+approvals and an agent's can be open together. Which calls ask follows the agent's mode, as on
+every host ([What asks](#what-asks)).
+
+When aelix drops a question your client still shows — the agent ended, was stopped or wrapped up,
+or the session's agents were rebuilt (a reload or a restart) — the adapter stops waiting for it and
+sends ACP's `$/cancel_request` with the request's id. A client that ignores that notification keeps
+the dialog open; an answer given in it then has no effect. A question nobody answers ends after
+aelix's own 300 s ("no answer from the host within 300 s"); the adapter waits 330 s (the lead's
+call; read from the source and held by a test with shorter bounds; a real 300 s or 330 s wait was
+not run). aelix asks one agent question at a time, so a second agent's question comes after the
+first one ends.
+
+A client that did not declare `aelix/clientActions`, and aelix-acp `16d6555b`, are not asked: under
+them a `default` parent's child runs `plan`, as before. The whole client contract is in aelix-acp's
+`docs/studio-integration.md`; what was built and measured is in ADR-0308's note of 2026-11-20. Live
+through aelix-acp's test client with a real model on macOS, during the lane and before its final
+commit (that note names each row's lane checkpoint): allow-once wrote the file and reject-once did
+not; a `session/cancel`, a stop and a restart with a question open each refused the write and sent
+`$/cancel_request`, and after the stop and the restart a late Allow wrote nothing. The cancel and
+the restart ran again on the final code (`03b9e32` minus aelix-acp #37's block and one docstring).
+The cancel during `/compact` and the one for a question whose task had not run yet are held by
+aelix-acp's unit tests and were not run live.
 
 ## Limits
 
@@ -144,5 +175,7 @@ before.
   changed) may fail to start: it is not started under the old rules instead.
 - An extension hook that changes a call's arguments does so after your answer, as for your own
   calls.
-- Not run: ACP; "Yes, for this agent" with a real model; Windows (the tests that start a real
-  agent are POSIX only).
+- Not run: "Yes, for this agent" with a real model (over RPC or ACP); Studio as the ACP client;
+  a real 300 s or 330 s wait; over ACP, a cancel during `/compact` or before a question's task ran
+  (unit tests only) and a Linux native; Windows (the tests that start a real agent are POSIX
+  only).

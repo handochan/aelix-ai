@@ -75,10 +75,10 @@ barrier confirmed empty answers ``confirmed``.
 The CLI's RPC host (``--mode rpc`` with delegation and background jobs on)
 carries the background actions since #612 (owner Q4, 2026-11-18; ADR-0307): a
 host reaches the rows through ``children/`` and is woken by ``aelix_notice``.
-aelix-acp ``16d6555b`` drives that host but sends no ``children/`` method and
-drops both events, so with a native that has #612 an ACP model gets the
-background actions and reads a result at its next prompt, and its client sees
-neither; the WebSocket host (``aelix-server``) builds neither service.
+aelix-acp ``16d6555b`` sends no ``children/`` method and drops both events;
+aelix-acp PR #39 (``03b9e32``) sends the methods, shows each agent on its
+parent's card and forwards ``_aelix/notice`` to a client that declares
+``aelix/notices``. The WebSocket host (``aelix-server``) builds neither service.
 """
 
 from __future__ import annotations

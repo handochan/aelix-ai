@@ -285,17 +285,37 @@ a new process before that prompt does not have it.
 
 This was run live with a real model on macOS against a real `--mode rpc` parent.
 
-**ACP.** aelix-acp `16d6555b` runs `aelix --mode rpc` as its native, and the native it records
-(`runtime-reference.json`, aelix-ai `e19ab55e`) predates #612: with that native nothing on this
-page changes under ACP. With a native that has #612 and the adapter unchanged, the ACP model gets
-what an RPC model gets — `agent(action="spawn")` and the other background actions, `job`,
-`job_stop` and `bash`'s `run_in_background` — but the adapter sends no `children/*` method and drops
-`aelix_child` and `aelix_notice`, so the client sees no agent rows, no events and no notices, and a
-background result reaches the model at its next prompt. The adapter closes its native with SIGTERM,
-then SIGKILL after 5 s (`terminate_owned`), so the stages of [When a session ends](#over-rpc-and-acp)
-— up to 10 s for a turn, then 10 s for the agents and jobs — can be cut short there. The host
-controls and events need the aelix-acp change (ADR-0307 D8). This is read from the adapter's source
-at `16d6555b`; ACP was not run.
+**ACP.** aelix-acp runs `aelix --mode rpc` as its native, so with a native that has #612 the ACP
+model gets what an RPC model gets — `agent(action="spawn")` and the other background actions,
+`job`, `job_stop` and `bash`'s `run_in_background`. aelix-acp PR #39 (`03b9e32`) pins aelix-ai
+`83714045`, which has #612, and brings the rest to the client:
+
+- every client sees each agent the model delegated to on the `agent` card that started it — its
+  last text, `stuck`, wrapping up, the tool it runs, and how it ended — also after that call ended
+  and after later prompts; a client that declares `aelix/nestedToolCalls` also gets each agent's
+  own calls as nested tool calls, and an `/agents run` agent as a card of its own;
+- `_aelix/manage children/list`, `children/events`, `children/steer`, `children/wrap_up` and
+  `children/stop` are answered while a prompt runs;
+- a client that declares `aelix/notices` is sent `_aelix/notice` when a result waits, and wakes the
+  session with `_aelix/manage children/notices` while it is idle; without it, a background result
+  reaches the model at its next prompt. `_aelix/notice` is not sent once the client is gone, nor
+  after a `session/load` replaced the session while the old native is being ended;
+- the adapter gives a native that serves these 45 s on POSIX between SIGTERM and SIGKILL, so the
+  stages of [When a session ends](#over-rpc-and-acp) — up to 10 s for a turn, then 10 s for the
+  agents and jobs — can finish (a native whose session end takes 8 s ended in about 8.1–8.6 s, where
+  the adapter before killed it at 5 s); `session/close` can therefore take up to 45 s. Windows ends
+  the native with its Job Object, as before.
+
+This was run live with a real model on macOS through aelix-acp's test client, during the lane and
+before its final commit: steer, wrap-up and stop during a prompt, a notice and then
+`children/notices`, and closing with a running agent, before a fix round changed the fence, added
+the close's read-through and counted an abort the turn's poll sent while `commands/cancel` waited
+as the cancel's one; an agent's card after a second prompt, after that fix round. Those rows were
+not run again on the final code, which aelix-acp's unit and native tests hold, and the close times
+were measured with a scripted model; ADR-0307's note of 2026-11-20 has the measurements and each
+row's lane checkpoint. Not run: Windows and Linux natives under ACP, Studio as the client, and the
+45 s deadline itself. Under aelix-acp `16d6555b`, whose recorded native (`e19ab55e`) predates #612,
+the client sees no agent rows, events or notices, and the close kills the native 5 s after SIGTERM.
 
 ## For extensions
 

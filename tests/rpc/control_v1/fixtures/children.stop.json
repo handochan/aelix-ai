@@ -12,7 +12,25 @@
       "required": true
     }
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:40-43",
+        "src/aelix_acp/server.py:228-231",
+        "src/aelix_acp/server.py:245-253",
+        "src/aelix_acp/session.py:1218-1243"
+      ],
+      "via": [
+        "_aelix/manage, before the session lock"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
   "cases": [
     {
       "name": "stops a running child",

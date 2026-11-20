@@ -30,7 +30,22 @@
       }
     }
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/session.py:734-741"
+      ],
+      "via": [
+        "_aelix/notice, to a client that declared aelix/notices"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
   "cases": [
     {
       "name": "queued when a notice is posted",

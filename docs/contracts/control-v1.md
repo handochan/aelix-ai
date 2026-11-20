@@ -1,6 +1,7 @@
 # control-v1 — who consumes what
 
-**Status: derived from aelix-acp `16d6555b`; confirmation pending.**
+**Status: derived from aelix-acp `16d6555b`, and #612's rows from aelix-acp PR #39 at `03b9e32`;
+confirmation pending.**
 
 - **Who writes it.** Owner, 2026-11-18: "aelix-ai가 쓰고 ACP가 확인 (권장)". aelix-ai wrote this
   register by reading aelix-acp's source (lane #623/#624), and aelix-acp confirms it in review.
@@ -17,10 +18,15 @@
 - aelix-ai `a1606f58`. The freeze baseline is the commit this lands on (ADR-0302 D1).
 - aelix-acp `16d6555b` (main, PR #21, 2026-10-31). It pins aelix-ai `e19ab55e` in
   `runtime-reference.json`.
+- aelix-acp PR #39, commit `03b9e32` (based on aelix-acp main `11fb4fe`; #612's lane L3), for
+  #612's rows only: the six `children/` methods, `ui/enable`'s `childApprovals`, the
+  `childApproval` dialog, `aelix_child` and `aelix_notice`. It pins aelix-ai `83714045`.
 - Aelix Studio `0285f5c3` (main).
 
 aelix-acp paths are under `src/aelix_acp/` unless they start with `scripts/` or `docs/`. Every
-aelix-acp line below was re-read at `16d6555b` on 2026-11-18.
+aelix-acp line below was re-read at `16d6555b` on 2026-11-18, except in #612's rows, whose lines
+were read at `03b9e32` on 2026-11-20 and say so; a #612 row's fixture names `03b9e32` as its
+`ref`.
 
 **How to read the rows.** A consumer uses a field in one of two ways:
 - **direct**: its code names the path. The row gives that path and the file:line.
@@ -29,7 +35,9 @@ aelix-acp line below was re-read at `16d6555b` on 2026-11-18.
   - `_aelix/capabilities.runtime` (`server.py:271-274`);
   - a slash command's JSON output (`runtime/commands.py:77-79`);
   - the unparented `_aelix/subagent` notification (`session.py:530-531`);
-  - a dialog frame (`session.py:631`).
+  - a dialog frame (`session.py:631`);
+  - at `03b9e32` also `_aelix/manage` before the session lock for five `children/` methods
+    (`server.py:228-231`), and the `_aelix/notice` notification (`session.py:734-741`).
 
   Every field there is consumed, by Studio or by an ACP client, even though no aelix-acp code
   names it. Its paths are the floor's `forwarded` set for that method: every path
@@ -78,7 +86,7 @@ reaches Studio or an ACP client.
 | Method | Sends | Direct reads | Forwarded whole through | Notes |
 |---|---|---|---|---|
 | `capabilities` | `{}` (`runtime/controls.py:60`, `:157`) | `version` (must be `1`: `session.py:236-238`); `methods[]` (the gate, §2); `thinkingLevels[]` (`runtime/controls.py:29`); `activeAgent` (`session.py:349`, `:370`) | `_aelix/capabilities.runtime`, the whole object (`server.py:271-274`) | `version ≠ 1` → ACP refuses the session with `-32004 runtime_control_required` |
-| `ui/enable` | `{"enabled": true}`, only when the ACP client set `_meta["aelix/clientActions"]` and `methods` has it (`session.py:282-284`) | — | — | |
+| `ui/enable` | `{"enabled": true}`, only when the ACP client set `_meta["aelix/clientActions"]` and `methods` has it (`session.py:282-284`); at `03b9e32` also `"childApprovals": true` when `methods` lists `children/list` (`session.py:118-124`, `:399-400`) | — | — | at `03b9e32` the answer is not read |
 | `agents/use` | `{"name": <str>}` (`session.py:257`; `runtime/commands.py:175`; manage) | — | manage (`server.py:309`); slash output | a failure on restore becomes `-32004 profile_unavailable` |
 | `agents/show` | `{"name": <str>}` (`session.py:353`; `runtime/commands.py:175`) | `profile.tools` (null means every tool: `session.py:353-354`) | manage; slash output | `profile` is `asdict(AgentProfile)` (`rpc/control.py:857`): every field name is a wire name (ADR-0302 D6) |
 | `agents/list` | `{}` (`runtime/commands.py:173`) | — | manage; slash output | `diagnostics[]` is `asdict` (`rpc/control.py:852`) |
@@ -99,6 +107,10 @@ reaches Studio or an ACP client.
 | `extensions/list` | `{}` | — | manage only | no native test covered it before #623 |
 | `commands/run` | `{"text": <str>}` (`runtime/commands.py:200`) | `outcome` (`prompt`, `not_a_command` and `error` are matched, any other value is treated as handled: `runtime/commands.py:203-208`); `prompt` (`runtime/commands.py:204`); `messages[].text` (`runtime/commands.py:201-202`) | slash output (the messages) | cancelled on timeout (`session.py:403-407`) |
 | `commands/cancel` | `{}` (`session.py:406`, `:813`) | — | — | |
+| `children/list` (#612) | at `03b9e32`, the client's `arguments`, unchanged (`server.py:228-231`, `:245-253`; `session.py:1218-1243`) | `epoch` (a newer one retires the older epoch's routes and voids its open child questions: `session.py:1234-1235`, `:891-896`) | manage before the session lock, so it is answered during `session/prompt` and `agents/run` (`server.py:228-231`) | 60 s, no cancel (`session.py:1228`); refused `-32000` with `data.kind: "session_changing"` while the worker is being replaced or ended, answered `-33002` when the worker's close ends it unanswered, `-32603` when the worker died first (ADR-0307's note of 2026-11-20) |
+| `children/events` (#612) | at `03b9e32`, the client's `arguments`, unchanged (`server.py:228-231`, `:245-253`; `session.py:1218-1243`) | `epoch` (as for `children/list`: `session.py:1234-1235`) | manage before the session lock, so it is answered during `session/prompt` and `agents/run` (`server.py:228-231`) | 60 s, no cancel (`session.py:1228`); refused `-32000` with `data.kind: "session_changing"` while the worker is being replaced or ended, answered `-33002` when the worker's close ends it unanswered, `-32603` when the worker died first (ADR-0307's note of 2026-11-20) |
+| `children/steer`, `children/wrap_up`, `children/stop` (#612) | at `03b9e32`, the client's `arguments`, unchanged (`server.py:228-231`, `:245-253`; `session.py:1218-1243`) | — | manage before the session lock, so it is answered during `session/prompt` and `agents/run` (`server.py:228-231`) | 60 s, no cancel (`session.py:1228`); refused `-32000` with `data.kind: "session_changing"` while the worker is being replaced or ended, answered `-33002` when the worker's close ends it unanswered, `-32603` when the worker died first (ADR-0307's note of 2026-11-20) |
+| `children/notices` (#612) | at `03b9e32`, `{}` (`session.py:1407`) | — | manage, under the session lock, with the turn's `stopReason` merged in (`server.py:462-463`; `session.py:1388-1418`) | run as a prompt turn: the turn timeout, `session/cancel` (the answer is then `{"stopReason": "cancelled"}` alone); a failure after it was sent is `-33002` where aelix-acp's `after_dispatch` maps it (a `-32603` or `-32001` failure: `wire/errors.py:77-94`), and one with a code of its own keeps it, so a `get_state` timeout stays `-32007`; `-32000` "Session is busy" during a turn (`server.py:438-439`) |
 | `permissions/evaluate` | not sent | — | — | named only in `READ_ONLY_CONTROLS` (`session.py:45-47`); frozen like every method (ADR-0302 D3), listed in §6 |
 
 `_aelix/manage`'s allowlist (`server.py:303`) is 17 actions:
@@ -111,17 +123,26 @@ reaches Studio or an ACP client.
 - `agents/list`, `agents/show`, `agents/use`, `agents/run`;
 - `permissions/get`.
 
-Each is also gated on `capabilities.methods` (`server.py:304`). Each is answered with native
+At `03b9e32` (PR #39) it is 23: these, `children/notices`, and the five `children/` methods that
+are sent before the session lock (`server.py:40-43`). The five are also gated on
+`capabilities.methods` and answered with native `data` unchanged, with 60 s and no cancel
+(`server.py:251-252`; `session.py:1228`). `children/notices` differs: its answer has the turn's
+`stopReason` merged in, and it is bounded by the turn timeout, not the 60 s
+(`session.py:1413-1418`; its §3.1 row).
+
+Each of the 17 is also gated on `capabilities.methods` (`server.py:304`). Each is answered with native
 `data` unchanged. For the actions outside `auth/login`, `resources/reload` and `agents/run`,
 the timeout is 60 s with no cancel (`server.py:309-310`).
 
 `_aelix/manage` refuses with "Session is busy" whenever the session's `mutation_lock` is held
 (`server.py:279-280`), and aelix-acp `16d6555b` holds that lock for the whole of a
 `session/prompt` (`server.py:248-255`). So during a turn Studio gets "Session is busy" from
-`_aelix/manage` before any of these actions reaches aelix-ai. #612's aelix-acp PR (lane L3, not
-yet opened) proposes sending `children/list`, `children/events`, `children/steer`,
-`children/wrap_up` and `children/stop` before that lock (ADR-0307 D8); until it lands, none of
-the `children/` methods reaches aelix-ai through aelix-acp (§6).
+`_aelix/manage` before any of these actions reaches aelix-ai. aelix-acp PR #39 (`03b9e32`, #612's
+lane L3) sends `children/list`, `children/events`, `children/steer`, `children/wrap_up` and
+`children/stop` before that lock and the activity lease (`server.py:228-231`, `Server.intervene`
+`:245-253`), so they are answered during `session/prompt` and `agents/run`; `children/notices`
+stays under the lock (ADR-0307 D8 and its note of 2026-11-20). Under `16d6555b` none of the
+`children/` methods reaches aelix-ai through aelix-acp.
 
 ### 3.2 Forwarded field paths
 
@@ -143,6 +164,12 @@ every case.
 | `auth/set_api_key` | `providers`, `providers[]`, `providers[].configured`, `providers[].provider`, `providers[].source` |
 | `auth/status` | `providers`, `providers[]`, `providers[].configured`, `providers[].provider`, `providers[].source` |
 | `capabilities` | `activeAgent`, `methods`, `methods[]`, `permissionModes`, `permissionModes[]`, `selectionKinds`, `selectionKinds[]`, `subagentsEnabled`, `thinkingLevels`, `thinkingLevels[]`, `version` |
+| `children/events` | `epoch`, `events`, `events[]`, `events[].data`, `events[].data.args`, `events[].data.background`, `events[].data.callId`, `events[].data.epoch`, `events[].data.id`, `events[].data.jobId`, `events[].data.name`, `events[].data.parentToolCallId`, `events[].data.profile`, `events[].data.seq`, `events[].data.sessionId`, `events[].data.state`, `events[].data.status`, `events[].data.text`, `events[].data.wrappingUp`, `events[].event`, `gap`, `lowSeq`, `nextSeq` |
+| `children/list` | `children`, `children[]`, `children[].activity`, `children[].activity[]`, `children[].activity[].args`, `children[].activity[].name`, `children[].activity[].status`, `children[].approval`, `children[].approval.callId`, `children[].approval.toolName`, `children[].background`, `children[].cost`, `children[].currentTool`, `children[].elapsedMs`, `children[].end`, `children[].id`, `children[].jobId`, `children[].lastText`, `children[].lowSeq`, `children[].model`, `children[].parentToolCallId`, `children[].profile`, `children[].provider`, `children[].seq`, `children[].sessionId`, `children[].state`, `children[].stuck`, `children[].tokens`, `children[].wrappingUp`, `epoch` |
+| `children/notices` | `cancelled`, `method`, `placed`, `reason`, `remaining`, `started` |
+| `children/steer` | `ended`, `outcome`, `phase`, `reason`, `verb` |
+| `children/stop` | `state` |
+| `children/wrap_up` | `ended`, `outcome`, `phase`, `reason`, `verb` |
 | `commands/run` | `command`, `messages`, `messages[]`, `messages[].text`, `messages[].type`, `outcome`, `prompt` |
 | `extensions/list` | `extensions`, `extensions[]`, `extensions[].distribution`, `extensions[].entry`, `extensions[].name`, `extensions[].version` |
 | `mcp/configure` | `servers`, `servers[]`, `servers[].clientName`, `servers[].connected`, `servers[].name`, `servers[].transport`, `skippedTools` |
@@ -156,16 +183,16 @@ every case.
 
 ## 4. Events
 
-| Event | Path | Direct reads | Forwarded whole through | aelix-acp `16d6555b` |
+| Event | Path | Direct reads | Forwarded whole through | aelix-acp `16d6555b` (#612's rows: `03b9e32`) |
 |---|---|---|---|---|
 | `aelix_subagent` | with a parent `agent` tool call open | `event` (∈ `subagent_start`, `subagent_tool`, `subagent_end`); `data.id` (required); `data.profile`, `data.state`, `data.current_tool`, `data.model`, `data.provider`, `data.elapsed_ms`, `data.tokens`, `data.cost` (each bounded and type-checked into `_meta["aelix/subagents"]` on the parent's `tool_call_update`, at most 32 children per call) | — | `session.py:515-516`, `:524-536`; `runtime/subagents.py:17-41`, `:62-79` |
 | `aelix_subagent` | no parent, or rejected by the tracker (`/agents run`, an unknown `event` value, data without a string `id`) | — | `_aelix/subagent`, as `{"jsonrpc": "2.0", "method": "_aelix/subagent", "params": {"sessionId", "event", "data"}}`, unbounded and unchecked, so every `data` field is consumed | `session.py:526-531`; `runtime/subagents.py:35-37`, `:66-69` |
 | `extension_ui_request` | `authProgress` | — | `_aelix/notification`, the whole frame | `session.py:620-623` |
 | `extension_ui_request` | `notify`, `setStatus`, `setWidget`, `setTitle` | `method` (which branch: `session.py:619`); `message`, `text` (read and shown as an agent message chunk: `session.py:624-628`) | — | `session.py:624-628` |
 | `extension_ui_request` | any other method | — | the dialog client action (`server.client_action(self, "dialog", event)`), the whole frame; an unknown method is shown as a dialog too | `session.py:629-632` |
-| `extension_ui_request` | `childApproval` (#612, ADR-0308): a delegated child's approval request | — | — | never sent to `16d6555b`: it is emitted only after `ui/enable` with `childApprovals: true`, which aelix-acp does not send (`session.py:282-284`); the row above would forward it as a dialog |
-| `aelix_child` | any (#612, ADR-0307) | — | — | dropped: `Session.event` has no branch for it (`session.py:463-522`) |
-| `aelix_notice` | any (#612, ADR-0307) | — | — | dropped: `Session.event` has no branch for it (`session.py:463-522`) |
+| `extension_ui_request` | `childApproval` (#612, ADR-0308): a delegated child's approval request | `id` (the answer's id); `title` (shown only to a client that did not declare `aelix/nestedToolCalls`); `child.id`, `child.epoch`, `child.cwd`, `child.parentToolCallId`, `child.profile`, `child.jobId`, `child.background`; `tool.callId`, `tool.name`, `tool.args`; `choices[].kind`, `choices[].id` (each type-checked into one `session/request_permission`; only an offered kind becomes an option, and only a selected offered option is answered with its choice's `id`) | — | `03b9e32`: `session.py:750`, `:871-878`, `:1020-1022`, `:1032-1092`, sent only after `ui/enable` with `childApprovals: true` (§3.1). Under `16d6555b` it is never sent: aelix-acp does not send `childApprovals` (`session.py:282-284`), and the row above would forward it as a dialog |
+| `aelix_child` | any (#612, ADR-0307) | `event` (one of the seven; any other drops the frame); `data.id`, `data.seq`, `data.epoch` (the route's key and its dedupe: `runtime/children.py:41-49`); `data.parentToolCallId` (on `state`, the card the child's frames reach: `runtime/children.py:141-162`); `data.profile`, `data.state`, `data.wrappingUp`, `data.text`, `data.stuck`, `data.requested`, `data.end` (onto the child's entry in the parent card's `_meta["aelix/subagents"]`, for every client); `data.callId`, `data.name`, `data.args`, `data.status`, `data.step` (a child's own call: the entry's `currentTool`, a nested tool call for a client that declared `aelix/nestedToolCalls`, and a `withdrawn` or `denied` step ends an open question) | — | `03b9e32`: `session.py:732-733`, `:800-869`, `:898-915`; `runtime/children.py`. Under `16d6555b`, dropped: `Session.event` has no branch for it (`session.py:463-522`) |
+| `aelix_notice` | any (#612, ADR-0307) | — | `_aelix/notice`, as `{"jsonrpc": "2.0", "method": "_aelix/notice", "params": {"sessionId", "event", "data"}}`, only to a client that declared `clientCapabilities._meta["aelix/notices"]` (a `data` that is not an object is sent as `{}`); not recorded | `03b9e32`: `session.py:734-741`. Under `16d6555b`, dropped: `Session.event` has no branch for it (`session.py:463-522`) |
 | `extension_ui_response` (client → host) | ACP writes `{"type": "extension_ui_response", "id", …answer}`: the client's whole dialog reply (`value`, `confirmed`, `cancelled`), or `{"cancelled": true}` | — | — | `session.py:629-636`; the write at `:635` |
 
 The fixtures are `tests/rpc/control_v1/fixtures/event.aelix_subagent.json` (frames emitted while an
@@ -188,6 +215,7 @@ differ.
 | Frame | Paths |
 |---|---|
 | `aelix_subagent` | `data`, `data.cost`, `data.current_tool`, `data.elapsed_ms`, `data.id`, `data.model`, `data.profile`, `data.provider`, `data.state`, `data.tokens`, `event`, `type` |
+| `aelix_notice` | `data`, `event`, `type` |
 | `extension_ui_request` | `child`, `child.background`, `child.cwd`, `child.epoch`, `child.id`, `child.jobId`, `child.parentToolCallId`, `child.profile`, `child.sessionId`, `choices`, `choices[]`, `choices[].id`, `choices[].kind`, `choices[].label`, `id`, `instructions`, `key`, `kind`, `lines`, `lines[]`, `message`, `method`, `options`, `options[]`, `options[].id`, `options[].label`, `placeholder`, `placement`, `prefill`, `text`, `title`, `tool`, `tool.args`, `tool.args.command`, `tool.callId`, `tool.kind`, `tool.name`, `type`, `url` |
 
 ## 5. Classic commands — observed, not frozen
@@ -240,14 +268,14 @@ consumer starts reading it. Methods added later under ADR-0302 D3 are listed her
 same way. `test_consumer_list.py` fails while this table and the fixtures with no `consumers`
 differ.
 
+#612's rows (the six `children/` methods, `ui/enable`'s `childApprovals` and the `childApproval`
+dialog, `aelix_child` and `aelix_notice`) moved to §3.1, §3.2, §4 and §4.1 on 2026-11-20: aelix-acp
+PR #39 (`03b9e32`) reads them.
+
 | Method or field | Added by | Expected consumer | Fixture |
 |---|---|---|---|
 | `permissions/evaluate` | #594 | none (aelix-acp names it only in `READ_ONLY_CONTROLS`) | `permissions.evaluate.json` |
 | `selections/list`, `selections/set` (and `capabilities.selectionKinds`) | #624 (ADR-0305), in the freeze commit itself | Studio #7, through aelix-acp's `_aelix/manage`. Its allowlist (`server.py:303`) and `READ_ONLY_CONTROLS` (`session.py:45-47`) do not list them yet. When aelix-acp adds `selections/set`, its default 60 s timeout is short: the consent dialog alone is bounded at 45 s (`rpc/control_selection.py` `CONSENT_TIMEOUT_SECONDS`), and settings-lock contention can add 30 s (ADR-0305 D4). So the request is to give it at least 90 s, or to send `commands/cancel` with its `requestId` on timeout. | `selections.list.json`, `selections.set.json`, `capabilities.json` |
-| `children/list`, `children/events`, `children/steer`, `children/wrap_up`, `children/stop` | #612 (ADR-0307 D4) | Studio, through aelix-acp's `_aelix/manage` once its #612 PR (lane L3) sends them before the session lock (ADR-0307 D8). `16d6555b`'s allowlist (`server.py:303`) does not list them. | `children.list.json`, `children.events.json`, `children.steer.json`, `children.wrap_up.json`, `children.stop.json` |
-| `children/notices` | #612 (ADR-0307 D4, owner Q4) | aelix-acp's notice turn after an `aelix_notice` frame (ADR-0307 D8) | `children.notices.json` |
-| The `childApprovals` param of ui/enable and the `extension_ui_request` method `childApproval` | #612 (ADR-0308) | aelix-acp, mapped to `session/request_permission` (ADR-0308; lane L3) | `ui.enable.json`, `event.extension_ui.json` |
-| `aelix_child`, `aelix_notice` events | #612 (ADR-0307 D5) | aelix-acp (lane L3); `16d6555b` drops both (§4) | `event.aelix_child.json`, `event.aelix_notice.json` |
 | `transcript/list` | #655 (ADR-0309) | aelix-acp #22 for CLI-to-Studio replay | `transcript.list.json` |
 
 ### 6.1 `transcript/list`
@@ -312,3 +340,7 @@ The owner took main at freeze time as the baseline on 2026-11-17 ("메서드 + �
 현재 main (권장)"), so all of them are v1. aelix-acp's native suite passed against `a1606f58`:
 134 tests, with 1 Windows-only skip (the scout's log,
 `.omc/probes/623-624/scout/evidence/acp-native-a1606f58.log`).
+
+aelix-acp PR #39 (`03b9e32`) moves the pin to aelix-ai `83714045`, after the freeze baseline. Its
+native suite passed against that commit: `scripts/test_native.py --check-ref`, 292 tests, with 1
+Windows-only skip, macOS (`.omc/probes/612/l3/lead/native-03b9e32.txt`).

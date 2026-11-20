@@ -115,7 +115,41 @@
       }
     }
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "03b9e32",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/session.py:732-733",
+        "src/aelix_acp/session.py:800-869",
+        "src/aelix_acp/session.py:898-915",
+        "src/aelix_acp/runtime/children.py:41-49",
+        "src/aelix_acp/runtime/children.py:141-162"
+      ],
+      "sends": [],
+      "reads": [
+        "event",
+        "data.id",
+        "data.seq",
+        "data.epoch",
+        "data.parentToolCallId",
+        "data.profile",
+        "data.state",
+        "data.wrappingUp",
+        "data.text",
+        "data.stuck",
+        "data.requested",
+        "data.end",
+        "data.callId",
+        "data.name",
+        "data.args",
+        "data.status",
+        "data.step"
+      ]
+    }
+  ],
   "cases": [
     {
       "name": "state: the first snapshot, running, then the end with how it ended",
