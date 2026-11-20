@@ -22,7 +22,10 @@ WAIT_NOTICE = "fixture-wait started"
 
 
 async def _echo(args: dict[str, Any], ctx: Any) -> ToolResult:
-    return ToolResult(content=[TextContent(text=str(args.get("text", "")))])
+    result = ToolResult(content=[TextContent(text=str(args.get("text", "")))])
+    if ctx.on_partial is not None:
+        ctx.on_partial(result)
+    return result
 
 
 ECHO = AgentTool(
@@ -100,6 +103,58 @@ COMMANDS = {
 
 def setup(aelix: ExtensionAPI) -> None:
     aelix.register_tool(ECHO)
+    import os
+
+    if os.environ.get("AELIX_655_FIXTURE_PROVIDER") == "1":
+        _register_transcript_provider(aelix)
     aelix.on("session_start", lambda event, ctx: None)
     for name, (handler, description) in COMMANDS.items():
         aelix.register_command(name, handler=handler, description=description)
+
+
+async def transcript_stream(model: Any, context: Any, options: Any) -> Any:
+    from aelix_ai.messages import AssistantMessage, ToolCallContent
+    from aelix_ai.streaming import AssistantDoneEvent, AssistantStartEvent, TextDeltaEvent
+
+    user = next(message for message in reversed(context.messages) if message.role == "user")
+    text = user.content if isinstance(user.content, str) else "".join(
+        block.text for block in user.content if isinstance(block, TextContent)
+    )
+    partial = AssistantMessage(content=[], provider=model.provider, model=model.id)
+    yield AssistantStartEvent(partial=partial)
+    yield TextDeltaEvent(delta="fixture", partial=partial)
+    if text == "fixture wait":
+        await asyncio.Event().wait()
+    if text == "fixture tools" and context.messages[-1].role != "toolResult":
+        yield AssistantDoneEvent(
+            message=AssistantMessage(
+                content=[ToolCallContent(tool_call_id="fixture-call", tool_name=ECHO.name, input={})],
+                stop_reason="toolUse",
+            ),
+            reason="toolUse",
+        )
+    else:
+        yield AssistantDoneEvent(
+            message=AssistantMessage(content=[TextContent(text="fixture")], stop_reason="stop"),
+            reason="stop",
+        )
+
+
+def _register_transcript_provider(aelix: ExtensionAPI) -> None:
+    from aelix_ai.api_registry import register_provider
+    from aelix_ai.streaming import Model
+    from aelix_coding_agent.model_registry import ProviderConfigInput
+
+    register_provider("fixture-transcript", transcript_stream)
+    aelix.register_provider(
+        "fixture-transcript",
+        ProviderConfigInput(
+            api_key="fixture-transcript-local",
+            models={
+                "local": Model(
+                    id="local", provider="fixture-transcript", api="fixture-transcript",
+                    base_url="http://127.0.0.1:9",
+                )
+            },
+        ),
+    )

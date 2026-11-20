@@ -116,7 +116,9 @@ from aelix_agent_core.harness.inbox import (
     notice_entry_id,
 )
 from aelix_agent_core.harness.tool_policy import ToolPolicy
-from aelix_agent_core.loop import agent_loop
+from aelix_agent_core.loop import _occurrence_sink, _OccurrenceSink, agent_loop
+from aelix_agent_core.session.jsonl_storage import JsonlSessionStorage
+from aelix_agent_core.session.transcript import ROLES, MessageAppendError, StoredMessage
 from aelix_agent_core.types import (
     AfterToolCallContext,
     AfterToolCallResult,
@@ -133,6 +135,7 @@ from aelix_agent_core.types import (
     InputWithdrawnEvent,
     MessageEndEvent,
     MessageStartEvent,
+    MessageUpdateEvent,
     QueueMode,
     ToolExecutionMode,
     TurnEndEvent,
@@ -527,6 +530,23 @@ class _UnansweredInputs:
     committed: list[tuple[AgentMessage, AgentMessage]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TranscriptOutcome:
+    status: Literal["stored", "storageOnly", "notStored", "unknown"]
+    stored: StoredMessage | None = None
+    replaced: bool = False
+
+
+class _TranscriptListener:
+    def __init__(
+        self, callback: Callable[[Any, str | None, TranscriptOutcome | None], None]
+    ) -> None:
+        self.callback = callback
+
+    def __call__(self, event: Any) -> None:
+        self.callback(event, None, None)
+
+
 def _answers_input(message: AgentMessage) -> bool:
     """A tool result, or an assistant message that did not fail (#654, ADR-0286)."""
 
@@ -730,6 +750,7 @@ class AgentHarness:
         self._settings_manager = options.settings_manager
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
+        self._transcript_listener: _TranscriptListener | None = None
         self._phase: AgentHarnessPhase = "idle"
         # Issue #334 — the claim of the ``prompt()`` call that holds the turn,
         # from its entry flip to the one release in its ``finally``; ``None``
@@ -1530,6 +1551,20 @@ class AgentHarness:
 
         return unsubscribe
 
+    def subscribe_transcript(
+        self, callback: Callable[[Any, str | None, TranscriptOutcome | None], None]
+    ) -> Callable[[], None]:
+        listener = _TranscriptListener(callback)
+        self._transcript_listener = listener
+        unsubscribe = self.subscribe(listener)
+
+        def retire() -> None:
+            if self._transcript_listener is listener:
+                self._transcript_listener = None
+            unsubscribe()
+
+        return retire
+
     # === Driving the loop ===
 
     async def prompt(
@@ -1973,6 +2008,7 @@ class AgentHarness:
             if self._withdraw_requested:
                 await self._withdraw_unanswered_inputs()
             await self._drain_pending_session_writes()
+            await self._settle_session_storage()
         except Exception:  # noqa: BLE001
             _log.warning(
                 "flush_pending_session_writes raised at the prompt's release "
@@ -2758,17 +2794,15 @@ class AgentHarness:
 
     # === Sprint 6h₂₀ (ADR-0128) — auto-retry state machine ====================
 
-    async def _emit_to_subscribers(self, event: Any) -> None:
-        """Fan out an event to ``self._listeners`` (no hook bus emit).
-
-        Mirrors the listener loop in ``_run``'s ``emit`` closure. Used for
-        UI-only events — ``auto_retry_start``/``auto_retry_end`` and the issue #4
-        ``compaction_start``/``compaction_end`` pair — that subscribers receive but
-        extensions don't see as lifecycle hooks.
-        """
-
+    async def _emit_to_subscribers(
+        self, event: Any, stream_id: str | None = None, outcome: TranscriptOutcome | None = None
+    ) -> None:
+        """Deliver the classic event and its private transcript observation."""
         for listener in list(self._listeners):
             try:
+                if isinstance(listener, _TranscriptListener):
+                    listener.callback(event, stream_id, outcome)
+                    continue
                 raw = listener(event)
                 if inspect.isawaitable(raw):
                     await raw
@@ -4426,6 +4460,16 @@ class AgentHarness:
             with contextlib.suppress(Exception):
                 await self.abort()
 
+    async def _settle_session_storage(self) -> None:
+        if self._session is None:
+            return
+        storage = self._session.get_storage()
+        if isinstance(storage, JsonlSessionStorage) and storage.settlement_pending:
+            try:
+                await storage.resolve_pending()
+            except Exception:
+                _log.debug("session storage settlement is still pending", exc_info=True)
+
     async def dispose(self) -> None:
         """Tear down the harness — abort + wait + cleanups LIFO (D.1.13 M-4).
 
@@ -4460,6 +4504,7 @@ class AgentHarness:
         self._pending_tasks.clear()
         await self._hooks.dispose()
         # Invalidate AFTER cleanups so cleanup callables can still inspect ctx.
+        await self._settle_session_storage()
         self._runtime.invalidate("AgentHarness has been disposed")
 
     # === Sprint 5b §B.3 — resources_discover (Pi parity ``extendResourcesFromExtensions``) ===
@@ -5792,6 +5837,46 @@ class AgentHarness:
 
     # === Run loop ===
 
+    def _visible_stream(self, event: AgentEvent, stream_id: str | None) -> str | None:
+        if isinstance(event, (MessageStartEvent, MessageUpdateEvent, MessageEndEvent)) and (
+            self.is_notice_message(event.message) or event.message.role not in ROLES
+        ):
+            return None
+        return stream_id
+
+    async def _persist_observed_message(
+        self,
+        message: AgentMessage,
+        answered: _UnansweredInputs | None,
+        *,
+        notice: bool,
+        tracked: bool,
+        replaced: bool,
+    ) -> TranscriptOutcome | None:
+        if self._session is None or notice:
+            return None
+        try:
+            if tracked:
+                receipt = await self._session.append_message_receipt(message)
+                entry_id = receipt.entry_id
+                outcome = TranscriptOutcome(
+                    "stored" if receipt.stored is not None else "storageOnly",
+                    receipt.stored,
+                    replaced,
+                )
+            else:
+                entry_id = await self._session.append_message(message)
+                outcome = None
+        except Exception as exc:  # noqa: BLE001 — classic listeners still receive the end
+            _log.debug("session append raised on message_end", exc_info=True)
+            if not tracked:
+                return None
+            uncertain = isinstance(exc, MessageAppendError) and exc.uncertain
+            return TranscriptOutcome("unknown" if uncertain else "notStored")
+        if answered is not None:
+            answered.safe_leaf = entry_id
+        return outcome
+
     async def _run(
         self,
         prompts: list[AgentMessage],
@@ -5909,7 +5994,7 @@ class AgentHarness:
                 tools=active_tools,
             )
 
-            async def emit(event: AgentEvent) -> AgentMessage | None:
+            async def deliver(event: AgentEvent, stream_id: str | None) -> AgentMessage | None:
                 # P0 #7 Wave 3 (ADR-0145, supersedes ADR-0013 + ADR-0018) —
                 # ``message_end`` is now a REPLACEMENT reducer. The order is
                 # REORDERED vs the old observational path: the hook reduction
@@ -5995,36 +6080,15 @@ class AgentHarness:
                         and isinstance(final_message, AssistantMessage)
                     ):
                         record.message = final_message
-                    # 2) Persist the REPLACEMENT (Sprint 4a primary write path,
-                    #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
-                    #    When no session is attached we skip — the no-session
-                    #    path has already committed it to ``_state.messages``.
-                    if self._session is not None and not notice:
-                        try:
-                            entry_id = await self._session.append_message(final_message)
-                            if answered and unanswered is not None:
-                                unanswered.safe_leaf = entry_id
-                        except Exception as exc:  # noqa: BLE001
-                            # Session failure during message_end is logged but
-                            # does not break the lifecycle emit chain — the
-                            # listeners below still run so the UI/observers see
-                            # the event.
-                            _log.debug(
-                                "session.append_message raised on message_end: %r",
-                                exc,
-                                exc_info=True,
-                            )
-                    # 3) Dispatch to local listeners with the ORIGINAL event
-                    #    (observers stay observational — they do not see a
-                    #    rewritten event; the replacement flows through the loop
-                    #    return, not the listener payload).
-                    for listener in list(self._listeners):
-                        try:
-                            raw = listener(event)
-                            if inspect.isawaitable(raw):
-                                await raw
-                        except Exception:  # noqa: BLE001 — listener errors must not break
-                            _log.debug("listener raised", exc_info=True)
+                    stream_id = self._visible_stream(event, stream_id)
+                    outcome = await self._persist_observed_message(
+                        final_message,
+                        unanswered if answered else None,
+                        notice=notice,
+                        tracked=stream_id is not None,
+                        replaced=final_message is not event.message,
+                    )
+                    await self._emit_to_subscribers(event, stream_id, outcome)
                     # 4) Close recovery before tools or later responses (#197).
                     await self._close_recovered_retry(final_message)
                     # #684 — an abort made before this run's task existed ends it
@@ -6036,14 +6100,7 @@ class AgentHarness:
                     #    into context/new/state messages. The hook reduction
                     #    already ran in step 1; do not fan out a second time.
                     return reduced
-                # Dispatch to local listeners first.
-                for listener in list(self._listeners):
-                    try:
-                        raw = listener(event)
-                        if inspect.isawaitable(raw):
-                            await raw
-                    except Exception:  # noqa: BLE001 — listener errors must not break
-                        _log.debug("listener raised", exc_info=True)
+                await self._emit_to_subscribers(event, self._visible_stream(event, stream_id))
                 # Sprint 6h₂₀ (ADR-0128) — UI-only retry events
                 # (``auto_retry_start``/``auto_retry_end``) go to subscribers
                 # via the listener loop above (the TUI renderer subscribes for
@@ -6093,6 +6150,11 @@ class AgentHarness:
                         )
                 # Non-message_end events never carry a replacement.
                 return None
+
+            async def classic_emit(event: AgentEvent) -> AgentMessage | None:
+                return await deliver(event, None)
+
+            emit = _OccurrenceSink(deliver) if self._transcript_listener else classic_emit
 
             try:
                 # Sprint 6a (Phase 4.1, ADR-0045 §D.1): if an explicit
@@ -6278,9 +6340,10 @@ class AgentHarness:
                     # Build after message_end committed the failure/replacement.
                     yield AgentEndEvent(messages=list(self._state.messages))
 
+                failure_emit = _occurrence_sink(emit)
                 for closure_event in failure_events():
                     try:
-                        await emit(closure_event)
+                        await failure_emit(closure_event)
                     except Exception as emit_exc:  # noqa: BLE001
                         _log.debug("emit during hook-fail close-out raised: %r", emit_exc, exc_info=True)
                 raise

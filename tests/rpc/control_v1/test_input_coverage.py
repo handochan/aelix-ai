@@ -227,6 +227,32 @@ def test_every_bound_is_sent_at_the_bound_and_refused_past_it(
     assert limit + 1 in sizes(False), f"{method} {path}: no refusal at {bound} {limit} + 1"
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "contract", "bound"),
+    [(m, p, c, b) for m, p, c in _param_rows() for b in ("minimum", "maximum") if b in c],
+)
+async def test_integer_param_bound_is_accepted_and_its_neighbor_is_refused(
+    method: str, path: str, contract: dict[str, Any], bound: str, tmp_path: Path,
+) -> None:
+    boundary = contract[bound]
+    outside = boundary + (1 if bound == "maximum" else -1)
+
+    def values(accepted: bool) -> set[int]:
+        return {
+            value for case in _cases(method)
+            if (_ok(case) if accepted else "error" in case)
+            for value in _values(_sent(case), path) if type(value) is int
+        }
+
+    assert boundary in values(True)
+    assert outside in values(False)
+    async with rigs.open_rig("full", tmp_path) as rig:
+        accepted = await rigs.request(rig.wire, "bound", method, {path: boundary})
+        refused = await rigs.request(rig.wire, "outside", method, {path: outside})
+        assert refused["id"] == "outside" and refused["error"] == "Invalid transcript selectors"
+        assert accepted["success"], accepted
+
+
 # --- populated arrays --------------------------------------------------------------
 
 
@@ -448,7 +474,29 @@ def _approval_kinds() -> list[str]:
 #: Every enum the floor holds, and the code's value set it must equal (closed) or
 #: sit inside (open). ``None`` says the code keeps the set as literals with no
 #: name to read; the fixture alone pins it, and the reason is the string.
+def _transcript_statuses() -> list[str]:
+    from aelix_agent_core.harness.core import TranscriptOutcome
+
+    return list(get_args(get_type_hints(TranscriptOutcome)["status"]))
+
+
+def _transcript_roles() -> list[str]:
+    from aelix_agent_core.session.transcript import ROLES
+
+    return sorted(ROLES)
+
+
+def _transcript_unavailable() -> list[str]:
+    from aelix_agent_core.session.transcript import UNAVAILABLE
+
+    return [UNAVAILABLE]
+
+
 CODE_VALUES: dict[tuple[str, str, str], Any] = {
+    ("methods", "transcript/list", "frame.transcript.status"): _transcript_statuses,
+    ("methods", "transcript/list", "data.entries[].message.role"): _transcript_roles,
+    ("methods", "transcript/list", "data.entries[].role"): _transcript_roles,
+    ("methods", "transcript/list", "data.entries[].unavailable"): _transcript_unavailable,
     ("methods", "capabilities", "data.permissionModes[]"): _modes,
     ("methods", "permissions/get", "data.mode"): _modes,
     ("methods", "permissions/set", "data.mode"): _modes,

@@ -32,13 +32,14 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
 from aelix_agent_core.session.entries import (
     LeafEntry,
+    MessageEntry,
     SessionTreeEntry,
     entry_from_json,
     entry_to_json,
@@ -50,6 +51,14 @@ from aelix_agent_core.session.storage import (
     PlacementConflict,
     SessionError,
     SessionStorage,
+)
+from aelix_agent_core.session.transcript import (
+    EntryOrder,
+    MessageAppend,
+    MessageAppendError,
+    StoredMessage,
+    TranscriptSnapshot,
+    is_transcript_message,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -102,6 +111,9 @@ class _LoadedSession:
     leaf_id: str | None
     recovery: SessionRecovery | None
     ends_with_newline: bool
+    decoded: list[SessionTreeEntry]
+    decoded_ids: set[str]
+    recorded_leaf_id: str | None
 
 
 def _iso_now() -> str:
@@ -222,14 +234,17 @@ async def _publish_file(fs: FileSystem, path: str, content: str) -> None:
         raise
 
 
-def _generate_entry_id(by_id: dict[str, SessionTreeEntry]) -> str:
+def _generate_entry_id(decoded_ids: set[str]) -> str:
     """Pi ``generateEntryId`` (``jsonl-storage.ts:35-41``)."""
 
     for _ in range(100):
         candidate = uuid.uuid4().hex[:8]
-        if candidate not in by_id:
+        if candidate not in decoded_ids:
             return candidate
-    return uuid.uuid4().hex
+    while True:
+        candidate = uuid.uuid4().hex
+        if candidate not in decoded_ids:
+            return candidate
 
 
 def _leaf_id_after_entry(entry: SessionTreeEntry) -> str | None:
@@ -342,7 +357,7 @@ def _parse_header_line(line: str, file_path: str) -> _SessionHeader:
 
 
 def _parse_entry_line(
-    line: str, file_path: str, line_number: int
+    line: str, file_path: str, line_number: int, *, decoded_ids: set[str] | None = None
 ) -> SessionTreeEntry:
     """Pi ``parseEntryLine`` (``jsonl-storage.ts:87-107``)."""
 
@@ -361,6 +376,9 @@ def _parse_entry_line(
             f"Invalid JSONL session file {file_path}: line {line_number} "
             "is not a valid session entry",
         )
+    raw_id = parsed.get("id")
+    if decoded_ids is not None and isinstance(raw_id, str) and raw_id:
+        decoded_ids.add(raw_id)
     if not isinstance(parsed.get("type"), str):
         raise SessionError(
             "invalid_entry",
@@ -510,14 +528,16 @@ def _parse_jsonl_content(content: str, file_path: str) -> _LoadedSession:
     entries: list[SessionTreeEntry] = []
     leaf_id: str | None = None
     skipped: list[int] = []
+    decoded_ids: set[str] = set()
     for i in range(1, len(lines)):
         try:
-            entry = _parse_entry_line(lines[i], file_path, i + 1)
+            entry = _parse_entry_line(lines[i], file_path, i + 1, decoded_ids=decoded_ids)
         except SessionError:
             skipped.append(i + 1)
             continue
         entries.append(entry)
         leaf_id = _leaf_id_after_entry(entry)
+    recorded_leaf_id = leaf_id
     if not skipped:
         return _LoadedSession(
             header=header,
@@ -525,6 +545,9 @@ def _parse_jsonl_content(content: str, file_path: str) -> _LoadedSession:
             leaf_id=leaf_id,
             recovery=None,
             ends_with_newline=ends_with_newline,
+            decoded=entries,
+            decoded_ids=decoded_ids,
+            recorded_leaf_id=recorded_leaf_id,
         )
 
     # A gap was bridged — re-check that the surviving forest is still
@@ -560,7 +583,104 @@ def _parse_jsonl_content(content: str, file_path: str) -> _LoadedSession:
         leaf_id=leaf_id,
         recovery=recovery,
         ends_with_newline=ends_with_newline,
+        decoded=entries,
+        decoded_ids=decoded_ids,
+        recorded_leaf_id=recorded_leaf_id,
     )
+
+
+def _retain_transcript_entries(order: EntryOrder) -> tuple[list[SessionTreeEntry], list[str]]:
+    # A parent must already be retained. A marker also depends on its target,
+    # which may itself be lost to recovery. Propagate those removals to children.
+    removed: set[str] = set()
+    dependents: dict[str, list[str]] = {}
+    for index, entry in enumerate(order.entries):
+        parent = entry.parent_id
+        if parent is not None:
+            if order.positions.get(parent, index) >= index:
+                removed.add(entry.id)
+            dependents.setdefault(parent, []).append(entry.id)
+        if isinstance(entry, LeafEntry) and entry.target_id is not None:
+            if entry.target_id not in order.positions:
+                removed.add(entry.id)
+            dependents.setdefault(entry.target_id, []).append(entry.id)
+    queue = list(removed)
+    for entry_id in queue:
+        for dependent in dependents.get(entry_id, ()):
+            if dependent not in removed:
+                removed.add(dependent)
+                queue.append(dependent)
+    kept = [entry for entry in order.entries if entry.id not in removed]
+    return kept, [entry.id for entry in order.entries if entry.id in removed]
+
+
+class _ReceiptIndex:
+    """Message counts on returnable paths through the decoded file prefix."""
+
+    def __init__(self, entries: list[SessionTreeEntry], *, recovered: bool) -> None:
+        self.sequences: dict[str, int | None] = {}
+        self.pruned: set[str] = set()
+        self.recovered = recovered
+        self.duplicate = False
+        try:
+            order = EntryOrder(entries)
+        except SessionError:
+            # The transcript reader refuses even an intact sibling of a duplicate.
+            self.duplicate = True
+            return
+        # Keep recovery pruning ready even for a clean file. An undecodable
+        # append can turn recovery on without changing classic storage state.
+        _, pruned = _retain_transcript_entries(order)
+        self.pruned.update(pruned)
+        for entry in entries:
+            self._remember(entry, order.positions)
+
+    def _remember(
+        self, entry: SessionTreeEntry, decoded: Mapping[str, object]
+    ) -> None:
+        parent = entry.parent_id
+        count = 0 if parent is None else self.sequences.get(parent)
+        target = entry.target_id if isinstance(entry, LeafEntry) else None
+        if target is not None and target != entry.id and target not in decoded:
+            count = None
+        self.sequences[entry.id] = None if count is None else count + is_transcript_message(entry)
+
+    def append(self, entry: SessionTreeEntry | None) -> None:
+        if entry is None:
+            self.recovered = True
+            return
+        if self.duplicate or entry.id in self.sequences:
+            self.duplicate = True
+            return
+        self._remember(entry, self.sequences)
+        target = entry.target_id if isinstance(entry, LeafEntry) else None
+        if self.sequences[entry.id] is None or (
+            entry.parent_id in self.pruned or target in self.pruned
+        ):
+            self.pruned.add(entry.id)
+
+    def receipt(self, entry: SessionTreeEntry | None) -> StoredMessage | None:
+        if self.duplicate or not isinstance(entry, MessageEntry) or not is_transcript_message(entry):
+            return None
+        count = self.sequences[entry.id]
+        if count is None or (self.recovered and entry.id in self.pruned):
+            return None
+        return StoredMessage(entry, count)
+
+
+@dataclass(frozen=True)
+class _Outgoing:
+    storage: JsonlSessionStorage
+    wait_idle: Callable[[], Awaitable[None]] | None
+    busy: Callable[[], bool] | None
+
+    @property
+    def pending(self) -> bool:
+        return (
+            (self.busy is not None and self.busy())
+            or self.storage._lock.locked()
+            or self.storage.settlement_pending
+        )
 
 
 class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
@@ -596,6 +716,9 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         leaf_id: str | None,
         recovery: SessionRecovery | None = None,
         ends_with_newline: bool = True,
+        decoded_ids: set[str] | None = None,
+        *,
+        receipt_index: _ReceiptIndex,
     ) -> None:
         self._fs = fs
         self._file_path = file_path
@@ -607,6 +730,8 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         self._by_id: dict[str, SessionTreeEntry] = {
             e.id: e for e in self._entries
         }
+        self._decoded_ids = set(self._by_id) if decoded_ids is None else decoded_ids
+        self._receipt_index = receipt_index
         self._labels_by_id: dict[str, str] = {}
         for entry in self._entries:
             _update_label_cache(self._labels_by_id, entry)
@@ -627,6 +752,11 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         # What an interrupted :meth:`withdraw_tail` still has to write. Every
         # write finishes it before it does anything else (#721).
         self._replay: _Replay | None = None
+        self._outgoing: _Outgoing | None = None
+        self._transcript_cut: tuple[str, TranscriptSnapshot] | None = None
+        # A CLI-RPC binding prepares receipts at install. None defers the
+        # check until a receipt append has materialized the file.
+        self._transcript_header_readable: bool | None = True
 
     async def _append_line(
         self, entry: SessionTreeEntry, what: str, *, snapshot: bool = False
@@ -687,17 +817,116 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         self._needs_newline = False
         return line
 
+    @property
+    def native_session_id(self) -> str:
+        return self._metadata.id
+
+    @property
+    def settlement_pending(self) -> bool:
+        return (
+            self._pending is not None
+            or self._replay is not None
+            or (self._outgoing is not None and self._outgoing.pending)
+        )
+
+    @property
+    def has_inherited_settlement(self) -> bool:
+        return self._outgoing is not None
+
+    def inherit_settlement(
+        self,
+        outgoing: JsonlSessionStorage,
+        *,
+        wait_idle: Callable[[], Awaitable[None]] | None = None,
+        busy: Callable[[], bool] | None = None,
+    ) -> None:
+        if outgoing is not self:
+            self._outgoing = _Outgoing(outgoing, wait_idle, busy)
+
+    async def transcript_snapshot(self) -> TranscriptSnapshot:
+        async with self._lock:
+            if self.settlement_pending:
+                raise SessionError("settlementPending", "Session settlement is pending")
+            return await self._transcript_snapshot_locked()
+
+    async def _transcript_snapshot_locked(self) -> TranscriptSnapshot:
+        content = await self._fs.read_text_file(self._file_path)
+        last = self._transcript_cut
+        if last is not None and last[0] == content:
+            return last[1]
+        loaded = _parse_jsonl_content(content, self._file_path)
+        decoded = EntryOrder(loaded.decoded)
+        retained = loaded.entries
+        leaf_id = loaded.leaf_id
+        pruned: list[str] = []
+        if loaded.recovery is not None:
+            retained, pruned = _retain_transcript_entries(decoded)
+            leaf_id = _leaf_id_after_entry(retained[-1]) if retained else None
+        snapshot = TranscriptSnapshot(
+            loaded.header.id,
+            leaf_id,
+            loaded.recorded_leaf_id,
+            decoded,
+            frozenset(entry.id for entry in retained),
+            loaded.recovery.skipped_lines if loaded.recovery else (),
+            tuple(pruned),
+            not loaded.ends_with_newline,
+        )
+        self._transcript_cut = (content, snapshot)
+        return snapshot
+
+    def release_transcript_cut(self) -> None:
+        self._transcript_cut = None
+
+    async def prepare_transcript_receipts(self, *, allow_missing: bool = True) -> None:
+        """Validate the reader's header once for the binding, deferring absent files."""
+        try:
+            lines = await self._fs.read_text_lines(
+                self._file_path, max_lines=1, skip_blank=True
+            )
+            if lines:
+                _parse_header_line(lines[0], self._file_path)
+        except FileNotFoundError:
+            self._transcript_header_readable = None if allow_missing else False
+        except (OSError, UnicodeError, SessionError):
+            self._transcript_header_readable = False
+        else:
+            self._transcript_header_readable = bool(lines)
+
+    async def _refresh_after_settlement_locked(self) -> None:
+        """Refresh the successor under its lock before accepting any writes."""
+        loaded = await _load_jsonl_storage(self._fs, self._file_path)
+        fresh = self._from_loaded(self._fs, self._file_path, loaded)
+        self._entries = fresh._entries
+        self._by_id = fresh._by_id
+        self._decoded_ids = fresh._decoded_ids
+        self._receipt_index = fresh._receipt_index
+        self._labels_by_id = fresh._labels_by_id
+        self._current_leaf_id = fresh._current_leaf_id
+        self._needs_newline = fresh._needs_newline
+        self.recovery = fresh.recovery
+
     def _commit_locked(self, entry: SessionTreeEntry) -> None:
         """Take ``entry`` into memory as the newest line. Caller holds the lock."""
 
+        self._decoded_ids.add(entry.id)
         self._entries.append(entry)
         self._by_id[entry.id] = entry
         _update_label_cache(self._labels_by_id, entry)
         self._current_leaf_id = _leaf_id_after_entry(entry)
 
     async def _write_locked(self, entry: SessionTreeEntry, what: str) -> None:
-        await self._append_line(entry, what)
+        line = await self._append_line(entry, what)
+        self._index_line(line)
         self._commit_locked(entry)
+
+    def _index_line(self, line: str) -> SessionTreeEntry | None:
+        try:
+            decoded = _parse_entry_line(line, self._file_path, len(self._entries) + 2)
+        except SessionError:
+            decoded = None
+        self._receipt_index.append(decoded)
+        return decoded
 
     async def _resolve_locked(self) -> None:
         """Settle what an earlier write left open before this one starts. Lock held.
@@ -708,6 +937,13 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         that asked is refused with nothing of its own written.
         """
 
+        outgoing = self._outgoing
+        if outgoing is not None:
+            if outgoing.wait_idle is not None:
+                await outgoing.wait_idle()
+            await outgoing.storage.resolve_pending()
+            await self._refresh_after_settlement_locked()
+            self._outgoing = None
         if self._pending is not None:
             await self._settle_locked()
         if self._replay is not None:
@@ -753,6 +989,8 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
                 cause=exc,
             ) from exc
         self._pending = None
+        self._decoded_ids.update(loaded.decoded_ids)
+        self._receipt_index = _ReceiptIndex(loaded.decoded, recovered=loaded.recovery is not None)
         landed: SessionTreeEntry | None = None
         if f"\n{pending.line}" in f"\n{content}\n":
             landed = next(
@@ -792,7 +1030,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         while replay.survivors:
             template = replay.survivors[0]
             entry = replace(
-                template, id=_generate_entry_id(self._by_id), parent_id=self._leaf_locked()
+                template, id=_generate_entry_id(self._decoded_ids), parent_id=self._leaf_locked()
             )
             try:
                 await self._write_locked(entry, f"entry {entry.id}")
@@ -822,6 +1060,12 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         cls, fs: FileSystem, file_path: str
     ) -> JsonlSessionStorage:
         loaded = await _load_jsonl_storage(fs, file_path)
+        return cls._from_loaded(fs, file_path, loaded)
+
+    @classmethod
+    def _from_loaded(
+        cls, fs: FileSystem, file_path: str, loaded: _LoadedSession,
+    ) -> JsonlSessionStorage:
         return cls(
             fs,
             file_path,
@@ -830,6 +1074,8 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             loaded.leaf_id,
             loaded.recovery,
             ends_with_newline=loaded.ends_with_newline,
+            decoded_ids=loaded.decoded_ids,
+            receipt_index=_ReceiptIndex(loaded.decoded, recovered=loaded.recovery is not None),
         )
 
     @classmethod
@@ -871,10 +1117,15 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         if header.parent_session is not None:
             wire["parentSession"] = header.parent_session
         lines = [json.dumps(wire) + "\n"]
+        decoded: list[SessionTreeEntry] = []
         leaf_id: str | None = None
-        for entry in entries:
-            lines.append(_encode_entry(entry, f"entry {entry.id}"))
+        for line_number, entry in enumerate(entries, start=2):
+            line = _encode_entry(entry, f"entry {entry.id}")
+            lines.append(line)
+            with contextlib.suppress(SessionError):
+                decoded.append(_parse_entry_line(line, file_path, line_number))
             leaf_id = _leaf_id_after_entry(entry)
+        receipt_index = _ReceiptIndex(decoded, recovered=len(decoded) != len(entries))
         content = "".join(lines)
         # ``lines`` and ``content`` are each a whole copy of the file, and
         # ``write_file`` encodes a third. Dropping the list before staging
@@ -882,7 +1133,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         # append loop this replaced had it, not four.
         del lines
         await _publish_file(fs, file_path, content)
-        return cls(fs, file_path, header, list(entries), leaf_id)
+        return cls(fs, file_path, header, list(entries), leaf_id, receipt_index=receipt_index)
 
     async def get_metadata(self) -> JsonlSessionMetadata:
         return self._metadata
@@ -901,7 +1152,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             if leaf_id is not None and leaf_id not in self._by_id:
                 raise SessionError("not_found", f"Entry {leaf_id} not found")
             entry = LeafEntry(
-                id=_generate_entry_id(self._by_id),
+                id=_generate_entry_id(self._decoded_ids),
                 parent_id=self._current_leaf_id,
                 timestamp=_iso_now(),
                 target_id=leaf_id,
@@ -909,7 +1160,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             await self._write_locked(entry, f"leaf {entry.id}")
 
     async def create_entry_id(self) -> str:
-        return _generate_entry_id(self._by_id)
+        return _generate_entry_id(self._decoded_ids)
 
     async def append_entry(self, entry: SessionTreeEntry) -> None:
         """Append ``entry`` exactly as given, parent included.
@@ -922,7 +1173,36 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
 
         async with self._lock:
             await self._resolve_locked()
+            self._check_append(entry)
             await self._write_locked(entry, f"entry {entry.id}")
+
+    def _check_append(self, entry: SessionTreeEntry) -> None:
+        if entry.id in self._decoded_ids:
+            raise SessionError("invalidTree", "Duplicate session entry ID")
+
+    async def append_message_receipt(
+        self, build: Callable[[str, str | None], MessageEntry]
+    ) -> MessageAppend:
+        async with self._lock:
+            try:
+                await self._resolve_locked()
+            except Exception as exc:
+                raise MessageAppendError(uncertain=False) from exc
+            entry = build(_generate_entry_id(self._decoded_ids), self._leaf_locked())
+            self._check_append(entry)
+            try:
+                line = await self._append_line(entry, f"entry {entry.id}")
+            except Exception as exc:
+                raise MessageAppendError(uncertain=self._pending is not None) from exc
+            stored = await self._read_receipt_locked(line)
+            self._commit_locked(entry)
+            if self._transcript_header_readable is None:
+                await self.prepare_transcript_receipts(allow_missing=False)
+            return MessageAppend(entry.id, stored if self._transcript_header_readable else None)
+
+    async def _read_receipt_locked(self, line: str) -> StoredMessage | None:
+        """Qualify the newly written line under the writer lock, without file I/O."""
+        return self._receipt_index.receipt(self._index_line(line))
 
     async def append_to_leaf(
         self, build: Callable[[str, str | None], SessionTreeEntry]
@@ -938,7 +1218,8 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
 
         async with self._lock:
             await self._resolve_locked()
-            entry = build(_generate_entry_id(self._by_id), self._leaf_locked())
+            entry = build(_generate_entry_id(self._decoded_ids), self._leaf_locked())
+            self._check_append(entry)
             await self._write_locked(entry, f"entry {entry.id}")
             return entry
 
@@ -975,13 +1256,10 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             entry = build(self._leaf_locked())
             if entry.id != entry_id:
                 raise ValueError(f"place_entry built {entry.id!r} for id {entry_id!r}")
+            self._check_append(entry)
             line = await self._append_line(entry, f"entry {entry.id}", snapshot=True)
-            try:
-                stored = _parse_entry_line(line, self._file_path, len(self._entries) + 2)
-            except SessionError:
-                # A line this store's own loader would skip (a ``build`` that
-                # left the timestamp empty). Kept as built, as any append is.
-                stored = entry
+            # A line the loader would skip is kept as built, as any append is.
+            stored = self._index_line(line) or entry
             self._commit_locked(stored)
             return Placement(stored, adopted=False)
 
@@ -1022,7 +1300,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
                 tail = path[ids.index(target_leaf) + 1 :]
             survivors = [entry for entry in tail if not is_withdrawn(entry)]
             move = LeafEntry(
-                id=_generate_entry_id(self._by_id),
+                id=_generate_entry_id(self._decoded_ids),
                 parent_id=self._current_leaf_id,
                 timestamp=_iso_now(),
                 target_id=target_leaf,

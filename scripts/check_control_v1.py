@@ -89,7 +89,7 @@ ADR_GLOB = "docs/decisions/0302-*.md"
 SECTIONS = ("methods", "events", "errors", "envelope")
 SCHEMA_KEYS = ("data", "error", "expect")
 BOUND_KEYS = ("minItems", "maxItems", "minLength", "maxLength", "pattern")
-PARAM_BOUNDS = ("maxItems", "maxLength")
+PARAM_BOUNDS = ("maxItems", "maxLength", "minimum", "maximum")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: The JSON Schema keywords :func:`schema_facts` turns into facts. Any other
 #: keyword in a case's schema is refused (``FloorError``), never dropped: a

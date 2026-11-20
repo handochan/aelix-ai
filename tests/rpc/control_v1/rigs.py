@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import itertools
 import json
 import socket
 import sys
@@ -338,6 +339,7 @@ REQUIRES: dict[str, str] = {
     "agents": "agent_service",
     "selections": "selections",
     "jobs": "jobs",
+    "transcript": "transcript",
 }
 
 
@@ -533,9 +535,7 @@ async def _hold_the_original_session(rig: Rig) -> None:
 
     runtime = rig.runtime
     original = runtime.harness.session_file
-    own = SessionWriterLock(original)
-    assert own.try_acquire(), "the rig could not take its own session lock"
-    runtime.set_writer_lock(own)
+    assert runtime.writer_lock is not None and runtime.writer_lock.held
     fork = runtime.fork
 
     async def fork_then_hold(*args: Any, **kwargs: Any) -> Any:
@@ -714,6 +714,72 @@ def _untrusted_project_resources(seed: Seed) -> None:
     )
 
 
+async def _transcript_seed(rig: Rig) -> None:
+    from aelix_ai.messages import TextContent, UserMessage
+
+    session = rig.harness.session
+    await session.append_thinking_level_change("low")
+    rig.values["second_entry"] = await session.append_message(
+        UserMessage(content=[TextContent(text="two")])
+    )
+    await session.append_message(UserMessage(content=[TextContent(text="three")]))
+    for limit, key in ((1, "first_cursor"), (2, "second_cursor")):
+        reply = await request(rig.wire, f"seed-{key}", "transcript/list", {"limit": limit})
+        assert reply["success"], reply
+        rig.values[key] = reply["data"]["nextCursor"]
+
+
+async def _transcript_special(rig: Rig, mode: str) -> None:
+    from dataclasses import replace
+
+    from aelix_agent_core.harness.hooks import MessageEndEventResult
+    from aelix_agent_core.session.entries import CustomEntry
+    from aelix_agent_core.session.fs import NotAttempted
+    from aelix_ai.messages import TextContent, UserMessage
+
+    from tests.rpc.control_v1.ui_extension import transcript_stream
+
+    session = rig.harness.session
+    storage = session.get_storage()
+    rig.harness._options.stream_fn = transcript_stream
+    if mode == "wide":
+        parent = "p" * 1_048_238
+        await storage.append_entry(
+            CustomEntry(id=parent, parent_id=None, timestamp="2026-11-20T00:00:00Z", custom_type="fixture")
+        )
+    if mode == "fragment":
+        await session.append_message(UserMessage(content=[TextContent(text="한" * 400_000)]))
+    if mode == "placeholder":
+        await session.append_message(UserMessage(content=[TextContent(text=chr(0xD800))]))
+        await session.append_message(UserMessage(content=[TextContent(text="later")]))
+    if mode == "recovered":
+        await storage._fs.append_file(rig.values["session_file"], "{torn\n")
+        await session.append_message(UserMessage(content=[TextContent(text="later")]))
+    if mode == "replace":
+        async def rewrite(event: Any, ctx: Any) -> MessageEndEventResult | None:
+            if event.message.role == "assistant":
+                return MessageEndEventResult(message=replace(event.message, timestamp=float("nan")))
+            return None
+
+        rig.harness.hooks.on("message_end", rewrite)
+    if mode in ("notStored", "unknown"):
+        original = storage._fs.append_file
+        failed = False
+
+        async def fault(path: str, text: str) -> None:
+            nonlocal failed
+            entry = json.loads(text)
+            if not failed and entry.get("message", {}).get("role") == "assistant":
+                failed = True
+                if mode == "notStored":
+                    raise NotAttempted("fixture refusal")
+                await original(path, text)
+                raise OSError("fixture lost write acknowledgement")
+            await original(path, text)
+
+        storage._fs.append_file = fault
+
+
 SETUPS: dict[str, Setup] = {
     "project_settings_absent": Setup(pre=_project_settings_absent),
     "many_mcp_servers": Setup(
@@ -733,6 +799,11 @@ SETUPS: dict[str, Setup] = {
     "jobs_only": Setup(subagents=False),
     "hold_the_swap": Setup(post=_hold_the_swap),
     "hold_the_model": Setup(post=_hold_the_model),
+    "transcript-seed": Setup(post=_transcript_seed),
+    **{
+        f"transcript-{mode}": Setup(post=lambda rig, mode=mode: _transcript_special(rig, mode))
+        for mode in ("live", "wide", "fragment", "placeholder", "recovered", "replace", "notStored", "unknown")
+    },
 }
 
 
@@ -892,6 +963,14 @@ async def build_harness(name: str, seed: Seed | None, gate: asyncio.Event, sessi
     return harness
 
 
+def hold_session_writer(runtime: Any) -> None:
+    from aelix_agent_core.session.session_lock import SessionWriterLock
+
+    lock = SessionWriterLock(runtime.harness.session_file)
+    assert lock.try_acquire() and lock.held
+    runtime.set_writer_lock(lock)
+
+
 @contextlib.asynccontextmanager
 async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncIterator[Rig]:
     """A running ``run_rpc_mode`` for rig ``name`` over an in-memory JSONL wire."""
@@ -943,6 +1022,7 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
 
         harness = await build_harness(name, seed, gate, session)
         runtime = await create_agent_session_runtime(harness, factory, repo=repo, fs=fs)
+        hold_session_writer(runtime)
         values.update(
             cwd=str(seed.cwd),
             root=str(seed.root),
@@ -1098,6 +1178,7 @@ class CaseResult:
     response: dict[str, Any] = field(default_factory=dict)
     frames: list[dict[str, Any]] = field(default_factory=list)
     during: dict[str, Any] | None = None
+    prompt_response: dict[str, Any] | None = None
 
 
 async def _wait(awaitable: Awaitable[Any], what: str, wire: Any) -> Any:
@@ -1128,6 +1209,7 @@ async def run_case(
     on_answered: Callable[[], None] | None = None,
     prefix: str = "",
     post_notice: Callable[[dict[str, Any]], None] | None = None,
+    native_idle: Callable[[], Awaitable[None]] | None = None,
 ) -> CaseResult:
     """Send one case's ``before``, ``during`` and request over ``wire``; collect what came back.
 
@@ -1160,6 +1242,7 @@ async def run_case(
             prefix,
             during,
             post_notice,
+            native_idle,
         )
         if on_answered is not None:
             on_answered()
@@ -1190,6 +1273,52 @@ async def run_case(
     return result
 
 
+async def _classic_prompt_frames(
+    wire: Any,
+    trigger: dict[str, Any],
+    family: str,
+    prefix: str,
+    result: CaseResult,
+    native_idle: Callable[[], Awaitable[None]] | None,
+) -> None:
+    assert trigger["until"] == "native_idle"
+    start = len(wire.records)
+    prompt_id = f"{prefix}transcript-prompt"
+    wire.send({"type": "prompt", "id": prompt_id, **trigger["classic_prompt"]})
+    reply = await _wait(wire.response(prompt_id), "classic prompt acceptance", wire)
+    result.prompt_response = reply
+    assert reply["success"], reply
+    await _wait(
+        wire.record(lambda frame: frame.get("type") == "agent_start"
+                    and any(frame is candidate for candidate in wire.records[start:])),
+        "the prompt start",
+        wire,
+    )
+    if native_idle is not None:
+        await _wait(native_idle(), "native idle", wire)
+    else:
+        await _wait(_child_idle(wire, prefix), "child native idle", wire)
+        settled = await request(wire, f"{prefix}settled", "transcript/list", {"leafId": None})
+        assert settled["success"], settled
+    role = trigger.get("role")
+    result.frames = [
+        frame for frame in wire.records[start:]
+        if frame.get("type") == family
+        and (role is None or frame.get("message", {}).get("role") == role)
+    ]
+
+
+async def _child_idle(wire: Any, prefix: str) -> None:
+    for index in itertools.count():
+        request_id = f"{prefix}idle-{index}"
+        wire.send({"type": "get_state", "id": request_id})
+        reply = await wire.response(request_id)
+        assert reply["success"], reply
+        if not reply["data"]["isStreaming"]:
+            return
+        await asyncio.sleep(0.01)
+
+
 async def _send_case(
     fixture: dict[str, Any],
     case: dict[str, Any],
@@ -1201,6 +1330,7 @@ async def _send_case(
     prefix: str,
     during: dict[str, Any] | None,
     post_notice: Callable[[dict[str, Any]], None] | None = None,
+    native_idle: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     for index, step in enumerate(case.get("before", [])):
         answer = await request(
@@ -1224,6 +1354,14 @@ async def _send_case(
             wire.record(lambda r: _matches(r, during["wait_for"])), "the during marker", wire
         )
     trigger = case.get("trigger")
+    if trigger is not None and "classic_prompt" in trigger:
+        await _classic_prompt_frames(
+            wire, trigger, case["frameType"], prefix, result, native_idle
+        )
+        params = resolve({**case.get("params", {}), **(override or {})}, values)
+        result.params = params
+        result.response = await request(wire, f"{prefix}case", fixture["method"], params)
+        return
     seen = {id(record) for record in wire.records}
     collect_only = trigger is not None and (
         "emit_subagent" in trigger or ("post_notice" in trigger and "method" not in fixture)
@@ -1333,6 +1471,7 @@ async def run_in_process(
             emit_subagent=emit,
             on_answered=rig.release,
             post_notice=post,
+            native_idle=rig.runtime.harness.wait_for_idle if rig.runtime is not None else None,
         )
         name = case.get("check") if override is None else None
         bound = (lambda: CHECKS[name](rig, result)) if name else (lambda: None)

@@ -172,3 +172,8 @@ compaction. The errors endpoints give when the conversation plus the cap is too
 large - Anthropic's ``input length and `max_tokens` exceed context limit``,
 Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - count
 as a context overflow, like `prompt is too long`.
+
+A writer-owned CLI-RPC binding can query the stored parent path with
+`transcript/list`. Earlier stored messages on that path retain their ordinals
+across compaction. The compaction entry contributes no row (ADR-0309 D2,
+`test_compacted_branch_cursor_pins_history_and_rebind_fences_it`).

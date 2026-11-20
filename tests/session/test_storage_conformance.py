@@ -514,6 +514,7 @@ async def test_appending_a_leaf_entry_moves_the_leaf_to_its_target(backend: Back
 
 
 async def test_a_dangling_folded_leaf_is_invalid_session_by_get_leaf_id(backend: Backend) -> None:
+    # Compatibility control on both backends. This is expected to pass on base.
     dangling: list[SessionTreeEntry] = [
         user("a", None),
         LeafEntry(id="l1", parent_id="a", timestamp=TS, target_id="ghost"),

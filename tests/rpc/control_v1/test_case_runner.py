@@ -91,3 +91,29 @@ def test_every_case_a_during_check_reads_waits_for_the_commands_own_answer() -> 
                     f"{fixture['_file']} {case['name']!r}: its check reads the during command's "
                     "answer, so the case must end it (ended_by_case)"
                 )
+
+
+async def test_classic_prompt_trigger_checks_frames_even_after_acceptance(tmp_path: Path) -> None:
+    from copy import deepcopy
+
+    from scripts.check_control_v1 import case_facts
+
+    fixture = next(f for f in rigs.load_fixtures() if f.get("method") == "transcript/list")
+    case = next(c for c in fixture["cases"] if c["name"] == "tool result ends with stored coordinates")
+    result, _ = await rigs.run_in_process(fixture, case, tmp_path / "rig")
+    assert result.prompt_response is not None and result.prompt_response["success"]
+    rigs.assert_case(fixture, case, result)
+
+    changed = deepcopy(case)
+    changed["trigger"]["until"] = "agent_end"
+    removed = set(case_facts(fixture, case)) - set(case_facts(fixture, changed))
+    assert any("classic_prompt" in fact and "native_idle" in fact for fact in removed)
+
+    broken = deepcopy(result)
+    del broken.frames[0]["transcript"]["streamId"]
+    with pytest.raises(AssertionError, match="streamId"):
+        rigs.assert_case(fixture, case, broken)
+    broken = deepcopy(result)
+    broken.frames[0]["transcript"]["status"] = "unknown"
+    with pytest.raises(AssertionError, match="stored"):
+        rigs.assert_case(fixture, case, broken)

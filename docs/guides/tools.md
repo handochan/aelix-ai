@@ -268,3 +268,10 @@ This is ADR-0297's text for the switch-on, with the limit given as the default i
 `tests/tools/test_bash_background_611.py`, `tests/cli/test_bash_background_cli_760.py`). What
 background jobs share — the footer, `/jobs`, notices, the settings and what is left when aelix is
 killed — is in [background-jobs.md](background-jobs.md).
+
+ADR-0309 adds `transcript/list` on a writer-owned CLI-RPC binding whose
+coordinates fit the reply bound. When an end reports `status:"stored"`, read
+the result or separately admitted user copy by its native entry and sequence
+after writer settlement. The receipt qualifies when the reader can return
+that row on the entry's own path. The #800 carrier tests cover directed
+readback for both carriers.

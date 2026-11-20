@@ -204,6 +204,34 @@ with `grep 'rpc("'` over `src/aelix_acp/`:
 - `set_steering_mode`, `set_follow_up_mode`, `set_auto_compaction`, `set_auto_retry`
   (`runtime/controls.py:148-154`).
 
+### 5.1 Stored message linkage (#655, ADR-0309)
+
+On a capable CLI-RPC binding, delivered `message_start`, `message_update`,
+`message_end`, `tool_execution_start`, `tool_execution_update` and
+`tool_execution_end` frames may include a top-level `transcript` object.
+Its base fields are `nativeSessionId`, `bindingId` and `streamId`.
+The tool execution frames use the stream ID reserved for that occurrence's
+toolResult. Keep the native IDs opaque and scope each stream to its binding.
+Placed notices contribute no transcript occurrence (ADR-0309 D1–D3).
+
+A delivered end adds `status`. `stored` includes `entryId`,
+`parentEntryId`, `sequence` and `replaced` when the same decoder and path
+rules used by `transcript/list` can return that row on its own tip after
+settlement and the binding has validated the file's readability and header
+once. `replaced` identifies a different object
+accepted by the end reducer. `storageOnly`, `notStored` and `unknown` omit
+those four fields. They describe confirmed but unreturnable storage,
+definite non-write and ambiguous current I/O, respectively. Cancellation
+and delivery loss can leave a stream without an end. Live payload fields
+continue to carry the classic observation. The transcript fixture checks
+all four outcomes and the six event types.
+
+When the low-level storage API writes a leaf marker before its target, later
+receipts on that path are `storageOnly` even if its rows read back, and reopening
+restores `stored` (ADR-0309 Limits, a write order the product's writers avoid).
+A session file made unreadable after the binding validated it can still receive
+`stored` receipts that fail readback.
+
 ## 6. Served, not yet consumed
 
 These are part of version 1: they are in `tests/rpc/control_v1/floor_v1.json`, protected like
@@ -220,6 +248,58 @@ differ.
 | `children/notices` | #612 (ADR-0307 D4, owner Q4) | aelix-acp's notice turn after an `aelix_notice` frame (ADR-0307 D8) | `children.notices.json` |
 | The `childApprovals` param of ui/enable and the `extension_ui_request` method `childApproval` | #612 (ADR-0308) | aelix-acp, mapped to `session/request_permission` (ADR-0308; lane L3) | `ui.enable.json`, `event.extension_ui.json` |
 | `aelix_child`, `aelix_notice` events | #612 (ADR-0307 D5) | aelix-acp (lane L3); `16d6555b` drops both (§4) | `event.aelix_child.json`, `event.aelix_notice.json` |
+| `transcript/list` | #655 (ADR-0309) | aelix-acp #22 for CLI-to-Studio replay | `transcript.list.json` |
+
+### 6.1 `transcript/list`
+
+Use `aelix_control` with `method:"transcript/list"` after verifying
+`capabilities.version === 1` and membership in `capabilities.methods`.
+Discovery requires a writer-owned persistent CLI-RPC installation whose
+binding coordinates fit an empty reply. Memory, sessionless, unowned,
+foreign read-only, stale and WebSocket bindings omit the method. Rediscover
+after a binding change (ADR-0309 D5, `test_floor.py` and
+`test_an_unencodable_header_keeps_classic_events_and_hides_transcript`).
+
+| Parameter | Selection |
+|---|---|
+| Omitted `leafId` | Capture the active leaf. |
+| `leafId` | Inclusive, nonempty entry ID, or null for the empty root. |
+| `firstSequence` | Inclusive integer from 1 through `totalMessages+1`. Default 1. |
+| `limit` | Integer from 1 through 100. Default 50. |
+| `cursor` | Nonempty URL-safe ASCII continuation of at most 256 characters. Only `limit` may accompany it. |
+
+Unknown keys, booleans or noninteger counts, missing tips and pruned tips
+receive correlated errors. A successful page has `bindingId`,
+`nativeSessionId`, `leafId`, `totalMessages`, `entries` and `nextCursor`.
+Null cursor means exhausted. The cursor pins the binding, selected tip,
+ordinal and recovery state. Refuse stale cursors on rebind, restart or a
+change of recovery state. A reader can retry a cursor or restart with a
+fresh selector. Recovery is signalled by `recovered:true` on each page of
+the damaged source snapshot (ADR-0309 D2 and D4, transcript fixture).
+
+Rows are oldest first. Each row has `entryId`, `parentEntryId` and
+one-based `sequence` on the selected physical parent path. `message` is
+the decoded native stored user, assistant or toolResult payload, including
+content blocks and native snake_case fields. The parent can be metadata.
+Compaction retains original rows, and withdrawal can leave them on an old
+tip. If the strict codec fails, the row retains its coordinates and role
+with `unavailable:"unencodable"`. Later rows continue normally. Oversized
+encodable rows come in one-part pages as `messagePart:{offset,totalBytes,base64}`.
+The bytes use compact UTF-8 JSON with sorted keys and standard padded
+base64. Verify contiguous offsets, stable coordinates and length before
+assembling the payload. Stage until the complete pinned scan succeeds
+(ADR-0309 D2 and D4, transcript fixture).
+
+Supply a nonempty scalar string request ID with at most 1,024 bytes in
+ASCII-escaped quoted JSON. For admitted IDs, every envelope, including
+its LF, is at most 1,048,576 UTF-8 bytes. A part contains at most 196,608
+raw bytes. If the smallest required row or part cannot fit, the method
+refuses with a bounded error. A read performs zero session writes.
+`settlementPending` means writer settlement is still outstanding for this
+file, including after switching away and back in this process.
+`invalidTree` identifies malformed selected ancestry or duplicate decoded
+entry IDs (ADR-0309 D2–D4,
+`test_transcript_655.py`).
 
 ## 7. Changes since aelix-acp's pin, accepted as v1
 

@@ -1,0 +1,2759 @@
+{
+  "contract": "control-v1",
+  "method": "transcript/list",
+  "since": "#655",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "transcript",
+  "consumers": [],
+  "params": {
+    "leafId": {
+      "type": "string|null",
+      "absent": "Capture the installed active tip."
+    },
+    "firstSequence": {
+      "type": "integer",
+      "absent": "Begin at sequence 1.",
+      "minimum": 1
+    },
+    "limit": {
+      "type": "integer",
+      "absent": "Use 50 rows.",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "cursor": {
+      "type": "string",
+      "absent": "Start a new selection."
+    }
+  },
+  "cases": [
+    {
+      "name": "explicit empty root",
+      "since": "#655",
+      "rig": "child",
+      "params": {
+        "leafId": null
+      },
+      "replay": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": "null"
+          },
+          "totalMessages": {
+            "const": 0
+          },
+          "entries": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "seeded metadata parent and ordinary rows",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-seed",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "sequence"
+                ],
+                "properties": {
+                  "sequence": {
+                    "const": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "sequence",
+                  "parentEntryId"
+                ],
+                "properties": {
+                  "sequence": {
+                    "const": 2
+                  },
+                  "parentEntryId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "inclusive alternate leaves",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "leafId": "$rig:entry_id"
+      },
+      "setup": "transcript-seed",
+      "sensitive": {
+        "leafId": "$rig:second_entry"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 1
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "first row at sequence one",
+      "since": "#655",
+      "rig": "full",
+      "params": {"firstSequence": 1},
+      "data": {"type": "object", "required": ["totalMessages"], "properties": {"totalMessages": {"const": 1}}}
+    },
+    {
+      "name": "lower limit makes a short page",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": 1
+      },
+      "setup": "transcript-seed",
+      "sensitive": {
+        "limit": 2
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "nextCursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "upper limit is accepted",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": 100
+      },
+      "setup": "transcript-seed",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "inclusive ordinal changes the first row",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 2
+      },
+      "setup": "transcript-seed",
+      "sensitive": {
+        "firstSequence": 1
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "sequence"
+                ],
+                "properties": {
+                  "sequence": {
+                    "const": 2
+                  }
+                }
+              }
+            ]
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "total plus one is an empty suffix",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 4
+      },
+      "setup": "transcript-seed",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "continuation starts at the first unreturned row",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "cursor": "$rig:first_cursor"
+      },
+      "setup": "transcript-seed",
+      "sensitive": {
+        "cursor": "$rig:second_cursor"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "sequence"
+                ],
+                "properties": {
+                  "sequence": {
+                    "const": 2
+                  }
+                }
+              }
+            ]
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "a large row uses one part",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 2
+      },
+      "setup": "transcript-fragment",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 2
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "messagePart"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "messagePart": {
+                  "type": "object",
+                  "required": [
+                    "offset",
+                    "totalBytes",
+                    "base64"
+                  ],
+                  "properties": {
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "totalBytes": {
+                      "type": "integer"
+                    },
+                    "base64": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 1,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "messagePart"
+                ],
+                "properties": {
+                  "messagePart": {
+                    "type": "object",
+                    "required": [
+                      "offset"
+                    ],
+                    "properties": {
+                      "offset": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "nextCursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "a placeholder precedes the next ordinary row",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 2
+      },
+      "setup": "transcript-placeholder",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "entryId",
+                  "parentEntryId",
+                  "sequence",
+                  "role",
+                  "unavailable"
+                ],
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "parentEntryId": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "sequence": {
+                    "type": "integer"
+                  },
+                  "role": {
+                    "enum": [
+                      "user",
+                      "assistant",
+                      "toolResult"
+                    ]
+                  },
+                  "unavailable": {
+                    "enum": [
+                      "unencodable"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "entryId",
+                  "parentEntryId",
+                  "sequence",
+                  "message"
+                ],
+                "properties": {
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "parentEntryId": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "sequence": {
+                    "type": "integer"
+                  },
+                  "message": {
+                    "type": "object",
+                    "required": [
+                      "role",
+                      "content"
+                    ],
+                    "properties": {
+                      "role": {
+                        "enum": [
+                          "user",
+                          "assistant",
+                          "toolResult"
+                        ]
+                      },
+                      "content": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "text",
+                            "text_signature"
+                          ],
+                          "properties": {
+                            "type": {
+                              "const": "text"
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "text_signature": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "name": "an intact row after a torn line is recovered",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 2
+      },
+      "setup": "transcript-recovered",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor",
+          "recovered"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 2
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "nextCursor": {
+            "type": "null"
+          },
+          "recovered": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "name": "unknown key",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "extra": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "empty leaf",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "leafId": ""
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "unknown leaf",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "leafId": "missing"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "zero limit",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": 0
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "limit over 100",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": 101
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "boolean limit",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": true
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "float first sequence",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 1.0
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "zero first sequence",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 0
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "first sequence past suffix",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 8
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "null limit",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "limit": null
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "cursor with selector",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "cursor": "x",
+        "leafId": null
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "foreign cursor",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "cursor": "x"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "over-length cursor",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "cursor": {
+          "$gen": "text",
+          "count": 257
+        }
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "unavailable on a host without storage",
+      "since": "#655",
+      "rig": "bare",
+      "params": {},
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    {
+      "name": "user start has its own stream",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle",
+        "role": "user"
+      },
+      "frameType": "message_start",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_start"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "user"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "assistant delta carries its stream",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle",
+        "role": "assistant"
+      },
+      "frameType": "message_update",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_update"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "assistant"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_update"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "assistant"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool starts with the result stream",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle"
+      },
+      "frameType": "tool_execution_start",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_execution_start"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool partial carries the result stream",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle"
+      },
+      "frameType": "tool_execution_update",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_execution_update"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool execution ends on the result stream",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle"
+      },
+      "frameType": "tool_execution_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_execution_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool result ends with stored coordinates",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-live",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture tools"
+        },
+        "until": "native_idle",
+        "role": "toolResult"
+      },
+      "frameType": "message_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                }
+              }
+            },
+            "minItems": 5,
+            "maxItems": 5
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId",
+                  "status",
+                  "entryId",
+                  "parentEntryId",
+                  "sequence",
+                  "replaced"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "stored",
+                      "storageOnly",
+                      "notStored",
+                      "unknown"
+                    ],
+                    "const": "stored"
+                  },
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "parentEntryId": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "sequence": {
+                    "type": "integer"
+                  },
+                  "replaced": {
+                    "const": false
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "toolResult"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "replacement commits a placeholder",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "firstSequence": 3
+      },
+      "setup": "transcript-replace",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture reply"
+        },
+        "until": "native_idle",
+        "role": "assistant"
+      },
+      "frameType": "message_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "role",
+                "unavailable"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "role": {
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "toolResult"
+                  ]
+                },
+                "unavailable": {
+                  "enum": [
+                    "unencodable"
+                  ]
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId",
+                  "status",
+                  "entryId",
+                  "parentEntryId",
+                  "sequence",
+                  "replaced"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "stored",
+                      "storageOnly",
+                      "notStored",
+                      "unknown"
+                    ],
+                    "const": "stored"
+                  },
+                  "entryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "parentEntryId": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "sequence": {
+                    "type": "integer"
+                  },
+                  "replaced": {
+                    "const": true
+                  }
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "assistant"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "definite refusal omits coordinates",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-notStored",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture reply"
+        },
+        "until": "native_idle",
+        "role": "assistant"
+      },
+      "frameType": "message_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 2
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId",
+                  "status"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "stored",
+                      "storageOnly",
+                      "notStored",
+                      "unknown"
+                    ],
+                    "const": "notStored"
+                  }
+                },
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "entryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "parentEntryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "sequence"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "replaced"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "assistant"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "lost acknowledgement omits coordinates",
+      "since": "#655",
+      "rig": "full",
+      "params": {},
+      "setup": "transcript-unknown",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture reply"
+        },
+        "until": "native_idle",
+        "role": "assistant"
+      },
+      "frameType": "message_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "totalMessages": {
+            "const": 3
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "entryId",
+                "parentEntryId",
+                "sequence",
+                "message"
+              ],
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentEntryId": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "enum": [
+                        "user",
+                        "assistant",
+                        "toolResult"
+                      ]
+                    },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type",
+                          "text",
+                          "text_signature"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "text_signature": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId",
+                  "status"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "stored",
+                      "storageOnly",
+                      "notStored",
+                      "unknown"
+                    ],
+                    "const": "unknown"
+                  }
+                },
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "entryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "parentEntryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "sequence"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "replaced"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "assistant"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "wide parent reports storageOnly",
+      "since": "#655",
+      "rig": "full",
+      "params": {
+        "leafId": null
+      },
+      "setup": "transcript-wide",
+      "trigger": {
+        "classic_prompt": {
+          "message": "fixture reply"
+        },
+        "until": "native_idle",
+        "role": "user"
+      },
+      "frameType": "message_end",
+      "data": {
+        "type": "object",
+        "required": [
+          "bindingId",
+          "nativeSessionId",
+          "leafId",
+          "totalMessages",
+          "entries",
+          "nextCursor"
+        ],
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leafId": {
+            "type": "null"
+          },
+          "totalMessages": {
+            "const": 0
+          },
+          "entries": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "type",
+              "transcript"
+            ],
+            "properties": {
+              "type": {
+                "const": "message_end"
+              },
+              "transcript": {
+                "type": "object",
+                "required": [
+                  "nativeSessionId",
+                  "bindingId",
+                  "streamId",
+                  "status"
+                ],
+                "properties": {
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "stored",
+                      "storageOnly",
+                      "notStored",
+                      "unknown"
+                    ],
+                    "const": "storageOnly"
+                  }
+                },
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "entryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "parentEntryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "sequence"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "replaced"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "message": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "const": "user"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

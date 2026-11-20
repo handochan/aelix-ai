@@ -11,7 +11,7 @@ ADR-0078 (Sprint 6h₄c wires them when the 3 DEFERRED RPC handlers move).
 Architectural decision (P-302): Aelix adopts **harness-rebuild** instead
 of session-swap. Pi can swap ``_session`` directly because
 ``AgentSession`` is a stateless wrapper; Aelix ``AgentHarness`` captures
-``_state.session_id`` at ``__init__`` (``harness/core.py:818``) and binds
+``_state.session_id`` at ``__init__`` (``harness/core.py:839``) and binds
 runtime actions / merges tools / caches session_name during construction.
 The harness factory pattern preserves all of these invariants.
 
@@ -98,12 +98,16 @@ from aelix_agent_core.runtime._types import (
     RuntimeReplaceResult,
     SessionImportFileNotFoundError,
 )
+from aelix_agent_core.session.entries import SessionTreeEntry
 from aelix_agent_core.session.fs import FileSystem
 from aelix_agent_core.session.jsonl_repo import (
     JsonlSessionCreateOptions,
     JsonlSessionRepo,
 )
-from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
+from aelix_agent_core.session.jsonl_storage import (
+    JsonlSessionStorage,
+    load_jsonl_session_metadata,
+)
 from aelix_agent_core.session.read_only import ReadOnlySessionStorage
 from aelix_agent_core.session.repo_utils import (
     ForkEntryId,
@@ -366,6 +370,11 @@ class AgentSessionRuntime:
         # (:meth:`_transition`), and the marker of the one running.
         self._lifecycle = asyncio.Lock()
         self._transition_marker: object | None = None
+        self.transcript_epoch = 0
+        self._transcript_stale = False
+        self._outgoing_writers: dict[str, tuple[JsonlSessionStorage, AgentHarness]] = {}
+        self._transcript_install: Callable[[AgentHarness, bool], Awaitable[None]] | None = None
+        self._transcript_retire: Callable[[], None] | None = None
 
     # === Public getters (Pi `:79-97`) ===========================================
 
@@ -396,6 +405,31 @@ class AgentSessionRuntime:
         """
 
         return self._transition_marker is not None
+
+    async def set_transcript_observer(
+        self,
+        install: Callable[[AgentHarness, bool], Awaitable[None]],
+        retire: Callable[[], None],
+    ) -> None:
+        """Keep RPC output attached to each producer until its disposal ends."""
+        self._transcript_install = install
+        self._transcript_retire = retire
+        await self._install_transcript()
+
+    @property
+    def transcript_transitioning(self) -> bool:
+        return self.in_transition or isinstance(getattr(self._harness, "turns_held", None), TurnSeal)
+
+    async def _install_transcript(self) -> None:
+        if self._transcript_install is not None:
+            lock = self.writer_lock
+            await self._transcript_install(
+                self._harness, not self._transcript_stale and lock is not None and lock.held
+            )
+
+    def _retire_transcript(self) -> None:
+        if self._transcript_retire is not None:
+            self._transcript_retire()
 
     @property
     def stopped(self) -> str | None:
@@ -1017,6 +1051,8 @@ class AgentSessionRuntime:
         except BaseException:
             self._stop()
             raise
+        finally:
+            self._retire_transcript()
 
     async def _apply(
         self, new_session: Session, *, reload_seed: ReloadSeed | None = None
@@ -1097,6 +1133,7 @@ class AgentSessionRuntime:
         """
 
         self._stopped = STOPPED_MESSAGE
+        self._retire_transcript()
         for harness in (self._harness, *also):
             with contextlib.suppress(Exception):
                 stop = getattr(harness, "stop", None)
@@ -1136,6 +1173,7 @@ class AgentSessionRuntime:
             if point.session is None:
                 raise RuntimeError("there is no session to rebuild")
             await self._apply(point.session, reload_seed=seed)
+            await self._install_transcript()
         except Exception as again:
             self._stop(point.harness)
             raise RebuildFailedError(
@@ -1267,6 +1305,7 @@ class AgentSessionRuntime:
         if current is not None and current is self._transition_marker:
             raise RuntimeError(NESTED_TRANSITION_MESSAGE)
         async with self._lifecycle:
+            self.transcript_epoch += 1
             marker = object()
             self._transition_marker = marker
             token = _IN_TRANSITION.set(marker)
@@ -1294,6 +1333,41 @@ class AgentSessionRuntime:
             return
         ctx = self._harness.create_replaced_session_context(runtime=self)
         await with_session(ctx)
+
+    def _carry_session_settlement(self, point: _RestorePoint, incoming: Session) -> None:
+        if self._transcript_install is None:
+            return
+        old = point.session.get_storage() if point.session is not None else None
+        lock = self.writer_lock
+        if lock is not None and isinstance(old, JsonlSessionStorage) and (
+            old.settlement_pending or point.harness.phase != "idle"
+        ):
+            self._outgoing_writers[lock.resolved_path] = (old, point.harness)
+
+        # A writer can settle while the runtime is bound to a different file.
+        self._outgoing_writers = {
+            path: (storage, harness)
+            for path, (storage, harness) in self._outgoing_writers.items()
+            if storage.settlement_pending or harness.phase != "idle"
+        }
+        path = incoming.session_file
+        new = incoming.get_storage()
+        if path is not None and isinstance(new, JsonlSessionStorage):
+            writer = self._outgoing_writers.get(resolve_session_path(path))
+            if writer is not None:
+                storage, harness = writer
+                new.inherit_settlement(
+                    storage,
+                    wait_idle=harness.wait_for_idle,
+                    busy=lambda: harness.phase != "idle",
+                )
+
+    @staticmethod
+    async def _replacement_branch(session: Session) -> list[SessionTreeEntry]:
+        storage = session.get_storage()
+        if isinstance(storage, JsonlSessionStorage) and storage.has_inherited_settlement:
+            return await storage.get_path_to_root(await storage.get_leaf_id())
+        return await session.get_branch()
 
     async def _finish_session_replacement(
         self,
@@ -1372,6 +1446,7 @@ class AgentSessionRuntime:
         point, ui = self._restore_point(), reopen is not None and _has_ui(self._harness)
 
         await self._teardown_current(reason, target_session_file)
+        stale = False
         # #681 — and what the teardown queued there after that: a
         # ``session_shutdown`` handler's line, or a prompt the teardown's abort
         # cancelled before it committed (requeued for the next turn, #320).
@@ -1381,11 +1456,13 @@ class AgentSessionRuntime:
                 try:
                     new_session = await reopen()
                 except Exception:
+                    stale = True
                     _tell(  # not a WARNING, which paints over a live TUI (verify round 2 F3)
                         "aelix: opening the session file again after the teardown failed; "
                         "the swap goes on with the copy opened before it",
                         ui,
                     )
+            self._carry_session_settlement(point, new_session)
             await self._apply(new_session)
         except Exception as exc:
             # The old harness is torn down and the new one was never installed:
@@ -1414,6 +1491,9 @@ class AgentSessionRuntime:
         if self._manages_writer_lock:
             self._install_writer_lock(writer_lock)
 
+        self._transcript_stale = stale
+        await self._install_transcript()
+
         # P-359 — setup AFTER apply, BEFORE rebind.
         if setup is not None:
             new_ctx = self._harness._make_context()
@@ -1432,7 +1512,7 @@ class AgentSessionRuntime:
         # build_context yields exactly that session's message set).
         # One branch read feeds both rebuilds (``build_context`` IS
         # ``build_session_context(await get_branch())``).
-        entries = await new_session.get_branch()
+        entries = await self._replacement_branch(new_session)
         session_ctx = build_session_context(entries)
         self._harness._state.messages = list(session_ctx.messages)
 
@@ -1552,7 +1632,7 @@ class AgentSessionRuntime:
 
             # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
             # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
-            # (``jsonl_storage.py:696`` reparents every later append onto it), so a
+            # (``jsonl_storage.py:916`` reparents every later append onto it), so a
             # turn the other terminal appends between our read and the moment we
             # own the file is reparented away by our next append — which is #137
             # itself, reproduced by the guard meant to prevent it. Review measured
@@ -1837,6 +1917,7 @@ class AgentSessionRuntime:
                     session,
                     reload_seed=ReloadSeed(flag_values=point.flag_values, model=point.model),
                 )
+                await self._install_transcript()
             except Exception as exc:
                 await self._restore_after(
                     exc, operation="reload", phase=self._reload_phase, point=point
@@ -2291,6 +2372,7 @@ class AgentSessionRuntime:
 
         # #800 (ADR-0307 D3) — pi's ``dispose`` begins with ``await
         # this.session.abort()``: the turn settles, bounded, before the emit.
+        self.transcript_epoch += 1
         seal = await self._seal_and_settle(CLOSING_MESSAGE)
         # Capture runner BEFORE invalidate/dispose — see P-340 race note.
         runner = self._harness.extension_runner
@@ -2325,7 +2407,10 @@ class AgentSessionRuntime:
                 )
 
         # DISPOSE THIRD (Pi line 372).
-        await self._harness.dispose()
+        try:
+            await self._harness.dispose()
+        finally:
+            self._retire_transcript()
 
         # #137 / ADR-0244 — LAST, and after ``harness.dispose()``: an
         # extension's ``session_shutdown`` handler is allowed to write a final

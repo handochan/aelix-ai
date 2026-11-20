@@ -31,6 +31,8 @@ from aelix_agent_core.session.entries import SessionTreeEntry
 SessionErrorCode = Literal[
     "not_found",
     "invalid_session",
+    "invalidTree",
+    "settlementPending",
     "invalid_entry",
     "invalid_fork_target",
     "storage",

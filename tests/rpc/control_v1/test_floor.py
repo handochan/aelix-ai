@@ -38,16 +38,24 @@ def _served_on(host: str) -> set[str]:
 
 
 async def _plane(tmp_path: Path, drop: str | None = None) -> tuple[Any, RpcControlPlane]:
+    from aelix_agent_core.session import JsonlSessionCreateOptions, JsonlSessionRepo
+    from aelix_coding_agent.rpc.control_transcript import TranscriptService
     from aelix_coding_agent.rpc.rpc_mode import _make_passthrough_runtime
 
     seed = rigs.seed_files(tmp_path / "seed")
     gate = asyncio.Event()
     gate.set()
-    harness = await rigs.build_harness("full", seed, gate, None)
+    repo = JsonlSessionRepo(sessions_root=str(seed.sessions))
+    session = await repo.create(JsonlSessionCreateOptions(cwd=str(seed.cwd)))
+    harness = await rigs.build_harness("full", seed, gate, session)
     runtime = _make_passthrough_runtime(harness, None)
+    rigs.hold_session_writer(runtime)
     if drop != "subagents":
         rigs.bind_fake_subagents(harness)
     services = rigs.rpc_services("full", seed, harness)
+    transcript = TranscriptService(runtime, lambda *_: None)
+    await transcript.start()
+    services["transcript"] = transcript
     if drop in rigs.REQUIRES:
         services.pop(rigs.REQUIRES[drop])
     return harness, RpcControlPlane(runtime, **services)
@@ -58,7 +66,7 @@ async def test_a_host_with_every_service_lists_every_cli_rpc_method(tmp_path: Pa
     try:
         listed = set((await plane.handle("capabilities", {}))["methods"])
     finally:
-        await harness.dispose()
+        await plane.runtime.dispose()
     assert listed == _served_on("cli-rpc"), listed ^ _served_on("cli-rpc")
 
 
@@ -75,7 +83,7 @@ async def test_requires_names_the_service_whose_absence_unlists_the_method(
     try:
         listed = set((await plane.handle("capabilities", {}))["methods"])
     finally:
-        await harness.dispose()
+        await plane.runtime.dispose()
     needing = {m for m, e in FLOOR["methods"].items() if e["requires"] == requires}
     assert not listed & needing, f"listed without {requires}: {listed & needing}"
     assert _served_on("cli-rpc") - needing <= listed
