@@ -247,10 +247,11 @@ if you set their API key. See the [providers guide](docs/guides/providers-and-mo
 
 ## Trust and self-hosting
 
-Built for closed networks and customer-site deployment. `--offline` turns off the outbound
-calls Aelix makes for itself — the `rg`/`fd` download, the catalog fetch, index-less extension
-installs, the update check — but not the provider you configured, so a closed network still
-needs a reachable or self-hosted model endpoint. `aelix --offline status`,
+Built for closed networks and customer-site deployment. `--offline` skips the `rg`/`fd`
+download, HTTP(S) catalog fetches, and the update check. Registered Git-over-SSH catalogs can
+still be refreshed. Extension installs and updates disable
+package-index lookups when no explicit or registered index is selected (#806). The configured
+model provider still needs a reachable endpoint. `aelix --offline status`,
 `aelix --offline docs`, and `aelix --offline extension …` run their commands.
 Only `--offline` may precede these root commands; other launch options cause a usage error
 (exit 2). For an intentional agent prompt, use `aelix -p status` or `aelix -- status`.
