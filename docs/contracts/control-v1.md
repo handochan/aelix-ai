@@ -382,8 +382,17 @@ the detail. The error still identifies the created branch and current binding.
 {"type":"response","id":"b1","command":"aelix_control","success":false,"error":"Created branch <branch>, but returning to <original> failed (session is already open in another terminal: <original>); the runtime is now on <branch>","errorDetails":{"kind":"session_locked"}}
 ```
 
-The producer omits `holderKind` when it cannot verify a known holder. A
-consumer treats future string values as unknown. The ACP client opts into
+The producer omits `holderKind` when it cannot verify a known holder. On
+Windows in beta.3 all holders are unknown under ADR-0316. The startup frame
+keeps the nonce and contention kind, and switch or branch-return errors carry
+`"errorDetails":{"kind":"session_locked"}`. The Windows real-child test
+`test_windows_marked_writer_keeps_generic_contention` covers startup and switch.
+
+```text
+AELIX_RPC_STARTUP_ERROR/1 {"nonce":"581b49ec167bd24c36378b26ffcb9a3b","kind":"session_locked"}
+```
+
+A consumer treats future string values as unknown. The ACP client opts into
 non-null `holder` using integer `1` at
 `initialize.clientCapabilities._meta["aelix/sessionLockHolder"]`. The adapter
 matches typed replies by the pending request's ID and command. The existing

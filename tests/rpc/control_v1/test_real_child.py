@@ -266,12 +266,13 @@ async def _launch_transcript_child(
     return ChildWire(proc)
 
 
-async def test_real_child_studio_holder_is_reported_on_startup_and_switch(tmp_path: Path) -> None:
-    seed = rigs.seed_files(tmp_path.resolve())
+async def _check_marked_writer_contention(
+    seed: rigs.Seed, details: dict[str, str], *, proof_cache: Path | None = None,
+) -> None:
     nonce = "a" * 32
     child = await _launch_transcript_child(
         seed, "--session-dir", str(seed.sessions), "--session-writer-kind=studio",
-        proof_cache=seed.root,
+        proof_cache=proof_cache,
     )
     try:
         child.send({"type": "get_state", "id": "state"})
@@ -286,28 +287,50 @@ async def test_real_child_studio_holder_is_reported_on_startup_and_switch(tmp_pa
                 "name": "an opted-in second opener sees a marked writer",
                 "launch": {
                     "args": ["--session", str(path), f"--rpc-session-lock-errors={nonce}"],
-                    "startupRecord": {
-                        "nonce": nonce, "kind": "session_locked", "holderKind": "studio",
-                    },
+                    "startupRecord": {"nonce": nonce, **details},
                 },
-                "stderr": {"type": "string", "pattern": "already open in another terminal"},
+                "stderr": {
+                    "type": "string",
+                    "pattern": r"^Error: this session is already open in another terminal\.",
+                },
             },
             {},
-            proof_cache=seed.root,
+            proof_cache=proof_cache,
         )
         opener = await _launch_transcript_child(
-            seed, f"--rpc-session-lock-errors={nonce}", proof_cache=seed.root,
+            seed, f"--rpc-session-lock-errors={nonce}", proof_cache=proof_cache,
         )
         try:
             opener.send({"type": "switch_session", "id": "switch", "sessionPath": str(path)})
             reply = await asyncio.wait_for(opener.response("switch"), BOOT_S)
             assert reply["command"] == "switch_session" and reply["success"] is False, reply
-            assert reply["errorDetails"] == {"kind": "session_locked", "holderKind": "studio"}
+            assert reply["error"] == f"session is already open in another terminal: {path}"
+            assert reply["errorDetails"] == details
         finally:
             await opener.stop()
         assert path.read_bytes() == original
     finally:
         await child.stop()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows holder proof is deferred in beta.3 (#881)",
+)
+async def test_real_child_studio_holder_is_reported_on_startup_and_switch(tmp_path: Path) -> None:
+    seed = rigs.seed_files(tmp_path.resolve())
+    await _check_marked_writer_contention(
+        seed, {"kind": "session_locked", "holderKind": "studio"}, proof_cache=seed.root,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows writer lock")
+async def test_windows_marked_writer_keeps_generic_contention(tmp_path: Path) -> None:
+    from aelix_agent_core.session import _lock_proof as proof
+
+    assert proof._store is None
+    await _check_marked_writer_contention(
+        rigs.seed_files(tmp_path.resolve()), {"kind": "session_locked"},
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires a POSIX umask")

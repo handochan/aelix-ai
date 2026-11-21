@@ -1,6 +1,6 @@
 # 0316. Report a cooperating session writer at the point of contention
 
-Status: Accepted
+Status: Accepted. Amended 2026-11-21 (#868) to limit beta.3 attribution to POSIX.
 
 Date: 2026-11-21
 
@@ -23,19 +23,20 @@ handoff model could reach the contender after a subsequent acquisition.
 Owner, 2026-11-21, “제안대로 (권장)” on the Studio launch marker and cooperating
 local launcher, “이대로 확정 (권장)” on the wire names, “제안대로 (권장)” on
 the private locator and authenticated loopback proof, and “이 문구로 (권장)”
-on the English headings and follow-up copy.
+on the English headings and follow-up copy. The owner narrowed beta.3 attribution
+on 2026-11-21 with “POSIX만 먼저, Windows는 후속 (권장)”.
 
 ## Decision
 
 1. **Keep kernel admission authoritative.** The ADR-0244 writer lock decides
-   admission. A real held acquisition can publish proof. Lock I/O failure,
+   admission. A real held POSIX acquisition can publish proof in beta.3. Lock I/O failure,
    contention and unsupported locking retain their existing outcomes. The
    runtime distinguishes contention from a lock I/O failure before cleaning
    up an unadopted file. If a contender acquired a newly published transcript,
    it keeps the transcript.
 
-2. **Identify a cooperating launch at signing.** Native interactive, print and
-   JSON launches publish CLI origin. A Studio-managed Host and qualified ACP
+2. **Identify a cooperating launch at signing.** On POSIX, native interactive,
+   print and JSON launches publish CLI origin. A Studio-managed Host and qualified ACP
    adapter pass `--session-writer-kind=studio` to the native RPC worker.
    Unmarked RPC, unmarked delegates and library writers without a specified
    origin remain unknown. Bind the kind for the lifetime of the launch,
@@ -61,13 +62,7 @@ on the English headings and follow-up copy.
    the POSIX regression test left the successor's label available. POSIX fork
    detaches inherited proof sockets and the child's copies of descriptors
    without unlocking the parent. The fork test measures this on filelock 3.12
-   and the locked dependency. Windows requires comparable local file IDs,
-   protected ACLs and non-reparse handles. Directory pins request
-   `FILE_TRAVERSE` and deny delete sharing so that Windows applies the sharing
-   check. The locator compares the shell's current and default LocalAppData
-   paths. The Windows-only tests exercise native sharing and the default
-   profile and model a redirected shell response. Native qualification is
-   pending.
+   and the locked dependency.
 
 4. **Preserve the choices and control-v1 contract.** In interactive startup
    and live `/resume`, verified origin changes the heading to “This session
@@ -117,3 +112,15 @@ process-local leaf state. Aelix retains ADR-0244 writer exclusion.
 The installed Studio renderer and artifact pins require separate qualification.
 Application attestation, history synchronization, and extra extension or
 general RPC-client projections remain outside beta.3 scope.
+
+## Note (2026-11-21, #868) — Windows attribution deferred
+
+**Windows.** In beta.3, no holder locator is published, no responder starts,
+and readers return `unknown` without a challenge. On the Windows runner profile,
+the ancestor-directory ACL check rejected holder proof with `untrusted lock
+proof permissions`, as shown by the directory-pin failure in PR #880. The
+Windows backend remains in the tree for #881. Filelock continues to
+enforce writer exclusion. The existing writer-lock tests passed in that run.
+`test_windows_marked_writer_keeps_generic_contention` covers the generic
+startup and switch text and the unknown-holder wire shape for a Studio-marked
+writer. [PR #880 CI run 44861771991](https://github.com/handochan/aelix-ai/actions/runs/44861771991)

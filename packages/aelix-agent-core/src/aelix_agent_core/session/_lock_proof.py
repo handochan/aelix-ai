@@ -16,16 +16,15 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Literal, Protocol
 from weakref import ReferenceType
 
 from . import _lock_fork
 
 if sys.platform == "win32":
-    try:
-        from . import _lock_proof_windows as _store
-    except (AttributeError, ImportError, OSError):
-        _store = None
+    # ADR-0316: the ancestor ACL check rejects the Windows CI profile.
+    _store: ModuleType | None = None
 else:
     from . import _lock_proof_posix as _store
 

@@ -22,13 +22,16 @@ from aelix_agent_core.session.session_lock import SessionWriterLock, session_loc
 
 from tests.env_sandbox import child_env
 
+_WINDOWS_ATTRIBUTION_FOLLOWUP = "Windows holder proof is deferred in beta.3 (#881)"
+
 _STORE_OVERRIDE = """
 from pathlib import Path
 from aelix_agent_core.session import _lock_proof as proof
-if sys.platform == "win32":
-    proof._store._cache = lambda _token: Path(sys.argv[2])
-else:
-    proof._store._cache_base = lambda: Path(sys.argv[2])
+if proof._store is not None:
+    if sys.platform == "win32":
+        proof._store._cache = lambda _token: Path(sys.argv[2])
+    else:
+        proof._store._cache_base = lambda: Path(sys.argv[2])
 """
 
 _HOLD_LOCK = """
@@ -48,6 +51,8 @@ _HOLDER = "import sys\n" + _STORE_OVERRIDE + _HOLD_LOCK
 def proof_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cache = (tmp_path / "cache").resolve()
     cache.mkdir()
+    if proof._store is None:
+        return cache
     if sys.platform == "win32":
         monkeypatch.setattr(proof._store, "_cache", lambda _token: cache)
     else:
@@ -97,7 +102,7 @@ def _denied(path: Path) -> str:
 @pytest.fixture
 def windows_store(monkeypatch: pytest.MonkeyPatch):
     if sys.platform == "win32":
-        return proof._store
+        return importlib.import_module("aelix_agent_core.session._lock_proof_windows")
     # Load the real Windows Python code in isolation. Only the DLL bindings
     # and the operations at the OS boundary are replaced in the tests below.
     path = Path(proof.__file__).with_name("_lock_proof_windows.py")
@@ -168,6 +173,7 @@ def test_windows_cache_compares_current_and_default_known_folder(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows directory sharing")
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_windows_directory_pin_denies_delete_until_released(tmp_path: Path, windows_store) -> None:
     directory = tmp_path.resolve() / "pinned"
     directory.mkdir()
@@ -212,6 +218,7 @@ else:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows LocalAppData known folder")
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_windows_default_local_app_data_proves_independent_writer(
     tmp_path: Path, windows_store, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -269,6 +276,7 @@ store._folder = lambda token, flags: (
         assert not (redirected / windows_store._STORE).exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 @pytest.mark.parametrize("error", ["EAGAIN", "ECONNRESET"])
 def test_responder_retries_transient_accept_failure(proof_root: Path, error: str) -> None:
     fault = proof_root / "accept-failed"
@@ -339,6 +347,7 @@ def _check_accept_failure(root: Path, error: str, later_holder: str, backoff: bo
             writer.release()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 @pytest.mark.parametrize(
     ("error", "later_holder", "backoff"),
     [
@@ -376,7 +385,20 @@ _check_accept_failure(Path(sys.argv[2]), sys.argv[1], sys.argv[3], sys.argv[4] =
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("writer", ["studio", "cli", "unknown"])
+@pytest.mark.parametrize(
+    "writer",
+    [
+        pytest.param(
+            "studio",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP),
+        ),
+        pytest.param(
+            "cli",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP),
+        ),
+        "unknown",
+    ],
+)
 def test_independent_writer_label_and_release(proof_root: Path, writer: str) -> None:
     path = proof_root / "transcript.jsonl"
     path.write_bytes(b"history")
@@ -389,6 +411,7 @@ def test_independent_writer_label_and_release(proof_root: Path, writer: str) -> 
     lock.release()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_crash_stale_locator_and_unmarked_takeover(proof_root: Path) -> None:
     path = proof_root / "transcript.jsonl"
     with _process_holder(path, proof_root, "studio") as process:
@@ -478,6 +501,7 @@ def test_post_response_rewalk_rejects_recreated_path(
         writer.release()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_failed_publication_revokes_registered_epoch(
     proof_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -499,6 +523,7 @@ def test_failed_publication_revokes_registered_epoch(
         writer.release()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_revoke_precedes_unlock_and_reacquire_is_fresh(
     proof_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -526,6 +551,7 @@ def test_revoke_precedes_unlock_and_reacquire_is_fresh(
         writer.release()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_acquisition_keeps_kernel_lock_through_publication_and_concurrent_release(
     proof_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -556,6 +582,7 @@ def test_acquisition_keeps_kernel_lock_through_publication_and_concurrent_releas
     assert session_lock_holder(writer.lock_path) == "unknown"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_responder_rejects_a_challenge_for_a_different_file(proof_root: Path) -> None:
     writer = SessionWriterLock(str(proof_root / "transcript.jsonl"), writer_kind="studio", timeout=0)
     assert writer.try_acquire()
@@ -583,6 +610,7 @@ def test_untrusted_session_parent_does_not_publish(proof_root: Path) -> None:
         assert not (proof_root / "aelix-session-locks-v2").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_WINDOWS_ATTRIBUTION_FOLLOWUP)
 def test_failed_retirement_still_invalidates_the_old_holder(
     proof_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

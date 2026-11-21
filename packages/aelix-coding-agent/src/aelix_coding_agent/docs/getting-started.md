@@ -394,9 +394,10 @@ one is already using. Only one of them can write to it: a session records where
 each turn attaches, and two terminals writing at once used to leave one
 terminal's turns on a branch nothing ever replayed again.
 
-The second terminal shows **This session is open in Aelix Studio.** or
+On POSIX in beta.3, the second terminal shows **This session is open in Aelix Studio.** or
 **This session is open in the Aelix CLI.** when it can verify a cooperating
-local writer. The generic prompt presents the same choices when attribution is unavailable.
+local writer. Windows uses the generic prompt under ADR-0316. The generic
+prompt presents the same choices when attribution is unavailable.
 
 ```
 This session is already open in another terminal.

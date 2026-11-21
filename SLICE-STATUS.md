@@ -62,16 +62,15 @@ runner's real user profile.
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows); since #123 (ADR-0306 D2) it also carries every delegated child's command inbox — see *W4 since #123* below | `rpc/rpc_mode.py`, `cli/entry.py`, `modes/print_inbox.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
-**Session writer records (#868, ADR-0316).** Attribution requires a fixed local
-volume and verified file identity, ACLs and directory handles. A redirected
-LocalAppData folder, reparse point, denied share or failed identity check leaves
-the holder unknown. Filelock retains its Windows byte range and sidecar cleanup.
-The Windows-only tests use the shell's default LocalAppData and its real ACLs
-for independent writer and reader processes. They also exercise a redirected
-shell response and require a separate process's DELETE open and rename to fail
-while a directory is pinned and to succeed after release. These tests await
-native Windows CI results. The installed Studio chain requires its managed
-artifact qualification.
+**Session writer records (#868, ADR-0316).** In beta.3, Windows reports the
+generic contention text and an unknown holder. The ancestor-directory ACL
+check rejected the runner profile in PR #880's Windows CI run `44861771991`.
+Attribution proof is disabled pending #881. Windows still uses filelock's
+byte-range exclusion and sidecar cleanup. The existing Windows writer-lock
+tests passed in that CI run. The Windows-only
+`test_windows_marked_writer_keeps_generic_contention` covers the generic
+startup and switch text, typed RPC errors without `holderKind`, and preservation
+of the held transcript. Native CI results for that test are pending.
 
 **W4 since #123 (recorded 2026-11-18, #829).** A delegated child is launched with
 `--command-inbox=1` and a pipe for its stdin, and `cli/entry.py`'s `_command_inbox`
