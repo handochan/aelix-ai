@@ -22,6 +22,7 @@ import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import pytest
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.overlay import show_modal
 from prompt_toolkit.application import create_app_session
@@ -129,6 +130,32 @@ async def test_modal_is_height_bounded_to_terminal() -> None:
 
 
 # === in-flow mount + focus handoff/restore ===============================
+
+
+@pytest.mark.parametrize("shutdown", ["exit", "eof"])
+async def test_app_shutdown_dismisses_mounted_modal(shutdown: str) -> None:
+    async with _chrome() as (chrome, pipe):
+        modal = asyncio.create_task(show_modal(chrome, lambda _result: _tall_window(1)))
+        try:
+            await asyncio.sleep(0)
+            assert chrome.is_modal_open() is True
+            app_future = chrome.app.future
+            assert app_future is not None and not app_future.done()
+
+            if shutdown == "eof":
+                pipe.close()
+            else:
+                chrome.exit()
+
+            assert await asyncio.wait_for(modal, timeout=1) is None
+            assert app_future.done()
+            assert chrome.is_modal_open() is False
+            assert chrome.app.layout.has_focus(chrome._input_window) is True
+        finally:
+            if not modal.done():
+                modal.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await modal
 
 
 async def test_modal_mounts_in_flow_and_holds_focus() -> None:
