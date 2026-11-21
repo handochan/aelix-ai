@@ -226,6 +226,8 @@ def test_a_real_ctrl_c_in_the_drain_exits_as_an_interrupt_after_the_flush(tmp_pa
                 print("SLEEPERS", pids, file=sys.stderr, flush=True)
                 await service.shutdown()
 
+        # A background pytest can pass SIG_IGN to this child.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         asyncio.run(main())
         """
     )
