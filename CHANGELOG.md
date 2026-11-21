@@ -1942,6 +1942,10 @@ unwritten. Add them with the next release.
   agent that has already ended, `/jobs wrap` says the same instead of "<id> already ended: done",
   `/jobs steer` gives the steer's refusal, and the panel's `w` `w` and `m` say what those two say
   instead of "<id> has ended" (`tests/agents_ext/test_wrap_up_refusal_822.py`).
+- **The panel's `m` on an ended agent no longer says "with this text as its next instruction"
+  (#848).** No text is typed there, so `m` gets the wrap-up's sentence, `action="resume"` with no
+  text to resume with; `/jobs steer <id> <text>` is unchanged. A kind without an `ended_message`
+  keeps the steer's own sentence (`tests/agents_ext/test_wrap_up_refusal_822.py`).
 - **Plan mode's refusal says "shift+tab to exit plan mode." only in the TUI (#826).** RPC/ACP,
   `-p`/`--mode json`, and a delegated child's `-p`/json run serving its parent's command inbox
   each read the way out that applies there, chosen by the host that runs, not by the inherited

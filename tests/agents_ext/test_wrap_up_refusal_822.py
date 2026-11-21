@@ -115,12 +115,13 @@ async def test_jobs_wrap_and_steer_on_a_finished_agent_say_what_the_model_is_tol
 
 @pytest.mark.usefixtures("jobs_on", "reap_children")
 @pytest.mark.skipif(sys.platform == "win32", reason="a stub child's pipes, as test_detach_611")
-async def test_the_panels_w_w_and_m_on_a_finished_agent_say_what_jobs_wrap_and_steer_say(tmp_path: Path) -> None:
-    """The ``/jobs`` panel's ``w`` ``w`` and ``m`` on an agent that has ended answer
-    through the service's ``control``, so the kind words them as ``/jobs wrap`` and
-    ``/jobs steer`` do. Fails on ``a3c8b9a6``: the panel answered "<id> has ended"
-    itself (``_armed_key`` and ``on_message`` stopped at the ended row) and never
-    asked the kind (lane b7f verify round 2, V2-F1)."""
+async def test_the_panels_w_w_says_what_jobs_wrap_says_and_m_names_no_text(tmp_path: Path) -> None:
+    """The ``/jobs`` panel's ``w`` ``w`` on an agent that has ended answers through the
+    service's ``control``, as ``/jobs wrap`` does. The panel's ``m`` types no text, so
+    its sentence is the wrap-up's, with no "with this text" (#848). Fails on
+    ``a3c8b9a6``: the panel answered "<id> has ended" itself (``_armed_key`` and
+    ``on_message`` stopped at the ended row) and never asked the kind (lane b7f
+    verify round 2, V2-F1)."""
 
     import asyncio
 
@@ -163,10 +164,61 @@ async def test_the_panels_w_w_and_m_on_a_finished_agent_say_what_jobs_wrap_and_s
         panel.list.press("m")
         with contextlib.suppress(AssertionError):
             await wait_for(lambda: panel.note not in ("", f"{short} has ended"), timeout=2.0)
-        assert panel.note == steer_said
+        assert panel.note == wrap_said  # #848: m with no typed text names no "with this text"
         assert not panel.list._result.done()  # a note, not a close with "/jobs steer <id> "
     finally:
         await finish(rig)
+
+
+async def test_the_panels_m_on_an_ended_job_of_a_steer_only_kind_keeps_the_steers_words(tmp_path: Path) -> None:
+    """#848: a kind that declares ``steer`` but not ``wrap_up``, with ``ended_control`` that
+    words each verb, gets the panel's ``m`` answered with the steer's own sentence, as the
+    panel's ``m`` did before the wrap-up change. The kind has no ``ended_message``, so the
+    panel asks ``control`` for a steer, not a wrap-up."""
+
+    import dataclasses
+
+    from aelix_coding_agent.tui.jobs_panel import JobsPanel
+    from prompt_toolkit.layout import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    from tests.jobs import _sleeper
+    from tests.jobs.conftest import fast_service, make_harness, make_session, wait_for
+
+    class _Chrome:
+        def invalidate(self) -> None:
+            pass
+
+        def modal_on_top(self, _content: object) -> bool:
+            return True
+
+    class _SteerOnly(_sleeper.SleeperAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.capabilities = dataclasses.replace(self.capabilities, controls=("steer",))
+
+        async def control(self, job_id: str, verb: str, payload: object) -> str:
+            return "taken"
+
+        def ended_control(self, job: object, verb: str) -> str:
+            return f"KIND WORDS FOR {verb}"
+
+    service = fast_service()
+    service.register_kind(_SteerOnly(), _sleeper.Sleeper)
+    await service.bind(make_harness(await make_session(tmp_path)))
+    job_id = await service.start(_sleeper.KIND, title="t", params={"seconds": 5})
+    await service.stop(job_id)
+    try:
+        assert service.ended_message(job_id) is None  # no ended_message: the steer's words
+        panel = JobsPanel(service, _Chrome())
+        panel.list.window = Window(FormattedTextControl("", focusable=True))
+        panel.list.refresh()
+        panel.on_message(SimpleNamespace(key=job_id))
+        await wait_for(lambda: panel.note == "KIND WORDS FOR steer", timeout=2.0)
+        assert panel.note == await service.control(job_id, "steer", {"origin": "user"})
+    finally:
+        await service.shutdown()
+        await _sleeper.reap_all()
 
 
 async def test_a_kind_without_ended_words_keeps_the_services(tmp_path: Path) -> None:

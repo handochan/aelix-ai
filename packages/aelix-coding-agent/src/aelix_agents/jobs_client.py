@@ -1156,6 +1156,15 @@ class DelegationKindAdapter:
         reason = WRAP_UP_RESUME_HINT if verb == "wrap_up" else RESUME_HINT
         return describe_delivery(Delivery("refused", reason=reason, verb=verb), what="the wrap-up")
 
+    def ended_message(self, job: JobSnapshot) -> str:
+        """The panel's ``m`` on an agent that has ended, with no text typed yet (#848, ``JobEndedMessageAdapter``).
+
+        Nothing is typed, so the sentence names no text to resume with: the
+        wrap-up's refusal, as ``ended_control`` words a wrap-up.
+        """
+
+        return describe_delivery(Delivery("refused", reason=WRAP_UP_RESUME_HINT, verb="wrap_up"), what="the wrap-up")
+
     def render_rows(self, snapshot: JobSnapshot, width: int) -> list[str]:
         """``<profile>: <task>``; while it runs ``running <tool>`` or ``thinking``, with
         ``· <n> tok``; its last text, on one line; ``id <agent id>`` — each cut to

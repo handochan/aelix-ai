@@ -378,7 +378,9 @@ protocol, #827): when `ident` is neither a job id nor a unique prefix of one, th
 one of them, and refuse an `ident` two kinds answer with different jobs. A kind that declares
 `controls` can also add `ended_control(job, verb)` (`JobEndedControlAdapter`, #822): the
 sentence `/jobs steer|wrap` and the panel show for a job of the kind that has ended, in place of
-`<id> already ended: <state>`.
+`<id> already ended: <state>`. The panel's `m` types no text, so a kind can add `ended_message(job)`
+(`JobEndedMessageAdapter`, #848) for the sentence it shows instead; a kind without it gets the steer's
+`ended_control` sentence.
 
 The facade is bound to your extension and to the runtime it came from: it registers kinds
 under your extension's name, starts, lists and stops only jobs of your kinds in the current

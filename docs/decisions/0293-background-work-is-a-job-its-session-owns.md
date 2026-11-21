@@ -11,7 +11,8 @@ turns §12's gate off for a launch; see the note at the end. Noted 2026-11-17 (#
 at the end. Amended 2026-11-19 (#810, #820, #821, #822, #825, #827): a lone surrogate never ends
 a job's notice, cut briefs end at a word, a kind may name its jobs by ids of its own
 (`JobIdAdapter`) and word a control on an ended job (`JobEndedControlAdapter`), and a restart
-shows the run time an outcome recorded; see the note of that date.
+shows the run time an outcome recorded, and a kind may word the panel's no-text `m` on an
+ended job (`JobEndedMessageAdapter`, #848); see the note of that date.
 Amended 2026-11-19 (#612, ADR-0307): `job` and `job_stop` are registered on RPC (and so under ACP)
 too, and a start or a Ctrl+B adoption that its owner's end overtook is refused with a `failed`
 outcome (the ended-owner epoch); see the note "(2026-11-19, ADR-0307, #612)".
@@ -1028,7 +1029,10 @@ already ended: <state>" stands. The agent kind answers its door's refusal, so `/
 `/jobs steer` on a finished agent say `use action="resume"` as the model is told (#822, Codex
 M6). The panel's `w` `w` and `m` on an ended row ask the same `control`, and show what those two
 say; they said "<id> has ended" without asking it (lane b7f verify round 2, V2-F1;
-`tests/agents_ext/test_wrap_up_refusal_822.py`).
+`tests/agents_ext/test_wrap_up_refusal_822.py`). The panel's `m` asks the kind for
+`ended_message` first, since it opens a steer with no text yet; when the kind has no message
+adapter (or supplies no sentence), it falls back to the service's `control` for `steer`. It
+does not deliver a message (#848; `tests/agents_ext/test_wrap_up_refusal_822.py`).
 
 **Restart.** An ended job read back after a restart has the run time its outcome fact recorded
 as its `elapsed` (`elapsed_ms` above 0; 0 is what the outcomes written with no run behind them
