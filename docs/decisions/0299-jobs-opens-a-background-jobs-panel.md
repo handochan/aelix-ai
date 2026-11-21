@@ -8,7 +8,8 @@ a zero width joiner and every control character, so it is never under `rich` 13.
 measured corpus, and a cut stops reading once past the width). **Active since #611 S3e (#779,
 2026-11-17):** `aelix_coding_agent/jobs/activation.py` `ACTIVE = True` (ADR-0293 §12). With it off
 there is no `/jobs` at all (`tests/cli/test_jobs_command_gate_776.py`, a guard that passes on
-`7e2feb50` too).
+`7e2feb50` too). Amended 2026-11-22 (#808): application exit dismisses a capturing modal mounted
+during that application run.
 Date: 2026-11-17
 Issue: #776 (#611 slice S3b). Parent: #611. Contract: `.omc/specs/611-s3-contract-r4-2026-11-12.md`
 §4 ("as r3", "as r2": r2 §4 is the text), with its 정오표 E3. Sub-issue body:
@@ -100,7 +101,7 @@ It also closes by itself (리드 판단: the narrowest fix, in this widget, not 
   frame is blank rows of the fixed height and the panel closes; a raising `rows()` read keeps the
   last rows and the panel open (`::test_a_host_that_cannot_draw_closes_the_panel_and_a_failed_read_keeps_it`;
   Codex's `lifecycle` probe raised in the title, verify's in `rows()`).
-Other modals are unchanged: an idle `/model` picker still outlives SIGTERM, as on base (verify P1).
+At #776, verify P1 also measured an idle `/model` picker outliving SIGTERM. See the #808 note below.
 
 ### 3. The jobs panel (`tui/jobs_panel.py`)
 
@@ -242,8 +243,8 @@ longer registered, is the title, not `label · title` (verify N5,
   `rich` 13.7.1–14.3.4 on the corpus §6 names; other `rich` versions, other strings and a terminal
   that draws a sequence differently from `rich` are not measured. The panel fits
   its own columns with the TUI's grapheme widths.
-- **SIGTERM with another modal open** (an idle `/model` picker, say) still outlives it, as before
-  this change (verify P1); only this panel closes with the application.
+- **SIGTERM with another modal open** remained a limitation at #776 (verify P1). The #808 note
+  records the subsequent fix and its measurements.
 - **Mutants**, fix round 2: see `.omc/probes/775-776/776-fix-r2/mutants/summary.txt`.
 - **Mutants**, round 0 (the lane's own set): 67 of 72 in the lane's set killed; the 5 left are
   judged equivalent (`.omc/probes/775-776/776-impl/mutants/summary.txt`): the arm's owner check (the list is the
@@ -266,3 +267,14 @@ longer registered, is the title, not `label · title` (verify N5,
 
 One entry under the "built and switched off" entries; #611 S3e's guide (`background-jobs.md`)
 describes the panel.
+
+## Note (2026-11-22, #808) — Application exit dismisses capturing modals mounted during the run
+
+For a capturing modal mounted while the application is running, `show_modal` watches the current
+`app.future` and resolves a pending modal with `None` when that future completes. The awaiting
+command can then return and let shutdown consume the queued EOF. A modal mounted before
+`chrome.run()` has no application future to watch at mount time. The headless regression
+checks dismissal, unmount and focus restoration after application exit or pipe EOF
+(`test_app_shutdown_dismisses_mounted_modal`). The 120×40 PTY regression checks that the seven idle
+pickers in #808 exit cleanly on SIGTERM and SIGHUP and that a live Bash job is gone after SIGTERM
+with `/model` open (`tests/tui/test_modal_shutdown_808.py`).
