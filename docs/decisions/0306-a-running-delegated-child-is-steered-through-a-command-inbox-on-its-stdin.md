@@ -12,6 +12,8 @@ Amended 2026-11-19 (#612, ADR-0307, ADR-0308): a row that asks its parent is lau
 `approval_request` lines; D8's `default` is `plan` only for a child without that channel; an idle
 RPC `permissions/set` now reaches running background children; lane B is ADR-0307 D4–D8; see the
 note "(2026-11-19, #612)".
+Amended 2026-11-22 (#848, PR #862): the panel's `m` on an ended agent says the wrap-up's sentence,
+with no text to resume with; see the note of that date.
 Date: 2026-11-18
 Issue: #123 (intervening in a running delegated child; #604 stage 3).
 Design: `.omc/specs/123-612-contract-r2-2026-11-18.md` (contract r2, Part A and §12's Lane A block),
@@ -530,10 +532,8 @@ line for the notice is `◆ background notice: <brief>`, a result's stays `◆ b
   and the panel's `w` `w` and `m` their own "<id> has ended", each before the kind was asked; the
   agent kind now words them, as its door does, and the panel asks the service's `control` as
   `/jobs wrap` and `/jobs steer` do (ADR-0293's `JobEndedControlAdapter`, note of this date;
-  Codex's review, M6; lane b7f verify round 2, V2-F1). The panel's `m` on an ended job types no text,
-  so it says the wrap-up's sentence and not the steer's "with this text" (#848): the agent kind's
-  `ended_message` (`JobEndedMessageAdapter`) answers it, and a kind without one keeps the steer's
-  `ended_control` sentence. `/jobs steer <id> <text>` is unchanged.
+  Codex's review, M6; lane b7f verify round 2, V2-F1). The panel's `m` changed on 2026-11-22
+  (#848; see the note of that date).
   `tests/agents_ext/test_wrap_up_refusal_822.py`.
 - **Plan mode's refusal in a child (#826).** §6 tightens a child to `plan`, and the refusal it
   then read ended in "shift+tab to exit plan mode.". A `-p`/json run serving the command inbox
@@ -598,3 +598,13 @@ changes here:
   1, Codex C-M8; ADR-0307 D5). D7's taking back of a `not_sent` request also covers a wrap-up
   cancelled while the `cancel` of an open approval request waits for its acknowledgement, before
   the final steer was written (ADR-0307, "Where the build differs", item 2).
+
+## Note (2026-11-22, #848)
+
+The panel's `m` on an ended job types no text, so it no longer says the steer's "with this text as
+its next instruction": the agent kind's `ended_message` (ADR-0293's `JobEndedMessageAdapter`, note
+of this date) answers the wrap-up's sentence, `use action="resume"` with no text to resume with. A
+kind without one keeps the steer's `ended_control` sentence. A steer's and a follow-up's refusal
+with text, `/jobs steer <id> <text>` among them, keep "with this text as its next instruction"
+(§3.2, note of 2026-11-19). Contributed by jay23606 (PR #862).
+`tests/agents_ext/test_wrap_up_refusal_822.py`.
