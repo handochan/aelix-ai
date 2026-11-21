@@ -217,6 +217,38 @@ def test_a_test_change_starts_the_touched_tests_and_the_hygiene_scans() -> None:
     assert _would_run("tests/test_agent_skills.py") == ALWAYS | {"test-hygiene", "touched-tests"}
 
 
+NESTED_EXAMPLE_MANIFEST = (
+    "packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/pyproject.toml"
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "unrelated"),
+    [
+        ("pyproject.toml", "scripts/pyproject.toml"),
+        ("packages/aelix-ai/pyproject.toml", NESTED_EXAMPLE_MANIFEST),
+        ("packages/aelix-agent-core/pyproject.toml", NESTED_EXAMPLE_MANIFEST),
+        ("packages/aelix-coding-agent/pyproject.toml", NESTED_EXAMPLE_MANIFEST),
+        ("packages/aelix-server/pyproject.toml", NESTED_EXAMPLE_MANIFEST),
+    ],
+)
+def test_a_workspace_manifest_alone_starts_import_direction(path: str, unrelated: str) -> None:
+    assert _would_run(unrelated, tests=()).isdisjoint({"import-direction", "control-v1"})
+    assert "import-direction" in _would_run(path, tests=())
+
+
+@pytest.mark.parametrize(
+    ("path", "unrelated"),
+    [
+        ("scripts/check_control_v1.py", "scripts/preflight.py"),
+        ("scripts/check_complexity.py", "docs/guides/getting-started.md"),
+    ],
+)
+def test_a_control_v1_checker_change_alone_starts_control_v1(path: str, unrelated: str) -> None:
+    assert _would_run(unrelated, tests=()).isdisjoint({"import-direction", "control-v1"})
+    assert "control-v1" in _would_run(path, tests=())
+
+
 RPC = "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/"
 
 
@@ -249,6 +281,31 @@ def test_the_control_v1_gate_checks_r3_against_the_changes_base_then_runs_the_fi
     assert not isinstance(steps, str)
     assert steps[0].shown == f"python scripts/check_control_v1.py --check --base {changes.base_sha}"
     assert steps[1].argv == [sys.executable, *pf.PYTEST, *pf.TOUCHED_FLAGS, "tests/rpc/control_v1"]
+
+
+@pytest.mark.parametrize("path", ["scripts/check_control_v1.py", "scripts/check_complexity.py"])
+def test_control_v1_skips_an_already_absent_checker_and_fails_on_deletion(
+    scratch: tuple[Path, dict[str, str]], path: str,
+) -> None:
+    repo, env = scratch
+    _write(repo / "docs/contracts/control-v1.md", "contract\n")
+    proc = _run(repo, env, "--base", "HEAD", "--only", "control-v1")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "skipped" in proc.stdout
+    assert "scripts/check_control_v1.py is not in this tree" in proc.stdout
+
+    _write(repo / "scripts/check_control_v1.py", "raise SystemExit(0)\n")
+    _write(repo / "scripts/check_complexity.py", "raise SystemExit(0)\n")
+    _git(repo, env, "add", "-A")
+    _git(repo, env, "commit", "-q", "-m", "add control checkers and contract")
+    _git(repo, env, "rm", "-q", path)
+
+    proc = _run(repo, env, "--base", "HEAD", "--only", "control-v1")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "failed   control-v1" in proc.stdout
+    assert "can't open file" in proc.stdout and Path(path).name in proc.stdout
 
 
 @pytest.mark.parametrize(
