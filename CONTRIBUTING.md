@@ -69,10 +69,9 @@ code; do not reformat files you are not changing.
 above and checks the release sdist against its size cap, then each of gates 1 to
 5 below, and the control-v1 floor, when a changed path matches its trigger, and the
 tests that the files you touched can fail. `--plan` shows which, and why, without
-running anything; `--help` lists every trigger. A trigger can be narrower than what
-its gate reads: gate 4's is a `.py` under `packages/` or anything under `src/`, so a
-dependency declared in a package's `pyproject.toml` alone does not run it, though it
-can fail gate 4. Run gate 4 as below after such a change. `--claims -` prints the
+running anything. Use `--help` for the full trigger list. A change to the root
+`pyproject.toml` or a workspace member's `packages/*/pyproject.toml` runs gate 4
+even when no source files changed (#870). `--claims -` prints the
 block for the PR's "How it was verified". Preflight never runs the full suite, so
 that is still yours.
 

@@ -12,17 +12,13 @@ CI's lint + test job runs ``ruff check``, the complexity ratchet, the control-v1
 floor, the type gate and the full suite on every leg
 (``.github/workflows/ci.yml``). This script runs ``ruff`` and the type gate
 always, each ratchet when a changed path matches its trigger in :data:`GATES`,
-and never the full suite. The control-v1 trigger does not name
-``scripts/check_control_v1.py`` or ``scripts/check_complexity.py``, which that
-script imports, so a change to either alone does not run it. Several others fail in files you
-never touched or only on a platform you are not on, and which ones your change
-can break depends on what it touched. This script reads the change and runs the
-gates that change can fail. The table is :data:`GATES`; a new gate is one row.
+and never the full suite. The table is :data:`GATES`; a new gate is one row.
 
 THE CHANGE is everything since the merge base with ``--base`` (default
 ``origin/main``, then ``main``): the commits, what is staged, what is not, and
 untracked files git does not ignore. Paths deleted in the change count for
-deciding which gates run and are never passed to one.
+deciding which gates run. Input lists such as the touched pytest files omit
+deleted paths.
 
 WHAT IT NEVER DOES:
 
@@ -662,8 +658,13 @@ def _docs(path: str, changes: ChangeSet) -> bool:
     return path.startswith(("docs/guides/", BUNDLED_DOCS))
 
 
-def _package_or_src(path: str, changes: ChangeSet) -> bool:
-    return (path.startswith("packages/") and path.endswith(".py")) or path.startswith("src/")
+def _import_direction_path(path: str, changes: ChangeSet) -> bool:
+    return (
+        (path.startswith("packages/") and path.endswith(".py"))
+        or path.startswith("src/")
+        or path == "pyproject.toml"
+        or re.fullmatch(r"packages/[^/]+/pyproject\.toml", path) is not None
+    )
 
 
 RUFF_CONFIGS = frozenset({"pyproject.toml", "ruff.toml", ".ruff.toml"})
@@ -733,8 +734,10 @@ def _hygiene(ctx: Context) -> list[Step] | str:
 
 
 CONTROL_V1_PRODUCT = "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/"
+CONTROL_V1_SCRIPT = "scripts/check_control_v1.py"
 CONTROL_V1_TEXT = (
-    "rpc/control*.py, rpc/rpc_mode.py, tests/rpc/control_v1/ or docs/contracts/control-v1.md"
+    "rpc/control*.py, rpc/rpc_mode.py, tests/rpc/control_v1/, docs/contracts/control-v1.md, "
+    "scripts/check_control_v1.py or scripts/check_complexity.py"
 )
 
 
@@ -744,15 +747,22 @@ def _control_v1(path: str, changes: ChangeSet) -> bool:
     if path.startswith(CONTROL_V1_PRODUCT):
         name = path[len(CONTROL_V1_PRODUCT) :]
         return name == "rpc_mode.py" or re.fullmatch(r"control[^/]*\.py", name) is not None
-    return path.startswith("tests/rpc/control_v1/") or path == "docs/contracts/control-v1.md"
+    return path.startswith("tests/rpc/control_v1/") or path in (
+        "docs/contracts/control-v1.md", CONTROL_V1_SCRIPT, COMPLEXITY_SCRIPT
+    )
 
 
 def _control_v1_steps(ctx: Context) -> list[Step] | str:
     """R3 against this change's base, then the fixtures (R1, R2, the real child)."""
 
-    if not (ctx.repo / "scripts" / "check_control_v1.py").is_file():
-        return "scripts/check_control_v1.py is not in this tree"
-    steps = [_py(ctx, "scripts/check_control_v1.py", "--check", "--base", ctx.changes.base_sha)]
+    paths = ctx.changes.paths
+    steps = []
+    if not (ctx.repo / COMPLEXITY_SCRIPT).is_file() and COMPLEXITY_SCRIPT in paths:
+        # The explicit-base checker does not import this helper.
+        steps.append(_py(ctx, COMPLEXITY_SCRIPT))
+    if not (ctx.repo / CONTROL_V1_SCRIPT).is_file() and CONTROL_V1_SCRIPT not in paths:
+        return steps or f"{CONTROL_V1_SCRIPT} is not in this tree"
+    steps.append(_py(ctx, CONTROL_V1_SCRIPT, "--check", "--base", ctx.changes.base_sha))
     tests = _pytest(ctx, "tests/rpc/control_v1", flags=TOUCHED_FLAGS)
     return steps + (tests if isinstance(tests, list) else [])
 
@@ -834,7 +844,8 @@ GATES: tuple[Gate, ...] = (
     Gate("docs-bundle", _docs, "docs/guides/ or its bundled copy",
          lambda c: _pytest(c, "tests/test_docs_bundle_sync.py", "tests/cli/test_docs_signpost.py"), 600,
          hint="Both copies move together: `uv run python scripts/sync_bundled_docs.py` (ADR-0218)."),
-    Gate("import-direction", _package_or_src, "a .py under packages/, or anything under src/",
+    Gate("import-direction", _import_direction_path,
+         "a .py under packages/, anything under src/, or pyproject.toml at the root or under packages/*/",
          lambda c: [_py(c, "scripts/check_import_direction.py")], 300,
          hint="Imports only go down (CONTRIBUTING.md gate 4, ADR-0015)."),
     Gate("complexity", _complexity_path, COMPLEXITY_TEXT, _complexity, 300, hint=COMPLEXITY_HINT,

@@ -106,8 +106,12 @@ gates that other checkout.
   pyright analyses your own platform only. Guard POSIX-only `os.*` calls with
   `sys.platform != "win32"`, not with `hasattr`: pyright narrows on the first and
   not on the second.
-- **You changed `rpc/control*.py`, `rpc/rpc_mode.py`, `tests/rpc/control_v1/` or
-  `docs/contracts/control-v1.md`:** the `control-v1` gate runs. It checks that the floor
+- **You changed a `.py` under `packages/`, a path under `src/`, the root `pyproject.toml`, or a
+  `packages/*/pyproject.toml`:** the `import-direction` gate runs `scripts/check_import_direction.py`
+  (#292, #870).
+- **You changed `rpc/control*.py`, `rpc/rpc_mode.py`, `tests/rpc/control_v1/`,
+  `docs/contracts/control-v1.md`, `scripts/check_control_v1.py` or `scripts/check_complexity.py`:**
+  the `control-v1` gate runs, including when a checker script is deleted (#871). It checks that the floor
   (`tests/rpc/control_v1/floor_v1.json`) still holds the floor at the merge base
   (`scripts/check_control_v1.py --check --base <base>`), then runs `tests/rpc/control_v1`, a
   real `--mode rpc` child included. Version 1 only grows (ADR-0302):

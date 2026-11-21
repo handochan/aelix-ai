@@ -65,8 +65,10 @@ removes orphans. The guide directory is flat: a nested guide is refused.
 ## import-direction
 
 `scripts/check_import_direction.py` (ADR-0015, #292). The stack is `aelix-ai` ←
-`aelix-agent-core` ← `aelix-coding-agent` ← `aelix-server` and `aelix`. That
-holds inside a function, under `TYPE_CHECKING` and through
+`aelix-agent-core` ← `aelix-coding-agent` ← `aelix-server` and `aelix`. Preflight
+runs the check on a `.py` under `packages/`, any path under `src/`, the root
+`pyproject.toml`, or `packages/*/pyproject.toml` (#870). The import rule holds
+inside a function, under `TYPE_CHECKING` and through
 `importlib.import_module` too. The script's `ALLOWLIST` must match the tree
 exactly. Do not add to it: pass a Protocol or a callback down, or move the shared
 type down. `--list` prints every reverse-import site.
@@ -113,6 +115,14 @@ of #858). Known limits of the trigger: a ruff config that is a symlink is read
 through the link, so a change to the file it points at alone leaves the gate skipped,
 and the script also scans ruff configs that git ignores, which preflight's change set
 does not list. Run the script alone after such a change.
+
+## control-v1
+
+Preflight checks the floor against the diff's merge base and runs the fixtures
+when a control RPC source file, the contract, a fixture path, `scripts/check_control_v1.py`,
+or `scripts/check_complexity.py` changes (ADR-0302 D8, #871). Deleting the checker
+fails the script step. Deleting its complexity helper or renaming `github_base`
+fails the GitHub-event fixture, which exercises that import (#871).
 
 ## band
 
