@@ -104,6 +104,7 @@ from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
     REASON_CANCELLED,
+    REASON_STOPPED,
     build_result,
     child_end,
     declined_result,
@@ -791,7 +792,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1216``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1226``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
     events: Any = None
@@ -2109,7 +2110,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:288``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:2344-2350``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:2354-2360``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2276,6 +2277,8 @@ class _SubagentRuntimeImpl:
                 "unconfirmed_files": unconfirmed,
                 "files_overflow": child.stream.files_overflow,
             }
+            if result.reason == REASON_STOPPED and child.stop_attribution is not None:
+                facts["reason"] = child.stop_attribution
             if all(getattr(result, name, None) == value for name, value in facts.items()):
                 return result
             return dataclasses.replace(result, **facts)
@@ -2367,7 +2370,7 @@ class _SubagentRuntimeImpl:
                 # resume the recorded tools it lost, not a new narrowing.
                 dropped_tools=plan.dropped_tools,
                 session_recorded=plan.session_path is not None,
-                reason=REASON_CANCELLED,
+                reason=child.stop_attribution or REASON_CANCELLED,
             )
             return self._with_run_facts(result, child=child, receipt=receipt, plan=plan)
         except Exception:  # noqa: BLE001 — a report never costs the cancel its exit

@@ -420,6 +420,16 @@ class RunningChild:
     snapshot (``SubagentProgress.approval``); set by the router."""
 
 
+    @property
+    def stop_attribution(self) -> str | None:
+        """A job runner's attribution for an otherwise generic stop."""
+        return getattr(self, "_stop_attribution", None)
+
+    @stop_attribution.setter
+    def stop_attribution(self, text: str | None) -> None:
+        self._stop_attribution = text
+
+
 @dataclass(frozen=True)
 class SpawnPlan:
     """Everything decided BEFORE a process exists.

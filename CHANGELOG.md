@@ -1092,7 +1092,8 @@ unwritten. Add them with the next release.
   (`tests/runtime/test_swap_settles_first_800.py::test_esc_then_new_gives_no_report_back_as_input`).
   When that result is not written — a `tool_result` hook that raises (one Esc is enough), a second
   Esc while it is being written, or a write to the session file that fails before its bytes — the
-  report reaches the model as a user message with your next prompt, in that process, as before (K1),
+  report or a content-free cancellation notice reaches the model with your next prompt in that
+  process (K1, amended by #839),
   and aelix says so in one line on stderr when it runs without the TUI (in the TUI it is logged at
   DEBUG and not drawn over the screen, fix round 2's pty capture, except after a swap whose teardown
   outlives its 10 s bound, K4); so does a harness with
@@ -1838,6 +1839,19 @@ unwritten. Add them with the next release.
   draft.
 
 ### Fixed
+
+- **A cancelled delegation's fallback carries the final mask when its result write fails (#839, ADR-0307).**
+  The fallback uses a content-free notice when a result hook withholds the text. The failed-write,
+  interrupted-close-out and reused-ID cases in `test_cancelled_report_owed_800.py` check a single
+  report or notice in the request and reopened session.
+  The same suite checks that hosts with the original session writer signatures still persist
+  ordinary messages. Its interrupted-write tests check one report in the request and file after a
+  host copies or rewrites the result with either original writer signature.
+
+- **Job-backed agents name the RPC host when it stops them through `children/stop` (#855, ADR-0307).**
+  The terminal event and model-readable job result agree in the cooperative and escalated spawn
+  cases and when the host stops an adopted job before its runner starts (ADR-0307's #855 note).
+  The legacy dispatch tests also check that the host stop reaches the original facade and service overrides.
 
 - **The `agent` tool is offered on an install without the `tui` extra (#797).** `aelix_agents`
   imported `rich` and `wcwidth` at module top, so `pip install aelix-coding-agent` and Aelix

@@ -27,9 +27,13 @@ line that landed and then raised, not the leaf from before it (Codex review of
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from aelix_ai.messages import ToolResultMessage
 
 from aelix_agent_core.session.entries import (
     BranchSummaryEntry,
@@ -49,7 +53,47 @@ from aelix_agent_core.session.storage import (
     SessionStorage,
 )
 from aelix_agent_core.session.transcript import MessageAppend
-from aelix_agent_core.types import AgentMessage
+from aelix_agent_core.types import AgentMessage, MessageCommit
+
+
+@dataclass
+class _MessageWrite:
+    session: Session
+    message: AgentMessage
+    commit: MessageCommit | None
+
+    def matches(self, message: AgentMessage) -> bool:
+        original = self.message
+        if isinstance(original, ToolResultMessage) and isinstance(message, ToolResultMessage):
+            # An override may forward a copy or rewrite its contents. The
+            # write scope and result binding identify the attempted entry.
+            # The writer can set its own timestamp.
+            return (
+                message.tool_call_id == original.tool_call_id
+                and message.tool_name == original.tool_name
+            )
+        return message == original
+
+
+_message_write: ContextVar[_MessageWrite | None] = ContextVar("_message_write", default=None)
+
+
+@contextlib.contextmanager
+def _capture_message_write(
+    session: Session, message: AgentMessage, commit: MessageCommit | None
+) -> Iterator[None]:
+    """Track the entry allocated inside the public writer, including an interrupted write."""
+    if commit is None:
+        yield
+        return
+    write = _MessageWrite(session, message, commit)
+    token = _message_write.set(write)
+    try:
+        yield
+    finally:
+        # A task spawned by an override can inherit this context past the write.
+        write.commit = None
+        _message_write.reset(token)
 
 
 def _iso_now() -> str:
@@ -161,6 +205,10 @@ class Session:
         await self._settle()
         return await self._storage.get_leaf_id()
 
+    async def require_settled_writes(self) -> None:
+        """Resolve pending writes or raise when delivery cannot yet be determined."""
+        await self._storage.resolve_pending()
+
     async def get_entry(self, id: str) -> SessionTreeEntry | None:
         return await self._storage.get_entry(id)
 
@@ -226,11 +274,23 @@ class Session:
         entry = await self._storage.append_to_leaf(build)
         return entry.id
 
-    @staticmethod
-    def _message_builder(message: AgentMessage) -> Callable[[str, str | None], MessageEntry]:
-        return lambda entry_id, parent_id: MessageEntry(
-            id=entry_id, parent_id=parent_id, timestamp=_iso_now(), message=message
-        )
+    def _message_builder(
+        self, message: AgentMessage
+    ) -> Callable[[str, str | None], MessageEntry]:
+        def build(entry_id: str, parent_id: str | None) -> MessageEntry:
+            write = _message_write.get()
+            if (
+                write is not None
+                and write.session is self
+                and write.commit is not None
+                and write.matches(message)
+            ):
+                write.commit.entry_id = entry_id
+            return MessageEntry(
+                id=entry_id, parent_id=parent_id, timestamp=_iso_now(), message=message
+            )
+
+        return build
 
     async def append_message(self, message: AgentMessage) -> str:
         return await self._append_to_leaf(self._message_builder(message))

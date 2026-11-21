@@ -218,6 +218,12 @@ _STOPPED_BY: dict[str, str] = {
 The envelope's own :data:`~aelix_agents.envelope.REASON_STOPPED` names the
 foreground ways — ``stop``, ``/new`` … — which are not how a job is stopped."""
 
+def _mark_stopped(row: RunningChild, ctx: Any) -> None:
+    row.stop_attribution = getattr(ctx, "stop_attribution", None)
+    withdraw_approval(row)
+    row.stopped = True
+
+
 _HELPERS_UNTRACKED = "the agent's run had no launch ledger to sweep"
 _HELPERS_NO_JOB = "the agent ran without a Windows Job to confirm its helpers against"
 _HELPERS_UNCONFIRMED = "its processes are not yet confirmed gone"
@@ -575,9 +581,7 @@ class DelegationRunner:
             # stopped. Before the process exists this is the whole stop: the
             # channel re-reads ``stopped`` before and after the spawn.
             for row in list(runtime._children.values()):
-                # #612 (ADR-0308): an open approval request is withdrawn first.
-                withdraw_approval(row)
-                row.stopped = True
+                _mark_stopped(row, self._ctx)
         if own is not None:
             own.request_stop(self._launch.stop_grace)
 
@@ -670,6 +674,7 @@ class AdoptedRunner:
         self._profile = profile
         self._session = session
         self._on_end = on_end
+        self._ctx: Any = None
         self._first_exc: BaseException | None = None
         self._stopped_by: str | None = None
         self._stop: asyncio.Future[None] | None = None
@@ -682,9 +687,14 @@ class AdoptedRunner:
 
         self._first_exc = asyncio.CancelledError()
 
+    def bind_context(self, ctx: Any) -> None:
+        """Give the stop path the latch before the job can be published."""
+        self._ctx = ctx
+
     async def run(self, ctx: Any) -> ClientOutcome:
         from aelix_agents.detach import drive
 
+        self.bind_context(ctx)
         self._entry.runner = weakref.ref(self)  # type: ignore[assignment]
         first_exc = self._first_exc
         # From this step the run is this runner's: the first task's rescue
@@ -701,8 +711,7 @@ class AdoptedRunner:
     def request_stop(self, reason: str) -> None:
         if self._stopped_by is None:
             self._stopped_by = reason
-        withdraw_approval(self._row)  # #612 (ADR-0308): before the stop
-        self._row.stopped = True
+        _mark_stopped(self._row, self._ctx)
         if self._stop is None:
             self._stop = asyncio.ensure_future(self._runtime.stop(self._row.id))
 

@@ -252,6 +252,47 @@ async def test_a_moved_run_stopped_by_the_user_ends_stopped(tmp_path: Path) -> N
 
 
 @REAL_CHILD
+async def test_host_stop_after_adoption_before_runner_start_keeps_the_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#855 report verification R1: stop the published job before its task enters."""
+    from aelix_coding_agent.jobs.service import JobService
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = JobService.run_adopted
+
+    async def gated(service: JobService, job: Any) -> None:
+        entered.set()
+        await release.wait()
+        await original(service, job)
+
+    monkeypatch.setattr(JobService, "run_adopted", gated)
+    rig, _, _, row = await _moved(tmp_path)
+    controls, ends = rig.ext.runtime.controls, []
+
+    def observe(event: str, data: dict[str, Any]) -> None:
+        if event == "state" and data.get("end"):
+            ends.append(data["reason"])
+
+    off = controls.subscribe(observe)
+    try:
+        (job,) = rig.jobs()
+        assert any(child.get("jobId") == job.job_id for child in controls.list())
+        await asyncio.wait_for(entered.wait(), 10)
+        assert await controls.stop(row.id) == {"state": "running"}
+        release.set()
+        snap = await settled(rig)
+        assert snap.state == "stopped"
+        result = _text(await call(rig, {"action": "result", "id": job.job_id}))
+        host = "stopped by the RPC host (children/stop)"
+        assert (ends, host in result) == ([host], True), (ends, result)
+    finally:
+        release.set()
+        off()
+        await finish(rig)
+
+
+@REAL_CHILD
 async def test_a_running_resume_moves_too(tmp_path: Path) -> None:
     gate = tmp_path / "gate"
     rig = await tui_rig(tmp_path, channel=_resumable(gate))
@@ -389,6 +430,17 @@ def _runner() -> AdoptedRunner:
         session=None,
         on_end=lambda: None,
     )
+
+
+async def test_adopted_runner_accepts_the_existing_context_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _runner()
+
+    async def drive(*_args: Any, **_kwargs: Any) -> ClientOutcome:
+        raise RuntimeError("entered the adopted run")
+
+    monkeypatch.setattr(dt, "drive", drive)
+    with pytest.raises(RuntimeError, match="entered the adopted run"):
+        await runner.run(ctx=SimpleNamespace())
 
 
 def test_records_raise_when_the_run_handed_none_over() -> None:

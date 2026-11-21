@@ -9,9 +9,9 @@ live here. The CONSENT DECISION does not — it is taken in the extension's own
 measured reasons, all of which make the hook the only correct location:
 
 1. **``execute()`` is not serialised.** The kernel runs ``before_tool_call`` in
-   the SEQUENTIAL prep phase (``loop.py:626-647``, driven from ``:1043-1077``) but
-   ``execute`` in a task per call (``loop.py:1083-1086``), with
-   ``tool_execution = "parallel"`` by default (``harness/core.py:326``). Two
+   the SEQUENTIAL prep phase (``loop.py:640-661``, driven from ``:1061-1095``) but
+   ``execute`` in a task per call (``loop.py:1101-1104``), with
+   ``tool_execution = "parallel"`` by default (``harness/core.py:329``). Two
    modals from one batch collide on ``tui/chrome.py:978``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C. (Since #701 the slot
@@ -26,7 +26,7 @@ measured reasons, all of which make the hook the only correct location:
    ``ToolCallResult(block=True, reason=…)`` is handled by
    ``harness/hooks.py::_reducer_tool_call`` (``:1419-1439``) — sequential,
    FIRST BLOCK WINS — and the kernel renders it as a model-readable immediate
-   error result (``loop.py:634-647``). An ``execute()`` refusal is just another
+   error result (``loop.py:648-661``). An ``execute()`` refusal is just another
    error string.
 
 :data:`AGENT_TOOL_NAME` is imported from :mod:`aelix_agents.print_channel`
@@ -119,7 +119,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:1452-1455``), and NO process is
+into a blocked call the model reads (``extension.py:1376-1379``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -278,7 +278,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:1452-1455``) with no process created.
+    # (``extension.py:1376-1379``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -556,7 +556,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:5395-5397`` explicitly permits a later handler to mutate
+    ``harness/core.py:5418-5420`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -1070,9 +1070,9 @@ def parse_agent_call(args: Mapping[str, Any], *, background: bool = False) -> Ag
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:1452-1455``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:1376-1379``) and
     the kernel renders it as a model-readable immediate error result
-    (``loop.py:634-647``). An oversize batch is therefore a refused CALL and is
+    (``loop.py:648-661``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
 
     ``action`` IS READ FIRST (#610 D1): a ``resume`` takes its own, narrower
@@ -1359,7 +1359,7 @@ def create_agent_tool(
     one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The
     kernel's ``_execute_tool_calls``
     downgrades the WHOLE BATCH to sequential when any tool in it declares this
-    (kernel ``types.py:47-56``; ``loop.py:878-888``), which closes the
+    (kernel ``types.py:47-56``; ``loop.py:894-904``), which closes the
     concurrent-modal hazard described in the module docstring at zero
     product-core cost. It is belt-and-braces with the hook location and with
     ``consent.py``'s process-wide lock — and because the description is
@@ -1396,7 +1396,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1748``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1766``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:5750-5754``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """

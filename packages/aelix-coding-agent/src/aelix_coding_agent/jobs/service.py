@@ -84,7 +84,8 @@ import logging
 import shutil
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -151,6 +152,28 @@ _OUTBOX_BACKOFF = (1.0, 2.0, 5.0, 10.0, 30.0)
 _GENERIC_NOTICE = "The job ended with status {status}; its client could not render a result."
 
 
+@dataclass
+class _StopActor:
+    job_id: str
+    text: str | None
+
+
+_stop_actor: ContextVar[_StopActor | None] = ContextVar("_stop_actor", default=None)
+
+
+@contextlib.contextmanager
+def attribute_job_stop(job_id: str, text: str) -> Iterator[None]:
+    """Carry host wording through the existing facade and service stop overrides."""
+    actor = _StopActor(job_id, text)
+    token = _stop_actor.set(actor)
+    try:
+        yield
+    finally:
+        # An override may have spawned a task that inherited the context.
+        actor.text = None
+        _stop_actor.reset(token)
+
+
 SESSION_ENDED_FIRST = "the session ended before the job started"
 """A start refused because its owner ended, or the service shut down, while it was being made (#612)."""
 
@@ -204,6 +227,7 @@ class _Job:
     directories: list[str] = field(default_factory=list)
     stop_latched: bool = False
     stop_reason: StopReason | None = None
+    stop_attribution: str | None = None
     stop_requested_by_service: str | None = None
     last_activity: float = 0.0
     quiet: bool = False
@@ -420,6 +444,11 @@ class _Context:
     @property
     def stop_latched(self) -> bool:
         return self._job.stop_latched
+
+    @property
+    def stop_attribution(self) -> str | None:
+        """The human-readable actor of the first accepted stop, when supplied by the host."""
+        return self._job.stop_attribution
 
     def progress(self, snapshot: Mapping[str, Any] | None = None) -> None:
         self._service._activity(self._job, snapshot)
@@ -1377,6 +1406,9 @@ class JobService:
         if not job.stop_latched:
             job.stop_latched = True
             job.stop_reason = reason
+            actor = _stop_actor.get()
+            if actor is not None and actor.job_id == job.job_id and reason == "user":
+                job.stop_attribution = actor.text
             if job.state == "running":
                 job.state = "stopping"
             try:
@@ -1434,7 +1466,10 @@ class JobService:
         job.stop_latched = True
         if job.stop_requested_by_service is None:
             job.stop_requested_by_service = why
-            if status == "stopped":
+            if job.stop_attribution is not None:
+                text = f"{job.stop_attribution}. {why}."
+                job.service_outcome = ClientOutcome(status, text, payload={"text": text})
+            elif status == "stopped":
                 job.service_outcome = ClientOutcome("stopped", why)
         job.task.cancel()
 

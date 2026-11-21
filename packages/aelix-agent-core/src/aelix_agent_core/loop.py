@@ -62,6 +62,7 @@ from aelix_agent_core.types import (
     AgentStartEvent,
     BeforeToolCallContext,
     BeforeToolCallResult,
+    MessageCommit,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -69,6 +70,7 @@ from aelix_agent_core.types import (
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
+    TrackedToolCancelled,
     TurnEndEvent,
     TurnStartEvent,
 )
@@ -91,16 +93,26 @@ class _OccurrenceSink:
 
     def __init__(
         self,
-        emit: Callable[[AgentEvent, str | None], Awaitable[AgentMessage | None]],
+        emit: Callable[[AgentEvent, str | None, MessageCommit | None], Awaitable[AgentMessage | None]],
         stream_id: str | None = None,
+        *,
+        track_streams: bool = True,
     ) -> None:
         self.emit = emit
         self.stream_id = stream_id
+        self.track_streams = track_streams
 
     def __call__(self, event: AgentEvent) -> Awaitable[AgentMessage | None]:
-        return self.emit(event, self.stream_id)
+        return self.emit(event, self.stream_id, None)
+
+    def message_end(
+        self, event: MessageEndEvent, commit: MessageCommit | None
+    ) -> Awaitable[AgentMessage | None]:
+        return self.emit(event, self.stream_id, commit)
 
     def occurrence(self) -> _OccurrenceSink:
+        if not self.track_streams:
+            return self
         return _OccurrenceSink(self.emit, uuid.uuid4().hex)
 
 
@@ -501,10 +513,10 @@ async def _stream_assistant_response(
 
 # What the model reads for a call a cancel cut, when the tool had nothing of its own
 # to say (#673, ADR-0290). "No result provided" now means that a call never began, or
-# that a hook failed on it. Public since #800 (ADR-0307 D2): it is how an extension
-# reading a committed session tells "this call's own result did not land" (the loop
-# wrote this sentence in its place) from "a hook rewrote that result". ``_CUT_TEXT``
-# stays as an alias for the code that imported it before.
+# that a hook failed on it. Public since #800 (ADR-0307 D2).
+# The owed-report path treats this sentence as content-free even when a hook
+# returned it (#839). ``_CUT_TEXT`` stays as an alias for the code that imported
+# it before.
 CUT_TEXT = "Cancelled: the user stopped the turn while this tool ran, so it may have partly run."
 _CUT_TEXT = CUT_TEXT
 
@@ -552,6 +564,7 @@ class _Prepared:
     args: dict[str, Any]
     abandoned: bool = False
     ended_with: ToolResult | None = None
+    commit: MessageCommit | None = None
 
 
 @dataclass
@@ -576,6 +589,7 @@ class _Finalized:
     tool_name: str
     result: ToolResult
     emit: AgentEventSink
+    commit: MessageCommit | None = None
 
 
 async def _prepare_tool_call(
@@ -767,6 +781,8 @@ async def _execute_and_finalize(
     try:
         result = await prepared.tool.execute(prepared.args, exec_ctx)
     except asyncio.CancelledError as exc:
+        if isinstance(exc, TrackedToolCancelled):
+            prepared.commit = exc.commit
         said = exc.result if isinstance(exc, ToolCancelled) else None
         said = said if isinstance(said, ToolResult) else None
         if _note_cancel_caught(cancels) or _cancel_pending(requested):
@@ -962,7 +978,9 @@ async def _execute_tool_calls_sequential(
         # then the tool-result message ``message_start`` / ``message_end``
         # pair via the shared helper, then we append to the batch list.
         await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, tool_emit, requested)
-        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, tool_emit, requested)
+        msg = await _commit_tool_result(
+            tc.tool_call_id, tc.tool_name, result, tool_emit, requested, prepared.commit
+        )
         if msg is not None:
             result_messages.append(msg)
         # What stops the batch: a cut call's, or one a tool or a sink swallowed.
@@ -1035,7 +1053,7 @@ async def _execute_tool_calls_parallel(
         prep.ended_with = result
         # tool_execution_end fires in COMPLETION order (§E row 4).
         await _emit_tool_end(prep.tool_call.tool_call_id, prep.tool.name, result, sink, requested)
-        return _Finalized(prep.tool_call, prep.tool.name, result, tool_emit)
+        return _Finalized(prep.tool_call, prep.tool.name, result, tool_emit, prep.commit)
 
     cancelled = False
     failure: BaseException | None = None
@@ -1114,7 +1132,7 @@ async def _execute_tool_calls_parallel(
                     entry.tool_call.tool_call_id, entry.tool.name, result, tool_emit, requested
                 )
             finalized_entries.append(
-                _Finalized(entry.tool_call, entry.tool.name, result, tool_emit)
+                _Finalized(entry.tool_call, entry.tool.name, result, tool_emit, entry.commit)
             )
             continue
         task = tasks[index] if tasks else None
@@ -1158,6 +1176,7 @@ async def _execute_tool_calls_parallel(
                 finalized.result,
                 finalized.emit,
                 requested,
+                finalized.commit,
             )
         except Exception:
             # With a failure on its way up, a sink's own must not take its place or
@@ -1355,6 +1374,7 @@ async def _commit_tool_result(
     result: ToolResult,
     emit: AgentEventSink,
     requested: Callable[[], bool] | None,
+    commit: MessageCommit | None = None,
 ) -> ToolResultMessage | None:
     """Commit one result. Returns the message, or ``None`` if it is lost.
 
@@ -1370,7 +1390,7 @@ async def _commit_tool_result(
     msg = _to_tool_result_message(tool_call_id, tool_name, result)
     cancels = _own_cancels()
     try:
-        return await _emit_tool_result_message(msg, emit, requested)
+        return await _emit_tool_result_message(msg, emit, requested, commit)
     except asyncio.CancelledError:
         _note_cancel_caught(cancels)
         _log.debug("a cancel landed while committing the result of tool call %s", tool_call_id)
@@ -1383,7 +1403,10 @@ async def _commit_tool_result(
 
 
 async def _emit_tool_result_message(
-    msg: ToolResultMessage, emit: AgentEventSink, requested: Callable[[], bool] | None
+    msg: ToolResultMessage,
+    emit: AgentEventSink,
+    requested: Callable[[], bool] | None,
+    commit: MessageCommit | None,
 ) -> ToolResultMessage:
     """Emit ``message_start`` + ``message_end`` for a tool-result message.
 
@@ -1419,7 +1442,10 @@ async def _emit_tool_result_message(
         _log.debug(
             "message_start failed for cancelled call %s", msg.tool_call_id, exc_info=True
         )
-    replacement = await emit(MessageEndEvent(message=msg))
+    end = MessageEndEvent(message=msg)
+    replacement = await (
+        emit.message_end(end, commit) if isinstance(emit, _OccurrenceSink) else emit(end)
+    )
     if _is_replacement(replacement, msg) and isinstance(
         replacement, ToolResultMessage
     ):

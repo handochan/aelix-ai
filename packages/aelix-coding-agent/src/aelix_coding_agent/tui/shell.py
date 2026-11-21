@@ -605,7 +605,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
     """#249 — the meter's MID-TURN figure, read straight off a finished message.
 
     The fresh number is in the ``message_end`` payload, and reading it avoids
-    a stats walk for every provider round-trip (``loop.py:308``). Before #320,
+    a stats walk for every provider round-trip (``loop.py:320``). Before #320,
     state was appended only after the whole loop returned, so those walks also
     repainted the pre-turn number. State now commits at each message_end, while
     reading this payload remains O(1): measured
@@ -1713,7 +1713,7 @@ async def run_tui(
             _commit(Text("Clone is unavailable (no session).", style="yellow"))
             return
         # ``Session.get_leaf_id`` is the public accessor for the session tip
-        # (Pi parity ``Session.get_leaf_id`` ``session.py:158``); degrades
+        # (Pi parity ``Session.get_leaf_id`` ``session.py:202``); degrades
         # silently when the session has no entries yet.
         # #413 — a session with no user or assistant message yet is refused
         # too, as before #413, when such a session had no entry and so no leaf:
@@ -2941,8 +2941,8 @@ async def run_tui(
     # figure directly, avoiding a repeated stats walk at every tool iteration.
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
-    # ``agent_end`` (one per PROMPT — ``loop.py:286``, ``:328``, ``:339``, plus
-    # the abort close-out ``core.py:6290`` and the hook-fail one ``:6341``)
+    # ``agent_end`` (one per PROMPT — ``loop.py:298``, ``:340``, ``:351``, plus
+    # the abort close-out ``core.py:6324`` and the hook-fail one ``:6375``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -3080,7 +3080,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:3200``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:3223``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -3088,11 +3088,11 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:3226``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3249``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
-        ``_safe_invoke`` (``hooks.py:1458-1463``) logs and swallows exactly
+        ``_safe_invoke`` (``hooks.py:1467-1472``) logs and swallows exactly
         ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
         redundant on purpose, not a second class of failure: it catches the same
         class, and it is here so the guarantee survives a future registration
@@ -3450,11 +3450,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2452``), so the refresh below is
+                # ``_state.messages`` (``core.py:2475``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1950``), so this never discards a figure a running
+                # ``core.py:1973``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3479,7 +3479,7 @@ async def run_tui(
             # unconditional and opens with its own ``get_session_stats``, so a
             # thirty-tool turn still performs thirty of them for the ``/stats``
             # history row. ``turn_end`` is per provider round-trip
-            # (``loop.py:308``, inside the ``loop.py:251`` tool-call loop), so
+            # (``loop.py:320``, inside the ``loop.py:263`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks formerly estimated over a message list the harness
             # only extended when the loop returned (fixed by #320). Each
@@ -3531,11 +3531,11 @@ async def run_tui(
         # remains useful after releasing the direct live usage figure.
         #
         # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
-        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1458``; the
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1467``; the
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:6358-6359`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:6392-6393`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3563,7 +3563,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:3226``).
+        # the model is already swapped in (``core.py:3249``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -4741,7 +4741,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:5197-5198``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:5220-5221``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

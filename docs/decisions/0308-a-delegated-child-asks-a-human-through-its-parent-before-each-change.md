@@ -16,6 +16,8 @@ or 330 s wait, a cancel during `/compact` and one before the question's task ran
 K13 (a native test with a scripted model), Windows, Linux and Studio.
 D5's ACP bullet, D6's void rule, K13, K16 and "Not run" carry dated marks, and "Note (2026-11-20,
 #612)" says what was built and measured.
+Amended 2026-11-20 (#855): the #855 note records the actor in tested job-backed host stops.
+Amended 2026-11-21 (#855): the #855 note also covers legacy job-stop dispatch.
 Date: 2026-11-19
 Issue: #612 (delegated children on RPC and ACP hosts). Owner, 2026-11-18, r3 Q2: **"자식 승인
 통로도 #612에"**; approval Q-A: **"default로 돌며 물어봄 (권장)"**; approval Q-B: **"즉시 대화창
@@ -599,3 +601,13 @@ one docstring (`fix-r2/live/`):
 Not run live through ACP: "Yes, for this agent", a real 300 s or 330 s wait, a cancel during
 `/compact` and one before the question's task ran (unit tests only), K13 (a native test with a
 scripted model), and Windows, Linux and Studio.
+
+## Note (2026-11-20, #855) — job-backed host stops
+
+The runner copies the latched actor, withdraws any open approval, then marks the row stopped.
+The spawned and adopted request-stop tests in `test_child_approvals_612.py` exercise this order's
+effects on the row and approval. ADR-0307's #855 note covers the running-child and pre-runner
+adoption cases that identify the same host in the stopped envelope and job result.
+
+The legacy dispatch tests in ADR-0307's #855 note exercise the same call through an old-signature
+facade and a forwarding job service. The existing runner stop calls still withdraw approvals.
