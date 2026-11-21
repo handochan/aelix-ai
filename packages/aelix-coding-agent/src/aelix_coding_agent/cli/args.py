@@ -1024,6 +1024,9 @@ Misc:
   --offline                       Skip the rg/fd binary download, the extension
                                   catalog fetch, index-less pypi installs, and
                                   the update check (same as PI_OFFLINE=1).
+                                  Path and Git installs without an explicit or
+                                  registered index resolve dependencies without
+                                  package indexes.
                                   Provider/LLM calls are NOT affected.
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})

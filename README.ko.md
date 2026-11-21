@@ -243,10 +243,11 @@ Copilot Enterprise는 호스트 해석·도메인 입력·영속화까지 구현
 
 ## 신뢰와 자체 호스팅
 
-폐쇄망과 고객사 설치를 전제로 만들었습니다. `--offline`은 Aelix가 스스로 내보내는 요청을
-끕니다 — `rg`/`fd` 다운로드, 카탈로그 fetch, 인덱스 없는 확장 설치, 업데이트 확인. 다만
-설정한 프로바이더 호출은 건드리지 않으므로, 폐쇄망이라도 도달 가능하거나 자체 호스팅한 모델
-엔드포인트는 필요합니다. `aelix --offline status`, `aelix --offline docs`,
+폐쇄망과 고객사 설치를 전제로 만들었습니다. `--offline`은 `rg`/`fd` 다운로드, HTTP(S) 카탈로그
+가져오기, 업데이트 확인을 건너뜁니다. 등록된 Git-over-SSH 카탈로그는 이 모드에서도
+갱신할 수 있습니다. 명시하거나 등록한 인덱스가 없으면 확장 설치와
+업데이트 시 패키지 인덱스 조회를 끕니다(#806). 설정한 모델 프로바이더에는 접근 가능한
+엔드포인트가 필요합니다. `aelix --offline status`, `aelix --offline docs`,
 `aelix --offline extension …`은 해당 명령을 실행합니다. 이 root 명령 앞에는
 `--offline`만 허용하며, 다른 실행 옵션을 붙이면 usage error(exit 2)로 거부합니다.
 의도적으로 에이전트에게 묻는 경우에는 `aelix -p status` 또는 `aelix -- status`를 쓰세요.
