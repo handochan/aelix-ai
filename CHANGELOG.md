@@ -1877,6 +1877,10 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Preflight checks workspace manifest changes and control-v1 checker changes (#870, #871).**
+  A root or member `pyproject.toml` change alone selects `import-direction`. A change to either
+  control-v1 checker script alone selects `control-v1`, and deleting `scripts/check_control_v1.py`
+  fails that gate. `tests/test_preflight.py` covers each of these paths in isolation.
 - **Shell commands run by a delegated agent inherit the user's `PYTHONPATH`
   (#803, ADR-0197).** In the macOS CLI probe, delegated `bash` passed through
   the two user-supplied paths unchanged and left the variable unset when it
