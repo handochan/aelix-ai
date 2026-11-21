@@ -26,10 +26,10 @@ run. The gate has to live here, keyed on what actually varies.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:626-647``, driven
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:652-673``, driven
 from ``:1012-1049``) while ``execute()`` runs in a task per call
-(``loop.py:1083-1086``) with ``tool_execution = "parallel"`` by default
-(``harness/core.py:326``). Two modals from one batch would collide on
+(``loop.py:1109-1112``) with ``tool_execution = "parallel"`` by default
+(``harness/core.py:332``). Two modals from one batch would collide on
 ``tui/chrome.py:978``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the

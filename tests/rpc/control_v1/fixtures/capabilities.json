@@ -931,6 +931,30 @@
           }
         }
       }
+    },
+    {
+      "name": "writer-owned CLI lists input observation",
+      "since": "#865",
+      "rig": "input-observation",
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "contains": {
+              "const": "inputs/observe"
+            }
+          }
+        }
+      }
     }
   ]
 }

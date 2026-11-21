@@ -56,6 +56,12 @@ from aelix_ai.utils.overflow import ClassifiedErrorText, RetryVerdict
 
 from aelix_agent_core.agent import AgentListener
 from aelix_agent_core.default_convert import default_convert_to_llm
+from aelix_agent_core.harness._input_observation import (
+    InputObservation,
+    call_with_input_origin,
+    is_base_method,
+    take_input_origin,
+)
 from aelix_agent_core.harness.hooks import (
     AbortHookEvent,
     AfterProviderResponseHookEvent,
@@ -751,6 +757,7 @@ class AgentHarness:
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
         self._transcript_listener: _TranscriptListener | None = None
+        self._input_observation: InputObservation | None = None
         self._phase: AgentHarnessPhase = "idle"
         # Issue #334 — the claim of the ``prompt()`` call that holds the turn,
         # from its entry flip to the one release in its ``finally``; ``None``
@@ -1565,6 +1572,14 @@ class AgentHarness:
 
         return retire
 
+    def _can_change_input_observation(self) -> bool:
+        return not (
+            self._phase != "idle" or self._disposed or self._turn_gate is not None
+            or self._steering_queue._messages or self._follow_up_queue._messages
+            or self._next_turn_queue or self._inbox.pending
+            or self._pending_session_writes or self._drain_lock.locked()
+        )
+
     # === Driving the loop ===
 
     async def prompt(
@@ -1613,6 +1628,11 @@ class AgentHarness:
         self._idle_event.clear()
         claim = self._claim = object()
         self._turn_refusal = _refused_by
+        observation = self._input_observation
+        observation and observation.start(
+            "prompt",
+            *take_input_origin(observation, "prompt", "native" if source == "interactive" else source),
+        )
         # #684 — from here an abort is this prompt's own: one made while an
         # ``input`` or ``before_agent_start`` handler still runs ends the turn as
         # it starts (:meth:`_run`) instead of being cleared there (#336).
@@ -1649,6 +1669,7 @@ class AgentHarness:
                 if isinstance(input_result, InputHandled):
                     # Pi: handled exits prompt() entirely — harness returns idle,
                     # through the ``finally`` below like every other exit (#334).
+                    observation and observation.set_outcome("handled")
                     if on_accept is not None:
                         on_accept("handled")
                     return []
@@ -1701,6 +1722,7 @@ class AgentHarness:
             if images:
                 content.extend(images)
             user_msg = UserMessage(content=content)
+            observation and observation.bind_direct(user_msg, refused=_refused_by is not None)
             # Sprint 3b — drain the next_turn queue (Pi parity, executeTurn
             # L466-472): messages queued via ``next_turn()`` while idle (or
             # during the previous turn) are prepended to this turn's prompt.
@@ -1710,6 +1732,7 @@ class AgentHarness:
                 # #367 verify round 5 — a refused turn carries its own message
                 # only: what others queued waits for the next real prompt.
                 self._next_turn_queue, drained_next = drained_next, []
+            observation and observation.detach(drained_next)
             # Issue #311 (ADR-0246) — from the detach above until ``agent_loop``
             # receives the list, the drained messages live in a LOCAL and nowhere
             # else. Two awaits sit between here and the ``_run`` call and both
@@ -1749,6 +1772,7 @@ class AgentHarness:
                 prompts: list[AgentMessage] = []
                 if injected and injected.messages:
                     prompts.extend(injected.messages)
+                observation and observation.initial_prefix(len(prompts))
                 prompts.extend(drained_next)
                 prompts.append(user_msg)
                 system_prompt = (
@@ -1768,6 +1792,7 @@ class AgentHarness:
                 )
             except BaseException:
                 self._next_turn_queue = drained_next + self._next_turn_queue
+                observation and observation.restore(drained_next)
                 raise
             self._unanswered = unanswered
             result = await self._run(
@@ -1775,7 +1800,12 @@ class AgentHarness:
                 system_prompt=system_prompt,
                 pending_inputs=[*drained_next, user_msg],
             )
-            return await self._settle_runs(result, system_prompt, claim)
+            result = await self._settle_runs(result, system_prompt, claim)
+            observation and observation.complete(self._abort_requested)
+            return result
+        except asyncio.CancelledError:
+            observation and observation.set_outcome("aborted")
+            raise
         finally:
             await self._release_prompt()
 
@@ -2001,6 +2031,8 @@ class AgentHarness:
         # phase "turn"); a second cancel leaves through the inner ``finally``
         # — what is still queued stays queued, and the next drain writes it
         # in order: nothing lost or reordered.
+        observation = self._input_observation
+        settled = False
         try:
             # #654 — the exits that skipped the check above: a raise, or an
             # abort made during the threshold check. Ahead of the drain, so
@@ -2009,6 +2041,7 @@ class AgentHarness:
                 await self._withdraw_unanswered_inputs()
             await self._drain_pending_session_writes()
             await self._settle_session_storage()
+            settled = True
         except Exception:  # noqa: BLE001
             _log.warning(
                 "flush_pending_session_writes raised at the prompt's release "
@@ -2016,6 +2049,7 @@ class AgentHarness:
                 exc_info=True,
             )
         finally:
+            observation and observation.release(settled=settled)
             self._unanswered = None
             self._claim = None
             self._turn_state = None
@@ -2083,6 +2117,10 @@ class AgentHarness:
         if final:
             self._final_message = message
         self._steering_queue.enqueue(message)
+        observation = self._input_observation
+        if observation is not None:
+            input_source, request_id = take_input_origin(observation, "steer", "native")
+            observation.enqueue(message, input_source, "steer", request_id)
         # Sprint 3b — enqueue paths emit ``queue_update`` (P-4: setters do
         # NOT, only enqueue paths do). Pi: ``agent-harness.ts`` steer path.
         await self._emit_queue_update()
@@ -2138,7 +2176,12 @@ class AgentHarness:
         content: list[Any] = [TextContent(text=text)]
         if images:
             content.extend(images)
-        self._follow_up_queue.enqueue(UserMessage(content=content))
+        message = UserMessage(content=content)
+        self._follow_up_queue.enqueue(message)
+        observation = self._input_observation
+        if observation is not None:
+            input_source, request_id = take_input_origin(observation, "follow_up", "native")
+            observation.enqueue(message, input_source, "followUp", request_id)
         await self._emit_queue_update()
 
     def _refuse_queue_if_disposed(self) -> None:
@@ -2206,6 +2249,9 @@ class AgentHarness:
         cleared_follow_up = list(self._follow_up_queue._messages)
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        observation = self._input_observation
+        observation and observation.remove(cleared_steer)
+        observation and observation.remove(cleared_follow_up)
         # ADR-0306 — a final steer still queued goes with the queue: never consumed.
         self._final_message = None
         if withdraw_unanswered:
@@ -4138,6 +4184,8 @@ class AgentHarness:
             content.extend(images)
         message = UserMessage(content=content)
         self._next_turn_queue.append(message)
+        observation = self._input_observation
+        observation and observation.enqueue(message, "native", "nextTurn")
         # W4 MINOR: DRY — reuse the shared queue_update emit helper so the
         # snapshot logic and hook-error wrapping live in exactly one place.
         await self._emit_queue_update()
@@ -5306,11 +5354,19 @@ class AgentHarness:
         loop = self._ensure_loop()
         text = _extract_message_text(message)
         if deliver_as == "steer":
-            task = loop.create_task(self.steer(text))
+            call = call_with_input_origin(
+                self._input_observation, "steer", "extension", None, self,
+                _BASE_INPUT_METHODS["steer"], self.steer, text
+            )
+            task = loop.create_task(call)
             self._pin_task(task)
             return
         if deliver_as == "follow_up":
-            task = loop.create_task(self.follow_up(text))
+            call = call_with_input_origin(
+                self._input_observation, "follow_up", "extension", None, self,
+                _BASE_INPUT_METHODS["follow_up"], self.follow_up, text
+            )
+            task = loop.create_task(call)
             self._pin_task(task)
             return
         # next_turn / default path.
@@ -5321,7 +5377,11 @@ class AgentHarness:
         # repaint. Without this split we double-deliver every triggered
         # message (once via the queue, once via prompt).
         if trigger_turn and self._phase == "idle" and self._turn_gate is None:
-            task = loop.create_task(self.prompt(text))
+            turn = call_with_input_origin(
+                self._input_observation, "prompt", "extension", None, self,
+                _BASE_INPUT_METHODS["prompt"], self.prompt, text
+            )
+            task = loop.create_task(turn)
             self._pin_task(task)
             return
         if trigger_turn and self._phase == "idle" and _refuses_a_trigger(self._turn_gate):
@@ -5332,11 +5392,18 @@ class AgentHarness:
             # a queued message left that wait — and the ``session_start`` emit
             # around it — hanging. Nothing is sent (:meth:`hold_turns`).
             _log.info("trigger_turn while turns are held (%s): refused", self._turn_gate)
-            task = loop.create_task(self.prompt(text, _refused_by=self._turn_gate))
+            turn = call_with_input_origin(
+                self._input_observation, "prompt", "extension", None, self,
+                _BASE_INPUT_METHODS["prompt"], self.prompt, text,
+                _refused_by=self._turn_gate,
+            )
+            task = loop.create_task(turn)
             self._pin_task(task)
             return
         msg = _coerce_agent_message(message)
         self._next_turn_queue.append(msg)
+        observation = self._input_observation
+        observation and observation.enqueue(msg, "extension", "nextTurn")
 
     def _action_send_user_message(
         self,
@@ -5487,6 +5554,8 @@ class AgentHarness:
     ) -> list[AgentMessage]:
         """Emit ``context`` hook, then chain the app-supplied transform."""
 
+        observation = self._input_observation
+        observation and observation.arbitrary_context(self._hooks.has_handlers("context"))
         try:
             result = await self._hooks.emit(ContextHookEvent(messages=list(messages)))
         except Exception as exc:
@@ -5499,12 +5568,15 @@ class AgentHarness:
             if isinstance(result, ContextResult) and result.messages is not None
             else list(messages)
         )
+        observation and observation.check_context(out)
         if self._options.transform_context is not None:
+            observation and observation.arbitrary_context(True)
             raw = self._options.transform_context(out, _signal)
             if inspect.isawaitable(raw):
                 raw = await raw
             if raw is not None:
                 out = list(raw)
+            observation and observation.check_context(out)
         return out
 
     async def _emit_before_agent_start(
@@ -5853,6 +5925,8 @@ class AgentHarness:
         tracked: bool,
         replaced: bool,
     ) -> TranscriptOutcome | None:
+        observation = self._input_observation
+        record = observation and observation.take_receipt_target(message)
         if self._session is None or notice:
             return None
         try:
@@ -5872,9 +5946,13 @@ class AgentHarness:
             if not tracked:
                 return None
             uncertain = isinstance(exc, MessageAppendError) and exc.uncertain
-            return TranscriptOutcome("unknown" if uncertain else "notStored")
-        if answered is not None:
-            answered.safe_leaf = entry_id
+            outcome = TranscriptOutcome("unknown" if uncertain else "notStored")
+            entry_id = None
+        else:
+            if answered is not None:
+                answered.safe_leaf = entry_id
+        if observation is not None and record is not None:
+            observation.receipt(record, outcome, entry_id)
         return outcome
 
     async def _run(
@@ -5900,6 +5978,7 @@ class AgentHarness:
             self._abort_requested = False
             self._withdraw_requested = False
         uncommitted_inputs = list(pending_inputs or [])
+        observation = self._input_observation
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
         # ``session.build_context().messages`` (Pi parity:
@@ -5931,6 +6010,7 @@ class AgentHarness:
             # again. A retry's inputs are already committed and supplies none.
             if uncommitted_inputs:
                 self._next_turn_queue = uncommitted_inputs + self._next_turn_queue
+                observation and observation.restore(uncommitted_inputs)
             raise
         # F-10: install per-turn snapshot so ``_current_system_prompt`` returns
         # the chained value resolved by ``before_agent_start`` for the duration
@@ -5995,6 +6075,7 @@ class AgentHarness:
             )
 
             async def deliver(event: AgentEvent, stream_id: str | None) -> AgentMessage | None:
+                observation and observation.before_event(event)
                 # P0 #7 Wave 3 (ADR-0145, supersedes ADR-0013 + ADR-0018) —
                 # ``message_end`` is now a REPLACEMENT reducer. The order is
                 # REORDERED vs the old observational path: the hook reduction
@@ -6056,6 +6137,7 @@ class AgentHarness:
                     if unanswered is not None:
                         if answered:
                             unanswered.committed.clear()
+                            observation and observation.answered()
                         elif not isinstance(final_message, AssistantMessage) and not notice:
                             unanswered.committed.append((event.message, final_message))
                     # #379 review round 3: the setup failure's record follows the
@@ -6081,7 +6163,12 @@ class AgentHarness:
                     ):
                         record.message = final_message
                     stream_id = self._visible_stream(event, stream_id)
-                    outcome = await self._persist_observed_message(
+                    persist = self._persist_observed_message
+                    observation and observation.admit(
+                        event.message, final_message, stream_id, notice=notice,
+                        base_persistence=is_base_method(persist, self, _BASE_INPUT_PERSIST),
+                    )
+                    outcome = await persist(
                         final_message,
                         unanswered if answered else None,
                         notice=notice,
@@ -6154,7 +6241,7 @@ class AgentHarness:
             async def classic_emit(event: AgentEvent) -> AgentMessage | None:
                 return await deliver(event, None)
 
-            emit = _OccurrenceSink(deliver) if self._transcript_listener else classic_emit
+            emit = _OccurrenceSink(deliver, observation=observation) if self._transcript_listener else classic_emit
 
             try:
                 # Sprint 6a (Phase 4.1, ADR-0045 §D.1): if an explicit
@@ -6232,6 +6319,7 @@ class AgentHarness:
                     # abort(); just return without raising. The phase stays
                     # the prompt's until ``prompt()``'s release (#334).
                     if self._abort_requested:
+                        observation and observation.set_outcome("aborted")
                         # #654 (ADR-0286) — first, so that the terminator's
                         # ``agent_end`` never carries what left context.
                         if self._withdraw_requested:
@@ -6364,6 +6452,7 @@ class AgentHarness:
             # once, ahead of late queue entries; completed messages stay put.
             if uncommitted_inputs:
                 self._next_turn_queue = uncommitted_inputs + self._next_turn_queue
+                observation and observation.restore(uncommitted_inputs)
             # Safety net: guarantee a flush even if the loop crashed before
             # turn_end fired. Idempotent if turn_end already drained the queue.
             # Issue #301: a write that the session refuses is now handled
@@ -6419,6 +6508,8 @@ class AgentHarness:
             return
         self._unanswered = None
         committed = unanswered.committed
+        observation = self._input_observation
+        observation and observation.withdraw(committed, prompt if prompt_uncommitted else None)
         prompt_withdrawn = prompt_uncommitted or any(o is prompt for o, _ in committed)
 
         # In commit order, so the queue keeps it: what committed went ahead of what
@@ -6431,6 +6522,7 @@ class AgentHarness:
         pending.clear()
         if requeued:
             self._next_turn_queue = requeued + self._next_turn_queue
+            observation and observation.restore(requeued)
 
         finals = [final for _, final in committed]
 
@@ -6502,6 +6594,7 @@ class AgentHarness:
         # the file and the model see them in the same order. With the inbox off
         # (``notice_inbox``) this is the drain it was before #722.
         steering = self._steering_queue.drain()
+        self._input_observation and self._input_observation.detach(steering)
         self._note_final(steering)  # ADR-0306 — at every drain, notices or not
         if not self._notices_enabled:
             return steering
@@ -6509,6 +6602,7 @@ class AgentHarness:
 
     async def _drain_follow_up(self) -> list[AgentMessage]:
         follow_up = self._follow_up_queue.drain()
+        self._input_observation and self._input_observation.detach(follow_up)
         if not self._notices_enabled:
             return follow_up
         return [*await self._place_notices(), *follow_up]
@@ -6649,6 +6743,8 @@ class AgentHarness:
         self._idle_event.clear()
         claim = self._claim = object()
         self._turn_refusal = None
+        observation = self._input_observation
+        observation and observation.start("notice")
         self._abort_requested = self._withdraw_requested = False
         # ADR-0306 (#123 fix round 1, F5) — as in :meth:`prompt`: a consumed
         # final belongs to the run that read it. Left up, this turn's call had
@@ -6661,6 +6757,7 @@ class AgentHarness:
                 return PromptNoticesResult(started=False, reason="refused")
             placed = await self._place_notices()
             if not placed and not await self.unanswered_notice_at_leaf():
+                observation and observation.set_outcome("noWork")
                 return PromptNoticesResult(started=False, reason="nothing")
             # Live state follows the session (``_run`` reads the context from it).
             self._state.messages.extend(placed)
@@ -6677,9 +6774,14 @@ class AgentHarness:
                 if injected and injected.system_prompt is not None
                 else self._state.system_prompt
             )
+            observation and observation.initial_prefix(len(prompts))
             result = await self._run(prompts, system_prompt=system_prompt)
             await self._settle_runs(result, system_prompt, claim)
+            observation and observation.complete(self._abort_requested)
             return PromptNoticesResult(started=True, placed=len(placed))
+        except asyncio.CancelledError:
+            observation and observation.set_outcome("aborted")
+            raise
         finally:
             await self._release_prompt()
 
@@ -6879,6 +6981,7 @@ class AgentHarness:
             return
         self._next_turn_queue = [m for m in self._next_turn_queue if not isinstance(m, UserMessage)]
         self._steering_queue._messages, self._follow_up_queue._messages = [], []
+        self._input_observation and self._input_observation.remove(queued)
         self._withdrawn_queued.extend(queued)
         await self._emit_input_withdrawn([], prompt_withdrawn=False)
         with contextlib.suppress(AgentHarnessError):
@@ -6911,6 +7014,15 @@ class AgentHarness:
 
 
 # === AgentEvent → HookEvent mapping ===
+
+
+# Snapshot the implementation identities before an embedder can replace a dispatch point.
+_BASE_INPUT_METHODS = {
+    "prompt": AgentHarness.prompt,
+    "steer": AgentHarness.steer,
+    "follow_up": AgentHarness.follow_up,
+}
+_BASE_INPUT_PERSIST = AgentHarness._persist_observed_message
 
 
 def _to_hook_event(event: AgentEvent) -> HookEvent:

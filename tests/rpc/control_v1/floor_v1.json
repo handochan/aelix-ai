@@ -2083,6 +2083,23 @@
             "type data object",
             "type data.methods array"
           ]
+        },
+        "writer-owned CLI lists input observation": {
+          "since": "#865",
+          "kind": "data",
+          "rig": "input-observation",
+          "sends": {},
+          "digest": "ea3107e6bc723ab036ac37f330567a2d51abb9852531f08a9996d6ced9d5babc",
+          "facts": [
+            "const data.version 1",
+            "contains data.methods {\"const\": \"inputs/observe\"}",
+            "req data.methods array",
+            "req data.version integer",
+            "reqif data.methods array",
+            "reqif data.version integer",
+            "type data object",
+            "type data.methods array"
+          ]
         }
       }
     },
@@ -4765,6 +4782,126 @@
             "type data.extensions[].entry null|string",
             "type data.extensions[].name string",
             "type data.extensions[].version null|string"
+          ]
+        }
+      }
+    },
+    "inputs/observe": {
+      "since": "#865",
+      "hosts": [
+        "cli-rpc"
+      ],
+      "requires": "input-observation",
+      "params": {
+        "enabled": {
+          "type": "boolean",
+          "required": true
+        }
+      },
+      "data": {
+        "bindingId": "null|string",
+        "enabled": "boolean",
+        "subscriptionId": "null|string"
+      },
+      "forwarded": {
+        "bindingId": "null|string",
+        "enabled": "boolean",
+        "subscriptionId": "null|string"
+      },
+      "closed": {},
+      "open": {},
+      "cases": {
+        "enable on a clean binding": {
+          "since": "#865",
+          "kind": "data",
+          "rig": "input-observation",
+          "sends": {
+            "enabled": true
+          },
+          "digest": "2859641a9ecc3f71cc8f93658e9258fede877e309e94e290247cc28d9ff0ed75",
+          "facts": [
+            "bound data.bindingId:minLength 1",
+            "bound data.subscriptionId:minLength 1",
+            "const data.enabled true",
+            "req data.bindingId string",
+            "req data.enabled boolean",
+            "req data.subscriptionId string",
+            "reqif data.bindingId string",
+            "reqif data.enabled boolean",
+            "reqif data.subscriptionId string",
+            "step sensitive.enabled false",
+            "type data object",
+            "type data.bindingId string",
+            "type data.subscriptionId string"
+          ]
+        },
+        "disable returns no epoch": {
+          "since": "#865",
+          "kind": "data",
+          "rig": "input-observation",
+          "sends": {
+            "enabled": false
+          },
+          "digest": "17ff8f6dde385aa2fa5b5d5e63299e67ec42ab2b1bd0c3f9f98b96368776f0e1",
+          "facts": [
+            "const data.bindingId null",
+            "const data.enabled false",
+            "const data.subscriptionId null",
+            "req data.bindingId null",
+            "req data.enabled boolean",
+            "req data.subscriptionId null",
+            "reqif data.bindingId null",
+            "reqif data.enabled boolean",
+            "reqif data.subscriptionId null",
+            "step before[0] {\"method\": \"inputs/observe\", \"params\": {\"enabled\": true}}",
+            "type data object"
+          ]
+        },
+        "enabled must be a boolean": {
+          "since": "#865",
+          "kind": "error",
+          "rig": "input-observation",
+          "sends": {
+            "enabled": "true"
+          },
+          "digest": "f33244bee092e455caab04c3307132a1cc1053b9727e6eb4a0f54b3b32aca800",
+          "facts": [
+            "const error \"Invalid input observation params\""
+          ]
+        },
+        "enabled is required": {
+          "since": "#865",
+          "kind": "error",
+          "rig": "input-observation",
+          "sends": {},
+          "digest": "c4e1e3215b38ec06e4f4d1aa4da10ad34cbb7298d374af440bda8d484536b78e",
+          "facts": [
+            "const error \"Invalid input observation params\""
+          ]
+        },
+        "additional params are rejected": {
+          "since": "#865",
+          "kind": "error",
+          "rig": "input-observation",
+          "sends": {
+            "enabled": true,
+            "extra": true
+          },
+          "digest": "cfd003feb5d3737e5d1bc6d3381b02300ff91c2d6913fbf7850fd7c1e005bfb9",
+          "facts": [
+            "const error \"Invalid input observation params\""
+          ]
+        },
+        "service absent": {
+          "since": "#865",
+          "kind": "error",
+          "rig": "bare",
+          "sends": {
+            "enabled": true
+          },
+          "digest": "ef4e3fe0e8d50b5742e65b2862d58d35bd6c8d2375fdd3f1d5361b0106bd48d8",
+          "facts": [
+            "const error \"Unsupported runtime control method: inputs/observe\""
           ]
         }
       }
@@ -14911,6 +15048,274 @@
         }
       },
       "frameType": "aelix_child"
+    },
+    "aelix_input": {
+      "since": "#865",
+      "hosts": [
+        "cli-rpc"
+      ],
+      "requires": "input-observation",
+      "params": {},
+      "frame": {
+        "bindingId": "string",
+        "event": "string",
+        "seq": "integer",
+        "subscriptionId": "string",
+        "type": "string"
+      },
+      "forwarded": {
+        "attempt": "integer",
+        "bindingId": "string",
+        "consumedPromptId": "string",
+        "entryId": "string",
+        "event": "string",
+        "input": "object",
+        "input.attempt": "integer",
+        "input.inputId": "string",
+        "input.requestId": "string",
+        "input.route": "string",
+        "input.source": "string",
+        "inputId": "string",
+        "inputIndex": "integer",
+        "message": "object",
+        "message.content": "array",
+        "message.content[]": "object",
+        "message.content[].text": "string",
+        "message.content[].text_signature": "string",
+        "message.content[].type": "string",
+        "message.role": "string",
+        "message.timestamp": "null",
+        "nativeSessionId": "string",
+        "outcome": "string",
+        "parentEntryId": "string",
+        "placement": "string",
+        "promptId": "string",
+        "promptKind": "string",
+        "queuedPromptId": "null|string",
+        "reason": "string",
+        "requestId": "string",
+        "route": "string",
+        "seq": "integer",
+        "sequence": "integer",
+        "source": "string",
+        "streamId": "string",
+        "subscriptionId": "string",
+        "turnIndex": "integer",
+        "type": "string"
+      },
+      "closed": {
+        "frame.event": [
+          "consumed",
+          "input_settled",
+          "prompt_settled",
+          "prompt_started",
+          "queued",
+          "stream_gap"
+        ]
+      },
+      "open": {},
+      "cases": {
+        "placements and terminals follow the claim": {
+          "since": "#865",
+          "kind": "frames",
+          "rig": "input-observation",
+          "sends": {
+            "classic_prompt": {
+              "message": "direct fixture input"
+            },
+            "until": "native_idle"
+          },
+          "digest": "e025f503ab64832ef945c28bf6faa496b66ee9d950f1453b18b4ece01a5b1d06",
+          "facts": [
+            "anyOf frame[0] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[1] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[2] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[3] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[4] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[5] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "anyOf frame[6] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "bound frame[0].bindingId:minLength 1",
+            "bound frame[0].subscriptionId:minLength 1",
+            "bound frame[1].bindingId:minLength 1",
+            "bound frame[1].subscriptionId:minLength 1",
+            "bound frame[2].bindingId:minLength 1",
+            "bound frame[2].subscriptionId:minLength 1",
+            "bound frame[3].bindingId:minLength 1",
+            "bound frame[3].subscriptionId:minLength 1",
+            "bound frame[4].bindingId:minLength 1",
+            "bound frame[4].subscriptionId:minLength 1",
+            "bound frame[5].bindingId:minLength 1",
+            "bound frame[5].subscriptionId:minLength 1",
+            "bound frame[6].bindingId:minLength 1",
+            "bound frame[6].subscriptionId:minLength 1",
+            "closed frame[0].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[1].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[2].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[3].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[4].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[5].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "closed frame[6].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "const frame[0].event \"prompt_started\"",
+            "const frame[0].type \"aelix_input\"",
+            "const frame[1].event \"queued\"",
+            "const frame[1].type \"aelix_input\"",
+            "const frame[2].event \"consumed\"",
+            "const frame[2].type \"aelix_input\"",
+            "const frame[3].event \"consumed\"",
+            "const frame[3].type \"aelix_input\"",
+            "const frame[4].event \"input_settled\"",
+            "const frame[4].type \"aelix_input\"",
+            "const frame[5].event \"input_settled\"",
+            "const frame[5].type \"aelix_input\"",
+            "const frame[6].event \"prompt_settled\"",
+            "const frame[6].type \"aelix_input\"",
+            "req frame[0].bindingId string",
+            "req frame[0].event string",
+            "req frame[0].seq integer",
+            "req frame[0].subscriptionId string",
+            "req frame[0].type string",
+            "req frame[1].bindingId string",
+            "req frame[1].event string",
+            "req frame[1].seq integer",
+            "req frame[1].subscriptionId string",
+            "req frame[1].type string",
+            "req frame[2].bindingId string",
+            "req frame[2].event string",
+            "req frame[2].seq integer",
+            "req frame[2].subscriptionId string",
+            "req frame[2].type string",
+            "req frame[3].bindingId string",
+            "req frame[3].event string",
+            "req frame[3].seq integer",
+            "req frame[3].subscriptionId string",
+            "req frame[3].type string",
+            "req frame[4].bindingId string",
+            "req frame[4].event string",
+            "req frame[4].seq integer",
+            "req frame[4].subscriptionId string",
+            "req frame[4].type string",
+            "req frame[5].bindingId string",
+            "req frame[5].event string",
+            "req frame[5].seq integer",
+            "req frame[5].subscriptionId string",
+            "req frame[5].type string",
+            "req frame[6].bindingId string",
+            "req frame[6].event string",
+            "req frame[6].seq integer",
+            "req frame[6].subscriptionId string",
+            "req frame[6].type string",
+            "reqif frame[0].bindingId string",
+            "reqif frame[0].event string",
+            "reqif frame[0].seq integer",
+            "reqif frame[0].subscriptionId string",
+            "reqif frame[0].type string",
+            "reqif frame[1].bindingId string",
+            "reqif frame[1].event string",
+            "reqif frame[1].seq integer",
+            "reqif frame[1].subscriptionId string",
+            "reqif frame[1].type string",
+            "reqif frame[2].bindingId string",
+            "reqif frame[2].event string",
+            "reqif frame[2].seq integer",
+            "reqif frame[2].subscriptionId string",
+            "reqif frame[2].type string",
+            "reqif frame[3].bindingId string",
+            "reqif frame[3].event string",
+            "reqif frame[3].seq integer",
+            "reqif frame[3].subscriptionId string",
+            "reqif frame[3].type string",
+            "reqif frame[4].bindingId string",
+            "reqif frame[4].event string",
+            "reqif frame[4].seq integer",
+            "reqif frame[4].subscriptionId string",
+            "reqif frame[4].type string",
+            "reqif frame[5].bindingId string",
+            "reqif frame[5].event string",
+            "reqif frame[5].seq integer",
+            "reqif frame[5].subscriptionId string",
+            "reqif frame[5].type string",
+            "reqif frame[6].bindingId string",
+            "reqif frame[6].event string",
+            "reqif frame[6].seq integer",
+            "reqif frame[6].subscriptionId string",
+            "reqif frame[6].type string",
+            "step before[0] {\"method\": \"inputs/observe\", \"params\": {\"enabled\": true}}",
+            "step frameType \"aelix_input\"",
+            "step setup \"input-observation\"",
+            "step trigger {\"classic_prompt\": {\"message\": \"direct fixture input\"}, \"until\": \"native_idle\"}",
+            "type frame[0] object",
+            "type frame[0].bindingId string",
+            "type frame[0].event string",
+            "type frame[0].seq integer",
+            "type frame[0].subscriptionId string",
+            "type frame[1] object",
+            "type frame[1].bindingId string",
+            "type frame[1].event string",
+            "type frame[1].seq integer",
+            "type frame[1].subscriptionId string",
+            "type frame[2] object",
+            "type frame[2].bindingId string",
+            "type frame[2].event string",
+            "type frame[2].seq integer",
+            "type frame[2].subscriptionId string",
+            "type frame[3] object",
+            "type frame[3].bindingId string",
+            "type frame[3].event string",
+            "type frame[3].seq integer",
+            "type frame[3].subscriptionId string",
+            "type frame[4] object",
+            "type frame[4].bindingId string",
+            "type frame[4].event string",
+            "type frame[4].seq integer",
+            "type frame[4].subscriptionId string",
+            "type frame[5] object",
+            "type frame[5].bindingId string",
+            "type frame[5].event string",
+            "type frame[5].seq integer",
+            "type frame[5].subscriptionId string",
+            "type frame[6] object",
+            "type frame[6].bindingId string",
+            "type frame[6].event string",
+            "type frame[6].seq integer",
+            "type frame[6].subscriptionId string"
+          ]
+        },
+        "binding swap retires the epoch": {
+          "since": "#865",
+          "kind": "frames",
+          "rig": "input-observation",
+          "sends": {
+            "classic_swap": true
+          },
+          "digest": "8e575dd2e4088999b78240fb71ece34e67cf006bbaf1ad29eaabc73f861f3acf",
+          "facts": [
+            "anyOf frame[0] [{\"properties\": {\"event\": {\"const\": \"prompt_started\"}, \"input\": {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"inputId\", \"attempt\", \"source\", \"route\"], \"type\": \"object\"}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}, \"promptKind\": {\"enum\": [\"prompt\", \"notice\"]}}, \"required\": [\"event\", \"promptId\", \"promptKind\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"queued\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"message\": {\"properties\": {\"content\": {\"type\": \"array\"}, \"role\": {\"const\": \"user\"}, \"timestamp\": {\"type\": [\"number\", \"null\"]}}, \"required\": [\"role\", \"content\", \"timestamp\"], \"type\": \"object\"}, \"placement\": {\"const\": \"available\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"message\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"consumedPromptId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"consumed\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"inputIndex\": {\"type\": \"integer\"}, \"placement\": {\"const\": \"unavailable\"}, \"queuedPromptId\": {\"type\": [\"string\", \"null\"]}, \"reason\": {\"enum\": [\"contextMismatch\", \"noModelRequest\", \"bodyTooLarge\", \"bodyUnencodable\"]}, \"requestId\": {\"minLength\": 1, \"type\": \"string\"}, \"route\": {\"enum\": [\"prompt\", \"steer\", \"followUp\", \"nextTurn\", \"prefix\"]}, \"source\": {\"enum\": [\"rpc\", \"extension\", \"native\"]}, \"streamId\": {\"minLength\": 1, \"type\": \"string\"}, \"turnIndex\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"source\", \"route\", \"queuedPromptId\", \"consumedPromptId\", \"turnIndex\", \"inputIndex\", \"streamId\", \"placement\", \"reason\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"entryId\": {\"minLength\": 1, \"type\": \"string\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"nativeSessionId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"const\": \"committed\"}, \"parentEntryId\": {\"type\": [\"string\", \"null\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}, \"sequence\": {\"type\": \"integer\"}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\", \"nativeSessionId\", \"entryId\", \"parentEntryId\", \"sequence\"], \"type\": \"object\"}, {\"properties\": {\"attempt\": {\"type\": \"integer\"}, \"event\": {\"const\": \"input_settled\"}, \"inputId\": {\"minLength\": 1, \"type\": \"string\"}, \"outcome\": {\"enum\": [\"withdrawn\", \"notAdmitted\", \"notStored\", \"storageOnly\", \"unknown\"]}, \"promptId\": {\"type\": [\"string\", \"null\"]}}, \"required\": [\"event\", \"inputId\", \"attempt\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"prompt_settled\"}, \"outcome\": {\"enum\": [\"complete\", \"aborted\", \"failed\", \"handled\", \"noWork\"]}, \"promptId\": {\"minLength\": 1, \"type\": \"string\"}}, \"required\": [\"event\", \"promptId\", \"outcome\"], \"type\": \"object\"}, {\"properties\": {\"event\": {\"const\": \"stream_gap\"}, \"reason\": {\"enum\": [\"bindingChanged\", \"budgetExceeded\", \"unverifiable\"]}}, \"required\": [\"event\", \"reason\"], \"type\": \"object\"}]",
+            "bound frame[0].bindingId:minLength 1",
+            "bound frame[0].subscriptionId:minLength 1",
+            "closed frame[0].event [\"consumed\", \"input_settled\", \"prompt_settled\", \"prompt_started\", \"queued\", \"stream_gap\"]",
+            "const frame[0].event \"stream_gap\"",
+            "const frame[0].type \"aelix_input\"",
+            "req frame[0].bindingId string",
+            "req frame[0].event string",
+            "req frame[0].seq integer",
+            "req frame[0].subscriptionId string",
+            "req frame[0].type string",
+            "reqif frame[0].bindingId string",
+            "reqif frame[0].event string",
+            "reqif frame[0].seq integer",
+            "reqif frame[0].subscriptionId string",
+            "reqif frame[0].type string",
+            "step before[0] {\"method\": \"inputs/observe\", \"params\": {\"enabled\": true}}",
+            "step trigger {\"classic_swap\": true}",
+            "type frame[0] object",
+            "type frame[0].bindingId string",
+            "type frame[0].event string",
+            "type frame[0].seq integer",
+            "type frame[0].subscriptionId string"
+          ]
+        }
+      },
+      "frameType": "aelix_input"
     },
     "aelix_notice": {
       "since": "#612",

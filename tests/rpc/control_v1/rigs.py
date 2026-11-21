@@ -75,7 +75,7 @@ HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
 FLOOR = HERE / "floor_v1.json"
 EXTENSION_FILE = HERE / "ui_extension.py"
-RIG_NAMES = ("bare", "full", "turn", "child")
+RIG_NAMES = ("bare", "full", "turn", "child", "input-observation")
 WAIT_S = 60.0
 PROFILE = "reviewer"
 SKILL = "fixture-skill"
@@ -340,6 +340,7 @@ REQUIRES: dict[str, str] = {
     "selections": "selections",
     "jobs": "jobs",
     "transcript": "transcript",
+    "input-observation": "input_observation",
 }
 
 
@@ -780,7 +781,15 @@ async def _transcript_special(rig: Rig, mode: str) -> None:
         storage._fs.append_file = fault
 
 
+async def _input_observation_seed(rig: Rig) -> None:
+    async def steer(_event: Any, _ctx: Any) -> None:
+        await rig.harness.steer("queued from the fixture")
+
+    rig.harness.hooks.on("before_agent_start", steer)
+
+
 SETUPS: dict[str, Setup] = {
+    "input-observation": Setup(post=_input_observation_seed),
     "project_settings_absent": Setup(pre=_project_settings_absent),
     "many_mcp_servers": Setup(
         pre=lambda seed: _mcp_servers(seed, [f"s{n}" for n in range(MAX_CHANGES)])
@@ -1034,7 +1043,7 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
         name=name, seed=seed, wire=wire, harness=harness, runtime=runtime, values=values, gate=gate
     )
     box.append(rig)
-    if name in ("full", "turn"):
+    if name in ("full", "turn", "input-observation"):
         register_oauth_provider(_FixtureOAuth())
         rig.cleanups.append(lambda: unregister_oauth_provider(OAUTH_PROVIDER))
     inventory = (
@@ -1360,7 +1369,16 @@ async def _send_case(
         )
         params = resolve({**case.get("params", {}), **(override or {})}, values)
         result.params = params
-        result.response = await request(wire, f"{prefix}case", fixture["method"], params)
+        if "method" in fixture:
+            result.response = await request(wire, f"{prefix}case", fixture["method"], params)
+        return
+    if trigger is not None and "classic_swap" in trigger:
+        request_id = f"{prefix}swap"
+        start = len(wire.records)
+        wire.send({"type": "new_session", "id": request_id})
+        answer = await _wait(wire.response(request_id), "binding swap", wire)
+        assert answer["success"] and not answer["data"]["cancelled"], answer
+        result.frames = [frame for frame in wire.records[start:] if frame["type"] == fixture["frameType"]]
         return
     seen = {id(record) for record in wire.records}
     collect_only = trigger is not None and (

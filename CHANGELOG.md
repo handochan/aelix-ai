@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Opt-in input observation on CLI-RPC (#865, ADR-0310).** Hosts with a
+  writer-owned R9 binding and transition fence can discover `inputs/observe` and receive bounded
+  post-reducer user placements before assistant output and terminal decisions
+  before native idle. The control-v1 fixtures exercise discovery, placement,
+  settlement and binding retirement.
+
 - **CLI-RPC can page stored messages and join live frames to their storage keys
   (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
   coordinates fit the reply bound, discover `transcript/list` to read stored
