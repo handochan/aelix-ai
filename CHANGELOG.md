@@ -54,6 +54,13 @@ unwritten. Add them with the next release.
   ratchet's `UNTRACKED` note, since CI measures that file once it is committed
   (`::test_a_passing_complexity_gate_shows_the_untracked_note`).
 
+- **Identify a cooperating session writer on POSIX contention (#868, ADR-0316).**
+  Interactive startup and `/resume` name Aelix CLI or Studio when local proof
+  verifies the current writer. The attribution tests passed on macOS locally
+  and on the Linux CI matrix for PR #880. Opted-in stdio RPC keeps structured
+  startup, switch and branch-return refusals. On Windows, the generic text and
+  unknown holder apply in beta.3, as specified in ADR-0316.
+
 - **CLI-RPC can page stored messages and join live frames to their storage keys
   (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
   coordinates fit the reply bound, discover `transcript/list` to read stored

@@ -36,6 +36,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0316 — Report a cooperating session writer at the point of contention](0316-session-writer-attribution.md)
+  (Accepted 2026-11-21, #868. Amended 2026-11-21, #868, to limit beta.3 attribution to POSIX.) Verify the current held lock file before attributing Studio or CLI. Interactive prompts retain their existing choices. Opted-in stdio can carry typed contention, and ACP verifies its original binding after a failed branch.
+
 - [0101 — MCP Client](0101-sprint-6h9d-mcp-client.md) (Amended 2026-11-20,
   #834.) Launch tests cover typed HTTP/SSE connection diagnostics, bounded
   JSON-RPC warnings, SDK metadata filtering, and tool discovery failure isolation

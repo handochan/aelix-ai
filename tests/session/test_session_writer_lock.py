@@ -15,6 +15,7 @@ which backend is actually in use rather than merely that nothing crashed.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import subprocess
@@ -524,3 +525,72 @@ def test_two_spellings_of_one_file_contend(tmp_path: Path) -> None:
     finally:
         first.release()
         second.release()
+
+
+_FORK = """
+import gc
+import os
+import sys
+from aelix_agent_core.session.session_lock import SessionWriterLock
+
+# The second, forked process stays alive when its parent exits. It must
+# neither unlock its parent's file nor extend ownership past the parent's exit.
+writer = SessionWriterLock(sys.argv[1], timeout=0)
+assert writer.try_acquire() and writer.held
+reader, signal = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(reader)
+    writer.release()
+    assert not writer.held
+    del writer
+    gc.collect()
+    os.write(signal, b"C")
+    # Wait for EOF from the test driver. The parent is coordinated separately.
+    while os.read(0, 1):
+        pass
+    os._exit(0)
+os.close(signal)
+assert os.read(reader, 1) == b"C"
+print(child, flush=True)
+import time
+while not os.path.exists(sys.argv[2]):
+    time.sleep(0.01)
+os._exit(0)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX fork and flock")
+def test_inherited_wrapper_cannot_unlock_or_outlive_parent(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    leave = tmp_path / "parent-exit"
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", _FORK, str(path), str(leave)],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert process.stdout is not None and process.stdin is not None
+        # A separate byte pipe observes both children before exercising the contention.
+        with contextlib.ExitStack() as stack:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stack.enter_context(stream)
+            import select
+
+            assert select.select([process.stdout], [], [], 10)[0], "fork did not finish"
+            assert process.stdout.readline().strip().isdigit(), process.poll()
+            contender = SessionWriterLock(str(path), timeout=0)
+            assert not contender.try_acquire()
+            leave.touch()
+            assert process.wait(timeout=10) == 0
+            assert contender.try_acquire() and contender.held
+            contender.release()
+            process.stdin.close()
+            assert select.select([process.stdout], [], [], 10)[0], "forked child did not finish"
+            assert process.stdout.read() == b""
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)

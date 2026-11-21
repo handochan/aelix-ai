@@ -1631,6 +1631,7 @@
         "permissionModes[]": "string",
         "selectionKinds": "array",
         "selectionKinds[]": "string",
+        "sessionLockErrors": "integer",
         "subagentsEnabled": "boolean",
         "thinkingLevels": "array",
         "thinkingLevels[]": "string",
@@ -1644,6 +1645,7 @@
         "permissionModes[]": "string",
         "selectionKinds": "array",
         "selectionKinds[]": "string",
+        "sessionLockErrors": "integer",
         "subagentsEnabled": "boolean",
         "thinkingLevels": "array",
         "thinkingLevels[]": "string",
@@ -2082,6 +2084,32 @@
             "reqif data.version integer",
             "type data object",
             "type data.methods array"
+          ]
+        },
+        "opted-in stdio advertises session-lock errors": {
+          "since": "#868",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "2951348197e835fc098d396a7e79c43fe88a8f66b8eec8d3719a53984e891f88",
+          "facts": [
+            "const data.sessionLockErrors 1",
+            "req data.sessionLockErrors integer",
+            "reqif data.sessionLockErrors integer",
+            "step setup \"session_lock_errors\"",
+            "type data object"
+          ]
+        },
+        "unopted stdio omits session-lock errors": {
+          "since": "#868",
+          "kind": "data",
+          "rig": "child",
+          "sends": {},
+          "digest": "e37bc4ff322d62884c450f40e8742e0d4c103d3e458b937bc913f7a0ee6a67ef",
+          "facts": [
+            "not data {\"required\": [\"sessionLockErrors\"]}",
+            "step replay true",
+            "type data object"
           ]
         }
       }
@@ -16807,6 +16835,130 @@
           "facts": [
             "source packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py \"session is already open in another terminal: \"",
             "source packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py \"Error: this session is already open in another terminal.\""
+          ]
+        },
+        "opted-in return contention omits an unknown holder": {
+          "since": "#868",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "kind": "clone"
+          },
+          "digest": "6787449c49c3024c098fb6a1d53c4c3ab096c1365178d830825c5a3179c99e78",
+          "facts": [
+            "bound error:pattern \"already open in another terminal\"",
+            "closed response.errorDetails{} [\"kind\"]",
+            "const response.errorDetails.kind \"session_locked\"",
+            "propertyNames response.errorDetails {\"enum\": [\"kind\"]}",
+            "req response.errorDetails object",
+            "req response.errorDetails.kind string",
+            "reqif response.errorDetails object",
+            "reqif response.errorDetails.kind string",
+            "step method \"sessions/branch\"",
+            "step setup \"session_lock_errors_on_return\"",
+            "type error string",
+            "type response object",
+            "type response.errorDetails object"
+          ]
+        },
+        "unopted return contention omits errorDetails": {
+          "since": "#868",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "kind": "clone"
+          },
+          "digest": "8555d2e18ad60601759727022c4aea5669f1be619ecfc42197f63fa36dec719f",
+          "facts": [
+            "bound error:pattern \"already open in another terminal\"",
+            "not response {\"required\": [\"errorDetails\"]}",
+            "step method \"sessions/branch\"",
+            "step setup \"hold_the_original_session\"",
+            "type error string",
+            "type response object"
+          ]
+        },
+        "opted-in validation error omits errorDetails": {
+          "since": "#868",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "kind": "other"
+          },
+          "digest": "d87f53c0be87d878635a7db42d1f85898ffc691f1ba9279f4207737a10bad226",
+          "facts": [
+            "bound error:minLength 1",
+            "not response {\"required\": [\"errorDetails\"]}",
+            "step method \"sessions/branch\"",
+            "step setup \"session_lock_errors\"",
+            "type error string",
+            "type response object"
+          ]
+        },
+        "opted-in startup preserves the refusal and ends in an unknown-holder frame": {
+          "since": "#868",
+          "kind": "launch",
+          "rig": "child",
+          "sends": {
+            "args": [
+              "--session",
+              "$rig:locked_session",
+              "--rpc-session-lock-errors=581b49ec167bd24c36378b26ffcb9a3b"
+            ],
+            "startupRecord": {
+              "nonce": "581b49ec167bd24c36378b26ffcb9a3b",
+              "kind": "session_locked"
+            }
+          },
+          "digest": "b361cc729f7f9b5da0eb5d13f64fcb77465caff56b3e20365ba3cf92ce9558db",
+          "facts": [
+            "bound stderr:pattern \"already open in another terminal\"",
+            "step replay true",
+            "type stderr string"
+          ]
+        },
+        "opted-in return contention reports a known holder": {
+          "since": "#868",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "kind": "clone"
+          },
+          "digest": "2ee018537cc41545363db5f6ecf88955f1d4b35e44d777099f14ee5cf5a87bdf",
+          "facts": [
+            "bound error:pattern \"Created branch.*already open in another terminal\"",
+            "closed response.errorDetails{} [\"holderKind\", \"kind\"]",
+            "const response.errorDetails.holderKind \"studio\"",
+            "const response.errorDetails.kind \"session_locked\"",
+            "propertyNames response.errorDetails {\"enum\": [\"kind\", \"holderKind\"]}",
+            "req response.errorDetails object",
+            "req response.errorDetails.holderKind string",
+            "req response.errorDetails.kind string",
+            "reqif response.errorDetails object",
+            "reqif response.errorDetails.holderKind string",
+            "reqif response.errorDetails.kind string",
+            "step method \"sessions/branch\"",
+            "step setup \"session_lock_errors_on_studio_return\"",
+            "type error string",
+            "type response object",
+            "type response.errorDetails object"
+          ]
+        },
+        "opted-in return veto omits errorDetails": {
+          "since": "#868",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "kind": "clone"
+          },
+          "digest": "24d75a24a66f4e849d494eb18e96074a94f9c150c2fc24f7a68fc55f32c5b06c",
+          "facts": [
+            "bound error:pattern \"an extension vetoed returning\"",
+            "not response {\"required\": [\"errorDetails\"]}",
+            "step method \"sessions/branch\"",
+            "step setup \"session_lock_errors_on_vetoed_return\"",
+            "type error string",
+            "type response object"
           ]
         }
       },

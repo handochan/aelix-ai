@@ -290,7 +290,7 @@ async def test_a_huge_output_is_capped_in_the_record_but_not_on_screen(
 
     Every sibling has one — the model-facing tool at 2000 lines / 50KB
     (``tools/bash.py:70``), ad-hoc RPC bash at 256 / 32KB
-    (``rpc/rpc_mode.py:682``), pi's own ``!`` path via ``truncateTail``
+    (``rpc/rpc_mode.py:684``), pi's own ``!`` path via ``truncateTail``
     (``core/bash-executor.ts:113``). Uncapped, the record is re-sent on every
     later turn and every ``--continue``: measured before the cap,
     ``print('x'*1000000)`` wrote a 1,000,047-char ``UserMessage`` and a

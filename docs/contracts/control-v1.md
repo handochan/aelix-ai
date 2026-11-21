@@ -163,7 +163,7 @@ every case.
 | `auth/logout` | `providers`, `providers[]`, `providers[].configured`, `providers[].provider`, `providers[].source` |
 | `auth/set_api_key` | `providers`, `providers[]`, `providers[].configured`, `providers[].provider`, `providers[].source` |
 | `auth/status` | `providers`, `providers[]`, `providers[].configured`, `providers[].provider`, `providers[].source` |
-| `capabilities` | `activeAgent`, `methods`, `methods[]`, `permissionModes`, `permissionModes[]`, `selectionKinds`, `selectionKinds[]`, `subagentsEnabled`, `thinkingLevels`, `thinkingLevels[]`, `version` |
+| `capabilities` | `activeAgent`, `methods`, `methods[]`, `permissionModes`, `permissionModes[]`, `selectionKinds`, `selectionKinds[]`, `sessionLockErrors`, `subagentsEnabled`, `thinkingLevels`, `thinkingLevels[]`, `version` |
 | `children/events` | `epoch`, `events`, `events[]`, `events[].data`, `events[].data.args`, `events[].data.background`, `events[].data.callId`, `events[].data.epoch`, `events[].data.id`, `events[].data.jobId`, `events[].data.name`, `events[].data.parentToolCallId`, `events[].data.profile`, `events[].data.seq`, `events[].data.sessionId`, `events[].data.state`, `events[].data.status`, `events[].data.text`, `events[].data.wrappingUp`, `events[].event`, `gap`, `lowSeq`, `nextSeq` |
 | `children/list` | `children`, `children[]`, `children[].activity`, `children[].activity[]`, `children[].activity[].args`, `children[].activity[].name`, `children[].activity[].status`, `children[].approval`, `children[].approval.callId`, `children[].approval.toolName`, `children[].background`, `children[].cost`, `children[].currentTool`, `children[].elapsedMs`, `children[].end`, `children[].id`, `children[].jobId`, `children[].lastText`, `children[].lowSeq`, `children[].model`, `children[].parentToolCallId`, `children[].profile`, `children[].provider`, `children[].seq`, `children[].sessionId`, `children[].state`, `children[].stuck`, `children[].tokens`, `children[].wrappingUp`, `epoch` |
 | `children/notices` | `cancelled`, `method`, `placed`, `reason`, `remaining`, `started` |
@@ -344,3 +344,58 @@ The owner took main at freeze time as the baseline on 2026-11-17 ("메서드 + �
 aelix-acp PR #39 (`03b9e32`) moves the pin to aelix-ai `83714045`, after the freeze baseline. Its
 native suite passed against that commit: `scripts/test_native.py --check-ref`, 292 tests, with 1
 Windows-only skip, macOS (`.omc/probes/612/l3/lead/native-03b9e32.txt`).
+
+### Session-lock errors on opted-in stdio (#868, ADR-0316)
+
+An artifact-qualified launcher passes `--rpc-session-lock-errors=<32 lowercase hex digits>`
+with a fresh nonce for each worker. A Studio-managed launch also passes
+`--session-writer-kind=studio` to declare the writer's origin. Ordinary native RPC starts
+with unknown origin.
+
+On true startup contention the process exits 1 with zero stdout bytes. After the
+complete existing stderr diagnostic it emits one final ASCII line, at most 256
+bytes including the literal LF. This frame shows a Studio holder.
+
+```text
+AELIX_RPC_STARTUP_ERROR/1 {"nonce":"581b49ec167bd24c36378b26ffcb9a3b","kind":"session_locked","holderKind":"studio"}
+```
+
+The launcher checks the nonce, exit, both EOFs and empty stdout, and requires one
+reserved-prefix line at the end. A POSIX newline in a session path can put that
+prefix in the preceding diagnostic. Ambiguous streams take the ordinary startup
+failure path and retain the diagnostic. An unqualified worker continues to use
+the existing text signal.
+
+After a successful opted-in stdio start, `capabilities.data.sessionLockErrors`
+is the integer `1`. The corresponding fields are absent for unopted stdio
+and WebSocket. An opted-in classic switch refusal retains the error string and
+adds a top-level sibling.
+
+```json
+{"type":"response","id":"s1","command":"switch_session","success":false,"error":"session is already open in another terminal: <target>","errorDetails":{"kind":"session_locked","holderKind":"cli"}}
+```
+
+For `sessions/branch`, only contention during the explicit return switch adds
+the detail. The error still identifies the created branch and current binding.
+
+```json
+{"type":"response","id":"b1","command":"aelix_control","success":false,"error":"Created branch <branch>, but returning to <original> failed (session is already open in another terminal: <original>); the runtime is now on <branch>","errorDetails":{"kind":"session_locked"}}
+```
+
+The producer omits `holderKind` when it cannot verify a known holder. On
+Windows in beta.3 all holders are unknown under ADR-0316. The startup frame
+keeps the nonce and contention kind, and switch or branch-return errors carry
+`"errorDetails":{"kind":"session_locked"}`. The Windows real-child test
+`test_windows_marked_writer_keeps_generic_contention` covers startup and switch.
+
+```text
+AELIX_RPC_STARTUP_ERROR/1 {"nonce":"581b49ec167bd24c36378b26ffcb9a3b","kind":"session_locked"}
+```
+
+A consumer treats future string values as unknown. The ACP client opts into
+non-null `holder` using integer `1` at
+`initialize.clientCapabilities._meta["aelix/sessionLockHolder"]`. The adapter
+matches typed replies by the pending request's ID and command. The existing
+`-33001` error retains its shape, including null holder for unknown or unopted
+clients. A branch failure or uncertain outcome requires settlement and an
+original-binding readback before subsequent writes on the same worker.

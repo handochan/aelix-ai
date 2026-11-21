@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import copy
 import dataclasses
+import functools
 import os
 import select
 import shutil
@@ -46,6 +48,7 @@ from aelix_agent_core.harness.core import (
 from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
+    AgentSessionRuntime,
     create_agent_session_runtime,
 )
 from aelix_agent_core.session.context import (
@@ -63,7 +66,11 @@ from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.read_only import ReadOnlySessionStorage
 from aelix_agent_core.session.session import Session
-from aelix_agent_core.session.session_lock import SessionWriterLock
+from aelix_agent_core.session.session_lock import (
+    SessionWriterLock,
+    WriterKind,
+    session_lock_holder,
+)
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
 from aelix_ai.utils.terminal_text import safe_for_terminal
@@ -91,6 +98,7 @@ from aelix_coding_agent.builtin.permission_mode import (
 from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
     session_choice_label,
+    session_lock_heading,
     short_field,
     with_conversation,
 )
@@ -2898,7 +2906,35 @@ async def _finish_refused_turns(harness: AgentHarness) -> None:
     await harness.wait_for_idle()
 
 
-async def _async_main(argv: list[str]) -> int:
+def _guard_startup(
+    run: Callable[[list[str], contextlib.AsyncExitStack], Awaitable[int]],
+) -> Callable[[list[str]], Awaitable[int]]:
+    @functools.wraps(run)
+    async def guarded(argv: list[str]) -> int:
+        async with contextlib.AsyncExitStack() as startup:
+            return await run(argv, startup)
+
+    return guarded
+
+
+def _launch_writer_kind(app_mode: AppMode, parsed: Args) -> WriterKind:
+    if app_mode == "rpc":
+        return "studio" if parsed.studio_session_writer else "unknown"
+    return "unknown" if subagent_depth() > 0 else "cli"
+
+
+def _release_startup_lock(lock: SessionWriterLock | None) -> None:
+    if lock is not None:
+        lock.release()
+
+
+async def _dispose_startup_runtime(runtime: AgentSessionRuntime) -> None:
+    with contextlib.suppress(Exception):
+        await runtime.dispose()
+
+
+@_guard_startup
+async def _async_main(argv: list[str], startup: contextlib.AsyncExitStack) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
     # #719 (ADR-0296): a delegated agent whose parent handed it a launch ledger
@@ -3318,12 +3354,15 @@ async def _async_main(argv: list[str]) -> int:
     # that can contend. One rule, one widget, one test matrix — a special case
     # per flag would be a second code path with its own bugs, for a difference
     # the user cannot see.
+    writer_kind = _launch_writer_kind(app_mode, parsed)
     ownership = await _resolve_session_ownership(
         session,
         repo,
         cwd,
         app_mode=app_mode,
         named_exactly=parsed.session is not None,
+        writer_kind=writer_kind,
+        rpc_nonce=parsed.rpc_session_lock_nonce,
         # The same three flags this comment block names as "the three that
         # can contend" — and for the same reason they are also the three that
         # read the file before they own it.
@@ -3334,6 +3373,7 @@ async def _async_main(argv: list[str]) -> int:
     if ownership is None:
         return 1
     session, session_lock, session_read_only = ownership
+    startup.callback(_release_startup_lock, session_lock)
 
     # #368 — ``--provider`` requires ``--model`` (pi ``main.ts:469-474`` @
     # b223082bb, 0c453048b): an argv usage error, in EVERY mode — print, json,
@@ -4877,7 +4917,9 @@ async def _async_main(argv: list[str]) -> int:
     # later. A read-only viewer can ``/resume``, and so can a
     # ``--no-session`` REPL — gating this on ``--no-session`` would have left
     # that one door open onto the exact defect.
-    runtime.set_writer_lock(session_lock)
+    runtime.set_writer_lock(session_lock, writer_kind=writer_kind)
+    startup.pop_all()
+    startup.push_async_callback(_dispose_startup_runtime, runtime)
     session_host["runtime"] = runtime
     # #795 (ADR-0304 D14) — the /agents panel's selection and kind, built once
     # here for EVERY mode, so the TUI and #624's RPC get the same object.
@@ -5189,6 +5231,7 @@ async def _async_main(argv: list[str]) -> int:
 
     # #703 — headless modes say on stderr, once, when strict TLS checking is relaxed.
     relaxation_notice_off: Callable[[], None] | None = None
+    startup.pop_all()  # the mode dispatch finally now owns disposal
     try:
         if late_route_refusal is not None:
             print(f"Error: {late_route_refusal}", file=sys.stderr)
@@ -5418,6 +5461,7 @@ async def _async_main(argv: list[str]) -> int:
                 # back-channel's permission extension (ADR-0308).
                 jobs=jobs_service,
                 permissions=permission_ext,
+                session_lock_errors=parsed.rpc_session_lock_nonce is not None,
             )
             return 0
 
@@ -5606,7 +5650,7 @@ def main_sync() -> None:
     load_dotenv()
     register_providers()
     try:
-        exit_code = asyncio.run(_async_main_noting_a_cancel(sys.argv[1:], ended))
+        exit_code, startup_frames = _run_cli(sys.argv[1:], ended)
         # Flush INSIDE the guard: if the stdout consumer vanished mid-run
         # (``aelix -p ... | head -1``), buffered bytes surface here as
         # BrokenPipeError instead of as the interpreter's noisy
@@ -5648,7 +5692,27 @@ def main_sync() -> None:
         except Exception:
             pass
         raise
+    if exit_code == 1 and startup_frames:
+        sys.stderr.flush()
+        sys.stderr.buffer.write(startup_frames[0])
+        sys.stderr.buffer.flush()
     sys.exit(exit_code)
+
+
+_STARTUP_LOCK_FRAMES: contextvars.ContextVar[list[bytes] | None] = contextvars.ContextVar(
+    "startup_lock_frames", default=None
+)
+
+
+def _run_cli(
+    argv: list[str], ended: list[tuple[asyncio.Task[Any], int]]
+) -> tuple[int, list[bytes]]:
+    frames: list[bytes] = []
+    token = _STARTUP_LOCK_FRAMES.set(frames)
+    try:
+        return asyncio.run(_async_main_noting_a_cancel(argv, ended)), frames
+    finally:
+        _STARTUP_LOCK_FRAMES.reset(token)
 
 
 # === #199 — delegated child sessions ======================================
@@ -5808,7 +5872,7 @@ def _session_owned_message(path: str) -> str:
 
 
 async def _prompt_session_owned_interactive(
-    path: str, *, default_read_only: bool
+    path: str, *, default_read_only: bool, holder: WriterKind = "unknown"
 ) -> Literal["fork", "read_only", "cancel"]:
     """D1's three-way question, on the same widget as the trust gate.
 
@@ -5833,8 +5897,9 @@ async def _prompt_session_owned_interactive(
         if default_read_only
         else [fork_label, read_only_label, cancel_label]
     )
+    heading = session_lock_heading(holder, unknown="This session is already open in another terminal.")
     chosen = await _prompt_one_shot_select(
-        f"This session is already open in another terminal.\n  {path}\n",
+        f"{heading}\n  {path}\n",
         options,
     )
     if chosen == fork_label:
@@ -5852,6 +5917,8 @@ async def _resolve_session_ownership(
     app_mode: AppMode,
     named_exactly: bool,
     opened_existing: bool,
+    writer_kind: WriterKind = "unknown",
+    rpc_nonce: str | None = None,
 ) -> tuple[Session, SessionWriterLock | None, bool] | None:
     """Give this terminal a session it may write to, or ``None`` to exit 1.
 
@@ -5872,39 +5939,43 @@ async def _resolve_session_ownership(
         # ``--no-session``: in-memory storage, no file, nothing to own.
         return session, None, False
 
-    lock = SessionWriterLock(path)
+    lock = SessionWriterLock(path, writer_kind=writer_kind)
     if lock.try_acquire():
-        if lock.degraded:
-            print(
-                "Warning: this filesystem has no file locking, so Aelix "
-                "cannot tell whether another terminal already has this "
-                "session open. Two terminals on one session lose a turn "
-                "(#137).",
-                file=sys.stderr,
-            )
-        if opened_existing:
-            # #137 — the file was READ above and is only OWNED here, and the
-            # gap between the two is exactly the handoff
-            # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
-            # appends its last turn and *then* releases, on ``/new`` or
-            # ``/quit``. We win the lock a few milliseconds later still
-            # holding the process-local leaf from before that append, and our
-            # next append reparents onto it — the other terminal's final turn
-            # vanishes from the replay. That is #137 reproduced by the guard
-            # meant to prevent it; review measured it end to end ("stored:
-            # shared, A-final, B-next; replay: shared, B-next").
-            #
-            # Re-reading under the lock closes the window: past this line
-            # nobody else may append. The in-session path needs no equivalent
-            # — ``switch_session`` locks BEFORE ``repo.open`` — but at startup
-            # three different flags resolve the session before ownership is
-            # even a question, so the honest fix is one extra read of a file
-            # we now own. ``cwd_override=cwd`` repeats what ``_build_session``
-            # and ``_resume_session_startup`` already pass, so the reopened
-            # session differs from the old one in nothing but freshness.
-            session = await repo.open(
-                await session.get_metadata(), cwd_override=cwd
-            )
+        try:
+            if lock.degraded:
+                print(
+                    "Warning: this filesystem has no file locking, so Aelix "
+                    "cannot tell whether another terminal already has this "
+                    "session open. Two terminals on one session lose a turn "
+                    "(#137).",
+                    file=sys.stderr,
+                )
+            if opened_existing:
+                # #137 — the file was READ above and is only OWNED here, and the
+                # gap between the two is exactly the handoff
+                # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
+                # appends its last turn and *then* releases, on ``/new`` or
+                # ``/quit``. We win the lock a few milliseconds later still
+                # holding the process-local leaf from before that append, and our
+                # next append reparents onto it — the other terminal's final turn
+                # vanishes from the replay. That is #137 reproduced by the guard
+                # meant to prevent it; review measured it end to end ("stored:
+                # shared, A-final, B-next; replay: shared, B-next").
+                #
+                # Re-reading under the lock closes the window: past this line
+                # nobody else may append. The in-session path needs no equivalent
+                # — ``switch_session`` locks BEFORE ``repo.open`` — but at startup
+                # three different flags resolve the session before ownership is
+                # even a question, so the honest fix is one extra read of a file
+                # we now own. ``cwd_override=cwd`` repeats what ``_build_session``
+                # and ``_resume_session_startup`` already pass, so the reopened
+                # session differs from the old one in nothing but freshness.
+                session = await repo.open(
+                    await session.get_metadata(), cwd_override=cwd
+                )
+        except BaseException:
+            lock.release()
+            raise
         return session, lock, False
 
     if lock.error is not None:
@@ -5933,10 +6004,12 @@ async def _resolve_session_ownership(
         # someone's loop. Narrower than it sounds: a bare ``-p`` creates a new
         # file and never reaches this line.
         print(_session_owned_message(path), file=sys.stderr)
+        if app_mode == "rpc" and rpc_nonce is not None:
+            _remember_startup_lock_error(rpc_nonce, lock.lock_path)
         return None
 
     choice = await _prompt_session_owned_interactive(
-        path, default_read_only=named_exactly
+        path, default_read_only=named_exactly, holder=session_lock_holder(lock.lock_path)
     )
     if choice == "cancel":
         print(_session_owned_message(path), file=sys.stderr)
@@ -5954,20 +6027,32 @@ async def _resolve_session_ownership(
     forked_path = forked.session_file
     if forked_path is None:  # pragma: no cover — fork_from always writes a file
         return forked, None, False
-    forked_lock = SessionWriterLock(forked_path)
+    forked_lock = SessionWriterLock(forked_path, writer_kind=writer_kind)
     if not forked_lock.try_acquire():  # pragma: no cover — a file published
         # microseconds ago. Not reachable by a user action, but the return
         # value used to be discarded outright, and "we published a file and
         # somebody already owns it" is the one shape that must never end in
         # this process writing to it anyway.
-        print(
-            "Error: the session this fork just created is already open in "
-            f"another terminal:\n  {forked_path}",
-            file=sys.stderr,
-        )
+        holder = "unknown" if forked_lock.error is not None else session_lock_holder(forked_lock.lock_path)
+        heading = session_lock_heading(holder, unknown=(
+            "the session this fork just created is already open in another terminal:"
+        ))
+        print(f"Error: {heading}\n  {forked_path}", file=sys.stderr)
         return None
-    print(f"Forked into a new session: {forked_path}", file=sys.stderr)
+    try:
+        print(f"Forked into a new session: {forked_path}", file=sys.stderr)
+    except BaseException:
+        forked_lock.release()
+        raise
     return forked, forked_lock, False
+
+
+def _remember_startup_lock_error(nonce: str, lock_path: str) -> None:
+    from aelix_coding_agent.rpc._session_lock_errors import startup_record
+
+    frames = _STARTUP_LOCK_FRAMES.get()
+    if frames is not None:
+        frames.append(startup_record(nonce, session_lock_holder(lock_path)))
 
 
 def _provider_requires_model(parsed: Args, registry: Any) -> str | None:

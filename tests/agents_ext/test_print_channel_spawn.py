@@ -775,7 +775,7 @@ async def test_stdin_is_the_parents_pipe_with_nothing_on_it(tmp_path: Path) -> N
     holds open and writes nothing to unless asked.
 
     It used to be ``DEVNULL`` to pin the +30 s landmine — an INHERITED stdin sent
-    the child into ``_read_piped_stdin`` (``cli/entry.py:324-448``), which waited
+    the child into ``_read_piped_stdin`` (``cli/entry.py:332-456``), which waited
     the whole ``AELIX_STDIN_TIMEOUT`` and prepended any bytes to the task. That
     guard moved to the flag: a child launched with ``--command-inbox`` reads no
     prompt from stdin at all (``tests/cli/test_command_inbox_123.py``). This
@@ -799,7 +799,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2654-2671``) nor child (``modes/print_mode.py:263-322``)
+    (``tui/shell.py:2652-2669``) nor child (``modes/print_mode.py:263-322``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -3053,7 +3053,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:390-398``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:398-406``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"

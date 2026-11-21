@@ -394,7 +394,10 @@ one is already using. Only one of them can write to it: a session records where
 each turn attaches, and two terminals writing at once used to leave one
 terminal's turns on a branch nothing ever replayed again.
 
-So the second terminal asks:
+On POSIX in beta.3, the second terminal shows **This session is open in Aelix Studio.** or
+**This session is open in the Aelix CLI.** when it can verify a cooperating
+local writer. Windows uses the generic prompt under ADR-0316. The generic
+prompt presents the same choices when attribution is unavailable.
 
 ```
 This session is already open in another terminal.
@@ -413,8 +416,14 @@ This session is already open in another terminal.
   scroll and use the read-only commands; `/fork` gives you a writable copy.
 - **Cancel** exits.
 
+When `/resume` is idle, selecting a session held by another writer shows
+the same attribution when available and offers Fork or Cancel. The current
+session stays open on Cancel.
+
 `-p`, `--mode json` and `--mode rpc` cannot ask, so they stop with an error
-naming `--fork <path>`, `--session <other>` and `--no-session`.
+naming `--fork <path>`, `--session <other>` and `--no-session`. A verified
+stdio RPC launcher can also opt into the machine-readable refusal described
+in [ADR-0316](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0316-session-writer-attribution.md).
 
 Quitting a terminal frees its session immediately, and so does killing one —
 the lock is held by the operating system, so there is nothing to clean up. You

@@ -1146,7 +1146,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:389-398``), and a child that waits forever on a
+    # forever" (``cli/entry.py:397-406``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that never ends on its
     # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -2409,7 +2409,7 @@ class PrintChannel:
                     # used to be DEVNULL, and the reason stands for a child
                     # launched without ``--command-inbox``: an inherited stdin
                     # cost +30 s per delegation (``_read_piped_stdin``,
-                    # ``cli/entry.py:324-448``) and any bytes that arrived were
+                    # ``cli/entry.py:332-456``) and any bytes that arrived were
                     # PREPENDED to the task. With the flag the child reads no
                     # prompt from it at all (and ``AELIX_STDIN_TIMEOUT=1`` in the
                     # env stays, belt-and-braces for a child without the flag).
@@ -2421,7 +2421,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2654-2671``) nor child
+                    # neither parent (``tui/shell.py:2652-2669``) nor child
                     # (``modes/print_mode.py:263-322``) installs a SIGINT
                     # handler to convert that into a result.
                     #

@@ -48,7 +48,7 @@ from aelix_coding_agent.cli.entry import _command_inbox, _read_piped_stdin
 from aelix_coding_agent.modes import print_mode
 from aelix_coding_agent.modes.print_inbox import RESPONSE_TYPE, CommandInbox
 from aelix_coding_agent.rpc import rpc_mode
-from aelix_coding_agent.rpc.rpc_types import RpcErrorResponse, RpcSuccessResponse
+from aelix_coding_agent.rpc.rpc_types import RpcSuccessResponse
 
 from tests.env_sandbox import child_env
 from tests.event_waits import wait_until
@@ -322,7 +322,7 @@ async def test_a_malformed_line_is_answered_by_id_or_dropped_and_never_fatal(
     answered = {r["id"]: r for r in run.responses}
     assert set(answered) == {"b1", "s0", "s2"}, "the two with no id were dropped"
     assert answered["b1"]["success"] is False and "bogus" in answered["b1"]["error"]
-    assert set(answered["b1"]) == set(RpcErrorResponse.__dataclass_fields__)
+    assert set(answered["b1"]) == {"type", "command", "success", "error", "id"}
     assert answered["s0"]["success"] is False
     assert answered["s2"]["success"] is True
     assert run.provider.seen[1][-1] == "user:KEPT"

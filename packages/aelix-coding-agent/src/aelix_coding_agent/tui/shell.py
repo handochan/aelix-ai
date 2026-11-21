@@ -36,6 +36,7 @@ from aelix_agent_core.session.compaction import calculate_context_tokens
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from aelix_agent_core.session.read_only import ReadOnlySessionStorage
+from aelix_agent_core.session.session_lock import WriterKind
 from prompt_toolkit.application.run_in_terminal import in_terminal
 from prompt_toolkit.utils import get_cwidth
 from rich.box import ROUNDED
@@ -48,6 +49,7 @@ from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
     session_choice_label,
     session_detail_lines,
+    session_lock_heading,
     short_field,
     with_conversation,
 )
@@ -920,11 +922,7 @@ def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
 
 
 #: #137 — what a ``!`` line or a prompt gets on a read-only session.
-_READ_ONLY_REFUSAL = (
-    "This session is open in another terminal, so this one "
-    "is read-only. /fork makes a writable copy of it; "
-    "/resume and /new switch to another session."
-)
+_READ_ONLY_REFUSAL = "This session is read-only. Use /fork to make a writable copy."
 
 
 async def run_tui(
@@ -2437,7 +2435,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:5238``) always passes one, so this is
+            # production caller (``entry.py:5281``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3671,7 +3669,7 @@ async def run_tui(
         out_chrome.detach_ready = jobs_ui.detach_ready
         out_chrome.on_detach = jobs_ui.request_detach
 
-    async def _ask_session_contended(path: str) -> SessionContendedChoice:
+    async def _ask_session_contended(path: str, holder: WriterKind) -> SessionContendedChoice:
         """#137 / ADR-0244 — ``/resume`` (or ``/import``) onto an owned file.
 
         Two options, not the three ``entry.py`` offers at startup. "Open
@@ -3686,8 +3684,9 @@ async def run_tui(
         """
 
         fork_label = "Fork and continue here (a new session file, same history)"
+        heading = session_lock_heading(holder, unknown="That session is already open in another terminal:")
         choice = await context.select(
-            f"That session is already open in another terminal:\n  {path}",
+            f"{heading}\n  {path}",
             [fork_label, "Cancel"],
             own=True,
         )
@@ -3698,7 +3697,7 @@ async def run_tui(
         # without this the swap looks like it did what was asked.
         _commit(
             Text(
-                "Forking it into a new session — the other terminal keeps the original.",
+                "Forking this session creates a writable copy.",
                 style="yellow",
             )
         )
@@ -3709,7 +3708,7 @@ async def run_tui(
     # ``FakeRuntime`` doubles across ``tests/tui/``, and a hard call would
     # take the whole REPL down inside a task whose exception nobody retrieves
     # — which is exactly how it failed when this landed unguarded.
-    _install_contended = getattr(runtime_host, "set_on_session_contended", None)
+    _install_contended = getattr(runtime_host, "set_on_session_contended_with_holder", None)
     if callable(_install_contended):
         _install_contended(_ask_session_contended)
 
@@ -4274,8 +4273,7 @@ async def run_tui(
         if read_only:
             _commit(
                 Text(
-                    "READ-ONLY — this session is open in another terminal. "
-                    "You can read it, and /fork gives you a writable copy.",
+                    _READ_ONLY_REFUSAL,
                     style="bold yellow",
                 )
             )
@@ -4720,11 +4718,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:2111``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:2119``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:2094`` already printed at startup, and one that
+    #       what ``entry.py:2102`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -5561,7 +5559,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:5129-5145 and
+            # Two audiences, discriminated exactly as entry.py:5171-5187 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

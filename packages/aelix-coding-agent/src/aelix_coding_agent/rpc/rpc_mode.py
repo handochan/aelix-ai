@@ -152,6 +152,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from aelix_agent_core.session.session_lock import SessionLockContention
 from aelix_ai.messages import ImageContent
 from aelix_ai.utils._child_output import decode_child_output
 
@@ -159,6 +160,7 @@ from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
     encode_json_line,
 )
+from aelix_coding_agent.rpc._session_lock_errors import lock_error_details
 from aelix_coding_agent.rpc.control_transcript import (
     BINDING_CHANGING,
     TRANSCRIPT_REPLY_MAX_BYTES,
@@ -1864,6 +1866,7 @@ def build_dispatch_table(
     model_registry: ModelRegistry | None = None,
     *,
     runtime_host: AgentSessionRuntime | None = None,
+    session_lock_errors: bool = False,
 ) -> dict[
     str, Callable[[Any, Any], Awaitable[RpcResponse]]
 ]:
@@ -1919,6 +1922,8 @@ def build_dispatch_table(
             table[cmd_type] = _bind_runtime_host(
                 runtime_handler, runtime_host
             )
+    if session_lock_errors:
+        table["switch_session"] = _with_switch_lock_details(table["switch_session"])
     for cmd_type, adr in DEFERRED_COMMANDS.items():
         table[cmd_type] = _make_deferred_handler(cmd_type, adr)
     return table
@@ -2159,6 +2164,23 @@ async def _open_stdin_reader(
     return reader, None
 
 
+def _with_switch_lock_details(
+    switch: Callable[[Any, Any], Awaitable[RpcResponse]],
+) -> Callable[[Any, Any], Awaitable[RpcResponse]]:
+    async def handle(harness: Any, command: Any) -> RpcResponse:
+        try:
+            return await switch(harness, command)
+        except SessionLockContention as exc:
+            return RpcErrorResponse(
+                id=command.id,
+                command="switch_session",
+                error=str(exc),
+                error_details=lock_error_details(exc.holder_kind),
+            )
+
+    return handle
+
+
 async def run_rpc_mode(
     harness: AgentHarness,
     *,
@@ -2178,6 +2200,7 @@ async def run_rpc_mode(
     selections: Any = None,
     jobs: Any = None,
     permissions: Any = None,
+    session_lock_errors: bool = False,
 ) -> None:
     """Pi parity: ``rpc-mode.ts:runRpcMode`` (lines 50-492).
 
@@ -2303,7 +2326,7 @@ async def run_rpc_mode(
     # ``runtime_host`` for the 4 runtime-host handlers (new_session +
     # switch_session + fork + clone).
     dispatch = build_dispatch_table(
-        model_registry, runtime_host=runtime_host
+        model_registry, runtime_host=runtime_host, session_lock_errors=session_lock_errors
     )
 
     from aelix_coding_agent.rpc.control import RpcControlPlane
@@ -2326,6 +2349,7 @@ async def run_rpc_mode(
         jobs=jobs,
         permissions=permissions,
         transcript=transcript,
+        session_lock_errors=session_lock_errors,
     )
 
     # The transcript service tracks the producer through disposal. This
@@ -2629,10 +2653,11 @@ def _write_event(
 async def _control_response(
     control: RpcControlPlane, payload: dict[str, Any]
 ) -> RpcSuccessResponse | RpcErrorResponse:
-    from aelix_coding_agent.rpc.control import control_error_message
+    from aelix_coding_agent.rpc.control import BranchReturnContention, control_error_message
 
     request_id = payload.get("id")
     method = payload.get("method")
+    details = None
     try:
         data = await control.handle(method, payload.get("params", {}), request_id)
         # Transcript replies are checked by the final byte writer.
@@ -2646,7 +2671,15 @@ async def _control_response(
             error = "Transcript unavailable"
         else:
             error = control_error_message(exc)
-    return RpcErrorResponse(id=request_id, command="aelix_control", error=error)
+        if (
+            control.session_lock_errors
+            and method == "sessions/branch"
+            and isinstance(exc, BranchReturnContention)
+        ):
+            details = lock_error_details(exc.holder_kind)
+    return RpcErrorResponse(
+        id=request_id, command="aelix_control", error=error, error_details=details
+    )
 
 
 def _reply_bytes(

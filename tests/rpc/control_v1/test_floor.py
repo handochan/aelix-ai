@@ -124,4 +124,5 @@ def test_the_websocket_host_lists_exactly_the_server_ws_methods(
             if frame.get("id") == "c":
                 break
     assert frame["success"] is True, frame
+    assert "sessionLockErrors" not in frame["data"]
     assert set(frame["data"]["methods"]) == _served_on("server-ws")
