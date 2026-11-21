@@ -69,10 +69,9 @@ Discover (2 matches):
   acme-deploy 0.3.2  — Deploy helpers   (catalog: Acme internal)
 ```
 
-`--refresh` is the only command that re-reads a catalog; without it `discover`
-answers from the local cache. `--offline` refuses any network access, which is
-what you want on an air-gapped host — it turns "quietly fell back to the
-internet" into an error.
+`discover` answers from the local cache by default. With `--offline --refresh`,
+it re-reads local catalogs and skips HTTP catalog fetches. The [installer
+rules below](#a-fully-air-gapped-setup) govern dependency resolution.
 
 Install by name:
 
@@ -518,29 +517,53 @@ On a host with no route to the internet:
 
 ```console
 $ export AELIX_DEFAULT_CATALOG=""          # no public default to attempt
-$ export PIP_NO_INDEX=1                    # dependencies never reach PyPI
-$ export PIP_FIND_LINKS=/mnt/share/wheelhouse
+$ export PIP_FIND_LINKS=/mnt/share/wheelhouse  # pip backend
+$ export UV_FIND_LINKS=/mnt/share/wheelhouse   # uv backend
 
 $ aelix extension source add --catalog file:///mnt/share/wheelhouse/catalog.json
 $ aelix extension discover --offline --refresh
 $ aelix extension discover install acme-notes --offline
 ```
 
-The catalog decides *what* to install; **pip's own configuration decides where
-dependencies come from**. `PIP_NO_INDEX` and `PIP_FIND_LINKS` (or the equivalent
-`no-index` / `find-links` in `pip.conf`) are inherited by the installer, so a
-pack whose dependencies are also in the wheelhouse resolves entirely offline.
-Use `--index-url` only for a real PEP 503 index — an internal devpi or
-Artifactory mirror — not for a flat directory of wheels.
+For path and Git sources, `install`, `discover install`, and `update` pass
+`--no-index` when offline mode is on and no explicit or registered index is
+selected (#806, ADR-0185). On macOS, pip and uv both resolved the test dependency
+from the absolute wheel directory configured above. Use a PEP 503 index such
+as an internal devpi or Artifactory mirror with `--index-url` on install or
+register it with `aelix extension source add <index-url>` for install and
+update. The loopback probes in ADR-0185 also observed requests to HTTP
+find-links locations and direct URL dependencies with `--no-index`, and to
+ambient extra indexes when a primary index was selected.
 
 If the directory lands at a different path than it was indexed at, re-run
 `index` there — absolute paths are recorded at generation time — or index it
 with `--relative` in the first place, which records paths from the catalog file
 and so survives the move. Regenerating is cheap and is always the right fix.
 
-Keep `--offline` on every command. Without it a missing dependency is a silent
-attempt to reach PyPI, and on an air-gapped host that is a timeout you will
-spend an afternoon on.
+### Updating and removing an installed wheel
+
+Installing a wheel whose distribution exposes an `aelix.extensions` entry
+point refreshes its named source. A bundle wheel that adds exactly one
+extension distribution can also be saved under that distribution's name
+(#814, ADR-0185).
+
+If a named update selects an older wheel for the same distribution, it
+refuses that wheel with code `2` before running the installer, even when the
+installed version dropped its entry point. If a bundle supplied the extension
+and the newer extension wheel drops its entry point, `extension update <name>`
+can replay the bundle's older pin. In the macOS offline wheelhouse probe,
+pip and uv both reinstalled 0.1.0 over 0.2.0 and exited `0` (#814, ADR-0185).
+
+An explicit `extension update <wheel-path>` upgrades that wheel in place and
+keeps the saved sources. To advance and refresh the saved source for a wheel
+with an extension entry point, use
+`aelix extension install <newer-wheel-path> --offline --yes`
+(#814, verified with pip and uv in ADR-0185).
+
+`aelix extension remove <name>` exits `0` on success, `1` when the backend
+reports a nonzero exit, and `2` on a handled refusal or backend launch error.
+Stderr includes the backend's exit code when the process ran and failed
+(#807, verified with pip and uv in ADR-0185).
 
 ## Verifying what you publish
 

@@ -1,6 +1,6 @@
 # ADR-0185 — #19: `aelix extension install <path|git|pypi>` (minimal, pip-based)
 
-- **Status:** Accepted — **LIVE**.
+- **Status:** Accepted — **LIVE**. Amended 2026-11-20 (#806, #807, #814).
 - **Date:** 2026-07-04
 - **Sprint:** Marketplace foundations — the minimal install command (registry index + marketplace UI deferred to #32).
 - **Pi pin:** `earendil-works/pi@734e08e`. Ecosystem-swap of pi's npm-based package manager (see Decision).
@@ -61,3 +61,46 @@ A 4-lens adversarial review (correctness / security / consistency / test-adequac
 [ADR-0261](0261-root-commands-reject-launch-options-before-dispatch.md) adds a leading offline-only root prefix and rejects other launch
 options before a command with exit 2. The command's existing tail parser and
 execution/trust contracts remain in force.
+
+## Note (2026-11-20, #806, #807, #814)
+
+- For #806, the lead chose to suppress package index resolution for offline
+  path and Git installs unless the caller supplies `--index-url` or registers
+  an index source. The shared installer passes `--no-index` for those sources
+  in `install`, `discover install`, and `update`. The macOS loopback wheel probe
+  received one dependency lookup on the base and zero with the fix. Pip and uv
+  both resolved the dependency from an absolute wheel directory with the fix.
+  The loopback controls still received requests to configured HTTP find-links
+  and direct URLs in dependencies, and to ambient extras when an explicit
+  primary index was selected. The CLI puts install failure status on its own
+  stderr line, including after uv's unterminated missing-dependency hint.
+- For #807, `remove` returns `1` and prints the backend status when the backend
+  runs and fails. On macOS, `PIP_TIMEOUT=abc` produced
+  `pip uninstall failed (exit 3).` with CLI exit `1`. A selected uv executable
+  with a missing interpreter produced a launch error on stderr and CLI exit
+  `2`, with no child status.
+- For #814, a wheel whose distribution exposes an `aelix.extensions` entry
+  point supersedes its older named sources, using Python package-name
+  equivalence for replacement and lookup. The macOS pip and uv probes upgraded
+  0.1.0 to a wheel whose metadata used dots in place of hyphens, and a named
+  update kept 0.2.0 with exit `0`. A wheel bundle that installed exactly one
+  extension distribution retained its offline named-update path. When a
+  selected wheel for that same distribution was older than the installed one,
+  named update returned `2` before launch even when 0.2.0 dropped its extension
+  entry point.
+  In the explicit path update probe, `update <wheel-path>` kept the existing
+  source record and `install <wheel-path>` refreshed it when the wheel
+  exposed an extension entry point.
+- If a bundle supplied the extension and the newer extension wheel drops its
+  entry point, `extension update <name>` can replay the saved
+  bundle and reinstall its older dependency pin. In the round-2 verifier's
+  macOS offline wheelhouse probe, the bundle's `starter` extra pinned the
+  extension to 0.1.0. After installing the 0.2.0 wheel without its entry point,
+  both pip and uv passed their dependency checks. A named update then exited
+  `0` and installed extension version 0.1.0 on both backends.
+
+At pi commit `e5d93ea0ab3747293dca5d12280361d04142eeb2`, the local package
+installer checks that the path exists and stores it. Configured updates skip
+offline work and local paths, and package command errors set exit `1`.
+Aelix invokes a Python installer for local wheels and supports dependency
+resolution from local wheels or a configured index during offline updates.

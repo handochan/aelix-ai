@@ -113,6 +113,8 @@ from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from aelix_ai.utils.terminal_text import safe_for_terminal
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 from ..extensions.ep_manifest import (
     EpApiLevelRefusal,
@@ -576,15 +578,16 @@ def build_pip_args(
     *,
     index_url: str | None = None,
     extra_index_urls: Iterable[str] | None = None,
+    offline: bool = False,
     upgrade: bool = False,
     backend: InstallBackend | None = None,
 ) -> list[str]:
     """Build the install argv for a classified target, in ``backend``'s dialect.
 
-    ``index_url`` / ``extra_index_urls`` apply to a ``pypi`` target only (a
-    bare-name install resolved against registered index sources — the first
-    index becomes ``--index-url``, the rest ``--extra-index-url``). ``upgrade``
-    adds ``--upgrade`` (used by ``extension update``).
+    A bare-name install uses ``index_url`` / ``extra_index_urls``. So does an
+    offline path or git install with an explicit or registered primary index.
+    Offline direct installs without a primary index pass ``--no-index``.
+    ``upgrade`` adds ``--upgrade`` (used by ``extension update``).
 
     ``backend`` defaults to :data:`PIP_BACKEND` (``python -P -m pip install …``);
     the ``uv`` backend swaps only the PREFIX (``uv pip install --python <interp>``)
@@ -617,20 +620,32 @@ def build_pip_args(
     base = (backend or PIP_BACKEND).install_prefix()
     if upgrade:
         base.append("--upgrade")
+    index_args = _install_index_args(kind, index_url, extra_index_urls, offline=offline)
     if kind == "path":
         # A catalog path is handed over as a file:// URI, never a path string the
         # backend would parse again (#131 review round 5, ResolvedPath.installer_arg).
         if isinstance(target, extension_catalog.ResolvedPath):
-            return [*base, target.installer_arg()]
-        return [*base, _install_spec(target, kind)]
+            return [*base, *index_args, target.installer_arg()]
+        return [*base, *index_args, _install_spec(target, kind)]
     if kind == "git":
-        return [*base, _normalize_git_spec(str(target))]
-    # pypi
-    extras = list(extra_index_urls or ())
-    args = [*base, str(target)]
-    if index_url:
-        args += ["--index-url", index_url]
-    for extra in extras:
+        return [*base, *index_args, _normalize_git_spec(str(target))]
+    return [*base, str(target), *index_args]
+
+
+def _install_index_args(
+    kind: TargetKind,
+    index_url: str | None,
+    extra_index_urls: Iterable[str] | None,
+    *,
+    offline: bool,
+) -> list[str]:
+    if kind != "pypi":
+        if not offline:
+            return []
+        if not index_url:
+            return ["--no-index"]
+    args = ["--index-url", index_url] if index_url else []
+    for extra in extra_index_urls or ():
         args += ["--extra-index-url", extra]
     return args
 
@@ -2259,7 +2274,8 @@ def install_extension(
         return _EXIT_DIDNT_RUN
 
     kind = classify_target(target)
-    if _is_offline(offline) and kind == "pypi" and not index_url:
+    offline = _is_offline(offline)
+    if offline and kind == "pypi" and not index_url:
         print(
             "Error: offline mode — a pypi install needs --index-url pointing at a "
             "self-hosted / local index (or use a path or git+file:// source).",
@@ -2331,6 +2347,7 @@ def install_extension(
         kind,
         index_url=index_url,
         extra_index_urls=extra_index_urls,
+        offline=offline,
         upgrade=upgrade,
         backend=backend,
     )
@@ -2455,8 +2472,7 @@ def install_extension(
             # The installer's own code is SHOWN, not returned — see
             # :data:`_INSTALLER_FAILED` for why passing it through made this
             # verb's documented exit split conditional on pip's choice of codes.
-            print(f"{backend.label} install failed (exit {code}).", file=sys.stderr)
-            return _INSTALLER_FAILED
+            return _install_failed(backend, code, no_index=offline and not index_url)
         if pending_pin is not None:
             try:
                 _record_pin(pending_pin, agent_dir)
@@ -2471,6 +2487,20 @@ def install_extension(
     finally:
         if cleanup_dir is not None:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+def _install_failed(backend: InstallBackend, code: int, *, no_index: bool) -> int:
+    # The child inherits stderr and can end its last hint without a newline.
+    print(f"\n{backend.label} install failed (exit {code}).", file=sys.stderr)
+    if no_index:
+        print(
+            "Offline dependency resolution uses no package index. If a requirement is "
+            "missing, supply a local wheel directory via PIP_FIND_LINKS (pip) or "
+            "UV_FIND_LINKS (uv), or register a local index with "
+            "'aelix extension source add <index-url>'.",
+            file=sys.stderr,
+        )
+    return _INSTALLER_FAILED
 
 
 def _default_runner(
@@ -4277,10 +4307,10 @@ async def _cmd_install(
     index_url = parsed.index_url
 
     kind = classify_target(target)
-    # Bare-name resolution: with no explicit --index-url, fold the registered
-    # index sources into pip's index set (first → --index-url, rest → extra).
+    # Registered indexes resolve bare names and provide an explicit dependency
+    # index for offline direct installs (first → --index-url, rest → extra).
     extra_index_urls: list[str] = []
-    if kind == "pypi" and index_url is None:
+    if index_url is None and (kind == "pypi" or _is_offline(parsed.offline)):
         registered = _index_urls(settings.get_extension_sources())
         if registered:
             index_url = registered[0]
@@ -4337,15 +4367,16 @@ async def _record_install(
 ) -> None:
     """Record a successful install so ``update`` can reinstall it (best-effort).
 
-    Detects the newly-added distribution name by diffing the entry-point ledger
-    before/after (``importlib.invalidate_caches`` first — a same-process install
-    otherwise stays invisible to ``importlib.metadata``). Any failure here is
-    swallowed: a missed record only degrades ``update``, never the install.
+    A wheel whose own distribution provides an extension supersedes its older
+    named sources. A bundle wheel can instead introduce a single extension
+    distribution, which gets the bundle path as its source. Cache invalidation
+    makes this process see the installer subprocess's changes.
     """
 
     try:
         importlib.invalidate_caches()
-        new_names = sorted(_installed_dist_names() - before)
+        installed = _installed_dist_names()
+        new_names = sorted(installed - before)
         detected = new_names[0] if new_names else None
         if kind == "pypi":
             spec = _bare_package_name(str(target))
@@ -4358,14 +4389,53 @@ async def _record_install(
         if not spec:
             return
         sources = settings.get_extension_sources()
-        new_sources, changed = _upsert_source(sources, spec, record_kind, name=name)
-        if changed:
+        wheel = _wheel_name_version(target, kind)
+        if wheel is not None:
+            wheel_name, _ = wheel
+            wheel_dist = next(
+                (dist for dist in installed if canonicalize_name(dist) == wheel_name), None
+            )
+            name = wheel_dist or (detected if len(new_names) == 1 else None)
+        else:
+            wheel_dist = None
+        candidates = _without_superseded_sources(sources, wheel_dist, spec) if wheel_dist else sources
+        new_sources, _ = _upsert_source(candidates, spec, record_kind, name=name)
+        if new_sources != sources:
             await _persist(settings, new_sources)
     except Exception as exc:  # noqa: BLE001 — recording is best-effort
         print(
             f"Warning: could not record install source: {safe_for_terminal(str(exc))}",
             file=sys.stderr,
         )
+
+
+def _without_superseded_sources(
+    sources: list[ExtensionSourceObject], name: str, spec: str
+) -> list[ExtensionSourceObject]:
+    """Keep the current wheel and unrelated sources when refreshing its record."""
+
+    wanted = canonicalize_name(name)
+    return [
+        source
+        for source in sources
+        if source.kind in ("index", "catalog")
+        or not source.name
+        or canonicalize_name(source.name) != wanted
+        or (source.kind == "path" and source.spec == spec)
+    ]
+
+
+def _wheel_name_version(target: InstallTarget, kind: TargetKind) -> tuple[str, Version] | None:
+    if kind != "path":
+        return None
+    try:
+        path = Path(_split_path_target(target)[0]).expanduser().resolve()
+        if path.suffix != ".whl" or path.is_dir():
+            return None
+        name, version, _, _ = parse_wheel_filename(path.name)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return name, version
 
 
 def _path_record_spec(target: InstallTarget) -> str:
@@ -4571,10 +4641,11 @@ async def _cmd_update(
     installable = [s for s in sources if s.kind in ("git", "path", "pypi")]
 
     if name_filter is not None:
+        wanted = canonicalize_name(name_filter.strip())
         matched = [
             s
             for s in installable
-            if (s.name is not None and _canon(s.name) == _canon(name_filter))
+            if (s.name is not None and canonicalize_name(s.name) == wanted)
             or _source_identity(s.spec, s.kind) == name_filter.strip()
         ]
         if not matched:
@@ -4773,6 +4844,10 @@ def _upgrade_and_report(
     # CatalogSpec is classified by its spelling, never by what the cwd holds (#405).
     if not isinstance(target, extension_catalog.ResolvedPath):
         target = extension_catalog.CatalogSpec(target)
+    kind = classify_target(target)
+    if refusal := _wheel_update_refusal(target, kind):
+        print(f"Error: {refusal}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN, frozenset()
     before = _installed_ext_dists()
     code = install_extension(
         target,
@@ -4801,9 +4876,7 @@ def _upgrade_and_report(
         # path caches are dropped. ``install`` gets this for free from
         # _record_install, which ``update`` does not run.
         importlib.invalidate_caches()
-        dists = _attributed_dists(
-            target, classify_target(target), before, _installed_ext_dists()
-        )
+        dists = _attributed_dists(target, kind, before, _installed_ext_dists())
         return _report_install_binding(dists), dists
     except Exception as exc:  # noqa: BLE001 — reporting must not fail the upgrade
         print(
@@ -4812,6 +4885,28 @@ def _upgrade_and_report(
         )
         print(_INSTALLED_NO_VERDICT)
         return 0, frozenset()
+
+
+def _wheel_update_refusal(target: InstallTarget, kind: TargetKind) -> str | None:
+    """Compare against installed distribution metadata, even without an endpoint."""
+
+    wheel = _wheel_name_version(target, kind)
+    if wheel is None:
+        return None
+    name, version = wheel
+    try:
+        dist = importlib.metadata.distribution(name)
+        current = dist.version
+        if current and version < Version(current):
+            return (
+                f"wheel version {version} is older than installed "
+                f"{safe_for_terminal(dist.name or name)} {safe_for_terminal(current)}. "
+                "Use a wheel at least as new as the installed version. If it provides "
+                "an extension, install it by path to refresh the source record."
+            )
+    except (importlib.metadata.PackageNotFoundError, InvalidVersion):
+        pass
+    return None
 
 
 def _upgrade_source(
@@ -4844,6 +4939,8 @@ def _upgrade_source(
     return _upgrade_and_report(
         _recorded_path_target(source.spec) if source.kind == "path" else source.spec,
         yes=yes,
+        index_url=index_urls[0] if index_urls else None,
+        extra_index_urls=index_urls[1:],
         offline=offline,
         verify=verify,
         input_fn=input_fn,
@@ -4884,7 +4981,7 @@ async def _cmd_remove(
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
-    """``extension remove <name>`` — pip uninstall + drop the recorded source."""
+    """Uninstall and drop the source. Return 0 on success, 1 on child failure, 2 before it runs."""
 
     name: str | None = None
     yes = False
@@ -4935,11 +5032,18 @@ async def _cmd_remove(
             return _EXIT_DIDNT_RUN
 
     run = runner if runner is not None else _default_runner
-    result = run(pip_args)
+    try:
+        result = run(pip_args)
+    except OSError as exc:
+        print(
+            f"Error: could not start {backend.label} uninstall: {safe_for_terminal(str(exc))}",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
     code = int(getattr(result, "returncode", 1))
     if code != 0:
         print(f"{backend.label} uninstall failed (exit {code}).", file=sys.stderr)
-        return code
+        return _INSTALLER_FAILED
     # Drop any recorded source for this name/dist (best-effort — a missed
     # cleanup only leaves a stale Sources row, never fails the removal).
     try:

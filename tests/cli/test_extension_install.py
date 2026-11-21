@@ -382,13 +382,101 @@ def test_consent_decline_variants_abort(tmp_path: Path, reply: str) -> None:
     assert runner.calls == []
 
 
-def test_install_offline_path_not_blocked(tmp_path: Path) -> None:
-    # Review LOW: offline only blocks pypi-without-index; a local path installs fine.
+@pytest.mark.parametrize("target", ["./ext", "git+file:///local/repo"])
+def test_offline_direct_install_disables_indexes(
+    target: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     (tmp_path / "ext").mkdir()
+    runner = _FakeRunner(returncode=1)
+    assert install_extension(target, yes=True, offline=True, runner=runner) == 1
+    (argv,) = runner.calls
+    assert "--no-index" in argv
+    err = capsys.readouterr().err
+    assert "pip install failed (exit 1)." in err
+    assert "PIP_FIND_LINKS" in err and "UV_FIND_LINKS" in err
+    assert "aelix extension source add <index-url>" in err
+
+
+def test_offline_env_direct_install_disables_indexes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELIX_OFFLINE", "1")
     runner = _FakeRunner()
-    code = install_extension(str(tmp_path / "ext"), yes=True, offline=True, runner=runner)
-    assert code == 0
-    assert len(runner.calls) == 1
+    assert install_extension(str(tmp_path), yes=True, runner=runner) == 0
+    assert "--no-index" in runner.calls[0]
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_install_failure_with_index_starts_on_its_own_line(
+    offline: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
+    monkeypatch.delenv("PI_OFFLINE", raising=False)
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        print("backend hint without a newline", end="", file=sys.stderr)
+        return subprocess.CompletedProcess(args=argv, returncode=1)
+
+    assert install_extension(
+        str(tmp_path), yes=True, offline=offline, index_url="https://idx.corp/simple",
+        runner=runner,
+    ) == 1
+    assert capsys.readouterr().err.splitlines() == [
+        "backend hint without a newline",
+        "pip install failed (exit 1).",
+    ]
+
+
+def test_offline_direct_install_uses_explicit_index(tmp_path: Path) -> None:
+    target = tmp_path / "ext"
+    target.mkdir()
+    runner = _FakeRunner()
+    assert install_extension(
+        str(target), yes=True, offline=True, index_url="https://idx.corp/simple", runner=runner
+    ) == 0
+    (argv,) = runner.calls
+    assert "--no-index" not in argv
+    assert argv[argv.index("--index-url") + 1] == "https://idx.corp/simple"
+
+
+def test_offline_direct_install_and_update_use_registered_indexes(tmp_path: Path) -> None:
+    target = tmp_path / "ext"
+    target.mkdir()
+    settings = SettingsManager.in_memory(
+        {"extensionSources": [
+            {"spec": "https://idx.corp/simple", "kind": "index"},
+            {"spec": "https://idx2.corp/simple", "kind": "index"},
+        ]}
+    )
+    runner = _FakeRunner()
+    assert run_extension_command(
+        ["install", str(target), "--offline", "--yes"], settings=settings, runner=runner
+    ) == 0
+    assert run_extension_command(
+        ["update", "--offline", "--yes"], settings=settings, runner=runner
+    ) == 0
+    install, update = runner.calls
+    assert "--upgrade" in update
+    for argv in (install, update):
+        assert "--no-index" not in argv
+        assert argv[argv.index("--index-url") + 1] == "https://idx.corp/simple"
+        assert argv[argv.index("--extra-index-url") + 1] == "https://idx2.corp/simple"
+
+
+def test_offline_direct_update_disables_indexes(tmp_path: Path) -> None:
+    target = tmp_path / "ext"
+    target.mkdir()
+    settings = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": str(target), "kind": "path"}]}
+    )
+    runner = _FakeRunner()
+    assert run_extension_command(
+        ["update", "--offline", "--yes"], settings=settings, runner=runner
+    ) == 0
+    (argv,) = runner.calls
+    assert "--upgrade" in argv
+    assert "--no-index" in argv
 
 
 def test_missing_pip_returns_didnt_run(
@@ -678,6 +766,153 @@ def test_install_path_records_source(tmp_path: Path) -> None:
     assert recorded[0].spec == str((tmp_path / "ext").resolve())
 
 
+def _wheel_dist_metadata(root: Path, name: str, version: str) -> Path:
+    metadata = root / f"my_ext-{version}.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8"
+    )
+    return metadata
+
+
+@pytest.mark.parametrize("new_name", ["My-Ext", "My.Ext"])
+def test_install_new_wheel_replaces_named_source(
+    new_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = tmp_path / "my_ext-0.1.0-py3-none-any.whl"
+    new = tmp_path / "my_ext-0.2.0-py3-none-any.whl"
+    old.touch()
+    new.touch()
+    installed: list[_ei_mod.InstalledExtension] = []
+    monkeypatch.setattr(_ei_mod, "list_installed_extensions", lambda: installed)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    unrelated = {"spec": "another-ext", "kind": "pypi", "name": "another-ext"}
+    settings = SettingsManager.in_memory({"extensionSources": [unrelated]})
+
+    def install_wheel(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        wheel = Path(argv[-1])
+        if wheel == old:
+            installed[:] = [_ei_mod.InstalledExtension("myext", "My-Ext", "0.1.0")]
+        else:
+            _wheel_dist_metadata(tmp_path, new_name, "0.2.0")
+            installed[:] = [_ei_mod.InstalledExtension("myext", new_name, "0.2.0")]
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    for wheel in (old, new):
+        assert run_extension_command(
+            ["install", str(wheel), "--yes", "--no-verify"],
+            settings=settings,
+            runner=install_wheel,
+        ) == 0
+    assert [(s.spec, s.kind, s.name) for s in settings.get_extension_sources()] == [
+        ("another-ext", "pypi", "another-ext"),
+        (str(new.resolve()), "path", new_name),
+    ]
+    update = _FakeRunner()
+    assert run_extension_command(
+        ["update", "my-ext", "--offline", "--yes", "--no-verify"],
+        settings=settings, runner=update,
+    ) == 0
+    (argv,) = update.calls
+    assert argv[-1] == new.resolve().as_uri()
+
+
+def test_install_bundle_wheel_records_its_extension_for_offline_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "my_bundle-0.1.0-py3-none-any.whl"
+    bundle.touch()
+    installed: list[_ei_mod.InstalledExtension] = []
+    monkeypatch.setattr(_ei_mod, "list_installed_extensions", lambda: installed)
+
+    def install_bundle(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        installed.append(_ei_mod.InstalledExtension("myext", "my-ext", "0.1.0"))
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    assert run_extension_command(
+        ["install", str(bundle), "--offline", "--yes", "--no-verify"], runner=install_bundle,
+    ) == 0
+    reloaded = SettingsManager.create(cwd=str(tmp_path), agent_dir=tmp_path / "agent")
+    assert [(s.spec, s.kind, s.name) for s in reloaded.get_extension_sources()] == [
+        (str(bundle.resolve()), "path", "my-ext"),
+    ]
+    update = _FakeRunner()
+    assert run_extension_command(
+        ["update", "my-ext", "--offline", "--yes", "--no-verify"],
+        settings=reloaded, runner=update,
+    ) == 0
+    (argv,) = update.calls
+    assert "--upgrade" in argv
+    assert argv[-1] == bundle.resolve().as_uri()
+
+
+def test_update_refuses_downgrade_after_new_wheel_drops_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    old = tmp_path / "my_ext-0.1.0-py3-none-any.whl"
+    new = tmp_path / "my_ext-0.2.0-py3-none-any.whl"
+    old.touch()
+    new.touch()
+    monkeypatch.syspath_prepend(str(tmp_path))
+    settings = _mem_settings()
+
+    def install_wheel(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        if Path(argv[-1]) == old:
+            metadata = _wheel_dist_metadata(tmp_path, "my-ext", "0.1.0")
+            (metadata / "entry_points.txt").write_text(
+                "[aelix.extensions]\nmyext = my_ext:setup\n", encoding="utf-8"
+            )
+        else:
+            metadata = tmp_path / "my_ext-0.1.0.dist-info"
+            (metadata / "entry_points.txt").unlink()
+            (metadata / "METADATA").unlink()
+            metadata.rmdir()
+            _wheel_dist_metadata(tmp_path, "my-ext", "0.2.0")
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    for wheel in (old, new):
+        assert run_extension_command(
+            ["install", str(wheel), "--offline", "--yes", "--no-verify"],
+            settings=settings, runner=install_wheel,
+        ) in (0, _ei_mod._INSTALL_NOT_BOUND)
+    assert _ei_mod.importlib.metadata.version("my-ext") == "0.2.0"
+    assert all(ext.dist_name != "my-ext" for ext in _ei_mod.list_installed_extensions())
+    runner = _FakeRunner()
+    assert run_extension_command(
+        ["update", "my-ext", "--offline", "--yes", "--no-verify"],
+        settings=settings, runner=runner,
+    ) == 2
+    assert runner.calls == []
+    assert "wheel version 0.1.0 is older than installed my-ext 0.2.0" in capsys.readouterr().err
+
+
+def test_update_refuses_stale_wheel_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    old = tmp_path / "my_ext-0.9.0-py3-none-any.whl"
+    new = tmp_path / "my_ext-0.10.0-py3-none-any.whl"
+    old.touch()
+    new.touch()
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _wheel_dist_metadata(tmp_path, "My-Ext", "0.10.0")
+    monkeypatch.setattr(
+        _ei_mod, "list_installed_extensions",
+        lambda: [_ei_mod.InstalledExtension("myext", "My-Ext", "0.10.0")],
+    )
+    settings = SettingsManager.in_memory(
+        {"extensionSources": [
+            {"spec": str(old), "kind": "path", "name": "my-ext"},
+            {"spec": str(new), "kind": "path"},
+        ]}
+    )
+    runner = _FakeRunner()
+    assert run_extension_command(
+        ["update", "my-ext", "--yes", "--no-verify"], settings=settings, runner=runner
+    ) == 2
+    assert runner.calls == []
+    assert "wheel version 0.9.0 is older than installed My-Ext 0.10.0" in capsys.readouterr().err
+
+
 def test_install_pypi_records_bare_name() -> None:
     mem = _mem_settings()
     run_extension_command(
@@ -835,7 +1070,9 @@ def test_remove_requires_name() -> None:
     assert run_extension_command(["remove"], settings=_mem_settings()) == 2
 
 
-def test_remove_pip_failure_keeps_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remove_pip_failure_keeps_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from aelix_coding_agent.cli import extension_install as ei
 
     monkeypatch.setattr(
@@ -847,10 +1084,34 @@ def test_remove_pip_failure_keeps_source(monkeypatch: pytest.MonkeyPatch) -> Non
         {"extensionSources": [{"spec": "some", "kind": "pypi", "name": "myext"}]}
     )
     code = run_extension_command(
-        ["remove", "myext", "--yes"], settings=mem, runner=_FakeRunner(returncode=1)
+        ["remove", "myext", "--yes"], settings=mem, runner=_FakeRunner(returncode=3)
     )
     assert code == 1
+    assert capsys.readouterr().err == "pip uninstall failed (exit 3).\n"
     assert len(mem.get_extension_sources()) == 1  # failed uninstall keeps the record
+
+
+def test_remove_backend_launch_failure_keeps_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        _ei_mod, "list_installed_extensions",
+        lambda: [_ei_mod.InstalledExtension("myext", "my-ext-dist", "1.0.0")],
+    )
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "my-ext-dist", "kind": "pypi", "name": "my-ext-dist"}]}
+    )
+
+    def cannot_launch(_argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("backend interpreter is missing")
+
+    assert run_extension_command(
+        ["remove", "my-ext-dist", "--yes"], settings=mem, runner=cannot_launch
+    ) == 2
+    assert capsys.readouterr().err == (
+        "Error: could not start pip uninstall: backend interpreter is missing\n"
+    )
+    assert [source.name for source in mem.get_extension_sources()] == ["my-ext-dist"]
 
 
 # === #32-A: top-level dispatch ===========================================

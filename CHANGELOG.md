@@ -1884,6 +1884,21 @@ unwritten. Add them with the next release.
   `aelix_subagent` writes `null` for non-finite `tokens` or `cost`.
   `test_legacy_subagent_usage_is_strict_json_at_the_wire` checks all three progress
   channels and the exact bytes for a finite sibling field and existing nulls.
+- **Offline extension resolution, remove exit status, and wheel update records (#806, #807, #814, ADR-0185).**
+  Offline path and Git installs use `--no-index` when no explicit or registered index
+  is supplied. The macOS wheel probe reached a loopback index on the base and made
+  zero index requests with the fix. `extension remove` returns `1` when the
+  backend runs and fails, verified with pip exit `3`. An OS launch error
+  returns `2`, verified with a uv executable whose interpreter was missing.
+  Installing a wheel that exposes an extension entry point refreshes the named
+  source, verified by a named update that kept 0.2.0 with pip and uv after the
+  distribution changed its separator spelling. When a named update selects an
+  older wheel for that same distribution, it returns `2` before installer launch,
+  even if the installed 0.2.0 wheel dropped its entry point. If a bundle
+  supplied the extension and a newer wheel for the
+  extension drops its entry point, `extension update <name>` can replay the
+  bundle's older pin. The macOS offline reproducer went from 0.2.0 to 0.1.0
+  with exit `0` on pip and uv (ADR-0185).
 
 - **The `agent` tool is offered on an install without the `tui` extra (#797).** `aelix_agents`
   imported `rich` and `wcwidth` at module top, so `pip install aelix-coding-agent` and Aelix
