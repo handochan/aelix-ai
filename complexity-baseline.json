@@ -23,7 +23,7 @@
     "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py::parse_profile": 21,
     "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py::AgentProfileService.use": 35,
     "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py::_walk": 23,
-    "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py::parse_args": 89,
+    "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py::parse_args": 88,
     "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py::_async_main": 155,
     "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py::_build_harness_options": 23,
     "packages/aelix-coding-agent/src/aelix_coding_agent/cli/extension_install.py::_cmd_discover": 27,

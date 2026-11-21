@@ -117,8 +117,11 @@ from aelix_agent_core.session.repo_utils import (
 )
 from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 from aelix_agent_core.session.session_lock import (
+    SessionLockContention,
     SessionWriterLock,
+    WriterKind,
     resolve_session_path,
+    session_lock_holder,
 )
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 
@@ -353,9 +356,10 @@ class AgentSessionRuntime:
         # over. ``None`` therefore means "this embedder does not participate
         # in session ownership", which is what tests and library callers want.
         self._writer_lock: SessionWriterLock | None = None
+        self._writer_kind: WriterKind = "unknown"
         self._manages_writer_lock = False
         self._on_session_contended: (
-            Callable[[str], Awaitable[SessionContendedChoice]] | None
+            Callable[[str, WriterKind], Awaitable[SessionContendedChoice]] | None
         ) = None
         # #25 (ADR-0284, Codex F08) — the step :meth:`reload` was on; read when
         # it raises, so a caller can name the step that failed (#663: what runs
@@ -585,7 +589,9 @@ class AgentSessionRuntime:
     # caller that forgets it — which is exactly how an injected callback ends
     # up permanently ``None`` and every ``/resume`` refuses instead of asking.
 
-    def set_writer_lock(self, lock: SessionWriterLock | None) -> None:
+    def set_writer_lock(
+        self, lock: SessionWriterLock | None, *, writer_kind: WriterKind = "unknown"
+    ) -> None:
         """Adopt the lock the CLI took on the startup session.
 
         The runtime becomes responsible for moving it on every session swap
@@ -596,6 +602,7 @@ class AgentSessionRuntime:
         leaves sidecars behind.
         """
         self._writer_lock = lock
+        self._writer_kind = writer_kind
         self._manages_writer_lock = True
 
     def set_on_session_contended(
@@ -613,6 +620,12 @@ class AgentSessionRuntime:
         on the wire instead of painting a full-screen selector into its own
         JSONL response stream.
         """
+        self._on_session_contended = None if cb is None else lambda path, _holder: cb(path)
+
+    def set_on_session_contended_with_holder(
+        self, cb: Callable[[str, WriterKind], Awaitable[SessionContendedChoice]]
+    ) -> None:
+        """Install a callback that also displays the current holder observation."""
         self._on_session_contended = cb
 
     @property
@@ -620,7 +633,7 @@ class AgentSessionRuntime:
         """The lock this runtime currently holds, if any."""
         return self._writer_lock
 
-    def _acquire_writer_lock(self, path: str) -> SessionWriterLock | None:
+    def _acquire_writer_lock(self, path: str) -> tuple[SessionWriterLock | None, str | None]:
         """Take the writer lock for ``path``; ``None`` when someone else owns it.
 
         Only ever called when :attr:`_manages_writer_lock`, so ``None`` has
@@ -629,6 +642,8 @@ class AgentSessionRuntime:
         :attr:`SessionWriterLock.error` — because telling the user their
         session is open in another terminal when the truth is a root-owned
         lock file sends them looking for a terminal that does not exist.
+
+        The second item is the exact contended sidecar name when no lock is returned.
 
         Returns the CURRENT lock unchanged when ``path`` is the file we
         already hold: re-acquiring our own file is not contention, and
@@ -639,9 +654,13 @@ class AgentSessionRuntime:
         """
 
         current = self._writer_lock
-        if current is not None and current.resolved_path == resolve_session_path(path):
-            return current
-        candidate = SessionWriterLock(path)
+        if (
+            current is not None
+            and (current.held or current.degraded)
+            and current.resolved_path == resolve_session_path(path)
+        ):
+            return current, None
+        candidate = SessionWriterLock(path, writer_kind=self._writer_kind)
         if not candidate.try_acquire():
             if candidate.error is not None:
                 raise SessionError(
@@ -649,8 +668,8 @@ class AgentSessionRuntime:
                     f"cannot take the writer lock for {path}: {candidate.error}",
                     cause=candidate.error,
                 )
-            return None
-        return candidate
+            return None, candidate.lock_path
+        return candidate, None
 
     async def _writer_lock_for_new_file(self, session: Session) -> SessionWriterLock | None:
         """The lock for a session file this process has just created.
@@ -681,7 +700,7 @@ class AgentSessionRuntime:
         if path is None:
             return None
         try:
-            lock = self._acquire_writer_lock(path)
+            lock, _ = self._acquire_writer_lock(path)
         except BaseException:
             await self._discard_unadopted_file(path)
             raise
@@ -799,6 +818,7 @@ class AgentSessionRuntime:
         path: str,
         metadata: JsonlSessionMetadata,
         opened: Session,
+        lock_path: str,
     ) -> tuple[Session | None, SessionWriterLock | None]:
         """Ask what to do about ``path``, which another live process owns.
 
@@ -813,13 +833,13 @@ class AgentSessionRuntime:
 
         from aelix_agent_core.session.session import Session as _Session
 
+        holder = session_lock_holder(lock_path)
         ask = self._on_session_contended
         if ask is None:
-            raise SessionError(
-                "storage",
-                f"session is already open in another terminal: {path}",
+            raise SessionLockContention(
+                f"session is already open in another terminal: {path}", holder
             )
-        choice = await ask(path)
+        choice = await ask(path, holder)
         if choice == "cancel":
             return None, None
         if choice == "fork":
@@ -1646,11 +1666,10 @@ class AgentSessionRuntime:
             # cancel hook: taking a lock is silent, putting a question in front of
             # a user an extension was about to overrule is not.
             target_lock: SessionWriterLock | None = None
-            contended = False
+            contended_path: str | None = None
             forked: str | None = None
             if self._manages_writer_lock:
-                target_lock = self._acquire_writer_lock(path)
-                contended = target_lock is None
+                target_lock, contended_path = self._acquire_writer_lock(path)
 
             # From here the lock is live, so every exit path has to account for it.
             try:
@@ -1678,9 +1697,9 @@ class AgentSessionRuntime:
                 # handler this process had switched to the file it deliberately
                 # did not switch to, the one the other terminal still owns.
                 target_session_file = path
-                if contended:
+                if contended_path is not None:
                     resolved, target_lock = await self._resolve_contended_target(
-                        path, metadata, new_session
+                        path, metadata, new_session, contended_path
                     )
                     if resolved is None:
                         return RuntimeReplaceResult(cancelled=True)
@@ -2258,7 +2277,7 @@ class AgentSessionRuntime:
             # new file whenever the basename is free.
             import_lock: SessionWriterLock | None = None
             if self._manages_writer_lock:
-                import_lock = self._acquire_writer_lock(destination_path)
+                import_lock, _ = self._acquire_writer_lock(destination_path)
                 if import_lock is None:
                     raise SessionError(
                         "storage",

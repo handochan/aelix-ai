@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4289-4563``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4329-4603``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -84,16 +84,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4609-4611``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4649-4651``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:3093``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:3129``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:4175`` / ``:4549``).
+        reads on every (re)build (``cli/entry.py:4215`` / ``:4589``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -286,7 +286,7 @@ class AgentProfileService:
            check. Without the rollback that raise left ``parsed.tools`` poisoned
            and the prompt already swapped, so the failure was reported in red
            while the next ``/new`` — which disposes the live harness BEFORE
-           rebuilding (``agent_session_runtime.py:1448``) — died in
+           rebuilding (``agent_session_runtime.py:1468``) — died in
            ``AgentHarness.__init__`` against the same validator and left the REPL
            with a disposed harness. Proven end to end.
         2. **Reset to the pristine baseline.** Mandatory, not hygiene:
@@ -347,7 +347,7 @@ class AgentProfileService:
         """
 
         # Function-level import: ``cli/entry.py`` imports this package at module
-        # scope (``entry.py:71-76``), so importing it back here at module scope
+        # scope (``entry.py:78-83``), so importing it back here at module scope
         # would close an import cycle. Reusing ITS helpers (rather than
         # re-deriving the same values) is the point — a live identity computed
         # from different inputs than a rebuilt one would silently diverge on the

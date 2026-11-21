@@ -51,8 +51,8 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1694``,
-# ``rpc/rpc_mode.py:1654``, ``extensions/command_context.py:116``), so a
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1692``,
+# ``rpc/rpc_mode.py:1656``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -514,6 +514,11 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/repo_utils.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/session_lock.py",
+        # ADR-0316 (#868): add attribution only for a held session-file lock.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/_lock_fork.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/_lock_proof.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/_lock_proof_posix.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/_lock_proof_windows.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/read_only.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/storage.py",
         #

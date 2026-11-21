@@ -70,6 +70,175 @@
           "contains": "Error: this session is already open in another terminal."
         }
       ]
+    },
+    {
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "method": "sessions/branch",
+      "name": "opted-in return contention omits an unknown holder",
+      "setup": "session_lock_errors_on_return",
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "pattern": "already open in another terminal"
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "errorDetails"
+        ],
+        "properties": {
+          "errorDetails": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "session_locked"
+              }
+            },
+            "propertyNames": {"enum": ["kind"]}
+          }
+        }
+      }
+    },
+    {
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "method": "sessions/branch",
+      "name": "unopted return contention omits errorDetails",
+      "setup": "hold_the_original_session",
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "pattern": "already open in another terminal"
+      },
+      "response": {
+        "type": "object",
+        "not": {
+          "required": [
+            "errorDetails"
+          ]
+        }
+      }
+    },
+    {
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "method": "sessions/branch",
+      "name": "opted-in validation error omits errorDetails",
+      "setup": "session_lock_errors",
+      "params": {
+        "kind": "other"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      },
+      "response": {
+        "type": "object",
+        "not": {
+          "required": [
+            "errorDetails"
+          ]
+        }
+      }
+    },
+    {
+      "name": "opted-in startup preserves the refusal and ends in an unknown-holder frame",
+      "since": "#868",
+      "rig": "child",
+      "replay": true,
+      "launch": {
+        "args": [
+          "--session",
+          "$rig:locked_session",
+          "--rpc-session-lock-errors=581b49ec167bd24c36378b26ffcb9a3b"
+        ],
+        "startupRecord": {
+          "nonce": "581b49ec167bd24c36378b26ffcb9a3b",
+          "kind": "session_locked"
+        }
+      },
+      "stderr": {
+        "type": "string",
+        "pattern": "already open in another terminal"
+      }
+    },
+    {
+      "name": "opted-in return contention reports a known holder",
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "method": "sessions/branch",
+      "setup": "session_lock_errors_on_studio_return",
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "pattern": "Created branch.*already open in another terminal"
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "errorDetails"
+        ],
+        "properties": {
+          "errorDetails": {
+            "type": "object",
+            "required": [
+              "kind",
+              "holderKind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "session_locked"
+              },
+              "holderKind": {
+                "const": "studio"
+              }
+            },
+            "propertyNames": {
+              "enum": [
+                "kind",
+                "holderKind"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "opted-in return veto omits errorDetails",
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "method": "sessions/branch",
+      "setup": "session_lock_errors_on_vetoed_return",
+      "params": {
+        "kind": "clone"
+      },
+      "error": {
+        "type": "string",
+        "pattern": "an extension vetoed returning"
+      },
+      "response": {
+        "type": "object",
+        "not": {
+          "required": [
+            "errorDetails"
+          ]
+        }
+      }
     }
   ]
 }

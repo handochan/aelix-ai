@@ -520,6 +520,7 @@ class Setup:
     inventory: Callable[[Seed], Awaitable[Any]] | None = None
     """#624: the extension inventory ``/extension`` and ``selections/*`` kind
     ``extension`` list, built before the services (``None``: the built-in rows only)."""
+    session_lock_errors: bool = False
     subagents: bool = True
     """#612: whether ``full`` and ``turn`` bind :class:`FakeSubagents` (a jobs-only host does not)."""
 
@@ -546,6 +547,32 @@ async def _hold_the_original_session(rig: Rig) -> None:
         return result
 
     runtime.fork = fork_then_hold
+
+
+async def _hold_a_reported_studio_session(rig: Rig) -> None:
+    from unittest.mock import patch
+
+    from aelix_agent_core.session.session_lock import lock_path_for, resolve_session_path
+
+    original = lock_path_for(resolve_session_path(rig.runtime.harness.session_file))
+    # The floor exercises projection after a genuine denial. Filesystem
+    # proof and recognized origins are exercised independently on real files.
+    observe = patch(
+        "aelix_agent_core.runtime.agent_session_runtime.session_lock_holder",
+        side_effect=lambda path: "studio" if path == original else "unknown",
+    )
+    observe.start()
+    rig.cleanups.append(observe.stop)
+    await _hold_the_original_session(rig)
+
+
+async def _veto_branch_return(rig: Rig) -> None:
+    from aelix_agent_core.runtime import RuntimeReplaceResult
+
+    async def veto(*args: Any, **kwargs: Any) -> RuntimeReplaceResult:
+        return RuntimeReplaceResult(cancelled=True)
+
+    rig.runtime.switch_session = veto
 
 
 async def _net_mcp_servers(rig: Rig) -> None:
@@ -790,6 +817,16 @@ SETUPS: dict[str, Setup] = {
     "untrusted_project_resources": Setup(pre=_untrusted_project_resources),
     "global_settings_unreadable": Setup(pre=_unreadable_global_settings),
     "hold_the_original_session": Setup(post=_hold_the_original_session),
+    "session_lock_errors": Setup(session_lock_errors=True),
+    "session_lock_errors_on_return": Setup(
+        post=_hold_the_original_session, session_lock_errors=True,
+    ),
+    "session_lock_errors_on_studio_return": Setup(
+        post=_hold_a_reported_studio_session, session_lock_errors=True,
+    ),
+    "session_lock_errors_on_vetoed_return": Setup(
+        post=_veto_branch_return, session_lock_errors=True,
+    ),
     "net_mcp_servers": Setup(post=_net_mcp_servers),
     "an_installed_extension": Setup(post=_an_installed_extension),
     "hold_the_rebuild": Setup(post=_hold_the_rebuild),
@@ -1062,6 +1099,7 @@ async def open_rig(name: str, root: Path, *, setup: str | None = None) -> AsyncI
             stdin=wire.reader,
             stdout_write=wire.write,
             install_signal_handlers=False,
+            session_lock_errors=hook.session_lock_errors,
             **services,
         )
     )
@@ -1592,6 +1630,8 @@ def assert_case(
         assert response.get("id") == f"{prefix}case", f"{label}: not correlated: {response}"
         shape = envelope["response"]["success" if response.get("success") else "failure"]
         _validate(shape, response, f"{label} envelope")
+        if "response" in case:
+            _validate(case["response"], response, f"{label} response")
         if "error" in case:
             assert response["success"] is False, f"{label}: expected a refusal, got {response}"
             _validate(case["error"], response["error"], f"{label} error")

@@ -49,7 +49,7 @@ async def _session(tmp_path: Path) -> tuple[JsonlSessionRepo, Session, str]:
 def _answer_with(
     monkeypatch: pytest.MonkeyPatch, choice: str, seen: dict[str, Any] | None = None
 ) -> None:
-    async def _prompt(path: str, *, default_read_only: bool) -> str:
+    async def _prompt(path: str, *, default_read_only: bool, holder: str = "unknown") -> str:
         if seen is not None:
             seen["path"] = path
             seen["default_read_only"] = default_read_only
@@ -489,3 +489,69 @@ async def test_an_unusable_lock_file_refuses_with_the_real_reason(
     assert "lock file cannot be used" in err
     assert f"{path}.lock" in err
     assert "already open in another terminal" not in err
+
+
+async def test_failed_startup_reread_releases_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, session, path = await _session(tmp_path)
+    captured = []
+    real_lock = SessionWriterLock
+
+    def capture(*args, **kwargs):
+        lock = real_lock(*args, **kwargs)
+        captured.append(lock)
+        return lock
+
+    async def broken(*args, **kwargs):
+        assert captured[0].held
+        raise OSError("reread failed")
+
+    monkeypatch.setattr(entry_mod, "SessionWriterLock", capture)
+    monkeypatch.setattr(repo, "open", broken)
+    with pytest.raises(OSError, match="reread failed"):
+        await _resolve_session_ownership(
+            session, repo, str(tmp_path), app_mode="interactive",
+            named_exactly=True, opened_existing=True,
+        )
+    assert not captured[0].held, "the failing resolver left a held lock in its traceback"
+    contender = SessionWriterLock(path, timeout=0)
+    assert contender.try_acquire()
+    contender.release()
+
+
+async def test_startup_contended_fork_storage_failure_does_not_look_up_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, session, path = await _session(tmp_path)
+    _, forked, fork_path = await _session(tmp_path / "fork")
+    original = SessionWriterLock(path)
+    assert original.try_acquire()
+    _answer_with(monkeypatch, "fork")
+    looked_up = []
+    monkeypatch.setattr(entry_mod, "session_lock_holder", lambda path: looked_up.append(path) or "unknown")
+
+    async def fork(*args, **kwargs):
+        return forked
+
+    class UnavailableLock(SessionWriterLock):
+        def try_acquire(self):
+            if self.session_path == fork_path:
+                self._error = PermissionError("lock sidecar denied")
+                return False
+            return super().try_acquire()
+
+    monkeypatch.setattr(repo, "fork_from", fork)
+    monkeypatch.setattr(entry_mod, "SessionWriterLock", UnavailableLock)
+    before = Path(fork_path).read_bytes()
+    try:
+        result = await _resolve_session_ownership(
+            session, repo, str(tmp_path), app_mode="interactive",
+            named_exactly=True, opened_existing=True,
+        )
+        assert result is None
+        assert looked_up == [original.lock_path]
+        assert "the session this fork just created is already open" in capsys.readouterr().err
+        assert Path(fork_path).read_bytes() == before
+    finally:
+        original.release()

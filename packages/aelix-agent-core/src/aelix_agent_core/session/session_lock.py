@@ -64,9 +64,15 @@ import contextlib
 import errno
 import logging
 import os
+import threading
+import weakref
 from typing import Any
 
 from filelock import FileLock, SoftFileLock, Timeout
+
+from . import _lock_fork, _lock_proof
+from ._lock_proof import WriterKind as WriterKind
+from .storage import SessionError
 
 _log = logging.getLogger(__name__)
 
@@ -141,6 +147,19 @@ def resolve_session_path(session_path: str) -> str:
         return session_path
 
 
+class SessionLockContention(SessionError):
+    """A managed switch refused after a confirmed kernel lock contention."""
+
+    def __init__(self, message: str, holder: WriterKind) -> None:
+        super().__init__("storage", message)
+        self.holder_kind: WriterKind = holder
+
+
+def session_lock_holder(lock_path: str) -> WriterKind:
+    """Observe a verified holder after the caller has confirmed contention."""
+    return _lock_proof.lookup(lock_path)
+
+
 class SessionWriterLock:
     """Exclusive ownership of one session file, for the life of this process.
 
@@ -151,6 +170,7 @@ class SessionWriterLock:
     """
 
     __slots__ = (
+        "__weakref__",
         "_session_path",
         "_resolved_path",
         "_lock_path",
@@ -159,10 +179,15 @@ class SessionWriterLock:
         "_held",
         "_degraded",
         "_error",
+        "_pid",
+        "_lifecycle",
+        "_writer_kind",
+        "_acquisition",
     )
 
     def __init__(
-        self, session_path: str, *, timeout: float = DEFAULT_ACQUIRE_TIMEOUT
+        self, session_path: str, *, timeout: float = DEFAULT_ACQUIRE_TIMEOUT,
+        writer_kind: WriterKind = "unknown",
     ) -> None:
         self._session_path = session_path
         self._resolved_path = resolve_session_path(session_path)
@@ -174,6 +199,10 @@ class SessionWriterLock:
         self._held = False
         self._degraded = False
         self._error: OSError | None = None
+        self._pid = os.getpid()
+        self._lifecycle = threading.Lock()
+        self._writer_kind: WriterKind = writer_kind
+        self._acquisition: _lock_proof.Acquisition | None = None
 
     @property
     def session_path(self) -> str:
@@ -203,7 +232,7 @@ class SessionWriterLock:
         are writing without having proved we are alone.
         """
 
-        return self._held
+        return self._pid == os.getpid() and self._held
 
     @property
     def degraded(self) -> bool:
@@ -215,7 +244,7 @@ class SessionWriterLock:
         open until they delete it by hand.
         """
 
-        return self._degraded
+        return self._pid == os.getpid() and self._degraded
 
     @property
     def error(self) -> OSError | None:
@@ -241,6 +270,12 @@ class SessionWriterLock:
         sidecar this process cannot use at all.
         """
 
+        if self._pid != os.getpid():
+            raise RuntimeError("create a fresh session writer lock after fork")
+        with _lock_fork.transition(), self._lifecycle:
+            return self._try_acquire()
+
+    def _try_acquire(self) -> bool:
         if self._held or self._degraded:
             return True
         self._error = None
@@ -319,7 +354,23 @@ class SessionWriterLock:
 
         self._lock = lock
         self._held = True
+        try:
+            # The live filelock context is the source of the acquired handle.
+            # Its layout is exercised at the project's dependency floor and lock.
+            fd = lock._context.lock_file_fd
+            if fd is not None:
+                _lock_fork.track_lock(lock, fd)
+                self._acquisition = _lock_proof.prepare(
+                    self._lock_path, fd, self._writer_kind, weakref.ref(self)
+                )
+                _lock_proof.publish(self._acquisition)
+        except BaseException:
+            self._release()
+            raise
         return True
+
+    def _owns_proof(self, acquisition: _lock_proof.Acquisition) -> bool:
+        return self.held and self._acquisition is acquisition
 
     def _degrade(self, why: str) -> bool:
         self._degraded = True
@@ -334,14 +385,31 @@ class SessionWriterLock:
         on is how mutual exclusion is lost.
         """
 
+        if self._pid != os.getpid():
+            return
+        with _lock_fork.transition(), self._lifecycle:
+            self._release()
+
+    def _release(self) -> None:
         lock, self._lock = self._lock, None
         self._held = False
         if lock is None:
             return
         try:
-            lock.release()
-        except Exception:  # noqa: BLE001 — teardown must not raise
-            _log.exception("releasing the session writer lock raised")
+            _lock_proof.retire(self._acquisition)
+        finally:
+            self._acquisition = None
+            try:
+                lock.release()
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                _log.exception("releasing the session writer lock raised")
+            finally:
+                if not lock.is_locked:
+                    _lock_fork.untrack_lock(lock)
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.release()
 
     def __repr__(self) -> str:  # pragma: no cover — debug aid
         state = "degraded" if self._degraded else ("held" if self._held else "free")

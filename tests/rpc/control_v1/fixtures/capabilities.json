@@ -931,6 +931,40 @@
           }
         }
       }
+    },
+    {
+      "name": "opted-in stdio advertises session-lock errors",
+      "since": "#868",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "setup": "session_lock_errors",
+      "data": {
+        "type": "object",
+        "required": [
+          "sessionLockErrors"
+        ],
+        "properties": {
+          "sessionLockErrors": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "unopted stdio omits session-lock errors",
+      "since": "#868",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "not": {
+          "required": [
+            "sessionLockErrors"
+          ]
+        }
+      }
     }
   ]
 }

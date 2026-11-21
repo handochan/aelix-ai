@@ -87,7 +87,7 @@ FLOOR_REL = "tests/rpc/control_v1/floor_v1.json"
 FIXTURES_REL = "tests/rpc/control_v1/fixtures"
 ADR_GLOB = "docs/decisions/0302-*.md"
 SECTIONS = ("methods", "events", "errors", "envelope")
-SCHEMA_KEYS = ("data", "error", "expect")
+SCHEMA_KEYS = ("data", "error", "expect", "response")
 BOUND_KEYS = ("minItems", "maxItems", "minLength", "maxLength", "pattern")
 PARAM_BOUNDS = ("maxItems", "maxLength", "minimum", "maximum")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -139,6 +139,7 @@ CASE_KEYS = frozenset(
         "frames",
         "source",
         "stderr",
+        "response",
     }
 )
 #: The fixture-level fields a case runs with (the event family's frame and reply

@@ -62,6 +62,17 @@ runner's real user profile.
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows); since #123 (ADR-0306 D2) it also carries every delegated child's command inbox — see *W4 since #123* below | `rpc/rpc_mode.py`, `cli/entry.py`, `modes/print_inbox.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
+**Session writer records (#868, ADR-0316).** Attribution requires a fixed local
+volume and verified file identity, ACLs and directory handles. A redirected
+LocalAppData folder, reparse point, denied share or failed identity check leaves
+the holder unknown. Filelock retains its Windows byte range and sidecar cleanup.
+The Windows-only tests use the shell's default LocalAppData and its real ACLs
+for independent writer and reader processes. They also exercise a redirected
+shell response and require a separate process's DELETE open and rename to fail
+while a directory is pinned and to succeed after release. These tests await
+native Windows CI results. The installed Studio chain requires its managed
+artifact qualification.
+
 **W4 since #123 (recorded 2026-11-18, #829).** A delegated child is launched with
 `--command-inbox=1` and a pipe for its stdin, and `cli/entry.py`'s `_command_inbox`
 opens that stdin with `rpc_mode._open_stdin_reader`, which on win32 is
@@ -209,7 +220,7 @@ moved. Anyone extending this slice should follow the pattern.
    already on UTF-8 is untouched, which is what keeps the helper inert on every
    platform that was already correct; input streams are never re-encoded at all
    (`read_all_text` picks a decoder from the bytes instead).
-8. **Ctrl+G external editor.** `tui/shell.py:4033` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:4032` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
    (Until this pass the line was duplicated five times, citing `:2567`,
    `:2583`, `:2588`, `:2607` and `:2791` — one per branch that ran

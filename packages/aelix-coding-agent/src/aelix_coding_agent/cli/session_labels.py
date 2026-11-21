@@ -56,6 +56,7 @@ from typing import Any
 from aelix_agent_core.session.entries import SessionInfoEntry, SessionTreeEntry
 from aelix_agent_core.session.jsonl_repo import JsonlSessionRepo
 from aelix_agent_core.session.jsonl_storage import _parse_jsonl_content
+from aelix_agent_core.session.session_lock import WriterKind
 from aelix_agent_core.session.storage import SessionError
 
 logger = logging.getLogger(__name__)
@@ -654,3 +655,11 @@ __all__ = [
     "truncate_cells",
     "with_conversation",
 ]
+
+
+def session_lock_heading(holder: WriterKind, *, unknown: str) -> str:
+    if holder == "studio":
+        return "This session is open in Aelix Studio."
+    if holder == "cli":
+        return "This session is open in the Aelix CLI."
+    return unknown

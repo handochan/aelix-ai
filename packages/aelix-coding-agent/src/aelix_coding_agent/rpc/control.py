@@ -39,6 +39,7 @@ from aelix_agent_core.harness.prompt_templates import (
 )
 from aelix_agent_core.harness.skills import format_skill_invocation
 from aelix_agent_core.harness.tool_policy import ToolPolicy
+from aelix_agent_core.session.session_lock import SessionLockContention, WriterKind
 from aelix_ai.models import get_supported_thinking_levels
 
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -255,6 +256,14 @@ class _GuardedSessionRuntime:
         return await self._plane.transition(self._plane.runtime.reload)
 
 
+class BranchReturnContention(ValueError):
+    """The branch committed, then the explicit return switch met contention."""
+
+    def __init__(self, message: str, contention: SessionLockContention) -> None:
+        super().__init__(message)
+        self.holder_kind: WriterKind = contention.holder_kind
+
+
 class RpcControlPlane:
     """Operate on the live runtime, including after session replacement."""
 
@@ -273,8 +282,10 @@ class RpcControlPlane:
         jobs: Any = None,
         permissions: Any = None,
         transcript: TranscriptService | None = None,
+        session_lock_errors: bool = False,
     ) -> None:
         self.runtime = runtime_host
+        self.session_lock_errors = session_lock_errors
         self.transcript = transcript
         self._transcript_epoch = 0
         self.posture = permission_posture
@@ -601,6 +612,7 @@ class RpcControlPlane:
             "activeAgent": self.agents.active.name if self.agents and self.agents.active else None,
             "subagentsEnabled": subagents is not None,
             "selectionKinds": sorted(self.selections),
+            **({"sessionLockErrors": 1} if self.session_lock_errors else {}),
         }
 
     async def _dispatch(
@@ -1239,10 +1251,13 @@ class RpcControlPlane:
         try:
             restored = await self.runtime.switch_session(original)
         except Exception as error:
-            raise ValueError(
+            message = (
                 f"Created branch {branch}, but returning to {original} failed "
                 f"({error or type(error).__name__}); the runtime is now on {self.harness.session_file}"
-            ) from error
+            )
+            if isinstance(error, SessionLockContention):
+                raise BranchReturnContention(message, error) from error
+            raise ValueError(message) from error
         if restored.cancelled:
             raise ValueError(
                 f"Created branch {branch}, but an extension vetoed returning to {original}; "

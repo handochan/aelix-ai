@@ -52,7 +52,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
 #: ``tools/bash.py:70``; ad-hoc RPC bash tighter at 256 lines / 32KB,
-#: ``rpc/rpc_mode.py:682``). Uncapped, one ``!cat server.log`` is re-sent on
+#: ``rpc/rpc_mode.py:684``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
 #: ``UserMessage`` and a 2,000,455-byte session file.

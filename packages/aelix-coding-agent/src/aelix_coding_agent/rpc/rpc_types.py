@@ -500,6 +500,7 @@ class RpcErrorResponse:
     id: str | None = None
     success: Literal[False] = False
     type: Literal["response"] = "response"
+    error_details: dict[str, str] | None = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -510,6 +511,8 @@ class RpcErrorResponse:
         }
         if self.id is not None:
             out["id"] = self.id
+        if self.error_details is not None:
+            out["errorDetails"] = self.error_details
         return out
 
 

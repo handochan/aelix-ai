@@ -17,6 +17,7 @@ Pi line citation: ``cli/args.ts:1-354`` at SHA
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
@@ -360,10 +361,13 @@ class Args:
     names SPECIFIC packs, never a blanket 'trust everything' that would reopen
     the hole."""
 
+    studio_session_writer: bool = False
+    rpc_session_lock_nonce: str | None = None
+
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:758-775``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:751-768``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -420,7 +424,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1553-1596``) resolves
+    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1561-1604``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -602,20 +606,9 @@ def parse_args(argv: list[str]) -> Args:
         elif arg in ("--version", "-v"):
             parsed.version = True
         elif arg == "--mode":
-            if takes_value:
-                mode_val = argv[i + 1]
-                if mode_val in VALID_MODES:
-                    parsed.mode = mode_val  # type: ignore[assignment]
-                else:
-                    parsed.diagnostics.append(
-                        {
-                            "type": "error",
-                            "message": f"Invalid --mode value: {mode_val}",
-                        }
-                    )
-                i += 1
-            else:
-                parsed.diagnostics.append({"type": "error", "message": "--mode requires a value"})
+            i = _parse_mode(parsed, argv, i)
+        elif arg.startswith(("--session-writer-kind=", "--rpc-session-lock-errors=")):
+            _parse_session_lock_option(parsed, arg)
         elif arg in ("--print", "-p"):
             parsed.print_mode = True
             # Pi parity: ``args.ts:123-129`` opportunistic positional eat.
@@ -784,7 +777,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:758-774): warn + drop, never
+                    # Mirrors --thinking (args.py:751-767): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -926,7 +919,40 @@ def parse_args(argv: list[str]) -> Args:
             # Plain positional → message.
             parsed.messages.append(arg)
         i += 1
+    _validate_session_lock_options(parsed)
     return parsed
+
+
+def _parse_mode(parsed: Args, argv: list[str], index: int) -> int:
+    value = argv[index + 1] if index + 1 < len(argv) else None
+    if value in VALID_MODES:
+        parsed.mode = cast("Literal['text', 'json', 'rpc']", value)
+        return index + 1
+    message = "--mode requires a value" if value is None else f"Invalid --mode value: {value}"
+    parsed.diagnostics.append({"type": "error", "message": message})
+    return index if value is None else index + 1
+
+
+def _parse_session_lock_option(parsed: Args, arg: str) -> None:
+    option, _, value = arg.partition("=")
+    if option == "--session-writer-kind" and value == "studio" and not parsed.studio_session_writer:
+        parsed.studio_session_writer = True
+        return
+    if (
+        option == "--rpc-session-lock-errors"
+        and re.fullmatch("[0-9a-f]{32}", value)
+        and parsed.rpc_session_lock_nonce is None
+    ):
+        parsed.rpc_session_lock_nonce = value
+        return
+    parsed.diagnostics.append({"type": "error", "message": f"Invalid or duplicate {option}"})
+
+
+def _validate_session_lock_options(parsed: Args) -> None:
+    if parsed.mode != "rpc" and (parsed.studio_session_writer or parsed.rpc_session_lock_nonce):
+        parsed.diagnostics.append(
+            {"type": "error", "message": "Session writer attribution options require --mode rpc"}
+        )
 
 
 def print_help(out: TextIO | None = None) -> None:
