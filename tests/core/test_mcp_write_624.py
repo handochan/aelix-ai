@@ -701,7 +701,8 @@ def test_macos_deny_delete_acl_is_refused_and_the_temp_removed(tmp_path: Path) -
         elapsed = time.monotonic() - started
         left = sorted(x.name for x in tmp_path.iterdir())
     finally:
-        subprocess.run(["chmod", "-N", str(p)], check=True)
+        # A leftover temp file can carry the same deny-delete ACL.
+        subprocess.run(["chmod", "-R", "-N", str(tmp_path)], check=True)
     assert out.status == "refused"
     assert elapsed < 1.0, "POSIX does not retry a refused replace"
     assert out.detail.startswith("mcp.json cannot be replaced")
