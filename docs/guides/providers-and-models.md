@@ -735,18 +735,17 @@ observational and cannot change a list.
 ## Offline
 
 `--offline` (equivalent to `PI_OFFLINE=1` or `AELIX_OFFLINE=1`) skips the
-network operations aelix starts on its own:
+following operations:
 
 - the `rg` / `fd` binary auto-download. Measured with `PI_OFFLINE=1` and neither
   binary on `PATH`: `ensure_tool("rg")` printed
   `ripgrep not found. Offline mode enabled, skipping download.` and returned
   nothing, instead of fetching a release archive from GitHub.
-- the extension catalog fetch and index-less pip installs. Use
-  `aelix --offline extension …`, the subcommand's own flag
-  (`aelix extension discover --refresh --offline`), or export
-  `PI_OFFLINE=1` / `AELIX_OFFLINE=1`. With it on, a catalog on a network transport is skipped with a
-  per-source notice, and a bare `aelix extension install <pkg>` with no
-  `--index-url` is refused rather than silently reaching PyPI.
+- HTTP(S) catalog refreshes and implicit package index lookups. Registered
+  Git-over-SSH catalogs can still be refreshed in offline mode. Without an
+  explicit or registered index, offline extension installs and updates refuse
+  package names and use `--no-index` for paths and Git sources (#806, ADR-0185).
+  See [A fully air-gapped setup](private-catalog.md#a-fully-air-gapped-setup).
 - the once-a-day update check.
 - the model catalog check ([The published catalog](#the-published-catalog)).
 

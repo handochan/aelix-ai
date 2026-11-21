@@ -700,6 +700,15 @@ def test_print_help_offline_line_does_not_overclaim() -> None:
     assert "NOT affected" in text
 
 
+def test_print_help_describes_offline_path_and_git_index_resolution() -> None:
+    buf = io.StringIO()
+    print_help(buf)
+    assert (
+        "Path and Git installs without an explicit or registered index "
+        "resolve dependencies without package indexes."
+    ) in " ".join(buf.getvalue().split())
+
+
 def test_print_help_says_path_for_skill_and_extension() -> None:
     """ADR-0196 — both lines said ``<name>`` while the implementation
     resolved a PATH (``entry.py:1561-1604`` for ``--skill``,

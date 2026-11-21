@@ -33,6 +33,15 @@
 > beta.2 is tagged. One person, one machine, one locale, plus a green CI leg.
 > The README's *Platform support* section is the canonical statement.
 
+> **Extension CLI (2026-11-20, #806, #807, #814).** The shared installer now
+> supplies `--no-index` for offline path and Git installs without a configured
+> index, maps nonzero uninstall child statuses to exit `1`, and refuses an
+> named update selecting an older wheel for the same distribution. On macOS,
+> pip and uv both returned `2` in that case. If a bundle supplied the extension
+> and its newer wheel dropped the entry point, the named update could replay
+> the bundle's pin. The offline probe on both backends reinstalled 0.1.0 over
+> 0.2.0 and exited `0` (ADR-0185). Native Windows installer behavior awaits measurement.
+
 Branch: `feat/windows-experimental-slice` (Scenario C — parallel, tag-optional).
 
 **Delegated interpreter environment (#803, ADR-0197).** The startup handoff
