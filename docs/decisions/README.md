@@ -161,6 +161,8 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   a delegation's rows are its title, `running <tool>`/`thinking` with tokens, its last text and
   its id, a bash job's its command and `<bytes> → <path>`. Limits: no notice turn while open, no
   dedicated open key, Ctrl+B inert inside it, rendering measured in a macOS pty only.
+  Amended 2026-11-22 (#808): application exit dismisses a capturing modal mounted during that
+  run, measured with seven idle pickers under SIGTERM and SIGHUP in a 120×40 PTY.
 - [0298 — Ctrl+B moves a running foreground delegation into a background job](0298-ctrl-b-moves-a-running-delegation-into-a-background-job.md)
   (Accepted 2026-11-12; #775, #611 S3a; active since #611 S3e, #779). In the TUI, with background jobs on,
   Ctrl+B moves the one running `agent` `run` (one task) or `resume` into a job of the session

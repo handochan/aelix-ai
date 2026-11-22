@@ -1877,6 +1877,11 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The TUI shuts down with an idle picker opened during the application run
+  (#808, ADR-0299).** The 120×40 PTY regression sends SIGTERM and SIGHUP with
+  `/model`, `/settings`, `/skill`, `/tools`, `/agents`, `/statusline` or `/login`
+  open. Its SIGTERM case with `/model` open also checks that a running background
+  Bash job is gone after exit.
 - **Preflight checks workspace manifest changes and control-v1 checker changes (#870, #871).**
   A root or member `pyproject.toml` change alone selects `import-direction`. A change to either
   control-v1 checker script alone selects `control-v1`, and deleting `scripts/check_control_v1.py`
