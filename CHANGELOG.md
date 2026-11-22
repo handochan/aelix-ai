@@ -1968,10 +1968,23 @@ unwritten. Add them with the next release.
 - **`job(action="status"|"result")`, `job_stop` and `/jobs` take a background agent's own id
   (#827).** They answered "no job … in this session" to the agent id the agent's own answer gave.
   They now take it for an agent this aelix process started or moved and, after a restart, for one
-  whose run has ended (done or recovered); a spawned run a restart reads back as unresolved is
-  still named only by its job id (`agent()` takes its agent id). A job id or a unique prefix of
+  whose run has ended (done or recovered), and since #847 for one read back unresolved or lost
+  (next entry). A job id or a unique prefix of
   one still names the job it named; the agent id is tried only when neither matches. In the `job` and `job_stop` tools an id that names
   no job now points at `job(action="list")` (`tests/agents_ext/test_job_tool_agent_id_827.py`).
+- **After a restart, `job`, `job_stop` and `/jobs` find a spawned background agent that is still
+  running, or that is gone and left no answer, by its agent id and its run key, at that restart
+  and every later one (#847, ADR-0293).** A restart read such a run back as `unresolved` or `lost`
+  with no ids, so the three answered "no job <agent id> in this session" while `agent()` took the
+  id (`job_stop` now finds it and, as for any agent job, points at `agent(action="stop")`). The
+  agent kind now names the job by the ids its run's own start record holds, read when a restart
+  asks it about the job and, once the job's outcome is recorded (`lost` included), when a later
+  restart reads that outcome. For a resumed agent whose older run ended and whose newer run was
+  still running, they name the newer job, as `agent()` does; `job` named the older one before. An
+  id the agent kind and another kind answer with different jobs is still refused, and a job whose
+  records hold no start record of its run is named by its job id only, as before
+  (`tests/agents_ext/test_job_tool_agent_id_827.py`, including a real background child whose
+  parent process ended with `os._exit`, read back by the next two services on that session).
 - **grep's `rg`, find's `fd` and the extension installer get `/dev/null` as stdin where aelix's
   stdin is a protocol (#828).** A delegated child's stdin is its parent's command inbox (#123) and
   RPC's is the RPC pipe. `rg` and `fd` always get `/dev/null` now, as pi's do; with the argv grep

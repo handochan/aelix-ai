@@ -18,6 +18,9 @@ outcome (the ended-owner epoch); see the note "(2026-11-19, ADR-0307, #612)".
 Amended 2026-11-22 (#848, PR #862): the panel's `m` on an ended job asks the kind's sentence
 for a message typed with no text first (`JobEndedMessageAdapter`), so an agent's names no text to
 resume with; see the note of that date.
+Noted 2026-11-22 (#847): after a restart the agent kind names a spawned run read back unresolved
+or lost by the agent id and run key its run's own start record holds, at that restart and every
+later one; see the note of that date.
 Date: 2026-11-08
 Issue: #722 (#611 slice S1b). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract), with rounds 3–5 and Codex's reviews of rounds 1, 3 and 5 beside it.
@@ -1017,9 +1020,10 @@ adapter could name another kind's job (Codex's review, H2). The core still names
 (`tests/jobs/test_core_is_kind_agnostic_611.py`). The agent kind answers from this process's
 names, then from each job's own data (the agent and session ids a restart read back into its
 payload, a moved run's linkage), so an agent of a run before a restart resolves too once that
-run has ended (Codex M4). A spawned run a restart reads back as unresolved (its recorded process
-alive, no settle record) has no read-back ids in its payload, and only its job id names it to the
-`job` tools and `/jobs`, while `agent()` takes its agent id (lane b7f verify round 2, V2-F2).
+run has ended (Codex M4). Until #847, a spawned run a restart read back as unresolved (its
+recorded process alive, no settle record) had no read-back ids in its payload, and only its job id
+named it to the `job` tools and `/jobs`, while `agent()` took its agent id (lane b7f verify round 2,
+V2-F2); see the 2026-11-22 note of #847.
 An id that names no job gets a pointer to `job(action="list")` in the `job` and `job_stop` tools;
 `/jobs` says `no job <id> in this session` as before
 (`tests/agents_ext/test_job_tool_agent_id_827.py`). Resolving the id, rather than only pointing
@@ -1083,3 +1087,85 @@ sentence away and gave it the service's "<id> already ended: <state>" (review ro
 `tests/agents_ext/test_wrap_up_refusal_822.py`
 (`test_the_panels_w_w_says_what_jobs_wrap_says_and_m_names_no_text`,
 `test_the_panels_m_on_an_ended_job_of_a_steer_only_kind_keeps_the_steers_words`).
+
+## Note (2026-11-22, #847)
+
+**A spawned run a restart reads back unresolved or lost is named by its agent id and its run key,
+at that restart and every later one.** The limit in the 2026-11-19 note of #827 (a spawned run
+read back as unresolved was named only by its job id) is lifted. Where the names come from was
+measured first. A background spawn writes the job's `start`
+fact, then its run's `aelix.child_session` start record, which holds the run key, the child
+session id (the agent id) and the job id, and only then the job's `process` fact: the agent id is
+fixed after the job's start and recorded with its job id before its process exists (one real
+spawn through the extension, the job service and the print channel with a stub child, macOS,
+Python 3.12). `runtime._run` has no platform branch between the job's start and that record, so
+win32 takes the same order; that is read, not run. So the record the issue's first option asked
+for already exists on every spawn path, and no new one is written. What was missing was a reader
+that `job_for`, which is synchronous and reads only snapshots, could use: a run read back
+`unresolved` or `lost` has an empty payload.
+
+The agent kind's `recover`, which a restart hands the job's own records, now keeps the run key
+and the child session id of that start record by job id (`DelegationJobs.read_back`, in memory)
+before it reaches any verdict, and `job_for` names a job by them after its payload and its moved
+run's linkage, newest first as before. A restart does not ask `recover` about a job whose outcome
+is recorded: it hands the outcome fact and the same records to `decode`, which keeps the same two
+ids from the same start record, whatever the outcome. Without that, a run read back `lost` had an
+empty payload again at the restart after the one that recorded `lost`, and was named by its job
+id only (found in #847's first verify round). The outcome fact is written by the job service,
+which this change does not touch, so an outcome an older aelix recorded reads the same: measured
+once by a driver, not a test, on a session whose `lost` outcome a `0436193c` restart recorded. Both keep only string values (tested below) and, as
+`_names_of` does, only non-empty ones (`commands.find` refuses an empty id before it asks any
+kind, so that part has no test). `decode` keeps nothing for a moved run's linkage of a version
+this aelix cannot read, which it refuses before it reads any record (tested below). The core and
+`jobs/contract.py` are unchanged (`job_for` stays synchronous;
+`tests/jobs/test_core_is_kind_agnostic_611.py` passes). Putting the names in the
+snapshot's payload would have needed the service to read them or a new adapter method, and a
+`job_for` that reads the session would have changed the contract; keeping them in the kind is the
+lead's call. In `tests/agents_ext/test_job_tool_agent_id_827.py`:
+
+- `job`, `job_stop` and `/jobs` find the job by its agent id and by its run key, as `agent()` does
+  (`job_stop` then answers what it answers for the job id: the agent kind's pointer to
+  `agent(action="stop")`), when its recorded process is alive (its child's file locked or not) and
+  when it is gone and left no answer (`lost`); each fails on `0436193c` with "no job <id> in this
+  session"
+  (`test_a_spawned_run_read_back_unfinished_is_named_by_its_agent_id_and_run_key`).
+- With a real background child still running when its service is dropped without a shutdown, a
+  second service bound to the same session reads the job back `unresolved` and takes the agent id
+  (`test_a_live_spawned_childs_agent_id_names_its_job_in_the_next_service`).
+- A run read back `lost` is recorded once, with an empty payload, and at the second and the third
+  restart `job` status and result, `job_stop`, `/jobs` and `agent()` still take its agent id and
+  its run key (`test_a_lost_runs_agent_id_names_its_job_at_every_later_restart`). With a real
+  background child whose parent process ended with `os._exit` while it ran, the next service,
+  opened from the file, reads the job back `unresolved` and, once the child is killed, `lost`; the
+  service after that reads `lost`; both take the agent id and the run key
+  (`test_a_crashed_parents_agent_is_named_by_its_agent_id_after_it_is_read_back_lost`). That is on
+  macOS, where the stub child reads no command inbox and outlives its parent. In Linux docker it
+  was gone 0.5 s after its parent's exit in 3 of 3 runs (`pdeathsig`), so the first service may
+  read `lost` at once; the test takes either, and passes there.
+- For a resumed agent whose older run ended with its parent's settle and whose newer run was still
+  running, `job`, `/jobs` and `agent()` take the newer job; on `0436193c` `job` named the older one
+  while `agent()` took the newer
+  (`test_after_a_restart_an_agent_whose_older_run_settled_names_its_newer_unfinished_run`).
+- A start record whose run key or child session id is a list or a dict, which only a hand-edited
+  or corrupt file holds, reads back as on `0436193c`: `done` from its parent's settle, else
+  `unresolved` from the OS evidence, and its job id names it
+  (`test_a_start_record_whose_ids_are_not_strings_reads_back_as_before`).
+- A run with its parent's settle whose restored outcome could not be written stays
+  `unresolved(record_failed)` with an empty payload and is still named by its agent id
+  (`test_a_settled_run_whose_restored_outcome_is_not_written_is_named_by_its_agent_id`).
+- An id the agent kind and another kind answer with different jobs is refused as before
+  (`JobService.jobs_named`; `test_an_id_a_restored_agent_and_another_kind_both_answer_is_refused`).
+- A job whose records hold no start record of its run, or one with no key and no child, reads back
+  as before: `unresolved` from the OS evidence and named by its job id only
+  (`test_a_job_whose_records_name_no_agent_reads_back_by_its_job_id_only`). So does a job whose
+  `start` fact links a moved run by a linkage version this aelix cannot read: neither the linkage's
+  ids nor those of a start record with its job id are trusted, at the restart that asks `recover`
+  nor at a later one that hands `decode` an outcome of the job
+  (`test_a_linkage_of_an_unknown_version_names_its_job_by_its_job_id_only`).
+
+A job whose kind a restart neither asks nor hands its outcome (its `start` fact unreadable, or its
+kind not registered or older than the one that wrote it) is still named only by its job id; that
+follows from the code and has no test of its own. The whole test module is skipped on win32 (its
+stub children's pipes, as in `tests/agents_ext/test_detach_611.py`), so none of these tests runs
+on Windows; `decode`, `recover`, `keep_read_back` and `job_for` have no platform branch, but the
+spawn and cleanup code the two real-child tests also drive does.

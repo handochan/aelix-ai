@@ -1026,6 +1026,9 @@ class DelegationKindAdapter:
         A moved run's linkage of a version this client cannot read raises, as
         ``recover`` answers ``adapter_decode_error`` for it: the service then
         keeps the job's stored brief and body (ADR-0293's decode failure).
+        Otherwise the agent id and run key the run's start record holds are kept
+        for :meth:`job_for`, whatever the outcome, as :meth:`recover` keeps them
+        (#847 fix round 1, F1).
         """
 
         _readable_linkage(client.get("client_start"))
@@ -1033,16 +1036,17 @@ class DelegationKindAdapter:
         fact = fact if isinstance(fact, Mapping) else {}
         records = client.get("records")
         records = records if isinstance(records, list) else []
+        start = _start_of(records, client.get("client_start"))
+        # #847 F1 — an outcome no settle backs (``lost``, which this aelix's last
+        # restart or an older aelix recorded) has no ids in its payload.
+        self._jobs.keep_read_back(fact.get("job_id"), start)
         status = fact.get("status")
         if status == "recovered":
             # Read from the child's file at the last restart: no settle backs it,
             # so its identity comes from the start record — a moved run's, from
             # its job's linkage (#775) — and ``result`` reads the file again under
             # the same rules (Codex #6).
-            payload = {
-                **_payload_of(_start_of(records, client.get("client_start"))),
-                "recovered": True,
-            }
+            payload = {**_payload_of(start), "recovered": True}
         else:
             payload = _settled_payload(records)
         return ClientOutcome(
@@ -1112,12 +1116,19 @@ class DelegationKindAdapter:
         neither a job id nor a prefix of one. This process's names first (a spawn
         or a move names them), then, newest first, what each job's own data
         names: the ids a restart read back into its ``payload`` from the run's
-        records, and a moved run's linkage (``client_start``, #775). So an agent
-        of a run before a restart resolves too once that run has ended (Codex
-        review of #827, M4: it reached ``job`` as "no job …" though ``agent()``
-        took it). A spawned run a restart reads back as unresolved has no ids
-        in its payload, and this answers ``None`` for its agent id (lane b7f
-        verify round 2, V2-F2).
+        records, a moved run's linkage (``client_start``, #775), and the ids the
+        run's own start record holds, which :meth:`recover` kept when this
+        process's restart asked it about the job, or :meth:`decode` kept when it
+        read the outcome an earlier process recorded (#847). So an agent of a
+        run before a restart resolves too, ended or not, and after every later
+        restart (Codex review of #827, M4: it reached ``job`` as "no job …"
+        though ``agent()`` took it; #847: a spawned run read back
+        ``unresolved`` or ``lost`` has an empty payload, and was named by its
+        job id only; fix round 1, F1: a ``lost`` outcome was so again at the
+        restart after the one that recorded it). The newer of two runs of one
+        agent is named when the older ended with a settle and the newer did not
+        (F3). A job whose records hold no start record of its run, as one whose
+        run never wrote it, is still named by its job id only.
         """
 
         ids = {snap.job_id for snap in jobs}
@@ -1125,7 +1136,7 @@ class DelegationKindAdapter:
         if found in ids:
             return found
         for snap in jobs:
-            if ident in _names_of(snap):
+            if ident in _names_of(snap) or ident in self._jobs.read_back.get(snap.job_id, ()):
                 return snap.job_id
         return None
 
@@ -1240,13 +1251,18 @@ class DelegationKindAdapter:
         Before any of it, a moved run's linkage of a version this client cannot
         read is ``unresolved(adapter_decode_error)``, settle or not (#775,
         Codex r1 6): the records it links cannot be trusted to be this run's.
+        Otherwise the agent id and run key its start record holds are kept for
+        :meth:`job_for` first, whatever the verdict (#847).
         """
 
         linkage = facts.get("client")
+        start = None if _linkage_unknown(linkage) else _start_of(list(client_records), linkage)
+        # #847 — whatever the verdict: a run read back ``unresolved`` or ``lost`` has
+        # none of these ids in its payload, and ``job_for`` reads no session.
+        self._jobs.keep_read_back(facts.get("job_id"), start)
         settled = _settled_recovery(linkage, client_records)
         if settled is not None:
             return settled
-        start = _start_of(list(client_records), linkage)
         if start is None:
             return None
         session = self._session()
@@ -1291,12 +1307,19 @@ class DelegationJobs:
     Held by the ONE ``AgentsExtension`` of the process, so it outlives every
     harness build as the job service does; the adapter of each build and every
     runner share it. In memory only: after a restart the ids are found again
-    through the parent's records (:meth:`resolve`).
+    through the parent's records (:meth:`resolve`), and a job a restart read
+    back, ended or not, is named by the ids its run's start record holds
+    (:attr:`read_back`, #847).
     """
 
     def __init__(self) -> None:
         self.info: dict[str, AgentJob] = {}
         self._by_agent: dict[str, str] = {}
+        #: By job id, the agent id and run key a restart's ``recover`` or ``decode``
+        #: read off the job's own start record (#847). Keyed by job, so a resumed
+        #: agent's two runs stay two entries and ``job_for`` keeps its newest-first
+        #: order.
+        self.read_back: dict[str, frozenset[str]] = {}
         #: Consecutive waits that ended with nothing settled, this prompt (D1).
         self.empty_waits = 0
         #: The jobs whose attention notice already ended a wait (#123 D1): a
@@ -1315,6 +1338,18 @@ class DelegationJobs:
             self._by_agent[entry.agent_id] = entry.job_id
         if entry.key:
             self._by_agent[entry.key] = entry.job_id
+
+    def keep_read_back(self, job_id: Any, start: Mapping[str, Any] | None) -> None:
+        """Keep the run key and agent id ``start``, the run's own start record as a restart read it, name job ``job_id`` by (#847).
+
+        Only non-empty strings, as :func:`_names_of` keeps: a hand-edited or
+        corrupt record's list or dict names nothing and never raises (#847 fix
+        round 1, F2).
+        """
+
+        payload = _payload_of(start)
+        names = (payload.get("key"), payload.get("session_id"))
+        self.read_back[job_id] = frozenset(name for name in names if isinstance(name, str) and name)
 
     def adopt_entry(self, entry: AgentJob) -> None:
         """A run Ctrl+B moved into a job (#775): named at once, as a spawn is at its launch."""

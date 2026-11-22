@@ -80,10 +80,14 @@ built-in names there leaves them on.
   takes a note with `agent(action="send", id=…, task=…)` and a wrap-up with
   `agent(action="wrap_up", id=…)` (#123; `docs/guides/agent-profiles.md`, "Steering a running
   agent"). The `job` tools and `/jobs` take a background agent's own id as well as its job id,
-  for one this aelix process started or moved and, once it has ended, for one a restart read
-  back; a job id or a unique prefix of one is matched first, and the agent id only when neither
-  matches (#827, `tests/agents_ext/test_job_tool_agent_id_827.py`). In the `job` and `job_stop`
-  tools an id that names no job answers
+  for one this aelix process started or moved, and for one a restart read back, ended or not, at
+  that restart and every later one, by the agent id and run key its run's own start record holds
+  (#847: a spawned run read back unresolved or lost was named by its job id only); for a resumed
+  agent whose older run ended and whose newer run was still running, they take the newer one, as
+  `agent()` does. A job id or a unique prefix of one is matched first, and the agent id only when
+  neither matches (#827,
+  `tests/agents_ext/test_job_tool_agent_id_827.py`). In the `job` and `job_stop` tools an id that
+  names no job answers
   `no job <id> in this session; job(action="list") lists this session's jobs and their ids`;
   `/jobs` answers `no job <id> in this session`.
 
