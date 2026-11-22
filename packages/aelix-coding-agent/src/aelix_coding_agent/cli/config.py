@@ -146,21 +146,19 @@ def get_session_dir() -> str | None:
 
 
 McpConfigSource = Literal["env", "project", "global"]
-"""Where the resolved MCP config came from — used by the Project Trust gate
-(Sprint P0 #10) to drop ONLY auto-discovered ``project`` contribs from an
-untrusted directory while keeping user-chosen ``env`` / ``global`` ones."""
+"""The resolved MCP config tier. Project Trust gates the auto-discovered project tier."""
 
 
 @dataclass(frozen=True)
 class McpConfig:
-    """The one ``mcp.json`` a launch reads, split by what a launch does with it.
+    """The selected ``mcp.json``, split by what a launch does with it.
 
     #512 (ADR-0282). ``contribs`` are the servers to connect; ``disabled`` the
     entries with ``"enabled": false`` — listed by ``/mcp``, ``/extension`` and
     ``aelix status``, never connected, their tools never registered.
     ``warnings`` are the entries that were skipped and why; ``declared`` every
-    name, skipped or not. ``source`` and ``path`` say which file it was (both
-    :data:`None` when there is none).
+    name, skipped or not. ``source`` and ``path`` identify the selected file,
+    including an unread untrusted project file (both are :data:`None` if absent).
     """
 
     contribs: list[McpServerContrib] = field(default_factory=list)
@@ -247,7 +245,7 @@ def _invalid_reason(exc: Exception) -> str:
     return "; ".join(parts) or f"invalid ({type(exc).__name__})"
 
 
-def load_mcp_config(cwd: str) -> McpConfig:
+def load_mcp_config(cwd: str, *, project_trusted: bool = True) -> McpConfig:
     """Load MCP server definitions from a Claude-Code-style JSON config.
 
     Resolution precedence — ONE file, the first that exists:
@@ -279,11 +277,9 @@ def load_mcp_config(cwd: str) -> McpConfig:
     returned as warning strings rather than raised, so one malformed server
     never aborts startup.
 
-    ``source`` tags which tier the file came from (``"env"`` / ``"project"`` /
-    ``"global"``). The Project Trust gate (Sprint P0 #10) uses it to suppress
-    ONLY ``"project"`` (auto-discovered ``cwd/.aelix/mcp.json``) servers in an
-    untrusted directory — ``"env"`` (``$AELIX_MCP_CONFIG``) and ``"global"`` are
-    explicit user choices and are never gated.
+    With ``project_trusted=False``, an auto-discovered project file returns
+    only its source and path (#835). The env and global tiers are explicit
+    user choices and are read regardless of project trust.
 
     That last sentence has a PRECONDITION (ADR-0203): ``$AELIX_MCP_CONFIG`` is
     an "explicit user choice" only because ``cli/runtime_bootstrap.py``
@@ -296,11 +292,13 @@ def load_mcp_config(cwd: str) -> McpConfig:
     """
 
     source, path = resolve_mcp_config(cwd)
+    if source == "project" and not project_trusted:
+        return McpConfig(source=source, path=path, cwd=cwd)
     return _read_mcp_config(path, source, cwd)
 
 
 def resolve_mcp_config(cwd: str) -> tuple[McpConfigSource, Path]:
-    """Which ``mcp.json`` a launch in *cwd* reads, and where it came from — without opening it.
+    """Which ``mcp.json`` a launch in *cwd* selects, without opening it.
 
     :func:`load_mcp_config`'s precedence, and nothing else: the project file is
     only ``stat``-ed (``is_file``), so an untrusted folder's file is never

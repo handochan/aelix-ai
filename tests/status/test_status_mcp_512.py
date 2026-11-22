@@ -91,14 +91,23 @@ async def test_no_endpoint_or_token_reaches_the_output(
     assert "quiet-srv" not in out
 
 
-async def test_an_untrusted_project_file_is_skipped_not_listed(
+async def test_an_untrusted_project_file_is_skipped_without_opening(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _setup(tmp_path, monkeypatch, where="project")
-    report = await _collect(discover=False)
+    target = _setup(tmp_path, monkeypatch, where="project").resolve()
+    original_open = Path.open
+
+    def reject_project_open(path, *args, **kwargs):
+        assert path.resolve() != target, "opened untrusted project MCP config"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_project_open)
+    assert await run_status_command(["--no-extensions", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
     mcp = report["mcp"]
     assert report["project_trusted"] is False
     assert mcp["source"] == "project" and mcp["skipped_untrusted"] is True
+    assert Path(mcp["config"]).resolve() == target and mcp["config_label"] == ".aelix/mcp.json"
     assert mcp["servers"] == [] and mcp["warnings"] == []
     assert await run_status_command(["--no-extensions"]) == 0
     out = capsys.readouterr().out

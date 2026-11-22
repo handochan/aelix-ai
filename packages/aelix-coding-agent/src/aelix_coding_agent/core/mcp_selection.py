@@ -352,7 +352,12 @@ class McpSelection:
             reasons = {"global": _env_reason(here), "project": _env_reason(here)}
         elif here.source == "project":
             reasons = {
-                "global": f"aelix reads .aelix/mcp.json in this folder, not {global_label}",
+                "global": (
+                    f"aelix reads .aelix/mcp.json in this folder, not {global_label}"
+                    if here.readable
+                    else "aelix selects .aelix/mcp.json in this folder. "
+                    "Project trust is required to read it."
+                ),
                 "project": None if here.readable else UNTRUSTED_SCOPE_REASON,
             }
         else:

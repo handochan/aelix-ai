@@ -3,8 +3,9 @@
 Status: Accepted (2026-10-31, #512). Amended 2026-11-01 (review rounds 1 and 2:
 D9, and the corrections listed under it). Amended 2026-11-18 by ADR-0305
 (#624): D8's second bullet is superseded (a bare `/mcp` turns servers on and
-off), D1's warning names a type, not a value, and D6 gains a row (note at the
-end).
+off), D1's warning names a type, not a value, and D6 gains a row.
+Amended 2026-11-22 (#835): startup and status skip the project file before opening it
+when it is selected in an untrusted directory.
 Date: 2026-10-31
 Issue: #512 (phase 1 of its checklist). Deferred: the global/project merge and a
 `/mcp` toggle (D8).
@@ -222,8 +223,6 @@ and D5, and that inventory is #25's.
   `aelix status` carry the full hint.
 - An untrusted project `.aelix/mcp.json` holding only disabled entries still
   makes the directory ask for trust (the trust predicate counts the file).
-- Warnings from an untrusted project file are still printed at startup
-  (pre-existing); its servers and names are not used.
 
 ## Amendment 2026-11-01 — review round 1
 
@@ -367,3 +366,22 @@ guide says to put the entry in the project file too.
 - **D7**: `aelix status` is unchanged except D1's words; it shows a toggle at once as `enabled`
   or `disabled`, and its JSON gains no key
   (`test_aelix_status_json_flips_the_state_and_gains_no_key`).
+
+## Note (2026-11-22, #835)
+
+When resolution auto-discovers `.aelix/mcp.json` in an untrusted project, startup and
+`aelix status` use its source and path without opening the file. The open spies
+in `tests/cli/test_mcp_enabled_512.py` and `tests/status/test_status_mcp_512.py`
+cover both entry points. Startup prints a presence notice, including for a file
+with only disabled entries. Status reports `skipped_untrusted` with empty server
+and warning lists. The launch tests exercise per-entry validation and connection
+eligibility after `--approve` or a saved trust decision.
+An explicit `AELIX_MCP_CONFIG` selection has source `env`. Startup and status read
+it even when the path is inside an untrusted project.
+
+D2 and D5 still apply. The project file remains selected and startup uses the
+global file only for name suppression, covered by
+`test_an_untrusted_project_file_leaves_the_global_files_names_counting`.
+At pi commit `780bf31fcaeb252fa9b68df3964c735eae75bde3`, pi also gates the
+project read on trust. Pi always loads the global configuration and constructs
+the project path only for trusted projects. [pi's MCP loader](https://github.com/earendil-works/pi/blob/780bf31fcaeb252fa9b68df3964c735eae75bde3/packages/coding-agent/src/extensions/mcp/config.ts#L137-L145)

@@ -1877,6 +1877,11 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Startup and status skip auto-discovered MCP files in untrusted projects (#835, ADR-0282).**
+  When Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, startup prints a
+  presence notice and status reports it as skipped. Open-spy tests cover both
+  entry points and verify that the file's entries and warnings stay out of the output.
+  Aelix reads files explicitly selected with `AELIX_MCP_CONFIG` as the environment source.
 - **The TUI shuts down with an idle picker opened during the application run
   (#808, ADR-0299).** The 120×40 PTY regression sends SIGTERM and SIGHUP with
   `/model`, `/settings`, `/skill`, `/tools`, `/agents`, `/statusline` or `/login`
