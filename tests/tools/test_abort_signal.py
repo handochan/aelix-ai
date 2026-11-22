@@ -73,7 +73,7 @@ TWO CASES RUN REAL SHELLS OUTSIDE BashPhases, deliberately:
 arms, one call each) and
 ``test_a_signal_that_blows_up_while_being_cancelled_leaves_nothing_for_the_gc``
 (three calls in one case). #471 left their 60 s bounds as they were, twice the
-hang guard, over ``echo ok`` and over a python sleeper under a 0.3 s timeout.
+hang guard, over ``echo ok``, a python child (#866) and a python sleeper under a 0.3 s timeout.
 What they assert is which branch a cancellation takes inside the watcher
 teardown and what reaches the loop's GC handler, not how long a call takes.
 BashPhases also stamps only a case's FIRST spawn, so the GC case's second and
@@ -128,7 +128,7 @@ import types
 import warnings
 import weakref
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from aelix_coding_agent.tools._abort import AbortSignal
@@ -713,6 +713,57 @@ async def test_bash_exec_cancel_watcher_teardown_catches_exception(
 _INTERPRETER = f'& "{sys.executable}"' if sys.platform == "win32" else shlex.quote(sys.executable)
 _SLEEPER = f'{_INTERPRETER} -c "import time; time.sleep(5)" "aelix234"'
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+#: The NORMAL legs' child (#866), and the GC case's arms 1 and 2. It prints
+#: ``ok`` and exits 0, as the ``echo ok`` it replaced did, but only once the
+#: file named by its first argument exists, and
+#: :class:`_CancelsTheTurnFromInsideTheWatcher` and
+#: :class:`_BlowsUpWhileBeingCancelled` create that file when their ``wait()``
+#: is entered. The bound, 3000 polls of 10 ms, only keeps a hook that never
+#: runs from holding the case past its own 60 s guard; the premise assert then
+#: fails the case.
+_PRINTS_OK_ONCE_THE_WATCHER_WAITS = (
+    "import os, sys, time; "
+    "any(os.path.exists(sys.argv[1]) or time.sleep(0.01) for _ in range(3000)); "
+    "print('ok')"
+)
+
+
+def _ok_once_the_watcher_waits(entered_flag: Path) -> str:
+    """That child's command, quoted for the resolved shell as :data:`_SLEEPER` is."""
+
+    flag = f'"{entered_flag}"' if sys.platform == "win32" else shlex.quote(str(entered_flag))
+    return f'{_INTERPRETER} -c "{_PRINTS_OK_ONCE_THE_WATCHER_WAITS}" {flag}'
+
+
+def _the_sleeper(_entered_flag: Path) -> str:
+    """The timeout leg's command. The flag cannot hold it: its end is the 0.3 s timeout."""
+
+    return _SLEEPER
+
+
+def _what_exec_did(task: asyncio.Task[ExecExitResult]) -> str:
+    """How a finished ``exec`` task ended, for the premise message (#866)."""
+
+    if task.cancelled():
+        return "was cancelled"
+    exc = task.exception()
+    return f"raised {exc!r}" if exc is not None else f"returned {task.result()!r}"
+
+
+def _output_lines(chunks: list[bytes]) -> list[bytes]:
+    """The output as whole lines, so the child's ``ok`` is compared as one (#866).
+
+    Never ``b"ok" in output``: a shell that refused the command prints its own
+    error instead, and bash's contains ``ok`` twice (``unexpected token`` and
+    the echoed ``print('ok')``). ``bytes.splitlines`` also drops the CR of the
+    CRLF pwsh writes on the windows leg.
+    """
+
+    return b"".join(chunks).splitlines()
+
 
 class _CancelsTheTurnFromInsideTheWatcher:
     """The whole signal surface ``exec`` needs, plus a hook in the one window.
@@ -744,12 +795,41 @@ class _CancelsTheTurnFromInsideTheWatcher:
     ``call_soon`` DID reach ``_must_cancel``, because the awaited object was the
     watcher task itself; moving to ``asyncio.wait`` is what collapsed the two
     paths, so this docstring cannot be inherited from the design.
+
+    THE WATCHER MUST ALREADY BE WAITING (#866). The teardown's ``cancel()``
+    reaches this ``except`` only if ``wait()`` is running. A cancel that lands
+    before the watcher task's first step ends the coroutine unstarted, and
+    ``cancelled_the_turn`` stays False. On Python 3.13 and 3.14 an ``echo ok``
+    could get there. ``asyncio/futures.py``'s ``_chain_future`` there sets the
+    asyncio future at once when it runs on the loop's own thread, where 3.11
+    and 3.12 always queue it with ``call_soon_threadsafe``. So when the command
+    had exited before ``_wait`` submitted ``proc.wait``, and the new executor
+    thread finished that wait before ``run_in_executor`` chained its future,
+    ``_wait``'s ``await`` did not suspend. ``exec`` then reached the teardown
+    in the step that created the watcher. Measured on darwin with the product
+    unchanged and the two normal legs looped in one process: py3.14.5 failed
+    102 of 600 in one run, 1 of 600 and 0 of 100 in two others; py3.12.13 and
+    py3.11.15 failed 0 of 600 each. With the loop thread held 50 ms after the
+    spawn, py3.14.5 failed 79 of 80 and py3.13.13 39 of 40, while py3.12.13
+    and py3.11.15 failed 0 of 80 each. So ``wait()`` creates ``entered_flag``
+    before its ``try``, and the normal legs run
+    :data:`_PRINTS_OK_ONCE_THE_WATCHER_WAITS`, which exits only once that file
+    exists: the command, and so ``_wait``, cannot end before the watcher waits.
+
+    The timeout leg is not held that way: its ``_wait`` ends at the 0.3 s
+    timeout whatever the hook does. It keeps the window only for a loop thread
+    kept 0.3 s or more between ``executor.submit`` and the chaining. On
+    py3.14.5, a probe that held that gap for 0.2 s or 0.28 s failed it 0 of 6
+    times each, one that held it for 0.32 s or 0.4 s 6 of 6 each, and it
+    failed 0 of 50 runs without a probe.
     """
 
-    def __init__(self, *, deliver: str = "inline") -> None:
+    def __init__(self, *, deliver: str = "inline", entered_flag: Path | None = None) -> None:
         self._event = asyncio.Event()
         self._deliver = deliver
+        self._entered_flag = entered_flag
         self.exec_task: asyncio.Task[ExecExitResult] | None = None
+        self.entered = False
         self.cancelled_the_turn = False
         self.delivered_via: str | None = None
 
@@ -763,6 +843,11 @@ class _CancelsTheTurnFromInsideTheWatcher:
         )
 
     async def wait(self) -> None:
+        # No ``await`` between this file and the ``try``: the child that waits
+        # for it cannot end before this coroutine is suspended inside it.
+        self.entered = True
+        if self._entered_flag is not None:
+            self._entered_flag.touch()
         try:
             await self._event.wait()
         except asyncio.CancelledError:  # the teardown's own ``watcher_task.cancel()``
@@ -779,7 +864,7 @@ class _CancelsTheTurnFromInsideTheWatcher:
 @pytest.mark.parametrize(
     (
         "arm",
-        "command",
+        "command_for",
         "timeout",
         "what_main_returned",
         "deliver",
@@ -789,7 +874,7 @@ class _CancelsTheTurnFromInsideTheWatcher:
     [
         pytest.param(
             "normal/inline",
-            "echo ok",
+            _ok_once_the_watcher_waits,
             None,
             "exit_code=0, timed_out=False",
             "inline",
@@ -799,7 +884,7 @@ class _CancelsTheTurnFromInsideTheWatcher:
         ),
         pytest.param(
             "timeout/inline",
-            _SLEEPER,
+            _the_sleeper,
             0.3,
             "exit_code=None, timed_out=True",
             "inline",
@@ -809,7 +894,7 @@ class _CancelsTheTurnFromInsideTheWatcher:
         ),
         pytest.param(
             "normal/after_completion",
-            "echo ok",
+            _ok_once_the_watcher_waits,
             None,
             "exit_code=0, timed_out=False",
             "after_completion",
@@ -822,7 +907,7 @@ class _CancelsTheTurnFromInsideTheWatcher:
 async def test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed(
     tmp_path: Path,
     arm: str,
-    command: str,
+    command_for: Callable[[Path], str],
     timeout: float | None,
     what_main_returned: str,
     deliver: str,
@@ -839,7 +924,9 @@ async def test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed(
     treat them alike:
 
     * NORMAL — the command exited on its own; ``main`` returned
-      ``exit_code=0, timed_out=False``.
+      ``exit_code=0, timed_out=False``. Since #866 that command exits only
+      once the watcher waits (:data:`_PRINTS_OK_ONCE_THE_WATCHER_WAITS`), so
+      the teardown's cancel cannot land before the watcher's first step.
     * TIMEOUT — ``_wait`` caught ``TimeoutExpired``, already ended the tree and
       stamped the kill, and returned ``None``; ``main`` returned
       ``exit_code=None, timed_out=True``. After the fix the cancellation wins
@@ -855,8 +942,10 @@ async def test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed(
     """
 
     ops = create_local_bash_operations()
-    sig = _CancelsTheTurnFromInsideTheWatcher(deliver=deliver)
+    entered_flag = tmp_path / "the-watcher-waits"
+    sig = _CancelsTheTurnFromInsideTheWatcher(deliver=deliver, entered_flag=entered_flag)
     chunks: list[bytes] = []
+    command = command_for(entered_flag)
     task = asyncio.ensure_future(
         ops.exec(command, str(tmp_path), on_data=chunks.append, signal=sig, timeout=timeout)
     )
@@ -874,7 +963,9 @@ async def test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed(
         pytest.fail(f"[{arm}] exec did not return within 60s")
 
     assert sig.cancelled_the_turn, (
-        f"[{arm}] the teardown never cancelled the watcher — the case measured nothing"
+        f"[{arm}] the teardown never cancelled the watcher — the case measured nothing "
+        f"(its wait() was {'entered' if sig.entered else 'never entered'}; exec "
+        f"{_what_exec_did(task)})"
     )
     assert sig.delivered_via == expect_delivered_via, (
         f"[{arm}] the cancel took the {sig.delivered_via} branch, not "
@@ -885,8 +976,10 @@ async def test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed(
         f"{task.result()!r} (on main: {what_main_returned})"
     )
     if expect_in_output is not None:
-        # ``in``, never ``== b"ok\n"``: pwsh writes CRLF on the windows leg.
-        assert expect_in_output in b"".join(chunks)
+        assert expect_in_output in _output_lines(chunks), (
+            f"[{arm}] no whole line of the output was {expect_in_output!r}: "
+            f"{b''.join(chunks)!r}"
+        )
     warnings.warn(
         f"watcher-teardown cancel [{arm}] returned in {elapsed:.3f}s on {sys.platform}",
         stacklevel=1,
@@ -905,19 +998,41 @@ class _BlowsUpWhileBeingCancelled:
 
     With ``exec_task`` set it also cancels the caller, so the same object
     produces the arm where a retrieval written AFTER the wait is skipped.
+
+    The watcher must already be waiting when the teardown cancels it, as in
+    :class:`_CancelsTheTurnFromInsideTheWatcher` (#866): a cancel that lands
+    before its first step ends it unstarted, nothing fails, and the arm
+    measures nothing. ``wait()`` therefore creates ``entered_flag`` before its
+    ``try``, and arms 1 and 2 run :data:`_PRINTS_OK_ONCE_THE_WATCHER_WAITS`.
+    Measured with the product unchanged and each arm's premise asserted: under
+    ``echo ok``, arm 1's watcher never started in 68 of 200 runs in Linux
+    docker on py3.14.7, exactly the runs whose ``proc.wait`` future was
+    already set when it was chained, and a 0.2 s hold of the loop thread
+    between ``executor.submit`` and the chaining failed each arm 5 of 5 on
+    py3.14.5; under the child, both arms passed 200 of 200 in that docker and
+    5 of 5 under that hold on py3.11.15, py3.12.13, py3.13.13 and py3.14.5.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, entered_flag: Path | None = None) -> None:
         self._event = asyncio.Event()
+        self._entered_flag = entered_flag
         self.exec_task: asyncio.Task[ExecExitResult] | None = None
+        self.entered = False
+        self.blew_up = False
         self.cancelled_the_turn = False
         self.watcher_task: asyncio.Task[None] | None = None
 
     async def wait(self) -> None:
         self.watcher_task = asyncio.current_task()
+        # No ``await`` between this file and the ``try``, as in
+        # :meth:`_CancelsTheTurnFromInsideTheWatcher.wait`.
+        self.entered = True
+        if self._entered_flag is not None:
+            self._entered_flag.touch()
         try:
             await self._event.wait()
         except asyncio.CancelledError as cancelled:
+            self.blew_up = True
             if self.exec_task is not None:
                 self.cancelled_the_turn = True
                 self.exec_task.cancel()
@@ -991,21 +1106,54 @@ async def test_a_signal_that_blows_up_while_being_cancelled_leaves_nothing_for_t
     try:
         # ARM 1 — the watcher fails during its own cancellation; no caller cancel.
         chunks: list[bytes] = []
-        first = _BlowsUpWhileBeingCancelled()
+        first_flag = tmp_path / "arm-1-the-watcher-waits"
+        first = _BlowsUpWhileBeingCancelled(entered_flag=first_flag)
         result = await asyncio.wait_for(
-            ops.exec("echo ok", str(tmp_path), on_data=chunks.append, signal=first), 60.0
+            ops.exec(
+                _ok_once_the_watcher_waits(first_flag),
+                str(tmp_path),
+                on_data=chunks.append,
+                signal=first,
+            ),
+            60.0,
+        )
+        assert first.blew_up, (
+            "arm 1: the teardown never cancelled the watcher — the arm measured nothing "
+            f"(its wait() was {'entered' if first.entered else 'never entered'}; exec "
+            f"returned {result!r})"
         )
         assert result.exit_code == 0
+        assert b"ok" in _output_lines(chunks), (
+            f"arm 1: no whole line of the output was b'ok': {b''.join(chunks)!r}"
+        )
+        # The hook holds the watcher's task, and with it bound the collection
+        # below reaches nothing, as in arm 2: left bound, this arm passed on
+        # py3.12.13 with the teardown's ``watcher_task.exception()`` removed
+        # from ``exec``. The report is asserted first: the handler keeps each
+        # reported task in ``reported``, so a report alone would also leave
+        # this one reachable.
+        ref = weakref.ref(first.watcher_task)
+        first.watcher_task = None
         await _settle_the_gc()
         assert _never_retrieved(reported) == [], (
             "arm 1: the teardown left the watcher's exception for the GC to report"
         )
+        assert ref() is None, (
+            "arm 1: the watcher task was still reachable — this arm's silence "
+            "measured nothing"
+        )
 
         # ARM 2 — the same, with the caller's cancellation landing in the wait.
         cancelled_chunks: list[bytes] = []
-        second = _BlowsUpWhileBeingCancelled()
+        second_flag = tmp_path / "arm-2-the-watcher-waits"
+        second = _BlowsUpWhileBeingCancelled(entered_flag=second_flag)
         task = asyncio.ensure_future(
-            ops.exec("echo ok", str(tmp_path), on_data=cancelled_chunks.append, signal=second)
+            ops.exec(
+                _ok_once_the_watcher_waits(second_flag),
+                str(tmp_path),
+                on_data=cancelled_chunks.append,
+                signal=second,
+            )
         )
         second.exec_task = task
         _done, pending = await asyncio.wait([task], timeout=60.0)
@@ -1015,11 +1163,16 @@ async def test_a_signal_that_blows_up_while_being_cancelled_leaves_nothing_for_t
                 await asyncio.wait([task], timeout=5.0)
             pytest.fail("arm 2: exec did not return within 60s")
         assert second.cancelled_the_turn, (
-            "arm 2: the teardown never cancelled the watcher — the arm measured nothing"
+            "arm 2: the teardown never cancelled the watcher — the arm measured nothing "
+            f"(its wait() was {'entered' if second.entered else 'never entered'}; exec "
+            f"{_what_exec_did(task)})"
         )
         assert task.cancelled(), (
             f"arm 2: the teardown swallowed the caller's cancellation: exec returned "
             f"{task.result()!r}"
+        )
+        assert b"ok" in _output_lines(cancelled_chunks), (
+            f"arm 2: no whole line of the output was b'ok': {b''.join(cancelled_chunks)!r}"
         )
         # Everything that could keep the watcher's task reachable, dropped:
         # the exec task holds ``exec``'s frame through its ``_cancelled_exc``

@@ -3584,12 +3584,18 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
 ) -> None:
     """ADR-0238's Consequences paragraph, against a real tree instead of a script.
 
-    ``test_abort_signal.py``'s case for this window uses ``echo ok`` — no tree,
-    no helper, no holder — so it pins the PROPAGATION and nothing about what
-    the cancellation costs. This one is 8b's command with the cancel in place of
+    ``test_abort_signal.py``'s case for this window runs a python child that
+    prints ``ok`` only once the watcher waits (#866) — no tree, no helper, no
+    holder — so it pins the PROPAGATION and nothing about what the
+    cancellation costs. This one is 8b's command with the cancel in place of
     the abort: the root exits 0 after backgrounding a helper meant to outlive it
     and a tail still holding the pipe, and the cancellation is delivered from
-    inside the watcher while ``exec`` is suspended in the teardown.
+    inside the watcher while ``exec`` is suspended in the teardown. Its root is
+    not held that way, so #866's window stays open here, on Python 3.13 and
+    3.14 only, for a loop thread stalled between ``executor.submit`` and the
+    chaining for as long as the root runs: a 0.2 s hold there failed this case
+    3 of 3 with DID NOT RAISE on py3.14.5 and py3.13.13 and 0 of 3 on py3.12.13
+    and py3.11.15, and 100 runs without a hold passed on py3.14.5.
 
     What must hold, all of it after the cancellation is already unwinding:
 
