@@ -597,11 +597,11 @@ _TRUST_NOTE = (
 
 
 def _collect_mcp(cwd: Path, project_trusted: bool) -> dict[str, Any]:
-    """The ``mcp`` key: the file a launch here reads and its servers' states.
+    """The ``mcp`` key: the file a launch here selects and its servers' states.
 
     Through ``load_mcp_config`` — the loader the launch calls — and the
-    launch's own trust rule: an untrusted ``project`` file is skipped whole, so
-    its entries are not listed. Server names are bounded like every other
+    launch's own trust rule: an untrusted ``project`` file is identified by
+    path without opening it. Server names are bounded like every other
     author-controlled string this command emits. A warning drops the file path
     it starts with — ``config`` already names the file, and the path alone ate
     the 128-character bound — and is bounded at a sentence's length instead,
@@ -614,7 +614,7 @@ def _collect_mcp(cwd: Path, project_trusted: bool) -> dict[str, Any]:
     from aelix_coding_agent.cli.config import load_mcp_config
     from aelix_coding_agent.core.mcp_servers import config_statuses
 
-    config = load_mcp_config(str(cwd))
+    config = load_mcp_config(str(cwd), project_trusted=project_trusted)
     prefix = f"{config.path}: "
 
     def warning_text(warning: str) -> str:
@@ -623,7 +623,7 @@ def _collect_mcp(cwd: Path, project_trusted: bool) -> dict[str, Any]:
         return safe_for_terminal(warning, max_chars=600)
 
     skipped = config.source == "project" and not project_trusted
-    statuses = [] if skipped else config_statuses(config.contribs, config.disabled_servers())
+    statuses = config_statuses(config.contribs, config.disabled_servers())
     return {
         "config": str(config.path) if config.path is not None else None,
         "config_label": config.label or None,
@@ -637,7 +637,7 @@ def _collect_mcp(cwd: Path, project_trusted: bool) -> dict[str, Any]:
             }
             for s in statuses
         ],
-        "warnings": [] if skipped else [warning_text(w) for w in config.warnings],
+        "warnings": [warning_text(w) for w in config.warnings],
         "trust_note": _TRUST_NOTE if config.source == "project" else None,
     }
 

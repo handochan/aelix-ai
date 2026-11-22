@@ -288,7 +288,10 @@ def test_both_arrows_refuse_where_nothing_is_writable(
     else:
         bench.write_project('{"mcpServers": {"x": {"command": "SECRET-624"}}}')
         reasons = {
-            "Global": f"aelix reads .aelix/mcp.json in this folder, not {bench.global_label}",
+            "Global": (
+                "aelix selects .aelix/mcp.json in this folder. "
+                "Project trust is required to read it."
+            ),
             "This project": "this folder is not trusted (/trust to decide)",
         }
     body = _body(bench.control())

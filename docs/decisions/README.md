@@ -487,6 +487,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   Round 2: the record is capped at 16 KiB and removed from the child's `os.environ` once read,
   its notices name the variable, and `/mcp` shows a url as scheme, host and port only.
   Amended 2026-11-18 (ADR-0305, #624): D8's `/mcp` toggle is built (a bare `/mcp` writes `enabled` in the file in force; `/mcp list` keeps the table); D1's warning names a type, not the value; D6 gains RPC `selections/*` kind `mcp`. The merge stays with #644.
+  Amended 2026-11-22 (#835): when the selected project MCP file is untrusted, startup and status report it as skipped without opening it.
 - [0279 — Skills, prompts and (later) tools and extensions are turned on and off through one settings contract](0279-resources-are-turned-on-and-off-through-one-settings-contract.md)
   (Accepted 2026-10-31; #511, absorbs #595). The `skills`, `prompts` and (with #25) `extensions`
   lists of both settings files use pi's grammar plus identity: a plain path adds a directory,

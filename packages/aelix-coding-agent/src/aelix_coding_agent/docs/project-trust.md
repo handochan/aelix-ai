@@ -27,7 +27,7 @@ The complete list comes from
 | --- | --- |
 | `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore` and `checkModelCatalog`. Its `agents` list can turn on an agent profile your global file turned off ([agent-profiles](agent-profiles.md#turning-profiles-on-and-off)). Read only when the project is trusted (#369). |
 | `<cwd>/.aelix/extensions/` | `importlib` `exec_module`s arbitrary Python with your privileges. |
-| `<cwd>/.aelix/mcp.json` | Declares MCP servers; a `stdio` one spawns a subprocess on connect. |
+| `<cwd>/.aelix/mcp.json` | Declares MCP servers. A `stdio` server spawns a subprocess on connect. Startup and `aelix status` report the selected project file as skipped without opening it when the project is untrusted (#835, ADR-0282). |
 | `<cwd>/.aelix/SYSTEM.md` | Replaces the generated system prompt, including the agent identity and tool guidance (#287, ADR-0257). |
 | `<cwd>/.aelix/APPEND_SYSTEM.md` | Adds instructions to the system prompt before AGENTS.md context (#287, ADR-0257). |
 | `<cwd>/.aelix/agents/` | An agent profile is an **identity** — it can replace the system prompt and swap the model and tool allow-list. |
@@ -383,6 +383,9 @@ misconfiguration:
 ```
 Notice: project-local .aelix resources (extensions, skills, agent profiles, settings) and .agents/skills skipped in an untrusted directory; pass --approve to trust.
 ```
+
+If the directory is untrusted and `.aelix/mcp.json` is the selected MCP file,
+startup also reports that it skipped reading that file (#835, ADR-0282).
 
 A repository that carries only `.aelix/settings.json` is now in this group
 (#369): a script that relied on such a file under `-p` must pass `--approve`,

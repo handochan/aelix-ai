@@ -263,6 +263,22 @@ async def test_an_untrusted_folder_lists_its_per_kind_rows_without_the_trust_poi
     )
 
 
+async def test_an_untrusted_mcp_selection_explains_why_the_global_scope_is_locked(
+    tmp_path: Path,
+) -> None:
+    async with rigs.open_rig("child", tmp_path / "rig", setup="untrusted_project_resources") as rig:
+        answer = await _ask(rig, "list-mcp", "selections/list", kind="mcp")
+
+    assert answer["success"] is True, answer
+    data = answer["data"]
+    global_scope = data["scopes"]["global"]
+    assert global_scope["writable"] is False
+    assert global_scope["reason"] == (
+        "aelix selects .aelix/mcp.json in this folder. Project trust is required to read it."
+    )
+    assert [row["label"] for row in data["items"]] == [".aelix/mcp.json not read"]
+
+
 # --- cancelling ---------------------------------------------------------------------
 
 

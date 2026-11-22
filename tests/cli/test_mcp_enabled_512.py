@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from aelix_coding_agent.cli import config
 from aelix_coding_agent.cli import entry as entry_mod
+from aelix_coding_agent.cli.project_trust import ProjectTrustStore
 
 _ARGV = ["--no-session", "--print", "--provider", "anthropic", "--model", "x"]
 
@@ -206,7 +207,7 @@ async def test_only_disabled_entries_still_build_an_inventory(
     assert spy.calls == [([], ["off"])]
 
 
-async def test_an_untrusted_project_file_lists_nothing_and_notices_only_real_skips(
+async def test_an_untrusted_project_file_with_only_disabled_entries_still_notices(
     env: Path, spy: type[_Spy], monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     _write_mcp(env / "proj" / ".aelix" / "mcp.json", {"off": {"command": "srv", "enabled": False}})
@@ -214,7 +215,52 @@ async def test_an_untrusted_project_file_lists_nothing_and_notices_only_real_ski
     await entry_mod._async_main(_ARGV)
     err = capsys.readouterr().err
     assert spy.calls == [], "an untrusted file has no say, its disabled entries included"
-    assert "servers skipped in an untrusted directory" not in err, "nothing would have started"
+    assert "project-local .aelix/mcp.json not read in an untrusted directory" in err
+
+
+@pytest.mark.parametrize("use_flags", [False, True], ids=["default-and-saved", "explicit"])
+async def test_project_mcp_config_is_opened_only_after_trust(
+    env: Path,
+    spy: type[_Spy],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    use_flags: bool,
+) -> None:
+    project = env / "proj"
+    target = _write_mcp(
+        project / ".aelix" / "mcp.json",
+        {
+            "eligible": {"command": "srv"},
+            "bad-enabled": {"command": "srv", "enabled": "yes"},
+            "override-only": {"enabled": False},
+        },
+    ).resolve()
+    monkeypatch.chdir(project)
+    original_open = Path.open
+
+    def reject_project_open(path, *args, **kwargs):
+        assert path.resolve() != target, "opened untrusted project MCP config"
+        return original_open(path, *args, **kwargs)
+
+    notice = "project-local .aelix/mcp.json not read in an untrusted directory"
+    with monkeypatch.context() as blocked:
+        blocked.setattr(Path, "open", reject_project_open)
+        await entry_mod._async_main([*_ARGV, "--no-approve"] if use_flags else _ARGV)
+    err = capsys.readouterr().err
+    assert notice in err
+    assert "Warning: MCP config:" not in err
+    assert spy.calls == []
+
+    if not use_flags:
+        ProjectTrustStore(str(env / "agent")).set(project, True)
+    await entry_mod._async_main([*_ARGV, "--approve"] if use_flags else _ARGV)
+    err = capsys.readouterr().err
+    assert notice not in err
+    warnings = [line for line in err.splitlines() if line.startswith("Warning: MCP config:")]
+    assert len(warnings) == 2
+    assert "'bad-enabled'" in warnings[0]
+    assert "'override-only'" in warnings[1]
+    assert spy.calls == [(["eligible"], [])]
 
 
 def _pack(extensions_dir: Path, server: str) -> None:

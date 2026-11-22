@@ -3947,53 +3947,53 @@ async def _async_main(argv: list[str], startup: contextlib.AsyncExitStack) -> in
 
     from .config import load_global_mcp_config
 
-    mcp_config = load_mcp_config(str(Path.cwd()))
+    mcp_cwd = str(Path.cwd())
+    mcp_config = load_mcp_config(mcp_cwd, project_trusted=project_trusted)
     mcp_contribs = list(mcp_config.contribs)
     mcp_disabled = mcp_config.disabled_servers()
-    mcp_source = mcp_config.source
     # The file whose NAMES count (D5): the one read, except in an untrusted
     # directory below.
     mcp_names_config = mcp_config
     for warning in mcp_config.warnings:
         print(f"Warning: MCP config: {warning}", file=sys.stderr)
-    # Project Trust gate: drop ONLY the auto-discovered project-local
-    # ``cwd/.aelix/mcp.json`` contribs from an untrusted directory. ``$AELIX_MCP_CONFIG``
-    # (``env``) and the user-global config are explicit user choices and are
-    # NEVER gated. When dropped in a non-interactive run, print a clear stderr
-    # notice (replaces the old post-hoc "loaded N on-disk extensions" warning).
+    # Project Trust gates the auto-discovered ``cwd/.aelix/mcp.json`` before
+    # opening it (#835, ADR-0282). If untrusted, the selected project file
+    # contributes no warnings, servers, disabled rows or names. Source and
+    # path still identify it for the notice below and for `aelix status`.
+    # The env and global tiers are explicit user choices and are never gated.
     #
     # "explicit user choice" is only true because ``AELIX_MCP_CONFIG`` is on
     # ``load_dotenv``'s ``_DOTENV_LOCKED`` list (ADR-0203) — the one branch the
-    # ``AELIX_DOTENV_ALLOW`` hatch cannot open. NOT the ``^AELIX_`` rule: that
-    # lives in ``_dotenv_key_allowed``, downstream of both the locked branch and
-    # the hatch, so for this key it never runs — and on its own it is provably
-    # insufficient, because one pasted ``export AELIX_DOTENV_ALLOW=AELIX_MCP_CONFIG``
-    # bypasses it and restored the spawn in full. It was NOT true before: a cwd ``.env`` runs before
-    # this gate exists, so a cloned repo could set ``AELIX_MCP_CONFIG`` itself
-    # and land its server in the one tier that is deliberately never gated —
-    # measured spawning ``sh -c`` at startup, even under ``--no-approve``. The
-    # ungated tier is safe only for as long as the env var behind it really does
-    # come from the user.
-    if mcp_source == "project" and not project_trusted:
-        # An untrusted file has no say at all: its disabled entries are not
-        # listed, and no name it declares — not even an invalid entry's — keeps
-        # a manifest server off. The notice speaks only when something that
-        # would have started was skipped.
-        if mcp_contribs:
-            print(
-                "Notice: project-local .aelix/mcp.json servers skipped in an "
-                "untrusted directory; pass --approve to trust.",
-                file=sys.stderr,
-            )
-        mcp_contribs = []
-        mcp_disabled = []
+    # ``AELIX_DOTENV_ALLOW`` hatch cannot open. The ``^AELIX_`` rule lives in
+    # ``_dotenv_key_allowed``, downstream of both the locked branch and the
+    # hatch, so for this key it never runs. Without the locked branch a
+    # repository's ``.env`` could nominate its own MCP config, because dotenv
+    # runs before the trust gate exists. The ungated tier depends on the env
+    # var behind it coming from the user.
+    #
+    # The one-file precedence remains in effect when the project file is
+    # skipped. The global file can supply names for the D5 rule below while
+    # its servers stay out of the connection list.
+    if mcp_config.source == "project" and not project_trusted:
+        # Project file presence is enough to explain the skip. The same
+        # notice covers empty files, disabled entries and malformed files,
+        # because the loader has only resolved the source and path.
+        #
+        # Both headless startup and the TUI reach this branch, including
+        # when an interactive trust prompt is declined or when a saved
+        # decision distrusts the project.
+        print(
+            "Notice: project-local .aelix/mcp.json not read in an untrusted directory; "
+            "pass --approve to trust.",
+            file=sys.stderr,
+        )
         # ...but the user's GLOBAL file still speaks for its names (D5, amended
         # 2026-11-01, #512 verify V1). The project file is the one picked, so
         # nothing from the global file starts here either; before this, a
         # repo's untrusted ``.aelix/mcp.json`` — ``{"mcpServers": {}}`` was
         # enough — made NO file's names count, and an extension server the
         # global file keeps off by name started (measured). NAMES only.
-        mcp_names_config = load_global_mcp_config(str(Path.cwd()))
+        mcp_names_config = load_global_mcp_config(mcp_cwd)
     mcp_declared = set(mcp_names_config.declared)
     mcp_off = set(mcp_names_config.off)
     # D9 (2026-11-01, #512 review 512-01 / verify V3) — what the aelix that
@@ -4172,8 +4172,8 @@ async def _async_main(argv: list[str], startup: contextlib.AsyncExitStack) -> in
     # ``has_trust_requiring_project_resources``, which also counts the
     # prompt-templates family and ``.aelix/mcp.json``, so naming one directory
     # here would report the wrong resource for, say, an agents-only project.
-    # (``.aelix/mcp.json`` keeps its own targeted notice above, which is emitted
-    # only when contribs were actually dropped.)
+    # (``.aelix/mcp.json`` has its own notice above when it is the selected
+    # config and the project is untrusted.)
     if (
         not project_trusted
         and app_mode != "interactive"

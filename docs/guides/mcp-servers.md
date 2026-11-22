@@ -8,25 +8,28 @@ each server is doing.
 
 ## Which file is read
 
-A launch reads **one** `mcp.json` for its servers, the first of these that
-exists:
+A launch selects **one** `mcp.json` for its servers in this order:
 
 1. the file `$AELIX_MCP_CONFIG` names;
 2. `<project>/.aelix/mcp.json`;
 3. `~/.aelix/agent/mcp.json`.
 
-The files are not merged. A project `.aelix/mcp.json` **replaces** your global
-file in that directory, trusted or not: none of the global servers start there.
+An auto-discovered `.aelix/mcp.json` **replaces** your global file as the source
+of servers in that directory.
 (pi merges the two and lets a project entry override a global server's
-`enabled`; aelix does not yet — an entry that sets only `enabled` in a project
-file changes nothing and gets a warning that says so.)
+`enabled`. When Aelix reads a project file, it warns about entries that set
+only `enabled` and leaves the global server's setting alone.)
 
-A project file's servers start only in a [trusted](project-trust.md) project.
-In an untrusted one the file is skipped whole — its servers are neither started
-nor listed, and its server names count for nothing — and aelix prints a notice
-when that skipped a server that would have started. Your global file's servers
-do not start there either, since the project file is the one picked; only its
-server names still count (see [Use the name](#servers-an-extension-declares)).
+When Aelix auto-discovers `.aelix/mcp.json` and the project is untrusted,
+startup and `aelix status` report it as skipped without opening it or reporting
+warnings from its contents
+(#835, ADR-0282). Startup reports the file's presence even if it is empty or
+holds only disabled entries. Use `--approve` or [save a trust decision](project-trust.md)
+to allow a launch to read and validate the project file. While the file is
+skipped, the global file supplies only the names used to suppress matching
+extension servers (see [Use the name](#servers-an-extension-declares)).
+Setting `AELIX_MCP_CONFIG` explicitly selects the file as the environment source.
+Aelix reads that file even if it is inside an untrusted project.
 
 ## Entries
 
@@ -117,8 +120,8 @@ The file written is the one [above](#which-file-is-read), and only that one:
   in one project: a `.aelix/mcp.json` there would replace the global file in
   that folder and stop its other servers too. That waits for #644;
 - in a trusted project with its own `.aelix/mcp.json`, that file;
-- in an untrusted project with one, nothing: the file is not read, and one
-  locked row says why;
+- when Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, nothing.
+  One locked row explains why Aelix skips the file;
 - under `$AELIX_MCP_CONFIG`, nothing: its rows are locked; edit it by hand.
 
 ←/→ to the other file says why it cannot be saved to. `/mcp` never creates an
@@ -214,7 +217,8 @@ you can do:
   notice naming the extension and the file whenever an extension's server is not
   started for this reason. Whose names count:
   - the names of the file the launch reads;
-  - in an untrusted project, your global file's — not the project file's;
+  - when Aelix skips an auto-discovered project file because the project is
+    untrusted, your global file's;
   - in a trusted project with its own `.aelix/mcp.json`, that file's only: it
     replaces the global one there, so put the entry in the project file too;
   - for a delegated agent, also every name its parent's file declares.
