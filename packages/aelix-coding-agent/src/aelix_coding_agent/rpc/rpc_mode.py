@@ -2117,25 +2117,25 @@ def _thread_pumped_stdin_reader(
     """
 
     loop = asyncio.get_running_loop()
-    reader = asyncio.StreamReader()
+    flow = _PumpFlow(loop)  # #852: the thread stops while nobody takes what it read
 
     def _pump() -> None:
         try:
             while True:
-                chunk = os.read(fd, 65536)
+                chunk = flow.read(fd)
                 if not chunk:
                     break
-                loop.call_soon_threadsafe(reader.feed_data, chunk)
+                flow.feed(chunk)
         except Exception:  # noqa: BLE001 — a broken stdin is an EOF, not a crash
             pass
         finally:
             # RuntimeError: the loop closed while we were blocked in the read.
             with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(reader.feed_eof)
+                loop.call_soon_threadsafe(flow.reader.feed_eof)
 
     thread = threading.Thread(target=_pump, name="aelix-rpc-stdin", daemon=True)
     thread.start()
-    return reader, thread
+    return flow.reader, thread
 
 
 async def _open_stdin_reader(
@@ -2241,9 +2241,9 @@ async def run_rpc_mode(
         stdin: Optional :class:`asyncio.StreamReader`. When ``None`` the
             entry connects to ``sys.stdin.buffer`` via
             :func:`asyncio.connect_read_pipe`.
-        stdout_write: Optional sink for outgoing JSONL records. When
-            ``None`` writes are buffered through the real ``sys.stdout``
-            file descriptor (bypassing the redirect).
+        stdout_write: Optional sink for outgoing JSONL records, called inline.
+            When ``None`` one writer thread writes them to the real stdout's
+            descriptor, bypassing the redirect (#852, ADR-0317).
         install_signal_handlers: Set False in tests to skip the
             SIGTERM/SIGHUP wiring (the test harness uses asyncio cancel
             instead).
@@ -2259,37 +2259,14 @@ async def run_rpc_mode(
     stdout_redirect_cm: contextlib.AbstractContextManager[Any] = (
         contextlib.redirect_stdout(sys.stderr)
     )
-    if stdout_write is None:
-        # Capture the real stdout descriptor BEFORE redirect, then route
-        # all RPC writes through it.
-        real_stdout_fd = sys.__stdout__
-        if real_stdout_fd is None:
-            real_stdout_fd = sys.stdout  # fallback for unusual environments
-
-        def _write(data: bytes) -> None:
-            try:
-                real_stdout_fd.buffer.write(data)
-                real_stdout_fd.buffer.flush()
-            except BrokenPipeError:
-                # Issue #57: the JSONL consumer vanished — re-raise so the
-                # caller can shut down. The text fallback below was written
-                # for the missing-``.buffer`` pytest case; routing EPIPE
-                # through it just re-raised the same error from the fallback
-                # write, uncaught and misattributed.
-                raise
-            except (AttributeError, ValueError, OSError):
-                # ``__stdout__`` may not expose ``.buffer`` in unusual
-                # environments (e.g. captured by pytest); fall back to
-                # the text stream.
-                # NOT ``decode_child_output``: these are bytes WE encoded, four
-                # lines below, and never a child's (#239).
-                real_stdout_fd.write(data.decode("utf-8", errors="replace"))
-                real_stdout_fd.flush()
-
-        stdout_write = _write
+    from aelix_coding_agent.rpc._stdout_writer import InputGate, open_frame_writer
 
     shutdown_event = asyncio.Event()
-    write_sink = _CloseOnBrokenPipe(stdout_write, shutdown_event.set).write
+    # #852 (ADR-0317) — the real stdout, captured before the redirect, is written by
+    # one writer thread, so a host that stops reading no longer stalls this loop; an
+    # injected sink is called inline, as before. A closed pipe starts the shutdown (#57).
+    writer = open_frame_writer(stdout_write, shutdown_event.set)
+    write_sink = writer.write
 
     def _output(obj: Any) -> None:
         write_sink(encode_json_line(obj))
@@ -2355,10 +2332,13 @@ async def run_rpc_mode(
     # The transcript service tracks the producer through disposal. This
     # capture follows the harness used by classic handlers and #612 controls.
     dispatch_harness = runtime_host.harness
+    # #852 — the turn waits while the host is more than the writer's mark behind (pi).
+    writer.follow(dispatch_harness)
 
     async def rebind_session(new_harness: AgentHarness, reason: str = "resume") -> None:
         nonlocal dispatch_harness
         previous_harness, dispatch_harness = dispatch_harness, new_harness
+        writer.follow(new_harness)
         # #594: client MCP tools follow the native selection rules.
         try:
             await control.mcp.attach(new_harness, previous_harness, reason)
@@ -2484,23 +2464,25 @@ async def run_rpc_mode(
                 )
             with contextlib.suppress(BrokenPipeError):
                 write_sink(_reply_bytes(response, bounded=bounded))
+            await input_gate.replied()  # #852: the reply counts for the input; then pi's wait
 
         task = asyncio.create_task(_dispatch())
         pending_command_tasks.add(task)
         task.add_done_callback(pending_command_tasks.discard)
+        input_gate.started(task)  # #852: it owes its reply from here
 
-    reader_obj = JsonlLineReader(_on_line)
+    # #852 (ADR-0317, the lead's call) — while the host is more than the writer's mark
+    # behind, its input is read and held, not parsed, except one line after each drain to
+    # the mark; under the mark a line is parsed when the queue and the replies still owed
+    # by the commands let in before it leave room.
+    input_gate = InputGate(writer, _on_line)
+    reader_obj = JsonlLineReader(input_gate.take)
     stdin_eof = asyncio.Event()
 
     async def _pump_stdin() -> None:
         try:
-            while True:
-                chunk = await stdin.read(4096)
-                if not chunk:
-                    reader_obj.end()
-                    stdin_eof.set()
-                    return
-                reader_obj.feed(chunk)
+            await input_gate.pump(stdin, reader_obj)
+            stdin_eof.set()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -2530,6 +2512,7 @@ async def run_rpc_mode(
     with stdout_redirect_cm:
         try:
             await _wait_for_shutdown(shutdown_event, stdin_eof)
+            writer.release_producers()  # #852: no wait on the host holds the exit
             # #594: nothing new starts, nothing queued runs, open dialogs settle
             # as cancelled, and a running lifecycle transition finishes — all
             # before waiting for the command tasks.
@@ -2551,6 +2534,7 @@ async def run_rpc_mode(
             # children's interventions — a ``run_rpc_mode`` cancelled before its main
             # loop's call too. Idempotent: it sets ``closing``, closes the dialogs,
             # cancels.
+            writer.release_producers()  # #852: a cancelled run's held turn aborts at once
             control.begin_shutdown()
             pump_task.cancel()
             with contextlib.suppress(BaseException):
@@ -2595,31 +2579,21 @@ async def run_rpc_mode(
                 # The disposal's ``session_shutdown`` stopped the children; their terminal
                 # ``aelix_child`` frames went out above. Now the subscription ends and the
                 # controls are retired.
-                transcript.retire()
-                control.retire()
+                try:
+                    transcript.retire()
+                    control.retire()
+                finally:
+                    # #852 (ADR-0317) — what is queued reaches the host, waiting at most 5 s.
+                    await writer.aclose()
             # Neither stdin arm needs teardown. On POSIX asyncio closes the pipe
             # transport when the reader hits EOF. On Windows (#107) the pump
             # thread is parked in a blocking ``readline`` that nothing can
             # interrupt, so joining it would hang shutdown until the client
             # happened to send another line — it is a daemon thread precisely so
             # the interpreter can exit out from under it.
-
-
-class _CloseOnBrokenPipe:
-    def __init__(self, write: Callable[[bytes], None], close: Callable[[], None]) -> None:
-        self._write = write
-        self._close = close
-        self._closed = False
-
-    def write(self, data: bytes) -> None:
-        if self._closed:
-            return
-        try:
-            self._write(data)
-        except BrokenPipeError:
-            self._closed = True
-            self._close()
-            raise
+    # #852 (ADR-0180, ADR-0317) — the host closed stdout, or it broke: ``main_sync`` exits
+    # 141, as when the base's buffered stdout failed its last flush.
+    writer.raise_if_gone()
 
 
 async def _wait_for_shutdown(shutdown: asyncio.Event, eof: asyncio.Event) -> None:
@@ -2630,6 +2604,58 @@ async def _wait_for_shutdown(shutdown: asyncio.Event, eof: asyncio.Event) -> Non
         for waiter in waiters:
             waiter.cancel()
         await asyncio.wait(waiters)  # Preserve the caller's cancellation reason.
+
+
+class _PumpFlow(asyncio.ReadTransport):
+    """The thread-pumped stdin's reader, with asyncio's own flow control over the thread (#852).
+
+    A ``StreamReader`` pauses its transport when a feed leaves more than twice its limit
+    unread (2 x 64 KiB) and resumes it when a read leaves the limit or less, or finds
+    nothing to read. This is that transport for :func:`_thread_pumped_stdin_reader`: the
+    pump thread reads its next chunk only after the loop has fed the one before and
+    while the reader is not paused, so at most 192 KiB waits unread here (128 KiB and
+    the 64 KiB chunk that crossed it) and input that nobody takes waits in the host's
+    pipe. On POSIX asyncio does the same to the pipe it reads. ``InputGate`` reads no
+    more once a mark's worth of lines is held (ADR-0317); before this the thread read
+    on into the reader without a bound.
+
+    Defined below its one caller so the lines above it keep their numbers.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__()
+        self.reader = asyncio.StreamReader()
+        self.reader.set_transport(self)
+        self._loop = loop
+        self._paused = False
+        self._go = threading.Event()
+        self._go.set()
+
+    def read(self, fd: int) -> bytes:
+        """On the pump thread: one ``os.read``, once the chunk before it is fed and not paused."""
+
+        self._go.wait()
+        return os.read(fd, 65536)
+
+    def feed(self, chunk: bytes) -> None:
+        """On the pump thread: hand ``chunk`` to the loop; the next read waits for it."""
+
+        self._go.clear()
+        self._loop.call_soon_threadsafe(self._fed, chunk)
+
+    def _fed(self, chunk: bytes) -> None:
+        try:
+            self.reader.feed_data(chunk)  # may pause this transport
+        finally:
+            if not self._paused:
+                self._go.set()
+
+    def pause_reading(self) -> None:
+        self._paused = True
+
+    def resume_reading(self) -> None:
+        self._paused = False
+        self._go.set()
 
 
 def _write_event(

@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
+import time
 
 import pytest
 from aelix_coding_agent.rpc.rpc_mode import (
@@ -103,6 +105,54 @@ async def test_thread_pump_treats_a_broken_stream_as_eof() -> None:
 
     assert await asyncio.wait_for(reader.readline(), 5) == b""
     thread.join(timeout=5)
+
+
+async def test_thread_pump_stops_reading_while_nobody_takes_its_input() -> None:
+    """#852 (ADR-0317): input that nobody takes waits in the host's pipe, not in memory.
+
+    The pump reads its next chunk only once the loop has fed the one before and the
+    reader is not paused, and asyncio pauses a reader that holds more than 2 x 64 KiB
+    unread. Before, the thread read on without a bound: with the output held, the round 2
+    verify's host wrote 6,291,456 bytes of input in 3 s and 5,283,840 of them sat in the
+    reader. Once the input is taken, every byte arrives, in order.
+    """
+
+    blocks = 1536  # 6 MiB in 4,096-byte blocks, each one its own number over and over
+    read_fd, write_fd = os.pipe()
+    written = 0
+
+    def host() -> None:
+        nonlocal written
+        try:
+            for index in range(blocks):
+                os.write(write_fd, index.to_bytes(4, "big") * 1024)  # waits while the pipe is full
+                written += 4096
+        finally:
+            os.close(write_fd)
+
+    writer = threading.Thread(target=host, daemon=True)
+    reader, thread = _thread_pumped_stdin_reader(read_fd)
+    try:
+        writer.start()
+        last, end = -1, time.monotonic() + 30
+        while written != last:  # until the host's writes have stopped for 0.3 s
+            assert time.monotonic() < end, "the host never stopped writing"
+            last = written
+            await asyncio.sleep(0.3)
+        # 192 KiB in the reader at most, and what the pipe itself holds (64 KiB on Linux).
+        assert written <= 512 * 1024, f"the pump took {written} bytes that nobody read"
+
+        received = bytearray()
+        while chunk := await asyncio.wait_for(reader.read(65536), 10):
+            received.extend(chunk)
+        assert bytes(received) == b"".join(
+            index.to_bytes(4, "big") * 1024 for index in range(blocks)
+        )
+        writer.join(timeout=5)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        os.close(read_fd)
 
 
 # === arm selection ==========================================================

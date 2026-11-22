@@ -1904,6 +1904,42 @@ unwritten. Add them with the next release.
   A root or member `pyproject.toml` change alone selects `import-direction`. A change to either
   control-v1 checker script alone selects `control-v1`, and deleting `scripts/check_control_v1.py`
   fails that gate. `tests/test_preflight.py` covers each of these paths in isolation.
+- **RPC: a host that stops reading stdout no longer stalls the native's event loop (#852,
+  ADR-0317).** `aelix --mode rpc` wrote every frame with a blocking write on the loop's thread, so
+  with the issue's driver (macOS) a host's 3.0 s pause stalled the loop 2.9 s, turn, handlers and
+  children's pumps alike; now one writer thread writes the real stdout, frames whole and in the
+  order they were enqueued, and the same pause leaves no ping over 0.5 s
+  (`tests/rpc/test_rpc_stdout_writer_852.py::test_a_host_that_stops_reading_for_3_s_does_not_stall_the_loop`,
+  2.914 s late at the base). Nothing is dropped while the mode runs: while more than 1 MiB is
+  queued, the turn and each command's reply wait, as pi's do
+  (`::test_a_turn_is_held_at_the_mark_and_every_frame_arrives_whole_in_order`), and the host's
+  input is read and held, not parsed, except one line after each drain to the mark; under the
+  mark a line is parsed when the queue and the replies still owed leave room (16 KiB for each
+  command let in, for at most 50 ms). So 6,000 requests and 1,000 malformed lines, or 20,000
+  requests, from a host that did not read left the queue less than 1 kB over the mark, in the
+  stall and when the host read again (macOS and Linux;
+  `::test_input_is_not_parsed_while_the_host_is_behind`), and a host that reads pays no wait
+  until 64 of its commands are unanswered
+  (`::test_a_host_that_reads_pays_no_wait_after_a_slow_command`). Commands that take longer than
+  50 ms and replies over 16 KiB can still pass the mark (ADR-0317 limit 10), as can every held
+  line at once when the host closes stdin while still behind (limit 2: 6,000 held `get_state`
+  lines left 3.8 MB queued, macOS and Linux), and `aelix_child`, `aelix_notice` and extension
+  dialogs are enqueued without a wait. On Windows the thread that
+  reads stdin, for `--mode rpc` and for a delegated child's command inbox, now stops while
+  nobody takes what it read
+  (`tests/rpc/test_rpc_stdin_win32.py::test_thread_pump_stops_reading_while_nobody_takes_its_input`;
+  not run on Windows by this change, CI's Windows legs run it). A closed pipe,
+  or a stdout that breaks mid-frame, still ends the mode, and the process exits 141
+  (`::test_a_real_aelix_rpc_exits_141_when_its_host_closes_stdout`). A host that never reads no
+  longer keeps the process from exiting: the exit waits at most 5 s for it and says on stderr how
+  many frames did not reach the host whole and how many bytes they hold (the frame being written
+  counts in full, though the host may hold part of it), and a full stderr or a terminal nobody
+  reads does not hold it either (a real `--mode rpc` exited 5.14 s and 5.16 s after stdin closed,
+  where the base had not exited 20 s later;
+  `::test_a_real_process_exits_past_a_host_that_never_reads`). Frames are lost
+  only past that bound or after a closed or broken stdout. The WebSocket host and the wire are
+  unchanged.
+
 - **Shell commands run by a delegated agent inherit the user's `PYTHONPATH`
   (#803, ADR-0197).** In the macOS CLI probe, delegated `bash` passed through
   the two user-supplied paths unchanged and left the variable unset when it

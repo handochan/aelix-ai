@@ -13,7 +13,8 @@ lane L3): D8 is built by aelix-acp PR #39 (`03b9e32`), with seven things r5 did 
 children control in flight is ended when the worker's close begins, not when a restart begins; K5
 and K7 are lowered, and parts of D4–D8 were run live through ACP on macOS during the lane, at
 three of its local checkpoints before its final commit — "Note (2026-11-20, #612)" says which row
-ran at which checkpoint, measured how, and what was not run.
+ran at which checkpoint, measured how, and what was not run. Noted 2026-11-22 (#852): K8 is
+replaced by ADR-0317.
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -536,7 +537,12 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
 - **K8 — a slow host.** Each frame is written with a blocking write and flush; a host that stops
   reading stalls the native's event loop (its turn, its children's pumps, every handler) until it
   reads. This is how every RPC event is written; #612 adds no bound (by reading the plane's emit
-  path; not measured).
+  path; not measured). *Note (2026-11-22, #852): measured (a 3.0 s pause stalled the loop
+  2.969 s) and replaced by ADR-0317: one writer thread writes the real stdout, the loop never
+  waits on the pipe, and the turn and each command's reply wait while the host is more than 1 MiB
+  behind, when the host's input is read and held, one line of it parsed after each drain to the
+  mark; the `aelix_child` and `aelix_notice` frames are enqueued without a wait (ADR-0317
+  limit 1).*
 - **K9 — replay's reach.** `children/events` replays within one hub generation (`epoch`) of one live
   process: a `/reload`, a session change or a reconnect starts a new one, and earlier rows are not
   replayable after it (D6).
