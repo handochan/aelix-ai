@@ -30,9 +30,18 @@ Go through every row. Write "n/a" with a reason rather than skipping one.
    - Pi: say what pi does for the same surface, at which pi commit, and whether this
      diverges on purpose (ADR-0235: parity is not a goal, but the divergence is
      stated).
-2. **ADR index row.** `docs/decisions/README.md` has one entry per ADR, newest first.
+2. **ADR index row.** `docs/decisions/README.md` has one entry per ADR. A new ADR's
+   entry is a list item (`- [NNNN — Title](NNNN-….md)` and an indented summary) near
+   the top of `## Index`, above the entry of the next lower-numbered ADR, where 0307,
+   0308, 0309 and 0316 put theirs.
    The row summarises the decision, and an amendment adds an `Amended ...` clause to
    the amended ADR's row. Rows run long. Edit the clause you mean and leave the rest.
+   `tests/docs/test_adr_index_845.py` fails when an ADR file has no entry of its own
+   under `## Index` that links its file (a table row whose first cell names the ADR, or
+   a list item that starts with its number, outside a fenced code block), or when the
+   index links an ADR file that is gone. CI's full suite runs it. `scripts/preflight.py`
+   selects it only when the test file itself changes, so a change that only adds or
+   edits an ADR does not run it before CI.
 3. **CHANGELOG.** Add an entry under `[Unreleased]`, in the section that fits
    (`Added`, `Changed`, `Fixed`, `Security`). Each entry opens with a bold summary
    that ends with its references, `**<summary> (#n, ADR-NNNN).**`. Write what a user

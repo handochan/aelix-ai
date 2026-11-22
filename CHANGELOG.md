@@ -1116,6 +1116,19 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **The ADR index has an entry for every ADR (#845).** `docs/decisions/README.md` had no entry
+  for 100 of its 300 ADR files (most of 0094 to 0216, ADR-0157 among them). Each now has a table
+  row with the title from its first heading, its `Status:` line as written (with a `Date:` added
+  when that line has no acceptance date, and the first sentence of any `Superseded by`,
+  `Amended`, `Extended by`, dated note or `Follow-up` line in its header), a link to the file, and
+  a one-line decision in the ADR's own words, taken from its Decision section where it has one.
+  Twenty-three of these rows also name a later amendment, extension, narrowing or partial
+  supersession that the later ADR's header or a dated note in the file records (ADR-0253's
+  amendment of ADR-0157 among them).
+  `tests/docs/test_adr_index_845.py` fails when an ADR file has no entry of its own under
+  `## Index` that links its file (a table row whose first cell names the ADR, or a list item that
+  starts with its number, outside a fenced code block), or when the index links an ADR file that
+  is gone.
 - **A delegation you stop with Esc reports what its agents did as the `agent` call's own result,
   which a session you reopen and an RPC host have, and aelix-acp shows as the call's last update
   (#800, ADR-0307 D1–D2).** Before,
