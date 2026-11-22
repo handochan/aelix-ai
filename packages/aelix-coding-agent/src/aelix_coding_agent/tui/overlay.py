@@ -311,6 +311,7 @@ async def show_modal(
     input (so the chrome grows upward and the whole modal stays visible, never
     clipped — ADR-0159), height-capped to the terminal, and steals focus; on
     completion (incl. cancel) it is unmounted and editor focus restored. A
+    pending modal mounted during the application run resolves with ``None`` on exit. A
     NON-CAPTURING overlay (``OverlayOptions.non_capturing``) instead takes the
     legacy Float path: it floats over the body, does NOT displace the input or
     steal focus, and coexists with a concurrently-open capturing modal (review
@@ -361,12 +362,24 @@ async def show_modal(
 
     chrome.mount_modal(slot_content, focus=content)
     focused = chrome.focus(content)
+    app_future: asyncio.Future[Any] | None = getattr(chrome.app, "future", None)
+
+    def dismiss_on_exit(_ended: asyncio.Future[Any]) -> None:
+        if not result.done():
+            result.set_result(None)
+
     try:
         if focused is False:
             # #671 — the focus failed for another reason (a torn-down layout).
             raise ValueError("a capturing modal needs a focusable window")
+        if app_future is not None:
+            # #808 — after the app exits, no key can resolve the modal and
+            # the input loop cannot consume its queued EOF until it returns.
+            app_future.add_done_callback(dismiss_on_exit)
         return await result
     finally:
+        if app_future is not None:
+            app_future.remove_done_callback(dismiss_on_exit)
         # #701 — this modal leaves; one it covered (a picker opened mid-turn,
         # under a tool approval) gets the slot and the keys back.
         chrome.unmount_modal(slot_content)
