@@ -30,6 +30,7 @@ instruction, `cwd` or built profile too; a chain's `{previous}` carrying either
 is made sendable (U+FFFD) instead. See `## Amendment (2026-10-31, #627)`.**
 Amended 2026-11-17 by ADR-0304 (#795, #796): a resume of a profile the session may not delegate to now has its own refusal, and D7's listing leaves such agents out (dated note at the end).
 Noted 2026-11-19 (ADR-0307, #612): #612 exposes delegated children to an RPC host and still adds no host door that resumes (owner r3 Q1); D16 and limit 8 stand (dated note at the end).
+Amended 2026-11-22 (ADR-0318, #836): an RPC host resumes a stopped agent the model delegated with `children/resume`, through the same lookup, checks and ceiling; D16 and limit 8 narrow accordingly (dated note at the end).
 Date: 2026-10-30
 Issue: #610 (phase 1 of the #604 delegation track). Design:
 `.omc/specs/610-design-2026-10-30.md` (rev 2), with its critique
@@ -847,7 +848,9 @@ The numbers are the design's (§12); the code cites them.
    cleanup is not equal on every OS"; the related macOS cleanup gap is #619).
    Until it ends, a resume is refused `RESUME_IN_USE`.
 8. **The model door only, for the model's own delegations** (D5, D16). No human
-   command and no host surface resumes (#612).
+   command and no host surface resumes (#612). *Amended 2026-11-22 (ADR-0318,
+   #836): an RPC host's `children/resume` resumes them too; still only the
+   model's own delegations, and no TUI command resumes.*
 9. **Delegations recorded before #610 cannot be resumed** (D9): their limits
    were never recorded and are not guessed.
 10. **A delegation cut by `/new`, `/resume`, `/fork` or quit is not announced on
@@ -1975,3 +1978,28 @@ host resumes through the model: `agent(action="resume", id=<child session id>, p
 with the child session id from the result's `Session:` line or `children/list`'s `sessionId`.
 ADR-0307 D7 lists what "resumable" means for a child a session change or a quit stopped: the
 runtime's checks, in order, with nothing inferred from a free lock.
+
+## Note (2026-11-22, ADR-0318, #836)
+
+[ADR-0318](0318-an-rpc-host-resumes-a-stopped-delegated-agent-with-children-resume.md) adds the host
+door that the note of 2026-11-19 left to a follow-up: `aelix_control` `children/resume {id, task}`.
+What changes here:
+
+- **D16** ("the model's `agent` tool is the only door"): an RPC host's `children/resume` is a
+  second door, and through aelix-acp's `_aelix/manage` an ACP client's. `/agents run` and the TUI
+  still have none.
+- **D5**: the targets are the same — `find_resume_target`, an agent the model delegated. One a
+  person started is refused on the host's door with its own sentence (ADR-0318 D3, limit L1). The
+  session's `agents` lists filter the model's resume and its listing, not the host's door, as they
+  do not filter `/agents run` (ADR-0318 D4).
+- **D10, D11, D12**: the host door runs the same checks in the same order, takes consent with
+  `request_resume_consent` on the dialogs the host enabled (the first run's grant still the
+  ceiling; the instruction labelled the host's, not the model's), checks after the dialog that the
+  profile is still the approved file, as the model door does, and runs through `resume_granted`,
+  unbudgeted and with `tool_call_id: null` on its record, as `/agents run` is unbudgeted.
+- **Limit 8** narrows to "no TUI command resumes".
+
+Measured: `tests/agents_ext/test_host_resume_836.py` and `tests/rpc/test_children_resume_836.py`
+(macOS, Python 3.12; each failing at `0436193c`), and live against a real `--mode rpc` parent and
+through aelix-acp with `openai/gpt-4.1-mini` (ADR-0318, "How it is held").
+

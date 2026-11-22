@@ -79,7 +79,7 @@ Some answers are given for you; the agent's model reads "Not approved: <reason>.
 
 | What happened | The reason it reads |
 | --- | --- |
-| you switched to `plan` (shift+tab before the question, or RPC `permissions/set`) | the parent is in plan mode |
+| you switched to `plan` (shift+tab before the question, or RPC `permissions/set`; during a turn, with `tighten: true`) | the parent is in plan mode |
 | the agent was asked to wrap up, with a question open or later | the agent was asked to wrap up |
 | it asked again while a question of its own was open | another approval request is open |
 | an RPC host that turned this off, with the question open or later | no one can answer approvals here |

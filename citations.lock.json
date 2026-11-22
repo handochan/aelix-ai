@@ -938,7 +938,7 @@
    "# poison every later one.",
    "_LOCK_BY_LOOP: dict[object, asyncio.Lock] = {}"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:1464-1470": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:1490-1496": [
    "# (:func:`grants_write_authority`, walked off the real ladder) and no",
    "# answer could change that — either the profile never declared it needs",
    "# write authority (constraint 0), or it did and something else in",
@@ -994,7 +994,7 @@
    "true of a human answer). It is set by exactly one branch —",
    ":func:`request_spawn_consent_batch` refusing a batch whose dialog would not"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:497-518": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:506-527": [
    "answer that grants nothing. A deny-list spelled ``mode != \"chain\"`` would hand",
    "the widening rung to every topology added after this one by default.\"\"\"",
    "",
@@ -1004,7 +1004,7 @@
    "clamped: PermissionMode,",
    "*,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:501-596": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:510-605": [
    "def _may_widen(",
    "resolved: ResolvedProfile,",
    "clamped: PermissionMode,",
@@ -1014,13 +1014,13 @@
    "ceiling: PermissionMode | None = None,",
    ") -> bool:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:564-564": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:573-573": [
    "and cannot be — no dialog can show text that does not exist yet."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:568-568": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:577-577": [
    "may never MANUFACTURE write authority for a prompt a process will write"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:599-690": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:608-699": [
    "def consent_is_required(",
    "resolved: ResolvedProfile,",
    "clamped: PermissionMode,",
@@ -1030,7 +1030,7 @@
    "ceiling: PermissionMode | None = None,",
    ") -> bool:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/consent.py:628-685": [
+  "packages/aelix-coding-agent/src/aelix_agents/consent.py:637-694": [
    "nowhere else, because it is the only prompt YOLO does not suppress.",
    "",
    "ONLY YOLO, and the asymmetry is the point. ``auto-accept-edits`` says",
@@ -1089,37 +1089,37 @@
    "(``index.ts:413``) and discards every partial the child streamed before it, so",
    "the user loses the work AND the diagnosis. Aelix keeps both."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1452-1455": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1450-1453": [
    "try:",
    "call = parse_agent_call(event.args, background=background)",
    "except AgentCallError as exc:",
    "return ToolCallResult(block=True, reason=str(exc))"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1537-1540": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1535-1538": [
    "# one code path here; ``request_spawn_consent_batch`` delegates a",
    "# one-member tuple to the P2 dialog byte-for-byte.",
    "try:",
    "grant = await self._grant_for("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1558-1560": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1556-1558": [
    "# THE WHOLE CALL IS FROZEN HERE, and ``_execute`` reads nothing else.",
    "# ``event.args`` stays the mutable dict the tool will receive.",
    "self._pending[event.tool_call_id] = PendingSpawn("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1753-1753": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1751-1751": [
    "parent = self._host_posture()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1775-1792": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1773-1791": [
    "return SpawnGrant(",
    "profile=resolved.name,",
    "source_path=resolved.source_path,",
    "scope=resolved.scope,",
    "asks_parent=asks,",
+   "parent=parent,",
    "mode=want,",
-   "widened=False,",
-   "consented=True,"
+   "widened=False,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1866-1875": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:1865-1874": [
    "self, event: SessionShutdownHookEvent, ctx: ExtensionContext",
    ") -> None:",
    "\"\"\"Kill the children, drop any un-spent grant, clear the statusline.",
@@ -1129,10 +1129,10 @@
    ":attr:`_pending` — grants taken in the hook for a tool call whose",
    "``execute()`` never ran — needs clearing; nothing else survives a spawn,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:614-614": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:612-612": [
    "aelix.register_tool(self._tool)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/extension.py:846-852": [
+  "packages/aelix-coding-agent/src/aelix_agents/extension.py:844-850": [
    "return self.cwd or os.getcwd()",
    "",
    "def _host_posture(self) -> PermissionMode:",
@@ -1302,7 +1302,7 @@
    "\"\"\"Bind a member's freshly minted spawn id to (group, submitted index).",
    "",
    "Called from the executor's per-member ``on_event`` closure, which runs",
-   "BEFORE this bridge sees the same snapshot (``runtime.py:2523-2527``), so by",
+   "BEFORE this bridge sees the same snapshot (``runtime.py:2742-2746``), so by",
    "the time :meth:`__call__` is reached the membership is already known.",
    "Idempotent: the closure calls it on every snapshot, not only the first,",
    "because \"the first\" is not a fact the closure can cheaply know."
@@ -1323,19 +1323,19 @@
   "packages/aelix-coding-agent/src/aelix_agents/rpc_channel.py:440-440": [
    "if not state.saw_agent_end:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1021-1024": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1091-1094": [
    "async def spawn(",
    "self,",
    "resolved: ResolvedProfile,",
    "task: str,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1096-1099": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1166-1169": [
    "grant = await request_spawn_consent(",
    "self.host.consent_context(),",
    "resolved,",
    "task,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1096-1101": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1166-1171": [
    "grant = await request_spawn_consent(",
    "self.host.consent_context(),",
    "resolved,",
@@ -1343,7 +1343,7 @@
    "self.host.posture(),",
    "cwd=child_cwd,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1852-1909": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2065-2122": [
    "if self._draining or self._closed:",
    "return _error_result(resolved, _SESSION_DRAINING)",
    "# THE PARENT'S AUTHORITY, READ ONCE — the frozen record of what it was",
@@ -1353,7 +1353,7 @@
    "# this run and leaks no registry row (#610 critique M4).",
    "parent_cwd = self.host.cwd()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1922-1936": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2138-2152": [
    "refusal = self._admit_live()",
    "if refusal is not None:",
    "return _error_result(resolved, refusal)",
@@ -1363,7 +1363,7 @@
    "# started exactly as one that ran for ten minutes did. Refunding would let",
    "# a task that reliably fails loop forever."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1925-1935": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2141-2151": [
    "# THE BUDGET (MEDIUM #2, S6). One charge per CHILD, taken only once the",
    "# delegation has been admitted, never refunded: the cost being bounded is",
    "# \"how many children may one turn start\", and a child that died instantly",
@@ -1373,34 +1373,34 @@
    "if self._delegations_this_prompt >= MAX_DELEGATIONS_PER_PROMPT:",
    "if taken is not None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1935-1935": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2151-2151": [
    "self._delegations_this_prompt += 1"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1936-1936": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2152-2152": [
    "spawn_id = _new_id()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1957-1958": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2173-2174": [
    "def _emit(state: _StreamState) -> None:",
    "self._publish(child, state, on_event, spawn_model=spawn_model)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1995-1995": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2214-2214": [
    "self._publish(child, child.stream, on_event, spawn_model=spawn_model)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:214-214": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:222-222": [
    "_TERMINAL_STATES = frozenset({\"done\", \"error\", \"stopped\"})"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2523-2527": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2742-2746": [
    "for tap in (on_event, self.host.on_progress):",
    "if tap is None:",
    "continue",
    "with contextlib.suppress(Exception):",
    "tap(progress)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2526-2527": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2745-2746": [
    "with contextlib.suppress(Exception):",
    "tap(progress)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2728-2739": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:2979-2990": [
    "def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMode:",
    "\"\"\"Rank-MIN of a consented mode and an optional live floor. Only tightens.",
    "",
@@ -1425,10 +1425,10 @@
    "during ``harness.bootstrap()`` even in interactive mode, re-pointed on every",
    "``/new`` / ``/fork`` / ``/resume``, and back to ``False`` on TUI exit), the"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:441-441": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:511-511": [
    "if profile.scope == \"project\" and not allow_project:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:923-928": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:993-998": [
    "def _admit_live(self) -> str | None:",
    "\"\"\"``None`` to proceed, or the refusal text. Never raises.\"\"\"",
    "",

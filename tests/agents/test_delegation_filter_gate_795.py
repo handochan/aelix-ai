@@ -103,6 +103,13 @@ class _SubagentRuntimeImpl:
 
     async def resume_granted(self, grant, resolved, task):
         return await self._run(grant, resolved, task)
+
+    async def resume_for_host(self, id, task):
+        resolved = self.resolve_profile(id)
+        return await self._resume_consented(resolved, task)
+
+    async def _resume_consented(self, resolved, task):
+        return await self.resume_granted(None, resolved, task)
 """
 
 _EXTENSION = """

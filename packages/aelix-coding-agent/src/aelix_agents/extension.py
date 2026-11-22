@@ -79,6 +79,7 @@ from aelix_agents.batch import MAX_CONCURRENCY, run_batch
 from aelix_agents.child_events import ChildEventHub
 from aelix_agents.child_session import RESUME_PROFILE_CHANGED, resume_refusal_text
 from aelix_agents.consent import (
+    IDENTITY_MISMATCH,
     SpawnGrant,
     build_disclosure_line,
     consent_is_required,
@@ -158,10 +159,7 @@ _NOT_APPROVED = (
     "place a grant is issued, and this call reached execution without one."
 )
 
-_IDENTITY_MISMATCH = (
-    "Delegation refused: the approved profile and the resolved profile do not "
-    "match. Nothing was started."
-)
+_IDENTITY_MISMATCH = IDENTITY_MISMATCH
 
 def _resume_refusal(exc: DelegationRefused) -> str:
     """ADR-0304 D7's resume text for a profile the session may not delegate to now."""
@@ -1491,7 +1489,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1925-1935``),
+        # inside ``runtime._run``'s admission block (``runtime.py:2141-2151``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1677,7 +1675,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1464-1470``). The
+        EVERY member or refuses the call outright (``consent.py:1490-1496``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -1777,6 +1775,7 @@ class AgentsExtension:
                 source_path=resolved.source_path,
                 scope=resolved.scope,
                 asks_parent=asks,
+                parent=parent,
                 mode=want,
                 widened=False,
                 consented=True,
@@ -1827,7 +1826,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1866-1875``).
+        seam is released on teardown, ``extension.py:1865-1874``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -2146,7 +2145,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1936``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:2152``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -2170,7 +2169,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:2523-2527``) with no ``await`` between them, so THIS
+            # (``runtime.py:2742-2746``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

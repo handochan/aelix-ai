@@ -96,7 +96,7 @@ reaches Studio or an ACP client.
 | `tools/set_active` | `{"names": [<str>…]}`, also `[]` (`session.py:325`, `:335`, `:339`, `:345`; `runtime/commands.py:147`) | `activeTools` (`runtime/commands.py:148`; `server.py:311-312`) | manage; slash output | |
 | `mcp/configure` | `{"servers": [{"name", "type"?: "stdio"\|"http"\|"sse", "command", "args": [<str>], "env": [{"name", "value"}], "url", "headers": [{"name", "value"}]}]}`, with a 60 s timeout (`session.py:337`) | — | manage (through `session.configure_mcp`, `server.py:306-307`) | on failure ACP restores the tool selection (`session.py:338-340`) |
 | `mcp/status` | `{}` | — | manage (`server.py:309`) | |
-| `permissions/set` | `{"mode": "default"\|"yolo"}` (`runtime/controls.py:179`) | `mode` (must equal the request: `runtime/controls.py:180-183`) | — | Studio's harness frame above |
+| `permissions/set` | `{"mode": "default"\|"yolo"}` (`runtime/controls.py:179`) | `mode` (must equal the request: `runtime/controls.py:180-183`) | — | Studio's harness frame above; aelix-acp does not send #853's `tighten` (§6.2) |
 | `permissions/get` | `{}` (`runtime/controls.py:187`) | `mode` (`runtime/controls.py:187`) | manage | |
 | `sessions/branch` | `{"kind": "clone"}` or `{"kind": "fork", "entryId": <str>}` (`runtime/commands.py:119-126`; `server.py:83`) | `cancelled` (`server.py:85`); `sessionFile` (must be an existing file: `server.py:87-89`); `title` (`server.py:97`) | — | |
 | `settings/get` | `{}` (`runtime/commands.py:155`, `:165`) | `settings.enabled_models` (`runtime/commands.py:165`) | manage; `/settings` output | |
@@ -166,7 +166,7 @@ every case.
 | `capabilities` | `activeAgent`, `methods`, `methods[]`, `permissionModes`, `permissionModes[]`, `selectionKinds`, `selectionKinds[]`, `sessionLockErrors`, `subagentsEnabled`, `thinkingLevels`, `thinkingLevels[]`, `version` |
 | `children/events` | `epoch`, `events`, `events[]`, `events[].data`, `events[].data.args`, `events[].data.background`, `events[].data.callId`, `events[].data.epoch`, `events[].data.id`, `events[].data.jobId`, `events[].data.name`, `events[].data.parentToolCallId`, `events[].data.profile`, `events[].data.seq`, `events[].data.sessionId`, `events[].data.state`, `events[].data.status`, `events[].data.text`, `events[].data.wrappingUp`, `events[].event`, `gap`, `lowSeq`, `nextSeq` |
 | `children/list` | `children`, `children[]`, `children[].activity`, `children[].activity[]`, `children[].activity[].args`, `children[].activity[].name`, `children[].activity[].status`, `children[].approval`, `children[].approval.callId`, `children[].approval.toolName`, `children[].background`, `children[].cost`, `children[].currentTool`, `children[].elapsedMs`, `children[].end`, `children[].id`, `children[].jobId`, `children[].lastText`, `children[].lowSeq`, `children[].model`, `children[].parentToolCallId`, `children[].profile`, `children[].provider`, `children[].seq`, `children[].sessionId`, `children[].state`, `children[].stuck`, `children[].tokens`, `children[].wrappingUp`, `epoch` |
-| `children/notices` | `cancelled`, `method`, `placed`, `reason`, `remaining`, `started` |
+| `children/notices` | `cancelled`, `method`, `placed`, `placedInTurn`, `reason`, `remaining`, `started` |
 | `children/steer` | `ended`, `outcome`, `phase`, `reason`, `verb` |
 | `children/stop` | `state` |
 | `children/wrap_up` | `ended`, `outcome`, `phase`, `reason`, `verb` |
@@ -277,6 +277,7 @@ PR #39 (`03b9e32`) reads them.
 | `permissions/evaluate` | #594 | none (aelix-acp names it only in `READ_ONLY_CONTROLS`) | `permissions.evaluate.json` |
 | `selections/list`, `selections/set` (and `capabilities.selectionKinds`) | #624 (ADR-0305), in the freeze commit itself | Studio #7, through aelix-acp's `_aelix/manage`. Its allowlist (`server.py:303`) and `READ_ONLY_CONTROLS` (`session.py:45-47`) do not list them yet. When aelix-acp adds `selections/set`, its default 60 s timeout is short: the consent dialog alone is bounded at 45 s (`rpc/control_selection.py` `CONSENT_TIMEOUT_SECONDS`), and settings-lock contention can add 30 s (ADR-0305 D4). So the request is to give it at least 90 s, or to send `commands/cancel` with its `requestId` on timeout. | `selections.list.json`, `selections.set.json`, `capabilities.json` |
 | `transcript/list` | #655 (ADR-0309) | aelix-acp #22 for CLI-to-Studio replay | `transcript.list.json` |
+| `children/resume` (and its `capabilities.methods` entry) | #836 (ADR-0318) | aelix-acp's `_aelix/manage` passthrough, added to its allowlist on aelix-acp branch `feat/836-children-resume` (not merged); Studio through it. It holds the session lock for the run, as `agents/run` does, so give it the run's timeout or send `commands/cancel` with its `requestId` | `children.resume.json`, `capabilities.json` |
 
 ### 6.1 `transcript/list`
 
@@ -328,6 +329,29 @@ file, including after switching away and back in this process.
 `invalidTree` identifies malformed selected ancestry or duplicate decoded
 entry IDs (ADR-0309 D2–D4,
 `test_transcript_655.py`).
+
+### 6.2 `permissions/set` during a turn (#853)
+
+`permissions/set` takes an optional `tighten` (boolean). With `tighten: true` the request skips
+the turn's idle check when `mode` blocks at least what the current mode blocks: each mode to
+itself; from `default` also to `plan`; from `auto-accept-edits` also to `default` and `plan`; from
+`auto` only to `plan` (its shell classifier blocks commands `default` and `auto-accept-edits` let
+an RPC parent run); from `yolo` to any mode. The answer is `{mode}` as before. That table is measured on the
+real gate, the child clamp and the parent's arbiter, with and without RPC dialogs and child
+approvals (`tests/rpc/test_permissions_tighten_853.py::test_the_admitted_pairs_are_the_measured_ones`,
+ADR-0306's note of 2026-11-22). During a turn every other request is refused as in v1: "Runtime
+mutations require an idle session", the mode unchanged. Only that check is skipped: while a classic
+RPC command runs a tighten is refused "A classic RPC command is still running; retry when it has
+answered", as in v1, so every idle answer is v1's. Codex's 510 serialized idle replies are the same
+bytes at `0436193c` and with #853. A tighten is admitted ahead of the mutation lock, as
+`children/stop` is, so it is answered at once while a `children/notices` turn, an `agents/run` or a
+`children/resume` holds the lock. It waits for the lock as before while a session change holds it
+and while another `permissions/set` waits for it. The write reaches what shift+tab reaches during
+a turn: the next tool call, a delegated child's open approval request (answered `no` for `plan`),
+each running child, and a child granted but not yet started. A host that wants the tightening
+without waiting for the turn sends `tighten: true`; an older native refuses it during a turn, the
+same way it refuses `{mode}` alone. The fixture cases are in `permissions.set.json`
+(`"since": "#853"`). No consumer sends it yet.
 
 ## 7. Changes since aelix-acp's pin, accepted as v1
 

@@ -327,6 +327,60 @@ class FakeSubagents:
             id="child-1", profile=resolved.name, ok=True, status="ok", summary=f"did: {task}"
         )
 
+    async def resume_for_host(
+        self,
+        id: str,  # noqa: A002
+        task: str,
+        *,
+        on_event: Any = None,
+        ui: Any = None,
+    ) -> Any:
+        """#836: ``children/resume``'s fake (the seam's optional ``HostResume``).
+
+        ``child-session-1`` is a stopped agent the model delegated, resumed
+        ``resumed: <task>``, or held until cancelled when the task is ``hold``;
+        ``by-a-person`` is one ``agents/run`` started; any other id is unknown.
+        The refusals are the bundled runtime's own sentences.
+        """
+
+        from aelix_agents.child_session import RESUME_UNKNOWN_ID
+        from aelix_agents.runtime import HOST_RESUME_NOT_YOURS, host_instruction_refusal
+        from aelix_coding_agent.subagent_contract import SubagentResult
+
+        refusal = host_instruction_refusal(task)  # the bundled runtime's first check
+        if refusal is not None:
+            raise ValueError(refusal)
+        if id == "by-a-person":
+            raise ValueError(HOST_RESUME_NOT_YOURS)
+        if id != "child-session-1":
+            raise ValueError(RESUME_UNKNOWN_ID)
+        if task == "hold":
+            if self.children.mark is not None:
+                self.children.mark("resume_entered")
+            await asyncio.Event().wait()
+        return SubagentResult(
+            id="child-2",
+            profile="reviewer",
+            ok=True,
+            status="ok",
+            summary=f"resumed: {task}",
+            session_id=id,
+        )
+
+
+class _CannotResume:
+    """#836: a delegation runtime with ``SubagentRuntime``'s members and no ``resume_for_host``."""
+
+    def __init__(self, fake: FakeSubagents) -> None:
+        self.contract_version = fake.contract_version
+        self.resolve_profile = fake.resolve_profile
+        self.spawn = fake.spawn
+        self.controls = fake.controls
+
+
+async def _a_runtime_that_cannot_resume(rig: Rig) -> None:
+    rig.harness.runtime._subagents = _CannotResume(rig.harness.runtime._subagents)
+
 
 #: A fixture's ``requires`` -> the :func:`rpc_services` keyword whose absence
 #: takes its method out of ``capabilities.methods`` (``test_floor.py``).
@@ -649,6 +703,14 @@ async def _stopped_harness(rig: Rig) -> None:
     rig.runtime._stopped = "The session stopped: a rebuild and its restore both failed (fixture)"
 
 
+async def _posture_auto(rig: Rig) -> None:
+    """#853 (fix round 1, Codex C3): the posture is ``auto`` before the ``turn`` rig opens its turn."""
+
+    from aelix_coding_agent.builtin.permission_mode import PermissionMode
+
+    rig.services["permission_posture"].set(PermissionMode.AUTO)
+
+
 async def _unbound_subagents(rig: Rig) -> None:
     rig.harness.runtime._subagents = None
 
@@ -832,6 +894,8 @@ SETUPS: dict[str, Setup] = {
     "hold_the_rebuild": Setup(post=_hold_the_rebuild),
     "stopped_harness": Setup(post=_stopped_harness),
     "no_subagents": Setup(post=_unbound_subagents),
+    "posture_auto": Setup(post=_posture_auto),
+    "a_runtime_that_cannot_resume": Setup(post=_a_runtime_that_cannot_resume),
     "children": Setup(post=_children),
     "jobs_only": Setup(subagents=False),
     "hold_the_swap": Setup(post=_hold_the_swap),
@@ -1246,7 +1310,7 @@ async def run_case(
     emit_subagent: Callable[[str, Any], None] | None = None,
     on_answered: Callable[[], None] | None = None,
     prefix: str = "",
-    post_notice: Callable[[dict[str, Any]], None] | None = None,
+    post_notice: Callable[[Any], None] | None = None,
     native_idle: Callable[[], Awaitable[None]] | None = None,
 ) -> CaseResult:
     """Send one case's ``before``, ``during`` and request over ``wire``; collect what came back.
@@ -1367,7 +1431,7 @@ async def _send_case(
     emit_subagent: Callable[[str, Any], None] | None,
     prefix: str,
     during: dict[str, Any] | None,
-    post_notice: Callable[[dict[str, Any]], None] | None = None,
+    post_notice: Callable[[Any], None] | None = None,
     native_idle: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     for index, step in enumerate(case.get("before", [])):
@@ -1489,16 +1553,20 @@ async def run_in_process(
             progress = SubagentProgress(**value) if "profile" in value else _Bare(**value)
             rig.runtime.harness.runtime.event_bus.emit(event, progress)
 
-        def post(notice: dict[str, Any]) -> None:
+        def post(notice: dict[str, Any] | list[dict[str, Any]]) -> None:
+            """Post one notice, or each of a list (#857); ``fill`` is a body of that many bytes."""
+
             from aelix_agent_core.harness.inbox import Notice
 
-            rig.runtime.harness.post_notice(
-                Notice(
-                    notice_id=str(notice.get("id", "rig-notice")),
-                    custom_type="aelix.fixture",
-                    body=str(notice.get("body", "a job ended")),
+            for one in notice if isinstance(notice, list) else [notice]:
+                body = "x" * int(one["fill"]) if "fill" in one else str(one.get("body", "a job ended"))
+                rig.runtime.harness.post_notice(
+                    Notice(
+                        notice_id=str(one.get("id", "rig-notice")),
+                        custom_type="aelix.fixture",
+                        body=body,
+                    )
                 )
-            )
 
         result = await run_case(
             fixture,

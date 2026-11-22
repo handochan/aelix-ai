@@ -162,7 +162,16 @@ RULES: tuple[Rule, ...] = (
             "aelix_agents/runtime.py::_SubagentRuntimeImpl.resolve_for_model",
         },
     ),
-    _rule("C1", (AGENTS,), ("resolve_profile",), set(), "runtime_resolve"),
+    # C1 — #836 (ADR-0318): the host's resume door is a HUMAN door, as RPC
+    # ``agents/run`` is, so it re-resolves the recorded profile unfiltered
+    # (ADR-0304 D17); it is the one place inside aelix_agents that does.
+    _rule(
+        "C1",
+        (AGENTS,),
+        ("resolve_profile",),
+        {"runtime.py::_SubagentRuntimeImpl.resume_for_host"},
+        "runtime_resolve",
+    ),
     _rule(
         "C2",
         (AGENTS,),
@@ -205,6 +214,8 @@ RULES: tuple[Rule, ...] = (
         {
             "aelix_agents/extension.py::AgentsExtension._execute_pending",
             "aelix_agents/detach.py::product_allowlist",
+            # #836 (ADR-0318): the host's door, after its own consent.
+            "aelix_agents/runtime.py::_SubagentRuntimeImpl._resume_consented",
         },
     ),
     _rule(

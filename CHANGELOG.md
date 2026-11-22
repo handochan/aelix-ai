@@ -23,6 +23,55 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **An RPC host can resume a stopped delegated agent itself: `children/resume` (#836, ADR-0318).**
+  `aelix_control` `children/resume {id, task}` resumes an agent the model delegated, on its own
+  session file with `task` as its next instruction, and answers `{result}` as `agents/run` does.
+  It finds the agents the model's `agent(action="resume")` finds and runs the model door's checks
+  before anything starts (nothing here runs it, its folder and model route are unchanged, no other
+  process holds its file), and after its dialog it checks that the profile is still the file that
+  was approved. An agent started with `/agents run` or `agents/run` is refused with a sentence
+  that says so. One difference from the model's door: the session's `agents` lists do not filter
+  it, as they do not filter `/agents run`, so an agent whose profile they turn off is refused to
+  the model and resumed for the host, and the host's listing names it. Consent is asked on the
+  host's dialogs when it enabled them, also in a process that reopened its session and has not
+  prompted yet, and never wider than the agent's first run was granted. The resume is not charged
+  against the model's delegation budget. It needs an idle session, holds it while the agent runs
+  and is ended by `commands/cancel` (`tests/agents_ext/test_host_resume_836.py`,
+  `tests/rpc/test_children_resume_836.py`). Run live on macOS with `openai/gpt-4.1-mini`: a real
+  `--mode rpc` parent whose turn was aborted mid-delegation resumed the agent on the same session,
+  and so did aelix-acp's `_aelix/manage children/resume` (aelix-acp branch
+  `feat/836-children-resume`, not merged). A second `--mode rpc` process that reopened that
+  parent's session asked the consent dialog before the agent ran, and so did a native aelix-acp
+  reopened with `session/load`. A control-v1 addition (`children.resume.json`).
+
+- **`children/notices` says how many notices its turn placed in all (#857, ADR-0307's note of
+  2026-11-22).** The answer gains `placedInTurn`, every notice the notice turn placed, those its
+  boundaries placed between model calls included; `placed` still counts only those placed before
+  the first model call. Two notices of nearly 64 KiB each, sent with one call, answer
+  `placed: 1, placedInTurn: 2`, and a notice posted while the model answered is counted too
+  (`tests/rpc/test_children_notices_placed_in_turn_857.py`). A control-v1 addition with four
+  fixture cases (`"since": "#857"`).
+
+- **An RPC host can tighten the permission mode while a turn runs (#853, ADR-0306's note of
+  2026-11-22).** `permissions/set {mode, tighten: true}` is answered during a turn when `mode`
+  blocks at least what the current mode blocks: each mode to itself, and from `yolo` to any mode,
+  from `auto-accept-edits` to `default` or `plan`, from `default` to `plan`, and from `auto` only
+  to `plan`, because its shell classifier blocks commands that `default` and `auto-accept-edits`
+  let an RPC parent run. That table is
+  measured on the real permission gate, the child clamp and the parent's answers to its children
+  (`tests/rpc/test_permissions_tighten_853.py`). The tighten reaches what shift+tab reaches then:
+  the parent's next tool call, a delegated child's open approval request (answered `no` for
+  `plan`), a running foreground child, which applies the new mode, and a child that was granted
+  but had not started. It is answered at once even while a `children/notices` turn, an
+  `agents/run` or a `children/resume` holds the session. During a turn any other mode, or a
+  request without `tighten: true`, is refused "Runtime mutations require an idle session" as
+  before. While a classic RPC command runs a tighten is refused as before, and idle, `tighten`
+  changes no answer (510 serialized idle replies are byte-identical with and without #853). A
+  control-v1 addition with eight fixture cases (`"since": "#853"`). Run live on macOS with
+  `openai/gpt-4.1-mini`: a real `--mode rpc` parent's delegated agent had written one of six files
+  when the tighten to `plan` was answered mid-turn, and its next write was refused by plan mode;
+  with the parent in `auto`, a tighten to `default` was refused and one to `plan` answered.
+
 - **Contributors: `scripts/preflight.py` checks the release sdist against its size cap on every
   change (#831).** An `sdist-size` gate runs
   `tests/packaging_gate/test_build_hygiene.py::test_the_release_sdist_stays_under_the_size_cap`

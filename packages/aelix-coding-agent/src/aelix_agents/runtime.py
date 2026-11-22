@@ -71,11 +71,13 @@ from aelix_coding_agent.subagent_contract import (
 )
 from aelix_coding_agent.tools._path_utils import resolve_to_cwd
 
+from aelix_agents.chain import MAX_TASK_BYTES
 from aelix_agents.child_approvals import ChildApprovals
 from aelix_agents.child_session import (
     RESUME_CONVERSATION_CHANGED,
     RESUME_IN_USE,
     RESUME_LOCK_ERROR,
+    RESUME_NOT_YOURS,
     RESUME_PROFILE_CHANGED,
     RESUME_ROUTE_MOVED,
     RESUME_RUNNING,
@@ -100,7 +102,13 @@ from aelix_agents.command_wire import (
     new_wrap_up,
     wrap_up_consumed,
 )
-from aelix_agents.consent import SpawnGrant, request_spawn_consent
+from aelix_agents.consent import (
+    IDENTITY_MISMATCH,
+    RESUME_HOST_INSTRUCTION_LABEL,
+    SpawnGrant,
+    request_resume_consent,
+    request_spawn_consent,
+)
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
     REASON_CANCELLED,
@@ -341,6 +349,68 @@ if len((RESUME_PREAMBLE + _RESUME_INSTRUCTION_HEAD).encode("utf-8")) > RESUME_PR
         "the reserve, or a resume instruction at the parser's limit makes a task "
         "over chain.MAX_TASK_BYTES."
     )
+
+
+HOST_RESUME_TASK_MAX_BYTES = MAX_TASK_BYTES - RESUME_PREAMBLE_RESERVE
+"""The bound on an RPC host's ``children/resume`` instruction (#836): the ``agent``
+parser's for a model's resume (``tool.RESUME_TASK_MAX_BYTES``), 64 512 UTF-8 bytes."""
+
+HOST_RESUME_NOT_YOURS = (
+    "Resume refused: children/resume resumes only an agent the model delegated, and "
+    "a person started that one (/agents run, or agents/run). Start it again with "
+    "agents/run."
+)
+"""The host's ``RESUME_NOT_YOURS`` (#836, ADR-0318 limit L1): the model's sentence says
+"not delegated by you", which is false addressed to the host."""
+
+
+def host_instruction_refusal(task: str) -> str | None:
+    """Why ``children/resume`` cannot send ``task`` (#836): a NUL, half of a character, or
+    more than :data:`HOST_RESUME_TASK_MAX_BYTES` — else ``None``."""
+
+    refusal = unsendable_refusal(task, where="The instruction", resend="the instruction")
+    if refusal is not None:
+        return refusal
+    size = len(task.encode("utf-8"))
+    if size > HOST_RESUME_TASK_MAX_BYTES:
+        return (
+            f"The instruction is {size} bytes; a resume instruction may be at most "
+            f"{HOST_RESUME_TASK_MAX_BYTES} bytes. Shorten it."
+        )
+    return None
+
+
+def _profile_moved(
+    resolve: Callable[[str], ResolvedProfile], name: str, approved: ResolvedProfile
+) -> bool:
+    """Whether ``name`` no longer resolves to the file ``approved`` was (#836, fix round 1, Codex C2).
+
+    The model door's anti-substitution check (``extension._execute_pending``), on
+    the host's door after its dialog: the dialog awaits a human, and the profile
+    search path is a directory the model's own tools can write. ``resolve`` is the
+    resolver :meth:`_SubagentRuntimeImpl.resume_for_host` loaded. Any failure to
+    resolve the name again counts as moved.
+    """
+
+    try:
+        again = resolve(name)
+    except Exception:  # noqa: BLE001 — an identity that cannot be re-found has moved
+        return True
+    return again.source_path != approved.source_path
+
+
+class _HostDialogs:
+    """The consent context over a host's own dialogs (#836, fix round 1, Codex C1).
+
+    ``request_resume_consent`` reads ``has_ui`` and ``ui``. The RPC plane passes
+    the dialogs it enabled, so whether the host is asked does not depend on
+    whether a hook has run in this process yet.
+    """
+
+    has_ui = True
+
+    def __init__(self, ui: Any) -> None:
+        self.ui = ui
 
 
 def resume_task(instruction: str) -> str:
@@ -1255,7 +1325,9 @@ class _SubagentRuntimeImpl:
     # ``spawn_granted``: a Protocol member would make ``bind_subagents`` refuse
     # every v1 third-party runtime, and ``CONTRACT_VERSION`` stays 1 (D12, D16).
 
-    async def find_resume_target(self, child_id: str | None) -> ResumeTarget | str:
+    async def find_resume_target(
+        self, child_id: str | None, *, policy: bool = True
+    ) -> ResumeTarget | str:
         """The child ``child_id`` names, if this session may resume it — else the
         refusal, with the listing when the id is missing or unknown.
 
@@ -1263,11 +1335,16 @@ class _SubagentRuntimeImpl:
         into (:attr:`SubagentHost.session`), so the target is checked against
         the session the resume's records will go to. See
         :func:`aelix_agents.child_session.find_resume_target`.
+
+        ``policy=False`` is the RPC host's door (#836, :meth:`resume_for_host`):
+        the session's ``agents`` lists and the identity's ``agents:`` rule do not
+        filter it (ADR-0318 D4), so its listing names the agents they rule out
+        like any other instead of counting them as ones that "cannot be resumed"
+        (fix round 1, verify V-F2). A found id reads no policy either way.
         """
 
-        return await _find_resume_target(
-            self._parent_session(), child_id, listed=self._listed_predicate()
-        )
+        listed = self._listed_predicate() if policy else None
+        return await _find_resume_target(self._parent_session(), child_id, listed=listed)
 
     def _listed_predicate(self) -> Callable[[str], bool] | None:
         """Whether an agent's recorded profile is one the session may delegate to now.
@@ -1377,6 +1454,8 @@ class _SubagentRuntimeImpl:
         record: SpawnRecordMeta | None = None,
         reservation: Any = None,
         detach: Any = None,
+        charge_budget: bool = True,
+        policy: bool = True,
     ) -> SubagentResult:
         """RESUME a child on its own session file — the model door, grant REQUIRED.
 
@@ -1413,7 +1492,13 @@ class _SubagentRuntimeImpl:
           pre-filter and the dialog);
         * the task :func:`resume_task` makes of ``instruction``.
 
-        Charged against the per-prompt budget like any model-driven delegation.
+        Charged against the per-prompt budget like any model-driven delegation;
+        ``charge_budget=False`` only from the host's door (#836,
+        :meth:`resume_for_host`), which a person asked for, as :meth:`spawn` is
+        unbudgeted. The model door never passes it, nor ``policy=False``, the
+        host door's unfiltered lookup (:meth:`find_resume_target`). ``_run``
+        stays awaited from this frame, the crossing ``detach.product_allowlist``
+        admits for a Ctrl+B of a running resume (ADR-0298 §2).
         """
 
         if not getattr(grant, "consented", False):
@@ -1436,7 +1521,7 @@ class _SubagentRuntimeImpl:
         # THE HOOK'S LOOKUP, AGAIN (#610 F3) — the same function, not a second
         # copy of what it checks. Whatever it would refuse now is refused, and
         # a target that is no longer the approved one is not resumed.
-        found = await self.find_resume_target(target.session_id)
+        found = await self.find_resume_target(target.session_id, policy=policy)
         if isinstance(found, str):
             return _error_result(resolved, found)
         if not _same_target(found, target):
@@ -1451,12 +1536,140 @@ class _SubagentRuntimeImpl:
             child_cwd=target.limits.cwd,
             on_event=on_event,
             permission_floor=target.limits.granted_mode,
-            charge_budget=True,
+            charge_budget=charge_budget,
             record=record,
             resume=_Resume(target=target, instruction=instruction),
             reservation=reservation,
             detach=detach,
         )
+
+    async def resume_for_host(
+        self,
+        id: str,  # noqa: A002 — the wire's own name, as on ``SubagentControls``
+        task: str,
+        *,
+        on_event: Callable[[SubagentProgress], None] | None = None,
+        ui: Any = None,
+    ) -> SubagentResult:
+        """THE HOST DOOR (#836, ADR-0318): an RPC host's ``children/resume``.
+
+        The same target as the model's ``agent(action="resume")`` finds
+        (:meth:`find_resume_target`: an agent the MODEL delegated, on the
+        parent's current branch) — one a person started (``/agents run``,
+        ``agents/run``) is refused with :data:`HOST_RESUME_NOT_YOURS`, the
+        lead's call (ADR-0318 L1). Then, in the model door's order
+        (``extension._approve_resume``), everything that can be known before a
+        dialog, each a :class:`ValueError` with the sentence the host reads:
+        the instruction (a NUL, half of a character, over
+        :data:`HOST_RESUME_TASK_MAX_BYTES`), the recorded profile re-resolved
+        on the HUMAN door (:meth:`resolve_profile`, ``allow_project=False``:
+        the ``agents`` lists do not filter it, as they do not filter
+        ``agents/run``, ADR-0304 D17), and :meth:`resume_refusal` (this
+        channel resumes, the same profile file, not running here, its
+        directory, its model route, its writer lock).
+
+        Consent as for a user-typed spawn (:meth:`spawn`): the slot reserved
+        before the dialog while jobs are on, then
+        :func:`~aelix_agents.consent.request_resume_consent` — the first run's
+        grant still the ceiling (ADR-0277 D10), the instruction labelled the
+        host's (:data:`~aelix_agents.consent.RESUME_HOST_INSTRUCTION_LABEL`) —
+        on ``ui``, the dialogs the host enabled (RPC ``ui/enable``), when it
+        passes them — fix round 1, Codex C1: a process that reopened its session
+        and resumed before any prompt had no hook context yet, so the consent
+        read no UI and launched unasked — and otherwise on the extension's hook
+        context, as ``spawn`` (none: the clamp, consented, as for ``agents/run``
+        headless). A decline is a ``declined`` result. After the dialog the
+        profile is resolved again and must still be the file approved, or the
+        result is :data:`~aelix_agents.consent.IDENTITY_MISMATCH`, the model
+        door's sentence (fix round 1, Codex C2). Then :meth:`resume_granted`,
+        the model door's re-checks before ``_run``, UNBUDGETED (a person asked,
+        as ``spawn`` is), unfiltered (``policy=False``) and with no tool call
+        (``record=None``: the run's start records ``tool_call_id: null``).
+        """
+
+        refusal = host_instruction_refusal(task)
+        if refusal is not None:
+            raise ValueError(refusal)
+        self._reopen()  # a person asked, as ``/agents run`` reopens it (:meth:`spawn`)
+        target = await self.find_resume_target(id, policy=False)
+        if isinstance(target, str):
+            raise ValueError(HOST_RESUME_NOT_YOURS if target == RESUME_NOT_YOURS else target)
+        # The HUMAN door's resolver, loaded here only (the structural gate's C1
+        # row), and asked again after the dialog (:func:`_profile_moved`).
+        resolve = self.resolve_profile
+        try:
+            resolved = resolve(target.profile)
+        except Exception:  # noqa: BLE001 — an identity that cannot be re-found is a refusal
+            raise ValueError(RESUME_PROFILE_CHANGED) from None
+        refusal = _launch_refusal(resolved, task, what="instruction") or self.resume_refusal(
+            target, resolved=resolved
+        )
+        if refusal is not None:
+            raise ValueError(refusal)
+        reservation: Any = None
+        if self.host.reserve is not None:
+            try:
+                reservation = self.host.reserve(1)
+            except Exception as exc:  # noqa: BLE001 — the refusal is the answer
+                raise ValueError(str(exc)) from None
+        consent = _HostDialogs(ui) if ui is not None else self.host.consent_context()
+        try:
+            return await self._resume_consented(
+                resolved, target, task, on_event, reservation, consent, resolve
+            )
+        finally:
+            if reservation is not None:
+                reservation.release()
+
+    async def _resume_consented(
+        self,
+        resolved: ResolvedProfile,
+        target: ResumeTarget,
+        task: str,
+        on_event: Callable[[SubagentProgress], None] | None,
+        reservation: Any,
+        consent: Any,
+        resolve: Callable[[str], ResolvedProfile],
+    ) -> SubagentResult:
+        """:meth:`resume_for_host` from its dialog on, holding ``reservation``, asking on ``consent``."""
+
+        grant = await request_resume_consent(
+            consent,
+            resolved,
+            target,
+            task,
+            self.host.posture(),
+            model=target.limits.model.model,
+            asks_parent=_asks_parent(self.host),
+            instruction_label=RESUME_HOST_INSTRUCTION_LABEL,
+        )
+        if not grant.consented:
+            return declined_result(
+                id=_new_id(), profile=resolved.name, permission_mode=grant.mode.value
+            )
+        if _profile_moved(resolve, target.profile, resolved):
+            return _error_result(resolved, IDENTITY_MISMATCH)
+        announce = self.host.on_disclosure
+        disclosure_key = f"resume:{_new_id()}"
+        if grant.disclosure and announce is not None:
+            with contextlib.suppress(Exception):
+                announce(disclosure_key, grant.disclosure)
+        try:
+            return await self.resume_granted(
+                grant,
+                resolved,
+                target,
+                task,
+                on_event=on_event,
+                record=None,
+                reservation=reservation,
+                charge_budget=False,
+                policy=False,
+            )
+        finally:
+            if grant.disclosure and announce is not None:
+                with contextlib.suppress(Exception):
+                    announce(disclosure_key, None)
 
     # ── Registry ──────────────────────────────────────────────────
 
@@ -1871,6 +2084,9 @@ class _SubagentRuntimeImpl:
         # child only its inheritance (no ``--thinking``, the pre-#354 argv),
         # never its spawn.
         parent_thinking = self._parent_thinking()
+        # #853 (fix round 1, Codex C6): a tighten since the grant, which found no
+        # row of this run to lower — read here, with the reads above.
+        since_grant = _floor_since_grant(grant, self.host)
         computed = fresh_limits(
             resolved,
             granted_mode=grant.mode,
@@ -1980,7 +2196,10 @@ class _SubagentRuntimeImpl:
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).
-            permission_mode=_tighten(grant.mode, permission_floor),
+            #
+            # A tighten between the grant and the row (#853, fix round 1, Codex
+            # C6) floors it as ``tighten_all`` floors a row: :func:`_floor_since_grant`.
+            permission_mode=_tighten(_tighten(grant.mode, permission_floor), since_grant),
             parent_tools=parent_tools,
             parent_context_files=parent_context_files,
             parent_thinking=parent_thinking,
@@ -2725,6 +2944,38 @@ def _nudge_once(child: RunningChild, stuck: str | None) -> None:
     asyncio.ensure_future(nudge())
 
 
+def _floor_since_grant(grant: SpawnGrant, host: SubagentHost) -> PermissionMode | None:
+    """The floor a posture change since ``grant`` sets, or ``None`` (#853, fix round 1, Codex C6).
+
+    :meth:`_SubagentRuntimeImpl.tighten_all` lowers a REGISTERED row when the
+    parent's posture changes; a run between its grant (the hook, the dialog) and
+    its registry row has no row yet, so a ``permissions/set {tighten: true}`` or a
+    shift+tab in that window would launch it with the posture it was granted
+    under. When the posture now differs from the one the grant was taken against
+    (:attr:`SpawnGrant.parent`), this is the floor ``tighten_all`` would have set:
+    ``child_permission_mode``'s ``inherit`` result for the posture now, with the
+    grant's channel. Only ever tightens (``_tighten``). The posture is compared at
+    the read, not over the window: a change there and back (shift+tab cycling
+    through ``plan`` to ``yolo``) leaves the grant as it was, where a registered
+    row would keep ``plan`` (ADR-0306's note of 2026-11-22). A grant with no
+    ``parent`` (built outside aelix's doors) and a getter that raises compare with
+    nothing.
+    """
+
+    then = getattr(grant, "parent", None)
+    if then is None:
+        return None
+    try:
+        now = host.posture()
+    except Exception:  # noqa: BLE001 — no reading is no evidence of a change
+        return None
+    if now is then:
+        return None
+    return child_permission_mode(
+        "inherit", now, "user", asks_parent=bool(getattr(grant, "asks_parent", False))
+    )
+
+
 def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMode:
     """Rank-MIN of a consented mode and an optional live floor. Only tightens.
 
@@ -3069,6 +3320,9 @@ __all__ = [
     "MAX_DELEGATIONS_PER_PROMPT",
     "MAX_LIVE_CHILDREN",
     "RESUME_PREAMBLE",
+    "HOST_RESUME_NOT_YOURS",
+    "HOST_RESUME_TASK_MAX_BYTES",
+    "host_instruction_refusal",
     "RESUME_PREAMBLE_RESERVE",
     "SETTLE_JOIN_SECONDS",
     "CallEnvelopes",

@@ -188,7 +188,7 @@ class _Batch:
     comparison against it can ever detect a tightening (with the channel a
     widening is offered from ``DEFAULT`` too, fix round 1 V-N2; see
     :func:`_live_floor`). The raw posture does not saturate: widening is only
-    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:568``
+    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:577``
     requires ``AUTO_ACCEPT`` strictly looser than the clamp), and a ``DEFAULT``
     parent still has ``PLAN`` below it to shift+tab into. See
     :func:`_live_floor`."""
@@ -235,7 +235,7 @@ async def run_batch(
     (``SubagentProgress`` carries no batch id — §3.6 explains why it stays that
     way). The index is available before the child's id exists, which is the
     property that makes the whole grouping design work: ``spawn_id = _new_id()``
-    is minted INSIDE ``_run`` (``runtime.py:1936``), and for members 5-8 not until
+    is minted INSIDE ``_run`` (``runtime.py:2152``), and for members 5-8 not until
     wave 2.
     """
 
@@ -420,7 +420,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
     THE ACQUIRE IS THE ONLY ``await`` BEFORE ``spawn_granted``, AND IT IS OUTSIDE
     BOTH TOCTOU WINDOWS (S5 / dossier H12). ``_run``'s admission block —
     ``_admit_live()`` → budget check → ``+= 1`` → ``_new_id()`` → registry insert
-    (``runtime.py:1922-1936``) — contains no ``await``, so asyncio cannot interleave
+    (``runtime.py:2138-2152``) — contains no ``await``, so asyncio cannot interleave
     two members inside it. Putting the acquire anywhere inside that block would
     split it and let two members both pass ``_admit_live`` before either
     registered. It is here, one frame above, where the only thing it orders is how
@@ -436,10 +436,10 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     # WHETHER A CHILD ROW EVER EXISTED, observed rather than inferred. ``_run``
     # publishes a first snapshot IMMEDIATELY after the registry insert
-    # (``runtime.py:1995``) and every refusal that precedes the insert —
+    # (``runtime.py:2214``) and every refusal that precedes the insert —
     # ``_admit_live``, the per-prompt budget, a resume refused at its limits
     # (#610), a non-consented grant — returns BEFORE it
-    # (``runtime.py:1852-1909``). So "this tap fired at least once" is
+    # (``runtime.py:2065-2122``). So "this tap fired at least once" is
     # exactly "a delegation was admitted", which is the fact
     # ``aggregate.MemberOutcome`` needs.
     #
@@ -450,7 +450,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2526-2527``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:2745-2746``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -510,10 +510,10 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:846-852``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1753``), and baked into ``grant.mode``, which
+    (``extension.py:844-850``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:1751``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
-    (``runtime.py:1995``). Meanwhile shift+tab stays live during a running
+    (``runtime.py:2214``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
     (``chrome.py:1655-1658``), and the input window holds focus while a turn runs;
@@ -528,7 +528,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     key=posture_rank)`` evaluated with an UNCHANGED posture returns ``live``
     whenever the human WIDENED at the dialog — ``consent._may_widen`` only offers
     the rung when ``AUTO_ACCEPT`` is strictly looser than the clamp
-    (``consent.py:568``), so ``grant.mode`` is strictly above ``live`` in exactly
+    (``consent.py:577``), so ``grant.mode`` is strictly above ``live`` in exactly
     the widened case. The literal form would therefore revoke every widening the
     human explicitly granted, on every batch, with no posture change at all — and
     it would break §7 invariant 1's own stated proof that "with a steady posture,
@@ -541,7 +541,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     (``asks_parent`` false) ``child_permission_mode`` reaches only three of the
     five ranks and, whenever ``_may_widen`` returns True, is provably ``PLAN``:
     the rung requires ``AUTO_ACCEPT`` strictly looser
-    than the clamp (``consent.py:568``) and the clamp's reachable set is
+    than the clamp (``consent.py:577``) and the clamp's reachable set is
     ``{PLAN, AUTO_ACCEPT, YOLO}`` (``DEFAULT`` is folded into ``PLAN`` at
     ``posture.py:246-248``), so the only value strictly
     below ``AUTO_ACCEPT`` is ``PLAN``. ``PLAN`` is rank 0. Nothing is strictly below rank 0, so
@@ -573,7 +573,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:2728-2739``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:2979-2990``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 

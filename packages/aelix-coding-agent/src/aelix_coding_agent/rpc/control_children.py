@@ -1,7 +1,10 @@
 """The RPC ``children/`` family: a host's view of the delegated children (#612, ADR-0307).
 
 Six methods (contract r5 §3.1, a proposal; owner Q4 2026-11-18 "전부 열기 (권장)"
-for ``children/notices``):
+for ``children/notices``), and a seventh since #836 (ADR-0318), ``children/resume``,
+which resumes a stopped agent the model delegated, in the foreground, as
+``agents/run`` runs one (``MUTATING_METHODS`` and ``CANCELLABLE_METHODS``), through
+the seam's optional ``HostResume``:
 
 * ``children/list`` and ``children/events`` read the build's child-event hub,
   lock-free (``READ_ONLY_METHODS``);
@@ -36,16 +39,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.agents.sendable import unsendable_refusal
+from aelix_coding_agent.subagent_contract import HostResume
 
 if TYPE_CHECKING:
     from aelix_coding_agent.rpc.control import RpcControlPlane
 
 NO_DELEGATED_AGENTS = "This RPC host has no delegated agents"
 NO_JOB_SERVICE = "This RPC host has no job service"
+NO_HOST_RESUME = "This RPC host's delegation runtime cannot resume an agent"
+RESULT_TEXT_MAX = 100_000
+"""``agents/run``'s cut of a result's ``details`` and ``tool_trail`` (``RpcControlPlane.run_agent``)."""
 SESSION_CHANGE_IN_PROGRESS = "a session change is in progress; retry when it has finished"
 SETTLE_GRACE_SECONDS = 1.0
 """How long a session change waits for the interventions it cancelled (contract r5 §3.4, a proposal)."""
@@ -123,6 +130,8 @@ async def children_call(plane: RpcControlPlane, method: str, params: dict[str, A
 
     if method == "children/notices":
         return await _notices(plane)
+    if method == "children/resume":
+        return await _resume(plane, params)
     controls = plane.controls
     if controls is None:
         raise ValueError(NO_DELEGATED_AGENTS)
@@ -139,8 +148,11 @@ async def _notices(plane: RpcControlPlane) -> dict[str, Any]:
     ``placed`` is ``PromptNoticesResult``'s: what the turn placed before its
     first model call, one drain budget (64 KiB). Each boundary inside the turn
     claims another, so one call can place more than ``placed`` says (fix round 1,
-    Codex C-M9; narrowed from contract r5 §3.1, the lead's call). ``remaining``,
-    the inbox's count after the turn, is the host's cue to call again (Codex 12).
+    Codex C-M9; narrowed from contract r5 §3.1, the lead's call). ``placedInTurn``
+    (#857, a control-v1 addition) counts them all, the boundaries' included:
+    ``PromptNoticesResult.placed_in_turn``, the harness's own count over the
+    turn. ``remaining``, the inbox's count after the turn, is the host's cue to
+    call again (Codex 12).
     """
 
     jobs = plane.jobs
@@ -152,9 +164,72 @@ async def _notices(plane: RpcControlPlane) -> dict[str, Any]:
     return {
         "started": result.started,
         "placed": result.placed,
+        "placedInTurn": result.placed_in_turn,
         "reason": result.reason,
         "remaining": int(remaining),
     }
+
+
+# === resume (#836, ADR-0318) =========================================================
+
+
+def _instruction(params: dict[str, Any]) -> str:
+    task = params.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise ValueError("task must be a non-empty string: the agent's next instruction")
+    # A NUL or half of a character cannot reach the child's argv (#627), as for
+    # ``agents/run``. How long an instruction may be is the runtime's to say
+    # (ADR-0197's band rule: a task-size cap is not product core's).
+    refusal = unsendable_refusal(task, where="The instruction", resend="the instruction")
+    if refusal is not None:
+        raise ValueError(refusal)
+    return task
+
+
+async def _resume(plane: RpcControlPlane, params: dict[str, Any]) -> dict[str, Any]:
+    """``children/resume {id, task}`` → ``{result}``, ``agents/run``'s shape.
+
+    ``id`` is the agent's child session id (its result's ``sessionId``, a
+    ``children/list`` row's ``sessionId``); ``task`` the next instruction. The
+    parameters are checked here, then the runtime's ``resume_for_host`` finds
+    the target, checks it and takes consent, on the plane's dialogs when the
+    host enabled them (passed as ``ui``, and bound as ``agents/run`` binds
+    them). A refusal before anything
+    ran is an error response with the runtime's sentence; a declined dialog and
+    the run's own end are the result. ``details`` and ``tool_trail`` are cut as
+    ``agents/run`` cuts them.
+    """
+
+    child_id = params.get("id")
+    if not isinstance(child_id, str) or not child_id.strip():
+        raise ValueError("id must be a non-empty string: the agent's session id")
+    task = _instruction(params)
+    stopped = getattr(plane.runtime, "stopped", None)
+    if isinstance(stopped, str):
+        raise ValueError(stopped)  # as ``agents/run`` (#663, verify V7)
+    command_runtime: Any = getattr(plane.harness, "runtime", None)
+    runtime = getattr(command_runtime, "subagents", None)
+    if runtime is None:
+        raise ValueError("Subagents are disabled; explicitly enable agent delegation")
+    if not isinstance(runtime, HostResume):
+        raise ValueError(NO_HOST_RESUME)
+    previous_ui = command_runtime.ui
+    dialogs = plane.ui if plane.ui.enabled else None
+    if dialogs is not None:
+        command_runtime.bind_ui(dialogs)
+    try:
+        # The dialogs are passed, not only bound (fix round 1, Codex C1): a
+        # process that reopened its session has no hook context before its first
+        # prompt, and the consent would otherwise read no UI.
+        result = asdict(await runtime.resume_for_host(child_id, task, ui=dialogs))
+    finally:
+        command_runtime.bind_ui(previous_ui)
+    for key in ("details", "tool_trail"):
+        text = result.get(key)
+        if isinstance(text, str) and len(text) > RESULT_TEXT_MAX:
+            result[key] = text[:RESULT_TEXT_MAX]
+            result[key + "Truncated"] = True
+    return {"result": result}
 
 
 # === interventions =================================================================
@@ -229,7 +304,9 @@ def _uncancel() -> None:
 
 __all__ = [
     "NO_DELEGATED_AGENTS",
+    "NO_HOST_RESUME",
     "NO_JOB_SERVICE",
+    "RESULT_TEXT_MAX",
     "SESSION_CHANGE_IN_PROGRESS",
     "SETTLE_GRACE_SECONDS",
     "STEER_MODES",

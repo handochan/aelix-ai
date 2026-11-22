@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1775-1792``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1773-1791``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -316,6 +316,15 @@ class SpawnGrant:
     (``--command-inbox=2``) and every later floor follow it. Read ONCE, by whichever
     door produced the grant, so the posture and the channel cannot disagree.
     Trailing and defaulted: every grant before #612 is ``False``."""
+
+    parent: PermissionMode | None = None
+    """The parent's posture the clamp was taken against (#853, fix round 1, Codex C6).
+
+    A tighten that lands after this grant and before the run's registry row
+    exists finds no row to lower (``runtime.tighten_all``), so the runtime
+    compares it with the posture at the row's insert and, when they differ,
+    floors the child as ``tighten_all`` floors a row (``runtime._run``). ``None``
+    (a grant built elsewhere) is compared with nothing."""
 
 
 DIALOG_ROW_CHARS = 80
@@ -840,8 +849,19 @@ def _model_row(model: object) -> str | None:
     return f"Model:      {flat}" if flat else None
 
 
+IDENTITY_MISMATCH = (
+    "Delegation refused: the approved profile and the resolved profile do not "
+    "match. Nothing was started."
+)
+"""What a door says when the profile a human approved no longer resolves to the same file
+after the dialog: the model's (``extension._IDENTITY_MISMATCH``) and, since #836's fix
+round 1, the RPC host's ``children/resume`` (``runtime.resume_for_host``)."""
+
 RESUME_EARLIER_TASK_LABEL = "Earlier task (written by the model):"
 RESUME_INSTRUCTION_LABEL = "Next instruction (written by the model, not by you):"
+RESUME_HOST_INSTRUCTION_LABEL = "Next instruction (sent by the application running aelix):"
+"""The instruction's label when an RPC host resumes the agent (#836, ADR-0318): the host's
+``children/resume`` sent it, not the model."""
 
 
 def build_resume_consent_title(
@@ -851,9 +871,14 @@ def build_resume_consent_title(
     clamped: PermissionMode,
     *,
     model: str | None = None,
+    instruction_label: str = RESUME_INSTRUCTION_LABEL,
 ) -> str:
     """The dialog body for RESUMING an agent (#610 D10) — :func:`build_consent_title`'s
     shape, for an agent that already has a conversation.
+
+    ``instruction_label`` names who wrote the next instruction: the model
+    (the default, the ``agent`` tool's door) or the RPC host
+    (:data:`RESUME_HOST_INSTRUCTION_LABEL`, ``children/resume``, #836).
 
     A SEPARATE BUILDER rather than a flag on that one: the fresh-spawn body is
     nine rows for every input (``test_the_p2_dialog_body_is_nine_rows_for_every_input``),
@@ -915,7 +940,7 @@ def build_resume_consent_title(
         RESUME_EARLIER_TASK_LABEL,
         earlier,
         "",
-        RESUME_INSTRUCTION_LABEL,
+        instruction_label,
         _truncate_task(instruction),
     ]
     return "\n".join(rows)
@@ -929,7 +954,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:1096-1099``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:1166-1169``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The
@@ -1440,6 +1465,7 @@ async def request_spawn_consent(
             source_path=resolved.source_path,
             scope=resolved.scope,
             asks_parent=asks_parent,
+            parent=parent,
             mode=mode,
             widened=widened,
             consented=consented,
@@ -1624,6 +1650,7 @@ async def request_spawn_consent_batch(
             source_path=resolved.source_path,
             scope=resolved.scope,
             asks_parent=asks_parent,
+            parent=parent,
             mode=granted,
             widened=widened,
             consented=consented,
@@ -1727,6 +1754,7 @@ async def request_resume_consent(
     *,
     model: str | None = None,
     asks_parent: bool = False,
+    instruction_label: str = RESUME_INSTRUCTION_LABEL,
 ) -> SpawnGrant:
     """Take one human decision about one RESUME (#610 D10). Never raises, never spawns.
 
@@ -1752,7 +1780,10 @@ async def request_resume_consent(
     parameter set is pinned (``test_request_spawn_consent_takes_no_memo_parameter``,
     the guard against a keyword only one door passes), its body is the
     fresh-spawn dialog, and the resume dialog has its own. Nothing here is on the
-    ``SubagentRuntime`` Protocol: the ceiling is the model door's alone (D16).
+    ``SubagentRuntime`` Protocol: the ceiling is the model door's (D16) and, since
+    #836, the RPC host's ``children/resume`` door's (``runtime.resume_for_host``,
+    ADR-0318), which passes :data:`RESUME_HOST_INSTRUCTION_LABEL` as
+    ``instruction_label`` because the host, not the model, wrote the instruction.
     """
 
     # LIVE read (OC-7), exactly as the single-task door does it.
@@ -1773,6 +1804,7 @@ async def request_resume_consent(
             source_path=resolved.source_path,
             scope=resolved.scope,
             asks_parent=asks_parent,
+            parent=parent,
             mode=mode,
             widened=widened,
             consented=consented,
@@ -1792,7 +1824,9 @@ async def request_resume_consent(
         return _grant(clamped, widened=False, consented=True)
     may_widen = _may_widen(resolved, clamped, has_ui=has_ui, ceiling=ceiling)
     options = build_options(clamped, may_widen=may_widen)
-    title = build_resume_consent_title(resolved, target, instruction, clamped, model=model)
+    title = build_resume_consent_title(
+        resolved, target, instruction, clamped, model=model, instruction_label=instruction_label
+    )
 
     async with _consent_lock():
         answer = await _ask(ctx.ui, title, options)
@@ -1808,8 +1842,10 @@ __all__ = [
     "CANCEL_OPTION",
     "DIALOG_FIELD_CHARS",
     "DIALOG_ROW_CHARS",
+    "IDENTITY_MISMATCH",
     "MIN_TERMINAL_ROWS",
     "RESUME_EARLIER_TASK_LABEL",
+    "RESUME_HOST_INSTRUCTION_LABEL",
     "RESUME_INSTRUCTION_LABEL",
     "SpawnGrant",
     "TASK_PREVIEW_CHARS",

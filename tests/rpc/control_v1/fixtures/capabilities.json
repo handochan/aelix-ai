@@ -965,6 +965,69 @@
           ]
         }
       }
+    },
+    {
+      "name": "lists children/resume with a runtime that resumes",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "contains": {
+              "type": "string",
+              "const": "children/resume"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "omits children/resume on a runtime that cannot resume",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "setup": "a_runtime_that_cannot_resume",
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "version",
+          "methods"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "not": {
+              "contains": {
+                "type": "string",
+                "const": "children/resume"
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

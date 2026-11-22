@@ -15,6 +15,10 @@ and K7 are lowered, and parts of D4–D8 were run live through ACP on macOS duri
 three of its local checkpoints before its final commit — "Note (2026-11-20, #612)" says which row
 ran at which checkpoint, measured how, and what was not run. Noted 2026-11-22 (#852): K8 is
 replaced by ADR-0317.
+Amended 2026-11-22 (#857): `children/notices` also answers `placedInTurn`, every notice its turn
+placed, boundary drains included; `placed` is unchanged. See the note "(2026-11-22, #857)".
+Amended 2026-11-22 (ADR-0318, #836): the `children/` family gains `children/resume`, a host's resume
+of a stopped agent the model delegated. See the note "(2026-11-22, #836)".
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -1025,3 +1029,47 @@ the 2 s cadence and the 45 s close (r5 §8's proposals); the 45 s also for a nat
 `children/notices`, since background jobs need D7's session-end stages; the three answers
 `-33002`, `-32000 session_changing` and `-32603`; and the adapter's 330 s wait for a child's
 question, past native's 300 s (ADR-0308's note of the same date).
+
+## Note (2026-11-22, #857): `children/notices` counts the whole turn in `placedInTurn`
+
+D4's `children/notices` answers a new field, `placedInTurn`: every notice its turn placed, the
+start's drain and each boundary's. `placed` keeps D4's meaning (the notices placed before the first
+model call, one 64 KiB budget), since changing what a field means is a change under ADR-0302 D3 and
+a new field is an addition; the TUI's `/jobs send`, which reads `placed == 0`, is unchanged. The
+count is the harness's own, `PromptNoticesResult.placed_in_turn`: `NoticeInbox.placed_count` read
+when the notice turn claims the harness and again when its run has settled (`harness/core.py`
+`prompt_notices`). The lead's call between that counter and counting the inbox's `placed`
+notifications in the plane: the counter is read by the harness that ran the turn, over exactly
+the turn, so a listener bound to another harness, or a placement outside the turn, cannot enter it.
+
+Measured on macOS, Python 3.12 (`tests/rpc/test_children_notices_placed_in_turn_857.py`, each test
+failing at `0436193c`, where the answer had no such field): C-M9's case above, two notices 100 B
+short of a budget each and one call, answers `placed: 1, placedInTurn: 2, remaining: 0`; a notice
+posted while the model answered, placed by the turn's boundary, makes `placed: 1, placedInTurn: 2`;
+one notice answers 1 and 1; nothing waiting answers 0 and 0; and a notice an ordinary prompt
+placed before the notice turn is not counted in it. control-v1: `fixtures/children.notices.json`
+gains four cases with `"since": "#857"` (nothing waits, one notice, the two budgets, and the real
+child's refusal answering 0), each requiring `placedInTurn`; the #612 cases are unchanged, and so is
+the v1 digest. The field reaches Studio through aelix-acp's `_aelix/manage`, which forwards the
+answer whole (the control-v1 contract §3.2); no consumer reads it by name.
+
+## Note (2026-11-22, #836): `children/resume`
+
+The owner's r3 Q1 for #612, "#612에서 빼기 (권장)", left a host's resume out of D4; #836 adds it as
+[ADR-0318](0318-an-rpc-host-resumes-a-stopped-delegated-agent-with-children-resume.md):
+`children/resume {id, task}`, a seventh `children/` method. It is admitted as `agents/run` is
+(`MUTATING_METHODS` and `CANCELLABLE_METHODS`, idle only, the lock held while the resumed agent runs
+in the foreground), not before the lock as D4's three interventions are, and it is listed in
+`capabilities.methods` only where the delegation runtime implements the seam's optional
+`HostResume`. While it runs, `children/list` and `children/events` show the resumed agent as a new
+row with the same `sessionId`, and `children/steer`, `children/wrap_up` and `children/stop` reach
+it. Both were seen live, on macOS with `openai/gpt-4.1-mini` against a real `--mode rpc` parent, in
+the lane's run and in its independent verification. In the lane's run the resumed row carried the
+stopped agent's `sessionId`. In the verification, `children/steer` and `children/wrap_up` sent to a
+running resumed agent were both answered `queued` (whether either changed its output was not
+looked at); `children/stop` sent to a running resume (the agent's second) answered `state:
+stopped`, and that resume answered `status: aborted`; and `commands/cancel` ended a resume with
+"Command cancelled", its row `stopped`, `cancelled`. The lock-free path,
+the fences and the notice wake are unchanged; since #853's fix round 1 a `permissions/set {tighten:
+true}` that narrows is admitted before the lock too (ADR-0306's note of 2026-11-22).
+

@@ -112,15 +112,18 @@ class PromptNoticesResult:
     """What :meth:`AgentHarness.prompt_notices` did.
 
     ``started`` is whether a turn ran. ``placed`` counts the notices placed for
-    it before the run began (more may be placed at its boundaries). ``reason``
-    says why nothing ran: ``held``, ``disposed``, ``busy``, ``nothing`` (no
-    notice pending and none unanswered at the leaf) or ``refused`` (the model
-    cannot run).
+    it before the run began (more may be placed at its boundaries).
+    ``placed_in_turn`` counts every notice the turn placed, those boundaries'
+    included (#857): :attr:`NoticeInbox.placed_count` when the turn claimed the
+    harness and when its run had settled. ``reason`` says why nothing ran:
+    ``held``, ``disposed``, ``busy``, ``nothing`` (no notice pending and none
+    unanswered at the leaf) or ``refused`` (the model cannot run).
     """
 
     started: bool
     placed: int = 0
     reason: str | None = None
+    placed_in_turn: int = 0
 
 
 @dataclass

@@ -6648,6 +6648,7 @@ class AgentHarness:
         self._phase = "turn"
         self._idle_event.clear()
         claim = self._claim = object()
+        placed_before = self._inbox.placed_count  # #857: every placement from here is this turn's
         self._turn_refusal = None
         self._abort_requested = self._withdraw_requested = False
         # ADR-0306 (#123 fix round 1, F5) — as in :meth:`prompt`: a consumed
@@ -6679,7 +6680,11 @@ class AgentHarness:
             )
             result = await self._run(prompts, system_prompt=system_prompt)
             await self._settle_runs(result, system_prompt, claim)
-            return PromptNoticesResult(started=True, placed=len(placed))
+            return PromptNoticesResult(
+                started=True,
+                placed=len(placed),
+                placed_in_turn=self._inbox.placed_count - placed_before,
+            )
         finally:
             await self._release_prompt()
 

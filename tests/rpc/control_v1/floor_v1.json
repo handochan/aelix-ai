@@ -2111,6 +2111,47 @@
             "step replay true",
             "type data object"
           ]
+        },
+        "lists children/resume with a runtime that resumes": {
+          "since": "#836",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "cefa6120e3c02d7278db0634d37f203415ef0fba3bebb7e641e0e5796bb71f24",
+          "facts": [
+            "const data.version 1",
+            "contains data.methods {\"const\": \"children/resume\", \"type\": \"string\"}",
+            "req data.methods array",
+            "req data.methods[] string",
+            "req data.version integer",
+            "reqif data.methods array",
+            "reqif data.version integer",
+            "type data object",
+            "type data.methods array",
+            "type data.methods[] string",
+            "type data.version integer"
+          ]
+        },
+        "omits children/resume on a runtime that cannot resume": {
+          "since": "#836",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "ac96b1beced6f9636808807c844598c7bea46f6d8f3df07ee86775409b0801dc",
+          "facts": [
+            "const data.version 1",
+            "not data.methods {\"contains\": {\"const\": \"children/resume\", \"type\": \"string\"}}",
+            "req data.methods array",
+            "req data.methods[] string",
+            "req data.version integer",
+            "reqif data.methods array",
+            "reqif data.version integer",
+            "step setup \"a_runtime_that_cannot_resume\"",
+            "type data object",
+            "type data.methods array",
+            "type data.methods[] string",
+            "type data.version integer"
+          ]
         }
       }
     },
@@ -3085,6 +3126,7 @@
         "cancelled": "boolean",
         "method": "string",
         "placed": "integer",
+        "placedInTurn": "integer",
         "reason": "null|string",
         "remaining": "integer",
         "started": "boolean"
@@ -3093,6 +3135,7 @@
         "cancelled": "boolean",
         "method": "string",
         "placed": "integer",
+        "placedInTurn": "integer",
         "reason": "null|string",
         "remaining": "integer",
         "started": "boolean"
@@ -3263,6 +3306,530 @@
           "facts": [
             "bound error:minLength 1",
             "bound error:pattern \"no job service\"",
+            "type error string"
+          ]
+        },
+        "nothing waits and none was placed in the turn": {
+          "since": "#857",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "b11c24705ebe9cd4ec1c6d12aa54db2ae365ae3a72b99ad3f4c9415dc9d9bf57",
+          "facts": [
+            "closed data.reason [\"busy\", \"disposed\", \"held\", \"nothing\", \"refused\", null]",
+            "const data.placed 0",
+            "const data.placedInTurn 0",
+            "const data.reason \"nothing\"",
+            "const data.remaining 0",
+            "const data.started false",
+            "req data.placed integer",
+            "req data.placedInTurn integer",
+            "req data.reason null|string",
+            "req data.remaining integer",
+            "req data.started boolean",
+            "reqif data.placed integer",
+            "reqif data.placedInTurn integer",
+            "reqif data.reason null|string",
+            "reqif data.remaining integer",
+            "reqif data.started boolean",
+            "type data object",
+            "type data.placed integer",
+            "type data.placedInTurn integer",
+            "type data.reason null|string",
+            "type data.remaining integer",
+            "type data.started boolean"
+          ]
+        },
+        "a posted notice is placed in the turn": {
+          "since": "#857",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "55e9e997f4f4a5205bcc25276100b91e1a1768c859b12bf23004f07d3c938f87",
+          "facts": [
+            "closed data.reason [\"busy\", \"disposed\", \"held\", \"nothing\", \"refused\", null]",
+            "const data.placed 1",
+            "const data.placedInTurn 1",
+            "const data.reason null",
+            "const data.remaining 0",
+            "const data.started true",
+            "req data.placed integer",
+            "req data.placedInTurn integer",
+            "req data.reason null|string",
+            "req data.remaining integer",
+            "req data.started boolean",
+            "reqif data.placed integer",
+            "reqif data.placedInTurn integer",
+            "reqif data.reason null|string",
+            "reqif data.remaining integer",
+            "reqif data.started boolean",
+            "step trigger {\"post_notice\": {\"body\": \"a job ended\", \"id\": \"rig-notice-1\"}}",
+            "type data object",
+            "type data.placed integer",
+            "type data.placedInTurn integer",
+            "type data.reason null|string",
+            "type data.remaining integer",
+            "type data.started boolean"
+          ]
+        },
+        "two budgets in one call count two in the turn": {
+          "since": "#857",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "6cebfb4e03d6f1f32e5c35a03468549341f54b8569745613b11905e5cacd0e90",
+          "facts": [
+            "closed data.reason [\"busy\", \"disposed\", \"held\", \"nothing\", \"refused\", null]",
+            "const data.placed 1",
+            "const data.placedInTurn 2",
+            "const data.reason null",
+            "const data.remaining 0",
+            "const data.started true",
+            "req data.placed integer",
+            "req data.placedInTurn integer",
+            "req data.reason null|string",
+            "req data.remaining integer",
+            "req data.started boolean",
+            "reqif data.placed integer",
+            "reqif data.placedInTurn integer",
+            "reqif data.reason null|string",
+            "reqif data.remaining integer",
+            "reqif data.started boolean",
+            "step trigger {\"post_notice\": [{\"fill\": 65436, \"id\": \"rig-notice-1\"}, {\"fill\": 65436, \"id\": \"rig-notice-2\"}]}",
+            "type data object",
+            "type data.placed integer",
+            "type data.placedInTurn integer",
+            "type data.reason null|string",
+            "type data.remaining integer",
+            "type data.started boolean"
+          ]
+        },
+        "the real child counts none placed in the turn": {
+          "since": "#857",
+          "kind": "data",
+          "rig": "child",
+          "sends": {},
+          "digest": "659e0efb719ce512a89d0f7299b46d0a833f0839db1b452d1918668de6d59d7d",
+          "facts": [
+            "anyOf data.reason [{\"const\": \"nothing\", \"type\": \"string\"}, {\"const\": \"refused\", \"type\": \"string\"}]",
+            "closed data.reason [\"busy\", \"disposed\", \"held\", \"nothing\", \"refused\", null]",
+            "const data.placed 0",
+            "const data.placedInTurn 0",
+            "const data.remaining 0",
+            "const data.started false",
+            "req data.placed integer",
+            "req data.placedInTurn integer",
+            "req data.reason null|string",
+            "req data.remaining integer",
+            "req data.started boolean",
+            "reqif data.placed integer",
+            "reqif data.placedInTurn integer",
+            "reqif data.reason null|string",
+            "reqif data.remaining integer",
+            "reqif data.started boolean",
+            "step replay true",
+            "type data object",
+            "type data.placed integer",
+            "type data.placedInTurn integer",
+            "type data.reason null|string",
+            "type data.remaining integer",
+            "type data.started boolean"
+          ]
+        }
+      }
+    },
+    "children/resume": {
+      "since": "#836",
+      "hosts": [
+        "cli-rpc"
+      ],
+      "requires": "subagents",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true
+        },
+        "task": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "data": {
+        "cancelled": "boolean",
+        "method": "string",
+        "result": "object",
+        "result.details": "null|string",
+        "result.dropped_lines": "integer",
+        "result.dropped_tools": "array",
+        "result.dropped_tools[]": "string",
+        "result.elapsed_ms": "integer",
+        "result.error": "null|string",
+        "result.exit_code": "integer|null",
+        "result.id": "string",
+        "result.ok": "boolean",
+        "result.profile": "string",
+        "result.session_id": "string",
+        "result.status": "string",
+        "result.stop_reason": "null|string",
+        "result.summary": "string",
+        "result.tool_trail": "null|string",
+        "result.truncated": "boolean",
+        "result.usage": "object",
+        "result.usage.cache_read": "integer",
+        "result.usage.cache_write": "integer",
+        "result.usage.cost": "number",
+        "result.usage.input": "integer",
+        "result.usage.output": "integer",
+        "result.usage.tokens": "integer",
+        "result.usage.turns": "integer"
+      },
+      "forwarded": {
+        "cancelled": "boolean",
+        "method": "string",
+        "result": "object",
+        "result.changed_files": "array",
+        "result.details": "null",
+        "result.dropped_lines": "integer",
+        "result.dropped_tools": "array",
+        "result.elapsed_ms": "integer",
+        "result.error": "null",
+        "result.exit_code": "null",
+        "result.files_overflow": "integer",
+        "result.id": "string",
+        "result.model": "null",
+        "result.note": "null",
+        "result.ok": "boolean",
+        "result.output_recorded": "boolean",
+        "result.permission_mode": "null",
+        "result.profile": "string",
+        "result.provider": "null",
+        "result.reason": "null",
+        "result.session_id": "string",
+        "result.session_path": "null",
+        "result.started": "boolean",
+        "result.status": "string",
+        "result.stop_reason": "null",
+        "result.summary": "string",
+        "result.tool_trail": "null",
+        "result.truncated": "boolean",
+        "result.unconfirmed_files": "array",
+        "result.usage": "object",
+        "result.usage.cache_read": "integer",
+        "result.usage.cache_write": "integer",
+        "result.usage.cost": "number",
+        "result.usage.input": "integer",
+        "result.usage.output": "integer",
+        "result.usage.tokens": "integer",
+        "result.usage.turns": "integer"
+      },
+      "closed": {},
+      "open": {},
+      "cases": {
+        "resumes an agent the model delegated": {
+          "since": "#836",
+          "kind": "data",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "ea20929d1e93733b4bef0960f3773e4cd9b7d7d287e98b36e366f5fa3132bbb0",
+          "facts": [
+            "const data.result.ok true",
+            "const data.result.profile \"reviewer\"",
+            "const data.result.session_id \"child-session-1\"",
+            "const data.result.status \"ok\"",
+            "const data.result.summary \"resumed: go on\"",
+            "req data.result object",
+            "req data.result.details null|string",
+            "req data.result.dropped_lines integer",
+            "req data.result.dropped_tools array",
+            "req data.result.dropped_tools[] string",
+            "req data.result.elapsed_ms integer",
+            "req data.result.error null|string",
+            "req data.result.exit_code integer|null",
+            "req data.result.id string",
+            "req data.result.ok boolean",
+            "req data.result.profile string",
+            "req data.result.session_id string",
+            "req data.result.status string",
+            "req data.result.stop_reason null|string",
+            "req data.result.summary string",
+            "req data.result.tool_trail null|string",
+            "req data.result.truncated boolean",
+            "req data.result.usage object",
+            "req data.result.usage.cache_read integer",
+            "req data.result.usage.cache_write integer",
+            "req data.result.usage.cost number",
+            "req data.result.usage.input integer",
+            "req data.result.usage.output integer",
+            "req data.result.usage.tokens integer",
+            "req data.result.usage.turns integer",
+            "reqif data.result object",
+            "reqif data.result.details null|string",
+            "reqif data.result.dropped_lines integer",
+            "reqif data.result.dropped_tools array",
+            "reqif data.result.elapsed_ms integer",
+            "reqif data.result.error null|string",
+            "reqif data.result.exit_code integer|null",
+            "reqif data.result.id string",
+            "reqif data.result.ok boolean",
+            "reqif data.result.profile string",
+            "reqif data.result.session_id string",
+            "reqif data.result.status string",
+            "reqif data.result.stop_reason null|string",
+            "reqif data.result.summary string",
+            "reqif data.result.tool_trail null|string",
+            "reqif data.result.truncated boolean",
+            "reqif data.result.usage object",
+            "reqif data.result.usage.cache_read integer",
+            "reqif data.result.usage.cache_write integer",
+            "reqif data.result.usage.cost number",
+            "reqif data.result.usage.input integer",
+            "reqif data.result.usage.output integer",
+            "reqif data.result.usage.tokens integer",
+            "reqif data.result.usage.turns integer",
+            "step sensitive.id \"no-such-agent\"",
+            "step sensitive.task \"something else\"",
+            "type data object",
+            "type data.result object",
+            "type data.result.details null|string",
+            "type data.result.dropped_lines integer",
+            "type data.result.dropped_tools array",
+            "type data.result.dropped_tools[] string",
+            "type data.result.elapsed_ms integer",
+            "type data.result.error null|string",
+            "type data.result.exit_code integer|null",
+            "type data.result.id string",
+            "type data.result.ok boolean",
+            "type data.result.profile string",
+            "type data.result.session_id string",
+            "type data.result.status string",
+            "type data.result.stop_reason null|string",
+            "type data.result.summary string",
+            "type data.result.tool_trail null|string",
+            "type data.result.truncated boolean",
+            "type data.result.usage object",
+            "type data.result.usage.cache_read integer",
+            "type data.result.usage.cache_write integer",
+            "type data.result.usage.cost number",
+            "type data.result.usage.input integer",
+            "type data.result.usage.output integer",
+            "type data.result.usage.tokens integer",
+            "type data.result.usage.turns integer"
+          ]
+        },
+        "an instruction of 64512 bytes is accepted": {
+          "since": "#836",
+          "kind": "data",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": {
+              "$gen": "text",
+              "count": 64512,
+              "char": "t"
+            }
+          },
+          "digest": "b987039e12ccd1e9fcca08699e252033c33b4d9dd0a769722baf2f9a46999f13",
+          "facts": [
+            "const data.result.ok true",
+            "const data.result.session_id \"child-session-1\"",
+            "req data.result object",
+            "req data.result.ok boolean",
+            "req data.result.session_id string",
+            "reqif data.result object",
+            "reqif data.result.ok boolean",
+            "reqif data.result.session_id string",
+            "type data object",
+            "type data.result object",
+            "type data.result.ok boolean",
+            "type data.result.session_id string"
+          ]
+        },
+        "an instruction of 64513 bytes is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": {
+              "$gen": "text",
+              "count": 64513,
+              "char": "t"
+            }
+          },
+          "digest": "bda65d03ec128d04d24eed6325f86e3dfcd5684eefdabddfe509e559ac203226",
+          "facts": [
+            "const error \"The instruction is 64513 bytes; a resume instruction may be at most 64512 bytes. Shorten it.\"",
+            "type error string"
+          ]
+        },
+        "an agent a person started is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "by-a-person",
+            "task": "go on"
+          },
+          "digest": "d86b3f62fb2518b8105fe4b1c6fc6acf26d40ad24902588729183d3a68d0208f",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"agents/run\"",
+            "type error string"
+          ]
+        },
+        "an unknown id is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "no-such-agent",
+            "task": "go on"
+          },
+          "digest": "c67df172c09d27172630a2894f822541196e45714cb9e3938b10556f07074b86",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"^Resume refused: no agent this conversation delegated has that id\"",
+            "type error string"
+          ]
+        },
+        "no id is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "task": "go on"
+          },
+          "digest": "dc9f123ced499d887e5e1508ce2be9f589461524ddaba46e7f35ef31e25664db",
+          "facts": [
+            "const error \"id must be a non-empty string: the agent's session id\"",
+            "type error string"
+          ]
+        },
+        "no task is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1"
+          },
+          "digest": "364f0169b13550fcc563c4237d85b2e11531b631edddb8ce1c4bc8c05cacfdae",
+          "facts": [
+            "const error \"task must be a non-empty string: the agent's next instruction\"",
+            "type error string"
+          ]
+        },
+        "a NUL in the task is refused": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": "a\u0000b"
+          },
+          "digest": "0efe3853d86c499143475a79025ac7de8a88fdbb545c5cbe878b5867153bfbbb",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"NUL\"",
+            "type error string"
+          ]
+        },
+        "a turn refuses children/resume": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "turn",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "652f057676023a590f81ad2462b9a61e10f49e8fb80494906e64bc541969c2f7",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"idle\"",
+            "type error string"
+          ]
+        },
+        "cancelled by commands/cancel": {
+          "since": "#836",
+          "kind": "data",
+          "rig": "full",
+          "sends": {},
+          "digest": "d46c545c848c03dac4b66ffd6a48f01e64c104e99b90be21c8b1cadb5d329712",
+          "facts": [
+            "const data.cancelled true",
+            "const data.method \"children/resume\"",
+            "req data.cancelled boolean",
+            "req data.method string",
+            "reqif data.cancelled boolean",
+            "reqif data.method string",
+            "step check \"cancelled_the_during_command\"",
+            "step during {\"ended_by_case\": true, \"method\": \"children/resume\", \"params\": {\"id\": \"child-session-1\", \"task\": \"hold\"}, \"wait_for\": {\"event\": \"resume_entered\", \"type\": \"rig\"}}",
+            "step method \"commands/cancel\"",
+            "type data object",
+            "type data.cancelled boolean",
+            "type data.method string"
+          ]
+        },
+        "no delegation refuses": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "5f2e52e8cdb8a40c7ca91ca57cdd02792784905d8349d356cdcb801199e2c61f",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"Subagents are disabled\"",
+            "step setup \"no_subagents\"",
+            "type error string"
+          ]
+        },
+        "a runtime that cannot resume refuses": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "88ae329277a42ddf1ef0d877928120e2d39911c422bf5a04ca415ae74baa941d",
+          "facts": [
+            "const error \"This RPC host's delegation runtime cannot resume an agent\"",
+            "step setup \"a_runtime_that_cannot_resume\"",
+            "type error string"
+          ]
+        },
+        "a stopped session refuses": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "full",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "dc277c7fb17b4b0f3ad31b860011edcb16ce95779728809ed2a2c777f18180a1",
+          "facts": [
+            "bound error:minLength 1",
+            "bound error:pattern \"stopped\"",
+            "step setup \"stopped_harness\"",
+            "type error string"
+          ]
+        },
+        "the server-ws shape refuses": {
+          "since": "#836",
+          "kind": "error",
+          "rig": "bare",
+          "sends": {
+            "id": "child-session-1",
+            "task": "go on"
+          },
+          "digest": "790725666f653905378b6ebaca09fbbf07321885288d5b2451db2ce5b23ba702",
+          "facts": [
+            "bound error:minLength 1",
             "type error string"
           ]
         }
@@ -5708,6 +6275,11 @@
             "yolo",
             "auto"
           ]
+        },
+        "tighten": {
+          "type": "boolean",
+          "required": false,
+          "absent": "a mutation that needs an idle session, as in v1; idle, it changes no answer"
         }
       },
       "data": {
@@ -5862,6 +6434,145 @@
             "req data.mode string",
             "reqif data.mode string",
             "step before[0] {\"method\": \"permissions/set\", \"params\": {\"mode\": \"default\"}}",
+            "step replay true",
+            "type data object",
+            "type data.mode string"
+          ]
+        },
+        "a turn accepts a tighten": {
+          "since": "#853",
+          "kind": "data",
+          "rig": "turn",
+          "sends": {
+            "mode": "plan",
+            "tighten": true
+          },
+          "digest": "560c758f36cc846f914febff367852bf72f31b638c490ab9463534a3e5581d02",
+          "facts": [
+            "closed data.mode [\"auto\", \"auto-accept-edits\", \"default\", \"plan\", \"yolo\"]",
+            "const data.mode \"plan\"",
+            "req data.mode string",
+            "reqif data.mode string",
+            "step sensitive.tighten false",
+            "type data object",
+            "type data.mode string"
+          ]
+        },
+        "a turn accepts a tighten to the mode it has": {
+          "since": "#853",
+          "kind": "data",
+          "rig": "turn",
+          "sends": {
+            "mode": "default",
+            "tighten": true
+          },
+          "digest": "84aefd3e4c6729101875f4232986391112a8928d8bbb6bc47d9320ff391b7db3",
+          "facts": [
+            "closed data.mode [\"auto\", \"auto-accept-edits\", \"default\", \"plan\", \"yolo\"]",
+            "const data.mode \"default\"",
+            "req data.mode string",
+            "reqif data.mode string",
+            "type data object",
+            "type data.mode string"
+          ]
+        },
+        "a turn refuses a tighten that widens": {
+          "since": "#853",
+          "kind": "error",
+          "rig": "turn",
+          "sends": {
+            "mode": "yolo",
+            "tighten": true
+          },
+          "digest": "fad33f13babc67bb24e09acff159cb46648c6d98667990557bb76ec19fd2ad8c",
+          "facts": [
+            "const error \"Runtime mutations require an idle session\"",
+            "type error string"
+          ]
+        },
+        "a turn refuses tighten false": {
+          "since": "#853",
+          "kind": "error",
+          "rig": "turn",
+          "sends": {
+            "mode": "plan",
+            "tighten": false
+          },
+          "digest": "99020eb59f6441636c2328e3927956f037f3cf1e003d180db1a72a8526a01387",
+          "facts": [
+            "const error \"Runtime mutations require an idle session\"",
+            "type error string"
+          ]
+        },
+        "from auto, a turn refuses a tighten to default": {
+          "since": "#853",
+          "kind": "error",
+          "rig": "turn",
+          "sends": {
+            "mode": "default",
+            "tighten": true
+          },
+          "digest": "1849c61beec23f347c8774662942ade99ce8137a2d303099a072296679893fa4",
+          "facts": [
+            "const error \"Runtime mutations require an idle session\"",
+            "step setup \"posture_auto\"",
+            "type error string"
+          ]
+        },
+        "from auto, a turn accepts a tighten to plan": {
+          "since": "#853",
+          "kind": "data",
+          "rig": "turn",
+          "sends": {
+            "mode": "plan",
+            "tighten": true
+          },
+          "digest": "3cb8c4d3fdff0a2acb4df317236a4a126825abefdc2957b771815a953734dd5d",
+          "facts": [
+            "closed data.mode [\"auto\", \"auto-accept-edits\", \"default\", \"plan\", \"yolo\"]",
+            "const data.mode \"plan\"",
+            "req data.mode string",
+            "reqif data.mode string",
+            "step setup \"posture_auto\"",
+            "type data object",
+            "type data.mode string"
+          ]
+        },
+        "idle, a tighten that widens sets the mode": {
+          "since": "#853",
+          "kind": "data",
+          "rig": "full",
+          "sends": {
+            "mode": "yolo",
+            "tighten": true
+          },
+          "digest": "2ca1f50c1c9619fbab6d36cbfe1ad1587412098446caced72701186ee8ec68d0",
+          "facts": [
+            "closed data.mode [\"auto\", \"auto-accept-edits\", \"default\", \"plan\", \"yolo\"]",
+            "const data.mode \"yolo\"",
+            "req data.mode string",
+            "reqif data.mode string",
+            "step before[0] {\"method\": \"permissions/set\", \"params\": {\"mode\": \"plan\"}}",
+            "step sensitive.mode \"auto\"",
+            "type data object",
+            "type data.mode string"
+          ]
+        },
+        "idle, a tighten sets the child's mode": {
+          "since": "#853",
+          "kind": "data",
+          "rig": "child",
+          "sends": {
+            "mode": "plan",
+            "tighten": true
+          },
+          "digest": "b41679510a11900db90d5f8f330e4f12c52d954b031b86c51b4fba29bafb14e4",
+          "facts": [
+            "closed data.mode [\"auto\", \"auto-accept-edits\", \"default\", \"plan\", \"yolo\"]",
+            "const data.mode \"plan\"",
+            "req data.mode string",
+            "reqif data.mode string",
+            "step before[0] {\"method\": \"permissions/set\", \"params\": {\"mode\": \"yolo\"}}",
             "step replay true",
             "type data object",
             "type data.mode string"

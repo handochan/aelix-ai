@@ -291,6 +291,233 @@
         "minLength": 1,
         "pattern": "no job service"
       }
+    },
+    {
+      "name": "nothing waits and none was placed in the turn",
+      "since": "#857",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "placedInTurn",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": false
+          },
+          "placed": {
+            "type": "integer",
+            "const": 0
+          },
+          "placedInTurn": {
+            "type": "integer",
+            "const": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": "nothing"
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "a posted notice is placed in the turn",
+      "since": "#857",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "trigger": {
+        "post_notice": {
+          "id": "rig-notice-1",
+          "body": "a job ended"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "placedInTurn",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": true
+          },
+          "placed": {
+            "type": "integer",
+            "const": 1
+          },
+          "placedInTurn": {
+            "type": "integer",
+            "const": 1
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": null
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "two budgets in one call count two in the turn",
+      "since": "#857",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "trigger": {
+        "post_notice": [
+          {
+            "id": "rig-notice-1",
+            "fill": 65436
+          },
+          {
+            "id": "rig-notice-2",
+            "fill": 65436
+          }
+        ]
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "placedInTurn",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": true
+          },
+          "placed": {
+            "type": "integer",
+            "const": 1
+          },
+          "placedInTurn": {
+            "type": "integer",
+            "const": 2
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "const": null
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "the real child counts none placed in the turn",
+      "since": "#857",
+      "rig": "child",
+      "replay": true,
+      "params": {},
+      "data": {
+        "type": "object",
+        "required": [
+          "started",
+          "placed",
+          "placedInTurn",
+          "reason",
+          "remaining"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": false
+          },
+          "placed": {
+            "type": "integer",
+            "const": 0
+          },
+          "placedInTurn": {
+            "type": "integer",
+            "const": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "busy",
+              "disposed",
+              "held",
+              "nothing",
+              "refused"
+            ],
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "nothing"
+              },
+              {
+                "type": "string",
+                "const": "refused"
+              }
+            ]
+          },
+          "remaining": {
+            "type": "integer",
+            "const": 0
+          }
+        }
+      }
     }
   ]
 }

@@ -618,6 +618,37 @@ class ModelDelegation(Protocol):
 
 
 @runtime_checkable
+class HostResume(Protocol):
+    """An RPC host's door to resume a stopped delegated agent (#836, ADR-0318).
+
+    An OPTIONAL member of the seam, kept out of :class:`SubagentRuntime` as
+    :class:`ModelDelegation` and :class:`SubagentControls` are, so a third-party
+    runtime that implements only that Protocol still binds and
+    :data:`CONTRACT_VERSION` does not move. The bundled runtime implements it;
+    ``children/resume`` is listed in ``capabilities.methods`` only on a runtime
+    that does.
+    """
+
+    async def resume_for_host(
+        self,
+        id: str,  # noqa: A002 — the wire's own name
+        task: str,
+        *,
+        on_event: Callable[[SubagentProgress], None] | None = None,
+        ui: Any = None,
+    ) -> SubagentResult:
+        """Resume the agent whose child session is ``id`` with the instruction ``task``.
+
+        The implementation finds the target, checks it and takes consent itself
+        (the user-typed door's, :meth:`SubagentRuntime.spawn`), on ``ui`` when the
+        host passes the dialogs it enabled. A refusal known before a dialog
+        raises :class:`ValueError` with the sentence the host reads; a declined
+        dialog and the run itself are a :class:`SubagentResult`, as ``spawn``'s
+        are."""
+        ...
+
+
+@runtime_checkable
 class SubagentRuntime(Protocol):
     """Bound onto ``_ExtensionRuntime`` by the ``aelix-agents`` extension.
 
@@ -737,6 +768,7 @@ __all__ = [
     "ChildApprovalRequest",
     "ChildEnd",
     "DelegationNotAllowed",
+    "HostResume",
     "DeliveryOutcome",
     "ModelDelegation",
     "ProjectScopeRefused",

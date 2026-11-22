@@ -808,8 +808,10 @@ async def test_a_pending_notice_primes_one_aelix_notice_and_each_later_one_raise
 async def test_children_notices_runs_one_turn_and_says_what_is_left(tmp_path: Path) -> None:
     _service, harness, plane, _frames = await _jobs_plane(tmp_path)
     answer = await plane.handle("children/notices", {})
-    assert answer == {"started": True, "placed": 1, "reason": None, "remaining": 0}
-    assert await plane.handle("children/notices", {}) == {"started": False, "placed": 0, "reason": "nothing", "remaining": 0}
+    assert answer == {"started": True, "placed": 1, "placedInTurn": 1, "reason": None, "remaining": 0}
+    assert await plane.handle("children/notices", {}) == {
+        "started": False, "placed": 0, "placedInTurn": 0, "reason": "nothing", "remaining": 0
+    }
     budget = 64 * 1024
     harness.post_notice(_notice(1, "x" * (budget - 100)))
     harness.post_notice(_notice(2, "y" * (budget - 100)))
@@ -818,8 +820,10 @@ async def test_children_notices_runs_one_turn_and_says_what_is_left(tmp_path: Pa
     assert first["remaining"] == harness.pending_notices
     # Fix round 1, Codex C-M9 (narrowed, the lead's call): a boundary inside the
     # turn claimed the second budget, so this one call placed both notices while
-    # ``placed`` says 1 — what ADR-0307 D4 and the guide now say.
+    # ``placed`` says 1 — what ADR-0307 D4 and the guide now say. #857:
+    # ``placedInTurn`` counts both.
     assert first["remaining"] == 0
+    assert first["placedInTurn"] == 2
     placed_ids = [
         e.details.get("notice_id") for e in await harness.session.get_branch() if e.type == "custom_message"
     ]

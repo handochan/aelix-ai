@@ -1,0 +1,412 @@
+{
+  "contract": "control-v1",
+  "method": "children/resume",
+  "since": "#836",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "subagents",
+  "params": {
+    "id": {
+      "type": "string",
+      "required": true
+    },
+    "task": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "consumers": [],
+  "cases": [
+    {
+      "name": "resumes an agent the model delegated",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "sensitive": {
+        "id": "no-such-agent",
+        "task": "something else"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "id",
+              "profile",
+              "ok",
+              "status",
+              "summary",
+              "truncated",
+              "usage",
+              "error",
+              "exit_code",
+              "stop_reason",
+              "elapsed_ms",
+              "dropped_tools",
+              "details",
+              "dropped_lines",
+              "tool_trail",
+              "session_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string",
+                "const": "reviewer"
+              },
+              "ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "status": {
+                "type": "string",
+                "const": "ok"
+              },
+              "summary": {
+                "type": "string",
+                "const": "resumed: go on"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "usage": {
+                "type": "object",
+                "required": [
+                  "input",
+                  "output",
+                  "cache_read",
+                  "cache_write",
+                  "cost",
+                  "tokens",
+                  "turns"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "integer"
+                  },
+                  "output": {
+                    "type": "integer"
+                  },
+                  "cache_read": {
+                    "type": "integer"
+                  },
+                  "cache_write": {
+                    "type": "integer"
+                  },
+                  "cost": {
+                    "type": "number"
+                  },
+                  "tokens": {
+                    "type": "integer"
+                  },
+                  "turns": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stop_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "elapsed_ms": {
+                "type": "integer"
+              },
+              "dropped_tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "details": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dropped_lines": {
+                "type": "integer"
+              },
+              "tool_trail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "session_id": {
+                "type": "string",
+                "const": "child-session-1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "an instruction of 64512 bytes is accepted",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": {
+          "$gen": "text",
+          "count": 64512,
+          "char": "t"
+        }
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "ok",
+              "session_id"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "session_id": {
+                "type": "string",
+                "const": "child-session-1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "an instruction of 64513 bytes is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": {
+          "$gen": "text",
+          "count": 64513,
+          "char": "t"
+        }
+      },
+      "error": {
+        "type": "string",
+        "const": "The instruction is 64513 bytes; a resume instruction may be at most 64512 bytes. Shorten it."
+      }
+    },
+    {
+      "name": "an agent a person started is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "by-a-person",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "agents/run"
+      }
+    },
+    {
+      "name": "an unknown id is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "no-such-agent",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^Resume refused: no agent this conversation delegated has that id"
+      }
+    },
+    {
+      "name": "no id is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "const": "id must be a non-empty string: the agent's session id"
+      }
+    },
+    {
+      "name": "no task is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "child-session-1"
+      },
+      "error": {
+        "type": "string",
+        "const": "task must be a non-empty string: the agent's next instruction"
+      }
+    },
+    {
+      "name": "a NUL in the task is refused",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": "a\u0000b"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "NUL"
+      }
+    },
+    {
+      "name": "a turn refuses children/resume",
+      "since": "#836",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "idle"
+      }
+    },
+    {
+      "name": "cancelled by commands/cancel",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "params": {},
+      "method": "commands/cancel",
+      "during": {
+        "method": "children/resume",
+        "params": {
+          "id": "child-session-1",
+          "task": "hold"
+        },
+        "wait_for": {
+          "type": "rig",
+          "event": "resume_entered"
+        },
+        "ended_by_case": true
+      },
+      "check": "cancelled_the_during_command",
+      "data": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "method"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "const": true
+          },
+          "method": {
+            "type": "string",
+            "const": "children/resume"
+          }
+        }
+      }
+    },
+    {
+      "name": "no delegation refuses",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "setup": "no_subagents",
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "Subagents are disabled"
+      }
+    },
+    {
+      "name": "a runtime that cannot resume refuses",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "setup": "a_runtime_that_cannot_resume",
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "const": "This RPC host's delegation runtime cannot resume an agent"
+      }
+    },
+    {
+      "name": "a stopped session refuses",
+      "since": "#836",
+      "rig": "full",
+      "replay": false,
+      "setup": "stopped_harness",
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "stopped"
+      }
+    },
+    {
+      "name": "the server-ws shape refuses",
+      "since": "#836",
+      "rig": "bare",
+      "replay": false,
+      "params": {
+        "id": "child-session-1",
+        "task": "go on"
+      },
+      "error": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  ]
+}

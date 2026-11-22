@@ -763,7 +763,7 @@ async def test_two_batches_ask_twice() -> None:
 
 
 async def test_a_default_parent_fans_out_with_no_dialog_at_all() -> None:
-    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:497-518``).
+    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:506-527``).
 
     A ``default`` parent clamps a non-declaring profile to ``plan``:
     ``grants_write_authority`` is False and nothing may be widened, so eight
@@ -993,7 +993,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:1021-1024`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:1091-1094`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards

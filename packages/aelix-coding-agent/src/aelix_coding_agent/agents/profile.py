@@ -67,7 +67,7 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:441``, ``consent.py:564``, ``posture.py:234``,
+literal ``"project"`` (``runtime.py:511``, ``consent.py:573``, ``posture.py:234``,
 ``profile.py``'s ``extensions:`` cut, ``discovery.py:401``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 

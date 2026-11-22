@@ -726,7 +726,7 @@ it is still the `--mode json -p` process it was, with the same result.
   not (`tests/agents_ext/test_command_wire_123.py`).
 - **A tighter posture** — shift+tab reaches every running child above the new rank, governs its
   approvals from then on, and stops one that does not apply it within 30 s
-  (`tests/agents_ext/test_permission_floor_123.py`); an idle RPC `permissions/set` reaches background ones.
+  (`tests/agents_ext/test_permission_floor_123.py`); so does RPC `permissions/set`, idle or with `tighten: true`.
 - **A stuck mark** — four identical calls and results, or three identical errors: `stuck:
   repeat` / `stuck: error loop` on the panel, one note, never a stop
   (`tests/agents_ext/test_stuck_123.py`); in the background the parent model is told once.

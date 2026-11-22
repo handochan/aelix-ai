@@ -216,9 +216,9 @@ Since #612 (owner, 2026-11-18: "전부 열기 (권장)") the CLI's RPC host (`ae
 delegation and background jobs on) gets what the TUI gets: the model can spawn a background agent,
 run a background `bash` command and use `job` and `job_stop`
 ([ADR-0307](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0307-a-cancelled-delegations-report-is-its-calls-result-and-a-session-change-settles-the-turn-first.md) D7).
-The host sees and steers the delegated agents with six `aelix_control` methods, listed in
-`capabilities.methods` only where served: the first five when delegation is on, `children/notices`
-when background jobs are on.
+The host sees, steers and resumes the delegated agents with seven `aelix_control` methods, listed
+in `capabilities.methods` only where served: the first five and `children/resume` when delegation
+is on, `children/notices` when background jobs are on.
 
 | Method | What it does |
 | --- | --- |
@@ -227,7 +227,8 @@ when background jobs are on.
 | `children/steer {id, text, mode}` | a note, as `/jobs steer`; `mode: "follow_up"` lands it after the agent's current answer. Answers `queued`, `unknown` or `not_sent`; a refusal is an error that names the state. |
 | `children/wrap_up {id}` | asks the agent to finish now, as `/jobs wrap`: it ends "wrapped up at the user's request". |
 | `children/stop {id}` | stops the agent and answers the state it has when the stop returned, or after 10 s; its last `state` event is its end. |
-| `children/notices` | places the notices that wait for the model, in one notice turn: `{started, placed, reason, remaining}`. |
+| `children/notices` | places the notices that wait for the model, in one notice turn: `{started, placed, placedInTurn, reason, remaining}`. |
+| `children/resume {id, task}` | resumes a stopped agent the model delegated, on its own session, with `task` as its next instruction (#836): `{result}`, as `agents/run` answers. Needs an idle session and holds it while the agent runs; `commands/cancel` stops it. |
 
 The three that act on an agent are answered even while `agents/run` holds the session, are
 refused while a session change runs ("a session change is in progress; retry when it has
@@ -248,8 +249,10 @@ for a text, and the largest event measured with every string at its cap is under
 waits for the model; a session that starts with notices already waiting sends one at once. Call
 `children/notices` while the session is idle, and again while `remaining` is above 0, or prompt,
 which places them first. `placed` counts the notices placed before the turn's first model call
-(at most 64 KiB); the turn can place more between its model calls, so read `remaining`, not
-`placed`, to know what still waits. `aelix_subagent` is unchanged, and a
+(at most 64 KiB); the turn can place more between its model calls, and `placedInTurn` counts every
+notice the turn placed, those included (two notices of nearly 64 KiB each answer `placed: 1,
+placedInTurn: 2`, `tests/rpc/test_children_notices_placed_in_turn_857.py`). Read `remaining`, not
+either count, to know what still waits. `aelix_subagent` is unchanged, and a
 background agent never sends one.
 
 **Replay.** Each agent keeps its latest 256 events. `epoch` names the session's current build: a
@@ -268,15 +271,27 @@ session that has ended is refused, "the session ended before the job started"
 handler after a `/reload` or a session change is the new session's
 (`tests/cli/test_session_start_job_owner_612.py`, measured over RPC).
 
-**Resuming a stopped agent** goes through the model; a host has no method for it (owner,
-2026-11-18: "#612에서 빼기 (권장)"): `agent(action="resume", id=<its sessionId>, profile=…, task=…)`.
-It resumes when the agent's start is on the session's current branch and was the model's own, its
+**Resuming a stopped agent.** Since #836 the host can: `children/resume {id: <its sessionId>, task}`
+(ADR-0318). The model can too: `agent(action="resume", id=<its sessionId>, profile=…, task=…)`.
+Either resumes when the agent's start is on the session's current branch and was the model's own, its
 records and file are as they were written, its profile is the same file and not a project one,
 nothing in this process runs it, its folder is still inside yours, its model still resolves the
 same way, and no other process holds its file's lock — a free lock does not prove the agent's
 process exited, and a filesystem that cannot lock skips that check
 ([agent-profiles.md](agent-profiles.md#resuming-an-agent)). An agent started with `--no-session`
-cannot be resumed.
+cannot be resumed. On the host's door an agent started with `/agents run` or `agents/run` is
+refused, "children/resume resumes only an agent the model delegated, and a person started that one
+…". The two doors differ in one check: the session's `agents` lists (`/agents`) do not filter the
+host's door, as they do not filter `/agents run`. An agent whose profile they turn off is refused
+to the model and resumed for the host, and the host's listing of resumable agents names it. The
+host's resume is consented as `agents/run` is: on the host's dialogs when it enabled them, also in
+a process that reopened the session and has not prompted yet, and never wider than the agent's
+first run was granted. After the dialog the profile must still be the file that was approved,
+"the approved profile and the resolved profile do not match" otherwise. It is not charged against
+the model's delegation budget. Run live against a real `--mode rpc` parent and through aelix-acp's
+`_aelix/manage children/resume`, both on macOS with a real model, and in a second process that
+reopened the parent's session, where the dialog came before the agent ran
+(`tests/rpc/test_children_resume_836.py`, `tests/agents_ext/test_host_resume_836.py`).
 
 **A cancelled delegation.** When a turn is cancelled while an `agent` call runs, the call's result
 is the report of what the agents did, so `get_messages` returns it, also after a relaunch with

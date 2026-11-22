@@ -42,7 +42,7 @@ from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.session.session_lock import SessionLockContention, WriterKind
 from aelix_ai.models import get_supported_thinking_levels
 
-from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.builtin.permission_mode import PermissionMode, authority_rank
 from aelix_coding_agent.core.resource_filter import validate_entries
 from aelix_coding_agent.extensions.command_dispatch import (
     CommandDispatchService,
@@ -65,6 +65,7 @@ from aelix_coding_agent.rpc.control_transcript import (
 )
 from aelix_coding_agent.rpc.control_transcript import METHOD as TRANSCRIPT_METHOD
 from aelix_coding_agent.rpc.control_ui import RpcCommandUI
+from aelix_coding_agent.subagent_contract import HostResume
 
 if TYPE_CHECKING:
     from aelix_coding_agent.core.agent_selection import DelegationView
@@ -142,6 +143,8 @@ MUTATING_METHODS = frozenset(
         "selections/set",
         # #612 (owner Q4, 2026-11-18): the host's wake — one notice turn.
         "children/notices",
+        # #836 (ADR-0318): a stopped agent resumed in the foreground, as agents/run runs one.
+        "children/resume",
     }
 )
 # Running operations that undo themselves when cancelled: a command handler and a
@@ -149,7 +152,14 @@ MUTATING_METHODS = frozenset(
 # MCP configuration rolls back to the previous lease, and a notice turn ends as
 # a cancelled turn does.
 CANCELLABLE_METHODS = frozenset(
-    {"commands/run", "agents/run", "auth/login", "mcp/configure", "children/notices"}
+    {
+        "commands/run",
+        "agents/run",
+        "auth/login",
+        "mcp/configure",
+        "children/notices",
+        "children/resume",
+    }
 )
 # #612 (ADR-0307, contract r5 §3.4): a host's interventions on a running child.
 # Admitted BEFORE the mutation lock — they are answered while ``agents/run`` holds
@@ -161,8 +171,37 @@ CONCURRENT_METHODS = frozenset({"children/steer", "children/wrap_up", "children/
 # between disposing the old harness and installing the new one leaves a disposed
 # harness live).
 LIFECYCLE_METHODS = frozenset({"resources/reload", "sessions/branch"})
-# Mutations that are safe while a turn runs.
+# Mutations that are safe while a turn runs. ``permissions/set`` is one too when
+# it only tightens (#853, :meth:`RpcControlPlane.tightens`).
 TURN_SAFE_METHODS = frozenset({"ui/enable"})
+
+CLASSIC_RUNNING = "A classic RPC command is still running; retry when it has answered"
+IDLE_ONLY = "Runtime mutations require an idle session"
+
+
+def narrows(current: PermissionMode, wanted: PermissionMode) -> bool:
+    """#853 — whether ``wanted`` blocks, wherever this plane serves, at least what ``current`` blocks.
+
+    The modes a mid-turn ``permissions/set {tighten: true}`` may go to (fix
+    round 1, Codex C3; the lead's call). Not the authority rank alone: ``auto``'s
+    shell classifier blocks a command that ``default`` and ``auto-accept-edits``
+    let an RPC parent run (it has no approval UI, so both reach the headless
+    verdict, which allows), so from ``auto`` only ``plan`` and ``auto`` itself
+    narrow. From every other mode, each mode ranked at or below it does: the
+    parent's own gate blocks nothing in ``default``, ``auto-accept-edits`` or
+    ``yolo`` there, and a delegated child's posture follows the rank (its floor
+    is ``child_permission_mode``'s, which never runs a child at ``auto``).
+    Measured against the real gate, the child clamp and the parent's arbiter,
+    with and without RPC dialogs and child approvals:
+    ``tests/rpc/test_permissions_tighten_853.py::test_the_admitted_pairs_are_the_measured_ones``.
+    """
+
+    if wanted is current or wanted is PermissionMode.PLAN:
+        return True
+    if current is PermissionMode.AUTO:
+        return False
+    return authority_rank(wanted) < authority_rank(current)
+
 
 # Classic RPC commands that never change the runtime.
 CLASSIC_READ_ONLY = frozenset(
@@ -346,6 +385,8 @@ class RpcControlPlane:
             raise ValueError(f"Unsupported runtime control method: {method}")
         if self.closing:
             raise ValueError("The RPC host is shutting down")
+        if self._tightens_now(method, params):
+            return self._set_mode(params)
         operation = _Operation(method, request_id, asyncio.current_task())
         self.operations.append(operation)
         try:
@@ -354,7 +395,7 @@ class RpcControlPlane:
                     raise ValueError("The RPC host is shutting down")
                 operation.active = True
                 if method not in TURN_SAFE_METHODS:
-                    self._require_quiescent()
+                    self._require_quiescent(any_phase=self.tightens(method, params))
                 if method in LIFECYCLE_METHODS:
                     return await self.transition(lambda: self._dispatch(method, params))
                 return await self._dispatch(method, params)
@@ -396,11 +437,73 @@ class RpcControlPlane:
         await self.settle_interventions()
         return await start()
 
-    def _require_quiescent(self) -> None:
+    def tightens(self, method: str, params: dict[str, Any]) -> bool:
+        """#853 — a ``permissions/set {mode, tighten: true}`` to a mode that :func:`narrows` the current one.
+
+        Such a request skips the turn's idle check, as ``ui/enable`` does (the
+        lead's call, adopting the rule #853 quotes, narrowed in fix round 1 to
+        :func:`narrows`, Codex C3). ONLY that check: while a classic command
+        runs it is refused as before, :data:`CLASSIC_RUNNING`, a classic session
+        swap included (fix round 1, verify V-F1, Codex C5), so an idle answer is
+        v1's in every state. ``tighten`` other than ``true``, a mode that is not
+        one, one that does not narrow, or a host with no posture is not a
+        tighten, and goes through both checks as before. What the write reaches
+        is what shift+tab's reaches during a turn: the next tool call, a
+        delegated child's open approval request (answered ``no`` for ``plan``,
+        ADR-0308) and each live child's floor (``tighten_all``, ADR-0306 D8) —
+        ``tests/rpc/test_permissions_tighten_853.py``.
+        """
+
+        if method != "permissions/set" or params.get("tighten") is not True or self.posture is None:
+            return False
+        try:
+            wanted = PermissionMode(params.get("mode"))
+        except (TypeError, ValueError):
+            return False
+        return narrows(self.posture.get(), wanted)
+
+    def _tightens_now(self, method: str, params: dict[str, Any]) -> bool:
+        """#853 — a tighten answered AHEAD of the mutation lock (fix round 1, Codex C4; the lead's call).
+
+        As ``children/stop`` and ``children/steer`` are admitted before it
+        (#612): a tighten sent while a ``children/notices`` turn, an
+        ``agents/run`` or a ``children/resume`` holds the lock reaches that
+        turn's next tool call and that run's child, instead of waiting for them
+        to end. It writes the posture with no ``await`` (:meth:`_set_mode`), so
+        no session change can begin while it runs and it has no "unknown"
+        outcome. Not ahead of the lock, and so waiting for it as before, while
+        a session change holds it (``transitioning``: the change finishes
+        first, and the posture, which every harness of this process shares,
+        then takes the tighten), or while another ``permissions/set`` waits
+        for it, so two writes land in the order they were sent. A classic
+        command running is the refusal it always was (:meth:`_set_mode` checks
+        it).
+        """
+
+        if self.transitioning or not self.tightens(method, params):
+            return False
+        return not any(op.method == "permissions/set" for op in self.operations)
+
+    def _set_mode(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A tighten admitted ahead of the lock (:meth:`_tightens_now`): the classic check, then the write."""
+
         if self.classic_inflight:
-            raise ValueError("A classic RPC command is still running; retry when it has answered")
-        if self.harness.phase != "idle":
-            raise ValueError("Runtime mutations require an idle session")
+            raise ValueError(CLASSIC_RUNNING)
+        return self._write_mode(params)
+
+    def _write_mode(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self.posture is None:
+            raise ValueError("This RPC host has no permission posture")
+        self.posture.set(PermissionMode(params.get("mode")))
+        return {"mode": self.posture.get().value}
+
+    def _require_quiescent(self, *, any_phase: bool = False) -> None:
+        """The idle checks a mutation passes: no classic command running, and (unless ``any_phase``) an idle harness."""
+
+        if self.classic_inflight:
+            raise ValueError(CLASSIC_RUNNING)
+        if not any_phase and self.harness.phase != "idle":
+            raise ValueError(IDLE_ONLY)
 
     def cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         target = params.get("requestId")
@@ -601,6 +704,8 @@ class RpcControlPlane:
             ]
         if self.jobs is not None:
             methods.append("children/notices")
+        if isinstance(subagents, HostResume):
+            methods.append("children/resume")  # #836 (ADR-0318)
         if self.transcript_available:
             methods.append(TRANSCRIPT_METHOD)
         model = self.harness.current_model
@@ -680,10 +785,7 @@ class RpcControlPlane:
         if method == "mcp/configure":
             return await self.mcp.configure(params.get("servers"), lambda: self.harness)
         if method == "permissions/set":
-            if self.posture is None:
-                raise ValueError("This RPC host has no permission posture")
-            self.posture.set(PermissionMode(params.get("mode")))
-            return {"mode": self.posture.get().value}
+            return self._write_mode(params)
         if method == "settings/set":
             return await self.set_setting(params)
         if method == "resources/reload":
@@ -1343,7 +1445,8 @@ class RpcControlPlane:
         return bound
 
     async def children_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """``children/list``, ``children/events`` and ``children/notices`` (#612, ADR-0307).
+        """``children/list``, ``children/events``, ``children/notices`` (#612, ADR-0307) and
+        ``children/resume`` (#836, ADR-0318).
 
         The three ``CONCURRENT_METHODS`` never come here: :meth:`handle` admits
         them before the lock (:meth:`_concurrent`).

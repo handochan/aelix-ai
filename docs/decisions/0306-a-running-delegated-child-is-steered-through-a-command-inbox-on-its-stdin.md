@@ -14,6 +14,11 @@ RPC `permissions/set` now reaches running background children; lane B is ADR-030
 note "(2026-11-19, #612)".
 Amended 2026-11-22 (#848, PR #862): the panel's `m` on an ended agent says the wrap-up's sentence,
 with no text to resume with; see the note of that date.
+Amended 2026-11-22 (#853): an RPC host's `permissions/set {mode, tighten: true}` is answered during a
+turn when the mode blocks at least what the current one blocks (from `auto` only `plan` besides
+itself), ahead of
+the mutation lock, and reaches what shift+tab reaches then, a child granted but not yet started
+included; see the note "(2026-11-22, #853)".
 Date: 2026-11-18
 Issue: #123 (intervening in a running delegated child; #604 stage 3).
 Design: `.omc/specs/123-612-contract-r2-2026-11-18.md` (contract r2, Part A and §12's Lane A block),
@@ -608,3 +613,117 @@ kind without one keeps the steer's `ended_control` sentence. A steer's and a fol
 with text, `/jobs steer <id> <text>` among them, keep "with this text as its next instruction"
 (§3.2, note of 2026-11-19). Contributed by jay23606 (PR #862).
 `tests/agents_ext/test_wrap_up_refusal_822.py`.
+
+## Note (2026-11-22, #853)
+
+D8's third measured RPC row, "`permissions/set` is refused during a turn", now holds only for a
+request that does not tighten. `permissions/set {mode, tighten: true}` skips the turn's idle check
+when `mode` blocks, wherever an RPC plane serves it, at least what the current mode blocks
+(`narrows`, `rpc/control.py`). The rule is the one #853 quotes, adopted as the lead's call, and
+narrowed in fix round 1 (Codex C3, the lead's call): the authority rank alone is not that order.
+`auto`'s shell classifier blocks a command that `default` and `auto-accept-edits` let an RPC parent
+run, because an RPC parent has no approval UI and both modes reach the headless verdict, which
+allows. So a mid-turn tighten may go:
+
+| From | To |
+| --- | --- |
+| `plan` | `plan` |
+| `default` | `default`, `plan` |
+| `auto-accept-edits` | `auto-accept-edits`, `default`, `plan` |
+| `auto` | `auto`, `plan` |
+| `yolo` | any mode |
+
+The table is measured, not chosen (`tests/rpc/test_permissions_tighten_853.py::test_the_admitted_pairs_are_the_measured_ones`,
+macOS, Python 3.12). The test drives the real gate (`PermissionExtension._on_tool_call`, the shell
+classifier stubbed for each probe, so no shell runs) over nine calls: a read; a write inside the
+project, outside it and to `.env`; an edit; a `bash` command the classifier allows, asks about and
+denies; and a tool aelix did not build. It does so for the parent with no UI and with RPC dialogs
+on, for the parent's answer to a child's request with and without child approvals, and for each
+delegated child under the mode. The children are taken through their own gate, at the floor
+`tighten_all` gives them and at the posture a new spawn of each `approval_mode` gets, with and
+without a UI and a parent to ask. A pair is admitted when the target ranks at or below the start
+and gives every probe a verdict at least as tight (allow, then ask, then block). In round 1 the rank
+alone admitted `auto` to `default` and to `auto-accept-edits`, and the
+command the classifier denied then ran
+(`test_from_auto_a_tighten_that_would_unblock_the_classifier_is_refused`). The control-v1 fixture
+gains two cases on the `turn` rig in `auto`: a tighten to `default` refused, one to `plan`
+answered.
+
+Measured on the same file, macOS, Python 3.12:
+
+- every admitted pair (13, the same mode included) is answered `{mode}` during a turn and sets the
+  mode; at `0436193c` all were refused "Runtime mutations require an idle session";
+- during a turn the 12 pairs that are not admitted, no `tighten`, `tighten` other than `true`
+  (`false`, `"true"`, `1`, `null`), an unknown mode or no mode are refused with that same text, and
+  the mode stays;
+- idle, the answer and the resulting mode are the same with `tighten: true`, `false` or without
+  it, for every start and every target, an unknown mode included (25 pairs and 5 refusals; a
+  guard, which held at `0436193c` too).
+
+**Only the turn's check is skipped** (fix round 1, verify V-F1, Codex C5). While a classic RPC
+command runs, a classic session swap included, a tighten is refused "A classic RPC command is still
+running; retry when it has answered", idle and during a turn, as at `0436193c`
+(`test_a_tighten_while_a_classic_command_runs_is_refused_as_before`: `bash`, `compact`,
+`set_model`, `new_session`, `switch_session` and `fork`, in each phase). In round 1 each of
+those was answered `{mode: "plan"}`. Codex's comparison of 510 serialized idle replies (five start
+modes, 17 `mode` values, six `tighten` values, no classic command running) gives the same bytes at
+`0436193c` and at this fix (63,150 bytes, the same SHA-256 on both); its two classic-swap lines
+read the base's refusal again.
+
+**Ahead of the mutation lock** (fix round 1, Codex C4, the lead's call). A tighten is admitted
+before the lock, as `children/stop` and `children/steer` are (ADR-0307 D4). So one sent while a
+`children/notices` turn, an `agents/run` or a `children/resume` holds the lock is answered at once.
+It governs that turn's next tool call and that run's child
+(`test_a_tighten_is_answered_while_a_notice_turn_holds_the_lock`,
+`test_a_tighten_is_answered_while_a_run_holds_the_lock` for both runs; in round 1 each waited for
+the holder to end). It writes the posture with no `await`, so no session change can begin while it
+runs and it has no "unknown" answer. It waits for the lock, as before, in two cases. While a session
+change holds the lock, the change ends first and the posture, which every harness of the process
+shares, then takes the tighten. While another `permissions/set` waits for the lock, the two writes
+land in the order they were sent (`test_a_tighten_waits_for_a_session_change_as_before`,
+`test_a_tighten_lands_after_a_mode_change_sent_before_it`; guards, which held in round 1 too).
+A mode that does not narrow waits for the lock as before.
+
+**A child granted before the tighten** (fix round 1, Codex C6). A delegation between its grant
+(the hook, the dialog) and its registry row has no row for `tighten_all` to lower. `_run` now
+compares the posture at the row's insert with the one the grant was taken against
+(`SpawnGrant.parent`). When they differ, it floors the child as `tighten_all` floors a row
+(`runtime._floor_since_grant`). With Codex's probe, a `yolo` grant followed by a tighten to `plan`
+before the tool's `execute` launched the child at `plan`; in round 1 it launched at `yolo`.
+With no tighten it launched at `yolo`
+(`test_a_child_granted_before_a_tighten_launches_with_the_tighter_floor`, both parameters).
+Limit: the posture is compared once, at the insert, not over the window. A change there and back,
+which only shift+tab can make (an RPC host cannot widen during a turn), leaves the grant as it was
+where a registered row would keep the tighter floor. Not measured.
+
+What a tighten during a turn applies to was measured against shift+tab first, on the same rig
+(an `auto-accept-edits` parent, a foreground child on the inbox stub, an open child approval
+request; shift+tab's next mode from there is `plan`). At `0436193c` shift+tab reached all three
+below and the RPC request was refused; now both reach the same three
+(`test_a_tighten_reaches_what_shift_tab_reaches_during_a_turn`, both parameters):
+
+- the parent's next tool call, which the gate reads the posture for: a `bash` call that ran
+  before the write is blocked by plan mode after it;
+- the open approval request, answered `no`, "the parent is in plan mode" (ADR-0308 D4);
+- the running foreground child, sent `set_permission_mode` and applying `plan` (`tighten_all`),
+  not stopped.
+
+A tool call already running is not touched, as with shift+tab (the H5 window above stands).
+
+Live, macOS, `openai/gpt-4.1-mini` through OpenRouter, a scratch HOME, agent dir and cwd, run on
+round 1's head and again on fix round 1's: a real `--mode rpc` parent in `auto-accept-edits`
+delegated six one-file writes to a `worker` profile. When `f1.txt` existed, `permissions/set {mode:
+"plan"}` was refused "Runtime mutations require an idle session" and `{mode: "plan", tighten: true}`
+was answered `{mode: "plan"}` within 1 ms, the turn still running. The child's next write, `f2.txt`,
+was refused by plan mode ("Plan mode is active …", in its session file), and only `f1.txt` was
+written. In fix round 1 the same run with the parent in `auto` had `{mode: "default", tighten:
+true}` refused with the idle text, then `{mode: "plan", tighten: true}` answered, and again only
+`f1.txt` was written.
+
+control-v1 (ADR-0302 D3, D9): `tighten` is a new optional param, and accepting a tighten during a
+turn is a widening; both are additions. `fixtures/permissions.set.json` gains eight cases with
+`"since": "#853"`: a turn accepts a tighten (and one to the mode it has), a turn refuses one that
+widens and one with `tighten: false`, from `auto` a turn refuses one to `default` and accepts one
+to `plan`, and idle, a tighten that widens sets the mode (in process) and one that narrows sets the
+real child's (replayed). The v1 case "refused during a turn" (`{mode: "plan"}`) is unchanged, and
+so is the v1 digest. aelix-acp does not send `tighten` (control-v1 contract §6.2).

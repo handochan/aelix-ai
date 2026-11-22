@@ -17,6 +17,11 @@
         "yolo",
         "auto"
       ]
+    },
+    "tighten": {
+      "type": "boolean",
+      "required": false,
+      "absent": "a mutation that needs an idle session, as in v1; idle, it changes no answer"
     }
   },
   "consumers": [
@@ -295,6 +300,217 @@
               "auto"
             ],
             "const": "yolo"
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn accepts a tighten",
+      "since": "#853",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "mode": "plan",
+        "tighten": true
+      },
+      "sensitive": {
+        "tighten": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn accepts a tighten to the mode it has",
+      "since": "#853",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "mode": "default",
+        "tighten": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "default"
+          }
+        }
+      }
+    },
+    {
+      "name": "a turn refuses a tighten that widens",
+      "since": "#853",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "mode": "yolo",
+        "tighten": true
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "a turn refuses tighten false",
+      "since": "#853",
+      "rig": "turn",
+      "replay": false,
+      "params": {
+        "mode": "plan",
+        "tighten": false
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "from auto, a turn refuses a tighten to default",
+      "since": "#853",
+      "rig": "turn",
+      "setup": "posture_auto",
+      "replay": false,
+      "params": {
+        "mode": "default",
+        "tighten": true
+      },
+      "error": {
+        "type": "string",
+        "const": "Runtime mutations require an idle session"
+      }
+    },
+    {
+      "name": "from auto, a turn accepts a tighten to plan",
+      "since": "#853",
+      "rig": "turn",
+      "setup": "posture_auto",
+      "replay": false,
+      "params": {
+        "mode": "plan",
+        "tighten": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "plan"
+          }
+        }
+      }
+    },
+    {
+      "name": "idle, a tighten that widens sets the mode",
+      "since": "#853",
+      "rig": "full",
+      "replay": false,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "plan"
+          }
+        }
+      ],
+      "params": {
+        "mode": "yolo",
+        "tighten": true
+      },
+      "sensitive": {
+        "mode": "auto"
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "yolo"
+          }
+        }
+      }
+    },
+    {
+      "name": "idle, a tighten sets the child's mode",
+      "since": "#853",
+      "rig": "child",
+      "replay": true,
+      "before": [
+        {
+          "method": "permissions/set",
+          "params": {
+            "mode": "yolo"
+          }
+        }
+      ],
+      "params": {
+        "mode": "plan",
+        "tighten": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto-accept-edits",
+              "plan",
+              "yolo",
+              "auto"
+            ],
+            "const": "plan"
           }
         }
       }
