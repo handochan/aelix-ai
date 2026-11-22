@@ -252,6 +252,47 @@ async def test_a_moved_run_stopped_by_the_user_ends_stopped(tmp_path: Path) -> N
 
 
 @REAL_CHILD
+async def test_host_stop_after_adoption_before_runner_start_keeps_the_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#855 report verification R1: stop the published job before its task enters."""
+    from aelix_coding_agent.jobs.service import JobService
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = JobService.run_adopted
+
+    async def gated(service: JobService, job: Any) -> None:
+        entered.set()
+        await release.wait()
+        await original(service, job)
+
+    monkeypatch.setattr(JobService, "run_adopted", gated)
+    rig, _, _, row = await _moved(tmp_path)
+    controls, ends = rig.ext.runtime.controls, []
+
+    def observe(event: str, data: dict[str, Any]) -> None:
+        if event == "state" and data.get("end"):
+            ends.append(data["reason"])
+
+    off = controls.subscribe(observe)
+    try:
+        (job,) = rig.jobs()
+        assert any(child.get("jobId") == job.job_id for child in controls.list())
+        await asyncio.wait_for(entered.wait(), 10)
+        assert await controls.stop(row.id) == {"state": "running"}
+        release.set()
+        snap = await settled(rig)
+        assert snap.state == "stopped"
+        result = _text(await call(rig, {"action": "result", "id": job.job_id}))
+        host = "stopped by the RPC host (children/stop)"
+        assert (ends, host in result) == ([host], True), (ends, result)
+    finally:
+        release.set()
+        off()
+        await finish(rig)
+
+
+@REAL_CHILD
 async def test_a_running_resume_moves_too(tmp_path: Path) -> None:
     gate = tmp_path / "gate"
     rig = await tui_rig(tmp_path, channel=_resumable(gate))
@@ -389,6 +430,17 @@ def _runner() -> AdoptedRunner:
         session=None,
         on_end=lambda: None,
     )
+
+
+async def test_adopted_runner_accepts_the_existing_context_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _runner()
+
+    async def drive(*_args: Any, **_kwargs: Any) -> ClientOutcome:
+        raise RuntimeError("entered the adopted run")
+
+    monkeypatch.setattr(dt, "drive", drive)
+    with pytest.raises(RuntimeError, match="entered the adopted run"):
+        await runner.run(ctx=SimpleNamespace())
 
 
 def test_records_raise_when_the_run_handed_none_over() -> None:
@@ -689,3 +741,74 @@ def test_the_hosts_guard_names_each_reason() -> None:
     assert ui.detach_blocked() is None
     ui.close()
 
+
+
+async def test_a_hosts_handle_whose_context_arrives_at_adopt_still_moves_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host facade's prepared handle has ``job_id`` at once and ``ctx`` from ``adopt`` on.
+
+    Round 4 of the independent verify read ``job.ctx`` right after
+    ``prepare_adopted`` to bind the runner's stop path early, and this handle
+    raised there: the move failed in the foreground and no job existed. The
+    base order — prepare, adopt, give_slot, announce_adopted, then the first
+    read of ``ctx``, then run_adopted — is kept for every facade (#855).
+    """
+
+    from aelix_coding_agent.jobs.facade import JobsFacade
+
+    trace: list[str] = []
+
+    class Handle:
+        def __init__(self, job: Any) -> None:
+            self.job = job
+            self.job_id = job.job_id
+            self.published = False
+
+        @property
+        def ctx(self) -> Any:
+            trace.append("ctx_after_publish" if self.published else "ctx_before_publish")
+            if not self.published:
+                raise RuntimeError("the host has not published this context")
+            return self.job.ctx
+
+    original_prepare = JobsFacade.prepare_adopted
+
+    def prepare(self: Any, *args: Any, **kwargs: Any) -> Handle:
+        trace.append("prepare")
+        return Handle(original_prepare(self, *args, **kwargs))
+
+    monkeypatch.setattr(JobsFacade, "prepare_adopted", prepare)
+
+    def forward(name: str) -> Any:
+        old = getattr(JobsFacade, name)
+
+        def wrapped(self: Any, handle: Any, *args: Any, **kwargs: Any) -> Any:
+            trace.append(name)
+            result = old(self, handle.job, *args, **kwargs)
+            if name == "adopt":
+                handle.published = True
+            return result
+
+        return wrapped
+
+    for name in ("adopt", "unadopt", "give_slot", "announce_adopted", "run_adopted", "rescue_adopted"):
+        monkeypatch.setattr(JobsFacade, name, forward(name))
+    gate = tmp_path / "gate"
+    rig = await tui_rig(tmp_path, script=script("finished", gate=gate, partial="halfway"))
+    turn = await parked_call(rig)
+    row = row_of(rig)
+    await wait_for(lambda: row.stream.last_text == "halfway")
+    try:
+        rig.jobs_ui.request_detach()
+        await wait_for(lambda: "prepare" in trace or turn.done())
+        gate.write_text("go")
+        result = _text(await within(turn))
+        if rig.jobs():
+            await settled(rig)
+        assert MOVED in result and len(rig.jobs()) == 1, (result, trace)
+        assert "ctx_before_publish" not in trace, trace
+        assert trace[:4] == ["prepare", "adopt", "give_slot", "announce_adopted"], trace
+    finally:
+        gate.touch()
+        await finish(rig)

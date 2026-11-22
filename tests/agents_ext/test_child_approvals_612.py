@@ -16,6 +16,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -562,6 +563,8 @@ async def test_a_job_rows_stop_withdraws_first() -> None:
     await wait_until(lambda: arbiter.asked, what="the dialog to open")
     runner = AdoptedRunner.__new__(AdoptedRunner)
     runner._stopped_by, runner._row, runner._stop = None, row, None
+    attribution = "stopped by the RPC host (children/stop)"
+    runner._ctx = SimpleNamespace(stop_attribution=attribution)
 
     class _Runtime:
         async def stop(self, _id: str) -> None:
@@ -570,6 +573,7 @@ async def test_a_job_rows_stop_withdraws_first() -> None:
     runner._runtime = _Runtime()
     runner.request_stop("user")
     assert [s[3] for s in hub.steps] == ["asked", "withdrawn"] and row.stopped
+    assert row._stop_attribution == attribution
     await runner._stop
     await _settled(router)
 
@@ -738,9 +742,12 @@ async def test_a_spawned_rows_job_stop_withdraws_first() -> None:
     await wait_until(lambda: arbiter.asked, what="the dialog to open")
     runner = DelegationRunner.__new__(DelegationRunner)
     runner._stopped_by, runner._own = None, None
+    attribution = "stopped by the RPC host (children/stop)"
+    runner._ctx = SimpleNamespace(stop_attribution=attribution)
     runner._runtime = _runtime_with(row)
     runner.request_stop("user")
     assert [s[3] for s in hub.steps] == ["asked", "withdrawn"] and row.stopped
+    assert row._stop_attribution == attribution
     await _settled(router)
 
 

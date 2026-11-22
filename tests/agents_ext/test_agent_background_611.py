@@ -62,7 +62,8 @@ from aelix_coding_agent.extensions.api import (
     _ExtensionRuntime,
 )
 from aelix_coding_agent.jobs import activation
-from aelix_coding_agent.jobs.contract import ClientOutcome
+from aelix_coding_agent.jobs.commands import JobsCommand
+from aelix_coding_agent.jobs.contract import ClientOutcome, StopReason
 from aelix_coding_agent.jobs.notice import NOTICE_MAX_BYTES
 from aelix_coding_agent.jobs.records import JOB_FACT_TYPE
 from aelix_coding_agent.jobs.service import JobService
@@ -621,6 +622,108 @@ async def test_stop_goes_through_the_barrier_and_its_partial_result_comes_back(
     with pytest.raises(ProcessLookupError):
         os.kill(process["evidence"]["pid"], 0)
     await rig.service.shutdown()
+
+
+@POSIX
+async def test_host_stop_reaches_a_legacy_service_override(
+    tmp_path: Path, jobs_on: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old service override still observes the host stop on a live job."""
+    rig = await _rig(tmp_path, script=_script(gate=tmp_path / "never", partial="ready"))
+    controls = rig.ext.runtime.controls
+    stop_job = rig.service.stop
+    calls: list[tuple[str, StopReason, float | None]] = []
+
+    async def stop(job_id: str, *, reason: StopReason = "user", wait: float | None = None):
+        calls.append((job_id, reason, wait))
+        return await stop_job(job_id, reason=reason, wait=wait)
+
+    monkeypatch.setattr(rig.service, "stop", stop)
+    try:
+        _spawned_id(await rig.call({"action": "spawn", "profile": "scout", "task": "t"}))
+        (job,) = rig.jobs()
+        await wait_for(lambda: (rig.jobs()[0].progress or {}).get("last_text") == "ready")
+        (child,) = [row for row in controls.list() if row["jobId"] == job.job_id]
+        await controls.stop(child["id"])
+        snap = await _settled(rig, job.job_id)
+        assert calls == [(job.job_id, "user", 0.0)]
+        assert snap.state == "stopped"
+    finally:
+        await rig.service.shutdown()
+
+
+@POSIX
+@pytest.mark.parametrize("forced", [False, True], ids=["cooperative", "escalated"])
+async def test_host_stop_reaches_the_child_event_and_job_result(
+    tmp_path: Path, jobs_on: Any, forced: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#855: the same job's terminal event, result and model notice identify the RPC host."""
+
+    release = asyncio.Event()
+    held = asyncio.Event()
+    script = _script(gate=tmp_path / "never", partial="ready")
+    print_channel = PrintChannel(argv_builder=lambda *_a, **_k: [sys.executable, "-c", script])
+
+    class StalledAfterStop:
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            result = await print_channel.run(*args, **kwargs)
+            held.set()
+            await release.wait()
+            return result
+
+    rig = await _rig(tmp_path, script=script, channel=StalledAfterStop() if forced else None)
+    if forced:
+        # Give the explicit stop escalation precedence over the periodic liveness check.
+        rig.service._exit_grace = 30.0
+        escalate = rig.service._escalate
+
+        async def escalate_after_channel_return(job: Any) -> None:
+            await asyncio.wait_for(held.wait(), 5)
+            await escalate(job)
+
+        monkeypatch.setattr(rig.service, "_escalate", escalate_after_channel_return)
+    controls = rig.ext.runtime.controls
+    events: list[dict[str, Any]] = []
+
+    def collect(event: str, data: dict[str, Any]) -> None:
+        if event == "state":
+            events.append(data)
+
+    unsubscribe = controls.subscribe(collect)
+    spawn = {"action": "spawn", "profile": "scout", "task": "t"}
+    try:
+        agent_id = _spawned_id(await rig.call(spawn))
+        (job,) = rig.jobs()
+        await wait_for(lambda: (rig.jobs()[0].progress or {}).get("last_text") == "ready")
+        (child,) = [row for row in controls.list() if row["jobId"] == job.job_id]
+        assert (await controls.stop(child["id"]))["state"] in {"running", "stopped"}
+        snap = await _settled(rig, job.job_id)
+        assert snap.state == "stopped"
+        (end,) = [frame for frame in events if frame["id"] == child["id"] and frame.get("end")]
+        (notice,) = rig.harness.undelivered_notices()
+        result = _text(await rig.call({"action": "result", "id": agent_id}))
+        reason = "stopped by the RPC host (children/stop)"
+        assert (end["end"], end["outcome"], end["reason"]) == ("stopped", "aborted", reason), (
+            end, result, notice.body
+        )
+        assert reason in result and reason in notice.body
+        if forced:
+            assert "its runner did not stop when asked" in result
+        else:
+            user_id = _spawned_id(await rig.call(spawn))
+            user_job = next(s for s in rig.jobs() if s.job_id != job.job_id)
+            await wait_for(
+                lambda: (rig.service.snapshot(user_job.job_id).progress or {}).get("last_text")
+                == "ready"
+            )
+            answer = await JobsCommand(rig.service)(f"stop {user_job.job_id}")
+            assert answer.endswith(": stopped"), answer
+            result = _text(await rig.call({"action": "result", "id": user_id}))
+            assert "stopped by the user (/jobs)" in result
+    finally:
+        release.set()
+        unsubscribe()
+        await rig.service.shutdown()
 
 
 async def test_result_rereads_the_whole_result_and_a_long_one_points_there(tmp_path: Path, jobs_on: Any) -> None:

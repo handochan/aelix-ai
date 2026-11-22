@@ -27,9 +27,13 @@ line that landed and then raised, not the leaf from before it (Codex review of
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
+
+from aelix_ai.messages import ToolResultMessage
 
 from aelix_agent_core.session.entries import (
     BranchSummaryEntry,
@@ -49,7 +53,74 @@ from aelix_agent_core.session.storage import (
     SessionStorage,
 )
 from aelix_agent_core.session.transcript import MessageAppend
-from aelix_agent_core.types import AgentMessage
+from aelix_agent_core.types import AgentMessage, MessageCommit
+
+
+@dataclass
+class _MessageWrite:
+    """The harness's write of one message, while its public writer runs (#839).
+
+    ``storage`` is the written session's store when it could be read (``None``
+    for a host session that has no ``get_storage``), so a session that writes
+    to another store inside the same call — a mirror — does not claim the
+    entry. The claim is the first entry a bundled ``Session`` builds for this
+    store inside the writer call that matches the message, by its call id and
+    tool name for a tool result (a host may forward a copy, rewrite the text or
+    restamp it) and by its role otherwise. A write that was interrupted before
+    any entry was claimed is marked ``interrupted`` on its receipt: the next
+    reader falls back to what it can see on the branch (the base behaviour
+    before receipts).
+    """
+
+    storage: Any
+    message: AgentMessage
+    commit: MessageCommit | None
+
+    def matches(self, message: Any) -> bool:
+        original = self.message
+        if isinstance(original, ToolResultMessage):
+            return (
+                getattr(message, "role", None) == "toolResult"
+                and getattr(message, "tool_call_id", None) == original.tool_call_id
+                and getattr(message, "tool_name", None) == original.tool_name
+            )
+        return getattr(message, "role", None) == getattr(original, "role", None)
+
+
+_message_write: ContextVar[_MessageWrite | None] = ContextVar("_message_write", default=None)
+_EntryT = TypeVar("_EntryT", bound=SessionTreeEntry)
+
+
+@contextlib.contextmanager
+def _capture_message_write(
+    session: Any, message: AgentMessage, commit: MessageCommit | None
+) -> Iterator[None]:
+    """Track the entry allocated inside the public writer, including an interrupted write."""
+    if commit is None:
+        yield
+        return
+    storage = None
+    get_storage = getattr(session, "get_storage", None)
+    if callable(get_storage):
+        with contextlib.suppress(Exception):
+            storage = get_storage()
+    write = _MessageWrite(storage, message, commit)
+    token = _message_write.set(write)
+    try:
+        yield
+    except Exception:
+        # A refused write: the harness sees the failure and the entry did not land.
+        raise
+    except BaseException:
+        # A cancel landed inside the writer before any entry was claimed: whether
+        # the host's write reached the file is unknown here.
+        if commit.entry_id is None:
+            commit.interrupted = True
+        raise
+    finally:
+        # A task spawned by an override can inherit this context past the write.
+        write.commit = None
+        _message_write.reset(token)
 
 
 def _iso_now() -> str:
@@ -161,6 +232,15 @@ class Session:
         await self._settle()
         return await self._storage.get_leaf_id()
 
+    async def _require_settled_writes(self) -> None:
+        """Resolve pending writes, or raise when what landed cannot yet be determined (#839).
+
+        Unlike :meth:`_settle`, which answers from the store as it stands, a reader
+        that must know whether an interrupted write landed gets the reason instead.
+        """
+
+        await self._storage.resolve_pending()
+
     async def get_entry(self, id: str) -> SessionTreeEntry | None:
         return await self._storage.get_entry(id)
 
@@ -223,8 +303,33 @@ class Session:
     ) -> str:
         """Append the entry ``build(id, leaf)`` returns, inside the store's hold (#721)."""
 
-        entry = await self._storage.append_to_leaf(build)
+        entry = await self._storage.append_to_leaf(self._claiming(build))
         return entry.id
+
+    def _claiming(
+        self, build: Callable[[str, str | None], _EntryT]
+    ) -> Callable[[str, str | None], _EntryT]:
+        """``build``, with the entry it builds claimed by the harness's write in flight (#839).
+
+        The claim is read off the built entry, not off the builder's argument, so a
+        subclass that overrides :meth:`_message_builder` (a static one, as the base's
+        was) is covered too. An entry that carries no message claims nothing.
+        """
+
+        def built(entry_id: str, parent_id: str | None) -> _EntryT:
+            entry = build(entry_id, parent_id)
+            write = _message_write.get()
+            if (
+                write is not None
+                and write.commit is not None
+                and write.commit.entry_id is None
+                and (write.storage is None or write.storage is self._storage)
+                and write.matches(getattr(entry, "message", None))
+            ):
+                write.commit.entry_id = entry_id
+            return entry
+
+        return built
 
     @staticmethod
     def _message_builder(message: AgentMessage) -> Callable[[str, str | None], MessageEntry]:
@@ -240,7 +345,9 @@ class Session:
 
         storage = self._storage
         if isinstance(storage, JsonlSessionStorage):
-            return await storage.append_message_receipt(self._message_builder(message))
+            return await storage.append_message_receipt(
+                self._claiming(self._message_builder(message))
+            )
         return MessageAppend(await self.append_message(message), None)
 
     async def append_thinking_level_change(self, thinking_level: str) -> str:

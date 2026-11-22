@@ -34,6 +34,7 @@ import aelix_agents.runtime as rt
 import pytest
 from aelix_agents.jobs_client import KIND
 from aelix_agents.stream import reduce_event
+from aelix_ai.tools import ToolCancelled
 
 from tests.agents_ext._detach_rig import (  # noqa: F401 — reap_children is the fixture
     reap_children,
@@ -108,11 +109,14 @@ async def _observe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: st
             else:
                 await asyncio.sleep(0.05)
                 turn.cancel()
+        cancelled_text = None
         try:
             result_text: str | None = _text(await within(turn))
             outcome = "result"
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancel:
             outcome, result_text = "cancelled", None
+            if isinstance(cancel, ToolCancelled) and cancel.result is not None:
+                cancelled_text = _text(cancel.result)
         entries = await rig.session.get_entries()
         phases = [
             e.data.get("phase") or e.data.get("state")
@@ -128,12 +132,11 @@ async def _observe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: st
         "outcome": outcome,
         "result_text": _timeless(result_text),
         # The D14 report is the cancelled call's result since #800, and owed
-        # under its id until a prompt finds it placed (ADR-0307 D1-D2); nothing
-        # goes on the next-turn queue any more.
-        # ``getattr``: on the base (no owed table) this fails on the assertion.
+        # under its id until a prompt finds it placed (ADR-0307 D1-D2).
+        # This calls the tool directly, so capture the report from ToolCancelled.
         "queued": len(queued),
         "d14_count": len(owed),
-        "d14_text": _timeless(next(iter(owed.values())).text) if owed else None,
+        "d14_text": _timeless(cancelled_text),
         "rows_left": len(runtime._children),
         "cleanups_left": len(runtime._cleanups),
         "records_at_return": records_at_return,

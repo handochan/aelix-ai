@@ -218,6 +218,32 @@ _STOPPED_BY: dict[str, str] = {
 The envelope's own :data:`~aelix_agents.envelope.REASON_STOPPED` names the
 foreground ways — ``stop``, ``/new`` … — which are not how a job is stopped."""
 
+def _mark_stopped(row: RunningChild, ctx: Any, job_id: str | None = None) -> None:
+    """Mark the row stopped, naming the actor the job's first accepted stop recorded (#855).
+
+    The actor is the job context's ``stop_attribution``. An adopted job can be
+    stopped between its publication and its runner's first step, before the
+    service hands the runner its context (verify round 1 F4): then the actor
+    is read from the stop that is being made (``attribute_job_stop``), for this
+    job's id, so the context is read exactly where it was read before #855.
+    """
+
+    if ctx is not None:
+        attribution = getattr(ctx, "stop_attribution", None)
+    elif job_id:
+        from aelix_coding_agent.jobs.service import current_stop_attribution
+
+        attribution = current_stop_attribution(job_id)
+    else:
+        attribution = None
+    # Kept off the public dataclass's fields, as a plain instance attribute the
+    # runtime reads back with ``getattr`` (``runtime.py``'s ``_with_run_facts``).
+    setattr(row, "_stop_attribution", attribution)  # noqa: B010 — not a field of the row
+    # #612 (ADR-0308): an open approval request is withdrawn first.
+    withdraw_approval(row)
+    row.stopped = True
+
+
 _HELPERS_UNTRACKED = "the agent's run had no launch ledger to sweep"
 _HELPERS_NO_JOB = "the agent ran without a Windows Job to confirm its helpers against"
 _HELPERS_UNCONFIRMED = "its processes are not yet confirmed gone"
@@ -575,9 +601,7 @@ class DelegationRunner:
             # stopped. Before the process exists this is the whole stop: the
             # channel re-reads ``stopped`` before and after the spawn.
             for row in list(runtime._children.values()):
-                # #612 (ADR-0308): an open approval request is withdrawn first.
-                withdraw_approval(row)
-                row.stopped = True
+                _mark_stopped(row, self._ctx)
         if own is not None:
             own.request_stop(self._launch.stop_grace)
 
@@ -670,6 +694,7 @@ class AdoptedRunner:
         self._profile = profile
         self._session = session
         self._on_end = on_end
+        self._ctx: Any = None
         self._first_exc: BaseException | None = None
         self._stopped_by: str | None = None
         self._stop: asyncio.Future[None] | None = None
@@ -685,6 +710,7 @@ class AdoptedRunner:
     async def run(self, ctx: Any) -> ClientOutcome:
         from aelix_agents.detach import drive
 
+        self._ctx = ctx
         self._entry.runner = weakref.ref(self)  # type: ignore[assignment]
         first_exc = self._first_exc
         # From this step the run is this runner's: the first task's rescue
@@ -701,8 +727,9 @@ class AdoptedRunner:
     def request_stop(self, reason: str) -> None:
         if self._stopped_by is None:
             self._stopped_by = reason
-        withdraw_approval(self._row)  # #612 (ADR-0308): before the stop
-        self._row.stopped = True
+        # Before ``run`` the job id is the one ``prepare_adopted`` gave the link.
+        link = self._link if self._ctx is None else None
+        _mark_stopped(self._row, self._ctx, None if link is None else link.job_id)
         if self._stop is None:
             self._stop = asyncio.ensure_future(self._runtime.stop(self._row.id))
 

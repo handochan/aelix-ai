@@ -13,7 +13,7 @@ failure modes an "obvious" implementation walks into:
 
 1. built-ins drop, extension + MCP tools survive (the point of the flag);
 2. ``--no-tools`` WINS — ``_action_set_active_tools`` is non-destructive
-   (``core.py:5130-5150``), so ``state.tools`` still holds the full registry
+   (``core.py:5153-5173``), so ``state.tools`` still holds the full registry
    after ``--no-tools``, and an unguarded filter would RE-ENABLE every
    extension/MCP tool the user just killed;
 3. ``--tools`` still intersects — the allowlist applies, it just cannot readmit
@@ -202,7 +202,7 @@ async def test_builtins_dropped_extension_and_mcp_kept(
     assert ALL_TOOL_NAMES.isdisjoint(active)
     assert set(active) == {_EXT_TOOL, _MCP_TOOL, "aelix_status"}
 
-    # The filter is NON-destructive by design (core.py:5130-5150): the built-ins
+    # The filter is NON-destructive by design (core.py:5153-5173): the built-ins
     # are still REGISTERED, they are merely inactive. Asserting this is what
     # distinguishes "filtered" from "the registry was rebuilt without them",
     # which is the shape reload() step 6 depends on.
@@ -285,7 +285,7 @@ async def test_filter_never_raises_on_removed_tool(
     """A ``--tools`` name whose extension is GONE drops silently on reload.
 
     ``set_active_tools`` validates against ``state.tools`` and RAISES on an
-    unknown name (``core.py:5136-5144``). On the reload path that raise would be
+    unknown name (``core.py:5159-5167``). On the reload path that raise would be
     unrecoverable — ``reload()`` has already disposed the old harness by then —
     which is exactly why the reloaded build is unfiltered (``on_reload=True``,
     ``cli/entry.py:2245-2258``). The ``--no-builtin-tools`` filter runs on that

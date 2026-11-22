@@ -1022,15 +1022,17 @@ def test_a_live_rows_elapsed_ms_counts_from_its_start_between_snapshots() -> Non
     assert ended["elapsedMs"] == 0, "an ended row keeps its own figure"
 
 
-async def test_a_hosts_stop_of_a_job_row_asks_the_job_service_as_the_user() -> None:
-    """Fix round 1, verify V-F5 mutant X5: the job's stop is recorded as the user's, not waited for."""
+async def test_a_hosts_stop_of_a_job_row_preserves_the_facade_override() -> None:
+    """#855: the RPC host keeps the original facade dispatch and zero wait."""
 
     from aelix_agents.extension import _job_stopper
 
-    asked: list[tuple[str, str, float]] = []
+    asked: list[tuple[str, str, float | None]] = []
 
     class _Facade:
-        async def stop(self, job_id: str, *, reason: str, wait: float) -> None:
+        async def stop(
+            self, job_id: str, *, reason: str = "user", wait: float | None = None
+        ) -> None:
             asked.append((job_id, reason, wait))
 
     stop = _job_stopper(_Facade())

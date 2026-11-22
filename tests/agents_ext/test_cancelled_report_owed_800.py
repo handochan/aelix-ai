@@ -1,8 +1,8 @@
 """#800 (ADR-0307 D1-D2): a cancelled delegation's report is its call's result, and is owed until placed.
 
 The ``agent`` tool raises ``ToolCancelled`` with the report, so the loop writes it as
-the cancelled call's result; the extension also records it under the call's
-``toolCallId`` (``AgentsExtension._owed``) and checks it at every
+the cancelled call's result; the extension records its execution receipt
+(``AgentsExtension._owed``) and checks it at every
 ``before_agent_start`` against the session as COMMITTED: retired when the call's own
 result is there and is not ``loop.CUT_TEXT`` (whatever a hook made of it), or when a
 copy it injected is there; injected again as a user message otherwise.
@@ -35,17 +35,30 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from aelix_agent_core import loop as core_loop
-from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
-from aelix_agent_core.harness.hooks import MessageEndEventResult, ToolResultPatch
-from aelix_agent_core.session import JsonlSessionStorage, LocalFileSystem, Session
+from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions, TranscriptOutcome
+from aelix_agent_core.harness.hooks import (
+    BeforeAgentStartHookEvent,
+    BeforeAgentStartResult,
+    MessageEndEventResult,
+    ToolExecutionEndHookEvent,
+    ToolResultPatch,
+)
+from aelix_agent_core.session import (
+    JsonlSessionStorage,
+    LocalFileSystem,
+    MemorySessionStorage,
+    Session,
+)
 from aelix_agent_core.session.fs import NotAttempted
+from aelix_agent_core.session.transcript import MessageAppend
+from aelix_agent_core.types import AgentEvent, AgentMessage
 from aelix_agents import extension as agents_extension
 from aelix_agents.aggregate import CANCEL_REPORT_HEAD
 from aelix_ai.messages import (
@@ -65,15 +78,18 @@ from tests.agents_ext.test_stopped_child_reports_604 import (
     _tool_call,
 )
 from tests.agents_ext.test_tool_and_security import _bench, _write_profile
+from tests.harness._cancelled_turn import MODEL, Provider, finished_tool
 
 CUT = core_loop._CUT_TEXT  # the alias exists on the base too; ``CUT_TEXT`` is #800's name
 REDACTED = "[redacted]"
 # ASCII words of ``CANCEL_REPORT_HEAD``: a JSONL line escapes its non-ASCII characters.
 _HEAD_WORDS = "stopped when the turn was cancelled"
 ANNOTATED = "[annotated] "
+NOTICE = "[aelix system report — not user input] The `agent` call was cancelled."
+MASKING_MARKER = "original delegation detail 839"
 
 
-def _owed(run: _Run) -> dict[str, Any]:
+def _owed(run: _Run) -> dict[Any, Any]:
     """The extension's owed records; none on the base, which has no such table."""
 
     return getattr(run.bench.ext, "_owed", {})
@@ -89,9 +105,24 @@ def _kinds(messages: list[Any]) -> list[str]:
             out.append(f"{message.role}(redacted)")
         elif text.startswith(ANNOTATED):
             out.append(f"{message.role}(annotated)")
-        elif CANCEL_REPORT_HEAD in text:
+        elif text == NOTICE or CANCEL_REPORT_HEAD in text:
             out.append(message.role)
     return out
+
+
+def _user_and_tool_rows(messages: list[Any]) -> list[tuple[str, str]]:
+    return [(m.role, _message_text(m)) for m in messages if m.role in {"user", "toolResult"}]
+
+
+def _refuse_rows(role: str, marker: str = "") -> Any:
+    original = LocalFileSystem.append_file
+
+    async def append(fs: LocalFileSystem, path: str, line: str) -> None:
+        if f'"role":"{role}"' in line.replace(" ", "") and marker in line:
+            raise NotAttempted("simulated append refusal")
+        await original(fs, path, line)
+
+    return patch.object(LocalFileSystem, "append_file", append)
 
 
 @dataclass
@@ -110,9 +141,12 @@ class _Run:
         return _kinds(self.seen[n - 1])
 
     async def file(self) -> list[str]:
+        return _kinds(await self.reopen())
+
+    async def reopen(self) -> list[Any]:
         assert self.path is not None
         reopened = Session(await JsonlSessionStorage.open(LocalFileSystem(), str(self.path)))
-        return _kinds(list((await reopened.build_context()).messages))
+        return list((await reopened.build_context()).messages)
 
 
 async def _cancelled(
@@ -169,7 +203,9 @@ async def _cancelled(
     if rewrite is not None:
 
         async def rewriting(event: Any, _ctx: Any) -> ToolResultPatch:
-            text = REDACTED if rewrite == "redact" else ANNOTATED + _message_text(event)
+            text = {"redact": REDACTED, "cut": CUT}.get(
+                rewrite, ANNOTATED + _message_text(event)
+            )
             return ToolResultPatch(content=[TextContent(text=text)])
 
         harness.hooks.on("tool_result", rewriting)
@@ -249,6 +285,102 @@ async def test_a_redacting_hook_leaves_only_the_redacted_result(tmp_path: Path) 
     assert await run.file() == ["toolResult(redacted)"]
 
 
+@pytest.mark.parametrize(
+    "mode", ["cut", "raises", "tool_result", "message_end", "nameless", "message_end_raises"]
+)
+async def test_fallback_uses_only_the_final_mask_or_a_cancellation_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """#839: exact cut, failed hook, and failed appends after either hook's mask."""
+
+    render = agents_extension.render_cancel_report
+    monkeypatch.setattr(
+        agents_extension, "render_cancel_report", lambda *a, **kw: f"{render(*a, **kw)}\n{MASKING_MARKER}"
+    )
+    observed: list[str] = []
+
+    def setup(run: _Run) -> None:
+        def observe(event: AgentEvent) -> None:
+            if event.type == "tool_execution_end":
+                observed.append(_message_text(event.result))
+
+        async def fail(_event: Any, _ctx: Any) -> None:
+            raise RuntimeError("redaction failed")
+
+        async def redact_message(event: Any, _ctx: Any) -> MessageEndEventResult | None:
+            if event.message.role == "toolResult":
+                return MessageEndEventResult(
+                    message=ToolResultMessage(
+                        tool_call_id=event.message.tool_call_id,
+                        tool_name="" if mode == "nameless" else event.message.tool_name,
+                        content=[TextContent(text=REDACTED)],
+                        is_error=True,
+                    ),
+                )
+            return None
+
+        run.harness.subscribe(observe)
+        if mode == "raises":
+            run.harness.hooks.on("tool_result", fail)
+        if mode in ("message_end", "nameless", "message_end_raises"):
+            run.harness.hooks.on("message_end", redact_message)
+        if mode == "message_end_raises":
+            async def fail_after_mask(event: Any, _ctx: Any) -> None:
+                if event.message.role == "toolResult":
+                    assert _message_text(event.message) == REDACTED
+                    raise RuntimeError("second message-end handler failed")
+
+            run.harness.hooks.on("message_end", fail_after_mask)
+
+    append = LocalFileSystem.append_file
+    refused: list[str] = []
+
+    async def refuse_mask(fs: Any, target: str, text: str) -> None:
+        if mode != "nameless" and REDACTED in text and '"toolResult"' in text:
+            refused.append(text)
+            raise NotAttempted("failed append after masking")
+        await append(fs, target, text)
+
+    rewrite = {"cut": "cut", "tool_result": "redact"}.get(mode)
+    with patch.object(LocalFileSystem, "append_file", refuse_mask):
+        run = await _cancelled(tmp_path, rewrite=rewrite, before_abort=setup)
+    assert len(run.seen) == 1, "cancellation started no extra turn"
+    expected = REDACTED if mode in ("tool_result", "message_end", "nameless") else NOTICE
+    carrier = "toolResult" if mode == "nameless" else "user"
+    copy_refusals: list[str] = []
+
+    async def refuse_copy(fs: Any, target: str, text: str) -> None:
+        if '"role":"user"' in text.replace(" ", "") and (REDACTED in text or MASKING_MARKER in text):
+            copy_refusals.append(text)
+            raise NotAttempted("failed first copy append")
+        await append(fs, target, text)
+
+    if mode == "tool_result":
+        with patch.object(LocalFileSystem, "append_file", refuse_copy):
+            await run.harness.prompt("next")
+        assert len(copy_refusals) == 1
+        await run.harness.prompt("retry")
+    else:
+        await run.harness.prompt("next")
+    await run.harness.prompt("again")
+    assert run.path is not None
+    assert MASKING_MARKER not in run.path.read_text(encoding="utf-8")
+    reopened = Session(await JsonlSessionStorage.open(LocalFileSystem(), str(run.path)))
+    for messages in (*run.seen[1:], (await reopened.build_context()).messages):
+        texts = [_message_text(message) for message in messages]
+        assert all(MASKING_MARKER not in text and CANCEL_REPORT_HEAD not in text for text in texts)
+        assert texts.count(expected) == 1, texts
+        assert sum(
+            message.role == carrier and _message_text(message) == expected for message in messages
+        ) == 1
+        assert texts.count(NOTICE) == (1 if expected == NOTICE else 0)
+    assert len(refused) == (1 if mode in ("tool_result", "message_end") else 0)
+    if mode in ("message_end", "nameless", "message_end_raises"):
+        assert len(observed) == 1 and MASKING_MARKER in observed[0]
+    else:
+        assert observed == [REDACTED if mode == "tool_result" else CUT]
+
+
 async def test_an_annotating_hook_leaves_one_result_and_no_copy(tmp_path: Path) -> None:
     """Contract r5 §12.3 test 3: identity, not text — the annotated result retires
     the record. On 6dd682cd the request carries the annotated cut text and the
@@ -276,7 +408,7 @@ async def test_a_copy_whose_append_fails_is_injected_again_and_the_file_keeps_on
     refusals: list[str] = []
 
     async def refused(fs: Any, target: str, text: str) -> None:
-        if '"role":"user"' in text.replace(" ", "") and _HEAD_WORDS in text:
+        if '"role":"user"' in text.replace(" ", "") and "The `agent` call" in text:
             refusals.append(text)
             raise NotAttempted("a simulated append failure")
         await append(fs, target, text)
@@ -302,7 +434,7 @@ def _redact_copies(run: _Run) -> None:
 
     async def rewrite(event: Any, _ctx: Any) -> MessageEndEventResult | None:
         message = event.message
-        if message.role == "user" and CANCEL_REPORT_HEAD in _message_text(message):
+        if message.role == "user" and _message_text(message) == NOTICE:
             return MessageEndEventResult(message=UserMessage(content=[TextContent(text=REDACTED)]))
         return None
 
@@ -438,7 +570,7 @@ async def test_a_later_calls_result_does_not_carry_the_report(tmp_path: Path, re
     append = LocalFileSystem.append_file
 
     async def refused(fs: Any, target: str, text: str) -> None:
-        if '"role":"user"' in text.replace(" ", "") and _HEAD_WORDS in text:
+        if '"role":"user"' in text.replace(" ", "") and "The `agent` call" in text:
             raise NotAttempted("a simulated append failure")
         await append(fs, target, text)
 
@@ -457,7 +589,8 @@ async def test_a_later_calls_result_does_not_carry_the_report(tmp_path: Path, re
 
 
 @pytest.mark.parametrize(
-    ("second", "later_id"), [("message_end", "call-9"), ("tool_result", "call-1")]
+    ("second", "later_id"),
+    [("message_end", "call-9"), ("message_end", "call-1"), ("tool_result", "call-1")],
 )
 async def test_a_later_delegations_result_does_not_carry_the_report(
     tmp_path: Path, second: str, later_id: str
@@ -486,9 +619,83 @@ async def test_a_later_delegations_result_does_not_carry_the_report(
     assert run.request(2) == ["user"]
 
 
+async def test_a_reused_id_does_not_replace_the_owed_mask(tmp_path: Path) -> None:
+    """#839 report verification R1: a real later agent call reuses a still-owed ID."""
+    later = _tool_call({"profile": "unknown-profile", "task": "later"})
+    with _refuse_rows("toolResult"):
+        run = await _cancelled(tmp_path, rewrite="redact", replies=[later])
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def after_later_result(event: Any) -> None:
+        if event.type == "message_end" and event.message.role == "toolResult":
+            reached.set()
+            await release.wait()
+
+    off = run.harness.subscribe(after_later_result)
+    with _refuse_rows("user", REDACTED):
+        turn = asyncio.create_task(run.harness.prompt("next"))
+        try:
+            await asyncio.wait_for(reached.wait(), 10)
+            await run.harness.abort()
+        finally:
+            off()
+            release.set()
+            await asyncio.wait_for(turn, 10)
+
+    await run.harness.prompt("retry")
+    await run.harness.prompt("again")
+    for messages, extra in ((run.seen[-2], []), (run.seen[-1], ["again"]), (await run.reopen(), ["again"])):
+        rows = _user_and_tool_rows(messages)
+        assert [text for role, text in rows if role == "user"] == [
+            "delegate", "next", REDACTED, "retry", *extra,
+        ]
+        (later_text,) = [text for role, text in rows if role == "toolResult"]
+        assert later_text.startswith("Delegation refused: unknown agent profile")
+
+
+@pytest.mark.parametrize("rewrite", [None, "redact"])
+async def test_a_finalized_report_survives_an_abort_in_agent_end(
+    tmp_path: Path, rewrite: str | None
+) -> None:
+    """#839 report verification R1: the result has reduced, its append was refused."""
+    observed: list[str] = []
+
+    def interrupt_closeout(run: _Run) -> None:
+        async def listener(event: Any) -> None:
+            if event.type == "agent_end" and not observed:
+                observed.extend(_message_text(m) for m in event.messages if m.role == "toolResult")
+                run.gated.set()
+                await run.released.wait()
+
+        run.harness.subscribe(listener)
+
+    async def abort_twice(run: _Run) -> None:
+        await run.harness.abort(withdraw_unanswered=True)
+        await asyncio.wait_for(run.gated.wait(), 10)
+        await run.harness.abort()
+
+    with _refuse_rows("toolResult"):
+        run = await _cancelled(
+            tmp_path, rewrite=rewrite, before_abort=interrupt_closeout, abort_with=abort_twice
+        )
+    (expected,) = observed
+    if rewrite:
+        assert expected == REDACTED
+    else:
+        assert _HEAD_WORDS in expected
+    await run.harness.prompt("next")
+    await run.harness.prompt("again")
+    assert _user_and_tool_rows(run.seen[1]) == [
+        ("user", "delegate"), ("user", expected), ("user", "next")
+    ]
+    for messages in (run.seen[-1], await run.reopen()):
+        assert _user_and_tool_rows(messages) == [
+            ("user", "delegate"), ("user", expected), ("user", "next"), ("user", "again")
+        ]
+
+
 async def test_a_cancel_right_after_the_copy_is_written_still_places_it(tmp_path: Path) -> None:
-    """The copy's commit is read at the next ``message_start`` or, when a cancel ends
-    the prompt first, at its ``agent_end``. A listener parks on the copy's
+    """The session assigns the copy's entry at its commit. A listener parks on its
     ``message_end`` (after the write) and the prompt is aborted there: the copy is on
     the branch, so the prompt after carries that one and injects none."""
 
@@ -500,7 +707,7 @@ async def test_a_cancel_right_after_the_copy_is_written_still_places_it(tmp_path
         if (
             getattr(event, "type", "") == "message_end"
             and getattr(message, "role", "") == "user"
-            and CANCEL_REPORT_HEAD in _message_text(message)
+            and _message_text(message) == NOTICE
             and not parked.is_set()
         ):
             parked.set()
@@ -508,15 +715,55 @@ async def test_a_cancel_right_after_the_copy_is_written_still_places_it(tmp_path
 
     run.harness.subscribe(listener)
     p1 = asyncio.ensure_future(run.harness.prompt("p1"))
-    await asyncio.wait_for(parked.wait(), 10)
-    await run.harness.abort()
-    release.set()
-    await asyncio.wait_for(p1, 10)
+    try:
+        await asyncio.wait_for(parked.wait(), 10)
+        await run.harness.abort()
+    finally:
+        release.set()
+        await asyncio.wait_for(p1, 10)
     await run.harness.prompt("p2")
 
     assert run.request(2) == ["user"], "p2 carries the copy p1 wrote, and only that one"
     assert await run.file() == ["user"]
     assert _owed(run) == {}
+
+
+async def test_a_committed_copy_survives_two_aborts_without_duplication(tmp_path: Path) -> None:
+    """The copy receipt survives an interrupted write and interrupted close-out."""
+    with _refuse_rows("toolResult"):
+        run = await _cancelled(tmp_path, rewrite="redact")
+    append = LocalFileSystem.append_file
+    written, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def park_after_bytes(fs: LocalFileSystem, path: str, line: str) -> None:
+        await append(fs, path, line)
+        if '"role":"user"' in line.replace(" ", "") and REDACTED in line:
+            written.set()
+            await release.wait()
+
+    async def park_before_closeout_hooks(event: Any) -> None:
+        if event.type == "agent_end":
+            closing.set()
+            await release.wait()
+
+    off = run.harness.subscribe(park_before_closeout_hooks)
+    with patch.object(LocalFileSystem, "append_file", park_after_bytes):
+        turn = asyncio.create_task(run.harness.prompt("interrupted"))
+        try:
+            await asyncio.wait_for(written.wait(), 10)
+            await run.harness.abort()
+            await asyncio.wait_for(closing.wait(), 10)
+            await run.harness.abort()
+        finally:
+            off()
+            release.set()
+            await asyncio.wait_for(turn, 10)
+    assert len(run.seen) == 1
+    await run.harness.prompt("next")
+    expected = [
+        ("user", "delegate"), ("user", REDACTED), ("user", "interrupted"), ("user", "next")
+    ]
+    assert _user_and_tool_rows(run.seen[-1]) == _user_and_tool_rows(await run.reopen()) == expected
 
 
 async def test_a_failed_read_of_the_session_never_duplicates_the_report(
@@ -567,11 +814,11 @@ async def test_a_branch_the_check_cannot_read_fails_the_prompt_and_keeps_the_rec
 
     monkeypatch.setattr(Session, "get_branch", unreadable)
     run = await _cancelled(tmp_path, before_abort=lambda r: broken.append(r.session))
-    assert list(_owed(run)) == ["call-1"]
+    assert [record.call_id for record in _owed(run).values()] == ["call-1"]
     with pytest.raises(Exception, match="cancelled delegation's report"):
         await run.harness.prompt("next")
     assert len(run.seen) == 1, "the failed prompt made a request"
-    assert list(_owed(run)) == ["call-1"]
+    assert [record.call_id for record in _owed(run).values()] == ["call-1"]
     broken.clear()
     await run.harness.prompt("retry")
 
@@ -640,7 +887,7 @@ async def test_a_report_that_lands_as_the_result_is_not_warned_about(
 # === fix round 2 (verify round 2 F1, F3, F4): fail on 9acd9ea0 unless a guard =====
 
 
-@pytest.mark.parametrize("to", ["root", "second"])
+@pytest.mark.parametrize("to", ["root", "root-masked", "second"])
 async def test_a_copy_after_the_leaf_moved_off_the_carrier_is_placed_once(
     tmp_path: Path, to: str
 ) -> None:
@@ -660,47 +907,274 @@ async def test_a_copy_after_the_leaf_moved_off_the_carrier_is_placed_once(
         if to == "second"
         else None
     )
-    run = await _cancelled(tmp_path, prior=prior)
+    run = await _cancelled(tmp_path, prior=prior, rewrite="redact" if to == "root-masked" else None)
     users = [
         entry.id
         for entry in await run.session.get_branch()
         if getattr(entry, "type", "") == "message" and entry.message.role == "user"
     ]
-    await run.harness.navigate_tree(users[0] if to == "root" else users[-1])
-    assert (await run.session.get_leaf_id() is None) is (to == "root")
+    await run.harness.navigate_tree(users[-1] if to == "second" else users[0])
+    assert (await run.session.get_leaf_id() is None) is (to != "second")
+    carrier = "user(redacted)" if to == "root-masked" else "user"
     for number in range(1, 4):
         await run.harness.prompt(f"rephrased {number}")
-        assert run.request(number + 1) == ["user"], f"prompt {number}"
-    assert await run.file() == ["user"]
+        assert run.request(number + 1) == [carrier], f"prompt {number}"
+    assert await run.file() == [carrier]
     assert _owed(run) == {}
 
 
-async def test_a_call_whose_origin_could_not_be_read_finds_its_result_anywhere(
-    tmp_path: Path,
+async def test_a_committed_mask_is_the_only_carrier_with_unreadable_leaves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify round 2 F4 (mutant V-E22: an unread origin skips the carrier check). The
-    session's leaf cannot be read when the ``agent`` call begins, so the record has no
-    origin and the whole branch is searched for the call's result: one Esc, and the
-    next request carries the report once, as that result, with no copy. A guard: it
-    passes on 9acd9ea0 and fails under the mutant with ``['toolResult', 'user']``."""
-
-    real_origin = agents_extension.AgentsExtension._call_origin
+    """#839 report verification R1: leaf lookup fails at execute and tool end."""
 
     async def unreadable_leaf(_session: Any) -> Any:
         raise OSError("the leaf cannot be read")
 
-    async def origin_unread(self: Any) -> Any:
-        with patch.object(Session, "get_leaf_id", unreadable_leaf):
-            return await real_origin(self)
+    def with_unreadable_leaf(method: Any) -> Any:
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            with patch.object(Session, "get_leaf_id", unreadable_leaf):
+                return await method(*args, **kwargs)
 
-    with patch.object(agents_extension.AgentsExtension, "_call_origin", origin_unread):
-        run = await _cancelled(tmp_path)
-    record = _owed(run)["call-1"]
-    assert record.session is run.session and record.origin is None
+        return wrapped
+
+    ext = agents_extension.AgentsExtension
+    for name in ("_execute", "_on_tool_execution_end"):
+        monkeypatch.setattr(ext, name, with_unreadable_leaf(getattr(ext, name)))
+    run = await _cancelled(tmp_path, rewrite="redact")
+    await run.harness.prompt("next")
+    expected = [("user", "delegate"), ("toolResult", REDACTED), ("user", "next")]
+    assert _user_and_tool_rows(run.seen[1]) == _user_and_tool_rows(await run.reopen()) == expected
+    assert _owed(run) == {}
+
+
+class _LegacyWriterSession(Session):
+    def __init__(self, storage: Any) -> None:
+        super().__init__(storage)
+        self.writes: list[tuple[str, str]] = []
+
+    async def append_message(self, message: AgentMessage) -> str:
+        self.writes.append((message.role, _message_text(message)))
+        return await super().append_message(message)
+
+
+class _LegacyReceiptSession(_LegacyWriterSession):
+    async def append_message_receipt(self, message: AgentMessage) -> MessageAppend:
+        self.writes.append((message.role, _message_text(message)))
+        return await super().append_message_receipt(replace(message))
+
+
+@pytest.mark.parametrize("transcript", [False, True], ids=["classic", "transcript"])
+@pytest.mark.parametrize("at_native_append", [False, True], ids=["override-return", "native-append"])
+@pytest.mark.parametrize("writer_text", [REDACTED, "host copy"], ids=["copy", "rewrite"])
+async def test_interrupted_legacy_writer_delivers_the_stored_result_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transcript: bool,
+    at_native_append: bool,
+    writer_text: str,
+) -> None:
+    """A base-signature writer can forward a copy and be cancelled after its bytes land."""
+    landed = asyncio.Event()
+    release = asyncio.Event()
+    parent = _parent
+
+    def copy_message(message: AgentMessage) -> AgentMessage:
+        if isinstance(message, ToolResultMessage) and writer_text != REDACTED:
+            return replace(message, content=[TextContent(text=writer_text)], timestamp=0.0)
+        return replace(message)
+
+    async def hold() -> None:
+        landed.set()
+        await release.wait()
+
+    class LegacySession(Session):
+        async def append_message(self, message: AgentMessage) -> str:
+            entry_id = await super().append_message(copy_message(message))
+            if not at_native_append and message.role == "toolResult":
+                await hold()
+            return entry_id
+
+        async def append_message_receipt(self, message: AgentMessage) -> MessageAppend:
+            receipt = await super().append_message_receipt(copy_message(message))
+            if not at_native_append and message.role == "toolResult":
+                await hold()
+            return receipt
+
+    async def legacy_parent(path: Path) -> tuple[LegacySession, Any, Path]:
+        session, repo, file = await parent(path)
+        return LegacySession(session.get_storage()), repo, file
+
+    async def listen(run: _Run) -> None:
+        if transcript:
+            run.harness.subscribe_transcript(lambda *_: None)
+
+    async def abort_twice(run: _Run) -> None:
+        await run.harness.abort(withdraw_unanswered=True)
+        try:
+            await asyncio.wait_for(landed.wait(), 5)
+            await run.harness.abort()
+        finally:
+            release.set()
+
+    if at_native_append:
+        append_file = LocalFileSystem.append_file
+
+        async def hold_after_append(fs: LocalFileSystem, path: str, text: str) -> None:
+            await append_file(fs, path, text)
+            if '"role":"toolResult"' in text.replace(" ", ""):
+                await hold()
+
+        monkeypatch.setattr(LocalFileSystem, "append_file", hold_after_append)
+    monkeypatch.setattr(f"{__name__}._parent", legacy_parent)
+    run = await _cancelled(tmp_path, rewrite="redact", before_prompt=listen, abort_with=abort_twice)
+    expected = [("user", "delegate"), ("toolResult", writer_text)]
+    for prompt in ("next", "again"):
+        await run.harness.prompt(prompt)
+        expected.append(("user", prompt))
+        assert _user_and_tool_rows(run.seen[-1]) == _user_and_tool_rows(await run.reopen()) == expected
+
+
+async def test_an_ordinary_extension_keeps_its_original_hook_shapes() -> None:
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=MODEL,
+            stream_fn=Provider([("call-a", "one")]),
+            tools=[finished_tool("one", "first")],
+        )
+    )
+    order: list[str] = []
+    hook_payloads: list[dict[str, Any]] = []
+    injected = BeforeAgentStartResult(None, "updated")
+    assert asdict(injected) == {"messages": None, "system_prompt": "updated"}
+
+    async def before_start(_event: Any, _ctx: Any) -> BeforeAgentStartResult:
+        order.append("before")
+        return injected
+
+    async def tool_end(event: ToolExecutionEndHookEvent, _ctx: Any) -> None:
+        order.append("tool end")
+        hook_payloads.append(asdict(event))
+
+    async def message_end(event: Any, _ctx: Any) -> None:
+        if isinstance(event.message, ToolResultMessage):
+            order.append("result message end")
+
+    harness.hooks.on("before_agent_start", before_start)
+    harness.hooks.on("tool_execution_end", tool_end)
+    harness.hooks.on("message_end", message_end)
+    reduced = await harness.hooks.emit(BeforeAgentStartHookEvent(prompt="start"))
+    assert type(reduced) is BeforeAgentStartResult
+    assert reduced == injected
+    order.clear()
+    await harness.prompt("start")
+    assert order == ["before", "tool end", "result message end"]
+    assert hook_payloads == [
+        {
+            "type": "tool_execution_end",
+            "tool_call_id": "call-a",
+            "tool_name": "one",
+            "is_error": False,
+        }
+    ]
+
+
+async def test_a_transcript_listener_preserves_a_legacy_memory_writer() -> None:
+    session = _LegacyWriterSession(MemorySessionStorage())
+    harness = AgentHarness(AgentHarnessOptions(model=MODEL, stream_fn=Provider([]), session=session))
+    statuses: list[str] = []
+
+    def observe(_event: Any, _stream_id: str | None, outcome: TranscriptOutcome | None) -> None:
+        if outcome is not None:
+            statuses.append(outcome.status)
+
+    harness.subscribe_transcript(observe)
+    await harness.prompt("hello")
+    assert [m.role for m in (await session.build_context()).messages] == ["user", "assistant"]
+    assert statuses == ["storageOnly", "storageOnly"]
+
+
+@pytest.mark.parametrize("transcript", [False, True], ids=["classic", "transcript"])
+@pytest.mark.parametrize("refuse_result", [False, True])
+async def test_legacy_jsonl_writer_stores_one_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transcript: bool, refuse_result: bool
+) -> None:
+    parent = _parent
+
+    async def legacy_parent(path: Path) -> tuple[_LegacyReceiptSession, Any, Path]:
+        session, repo, file = await parent(path)
+        return _LegacyReceiptSession(session.get_storage()), repo, file
+
+    async def listen(run: _Run) -> None:
+        if transcript:
+            run.harness.subscribe_transcript(lambda *_: None)
+
+    monkeypatch.setattr(f"{__name__}._parent", legacy_parent)
+    with _refuse_rows("toolResult") if refuse_result else contextlib.nullcontext():
+        run = await _cancelled(tmp_path, rewrite="redact", before_prompt=listen)
+
+    carrier = ("user" if refuse_result else "toolResult", REDACTED)
+    expected = [("user", "delegate"), carrier]
+    for prompt in ("next", "again"):
+        await run.harness.prompt(prompt)
+        expected.append(("user", prompt))
+        assert _user_and_tool_rows(run.seen[-1]) == _user_and_tool_rows(await run.reopen()) == expected
+    assert run.session.writes.count(carrier) == 1
+
+
+@pytest.mark.parametrize("field_name", ["tool_call_id", "tool_name"])
+@pytest.mark.parametrize("refuse_result", [False, True])
+async def test_a_result_with_the_wrong_call_binding_needs_a_generic_notice(
+    tmp_path: Path, field_name: str, refuse_result: bool
+) -> None:
+    async def change_binding(event: Any, _ctx: Any) -> MessageEndEventResult | None:
+        if event.message.role != "toolResult":
+            return None
+        return MessageEndEventResult(
+            message=replace(
+                event.message, content=[TextContent(text="unbound")], **{field_name: "different"}
+            )
+        )
+
+    def register(run: _Run) -> None:
+        run.harness.hooks.on("message_end", change_binding)
+
+    with _refuse_rows("toolResult") if refuse_result else contextlib.nullcontext():
+        run = await _cancelled(tmp_path, before_abort=register)
     await run.harness.prompt("next")
 
-    assert run.request(2) == ["toolResult"]
-    assert _owed(run) == {}
+    expected = [("user", "delegate")]
+    if not refuse_result:
+        expected.append(("toolResult", "unbound"))
+    expected.extend([("user", NOTICE), ("user", "next")])
+    assert _user_and_tool_rows(run.seen[-1]) == _user_and_tool_rows(await run.reopen()) == expected
+
+
+async def test_two_owed_reports_with_the_same_call_id_survive_in_order(tmp_path: Path) -> None:
+    later = _tool_call({"profile": "scout", "task": "second"})
+    with _refuse_rows("toolResult"):
+        run = await _cancelled(tmp_path, rewrite="redact", replies=[later])
+    channel = run.bench.channel
+    channel.arrived.clear()
+    second_mask = "second mask"
+
+    async def rewrite(_event: Any, _ctx: Any) -> ToolResultPatch:
+        return ToolResultPatch(content=[TextContent(text=second_mask)])
+
+    run.harness.hooks.on("tool_result", rewrite)
+    with _refuse_rows("user", REDACTED), _refuse_rows("toolResult"):
+        turn = asyncio.create_task(run.harness.prompt("second delegation"))
+        try:
+            await asyncio.wait_for(channel.arrived.wait(), 10)
+            await run.harness.abort(withdraw_unanswered=True)
+        finally:
+            await asyncio.wait_for(turn, 10)
+    await run.harness.prompt("retry")
+
+    for messages in (run.seen[-1], await run.reopen()):
+        assert [row for row in _user_and_tool_rows(messages) if row[1] in {REDACTED, second_mask}] == [
+            ("user", REDACTED), ("user", second_mask),
+        ]
 
 
 # === guards: pass on the base and after ===========================================
@@ -712,8 +1186,8 @@ async def test_a_second_cancel_gives_one_user_copy_and_none_after(
 ) -> None:
     """K1: a second abort in the call's ``tool_result`` hook or in its result's
     ``message_end`` before the commit keeps the report out of the call's result.
-    The next prompt carries it as a user message, as the base's queue did, and the
-    one after carries that copy from the file and injects no second one."""
+    The next prompt carries a content-free notice as a user message, and the
+    one after carries that notice from the file and injects no second one."""
 
     run = await _cancelled(tmp_path, second=second)
     await run.harness.prompt("p1")
@@ -722,6 +1196,7 @@ async def test_a_second_cancel_gives_one_user_copy_and_none_after(
     assert run.request(2) == ["user"]
     assert run.request(3) == ["user"]
     assert await run.file() == ["user"]
+    assert [_message_text(message) for message in run.seen[1] if message.role == "user"].count(NOTICE) == 1
 
 
 async def test_a_second_cancel_in_the_reports_append_gives_one_user_copy(tmp_path: Path) -> None:
@@ -891,7 +1366,11 @@ async def test_report_carriers_have_distinct_live_keys_and_directed_readback(
             row = await _directed_receipt(wire, receipt, f"user-{index}")
             assert row["message"]["role"] == "user"
         if second is not None:
-            assert CANCEL_REPORT_HEAD in user_ends[-2]["message"]["content"][0]["text"]
+            copy_text = user_ends[-2]["message"]["content"][0]["text"]
+            if second == "message_end":
+                assert copy_text == NOTICE
+            else:
+                assert CANCEL_REPORT_HEAD in copy_text
             assert user_ends[-1]["transcript"]["parentEntryId"] == user_ends[-2]["transcript"]["entryId"]
     finally:
         if wire is not None and rpc is not None:
@@ -1003,3 +1482,227 @@ async def test_outgoing_report_receipt_is_delivered_during_disposal(
         if rpc is not None and not rpc.done():
             rpc.cancel()
             await asyncio.gather(rpc, return_exceptions=True)
+
+
+# ── host writers and readers the receipt cannot identify (#839, verify round 4) ──────────
+#
+# The next four tests pin the configurations round 4 of the independent verify found
+# delivering a cancelled report twice. Each passes on the base before #839 (one carrier)
+# and must keep passing: a host written for the base sees what it saw.
+
+
+@pytest.mark.parametrize("transcript", [False, True], ids=["classic", "transcript"])
+async def test_a_forwarding_writer_over_the_same_storage_delivers_its_copy_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transcript: bool
+) -> None:
+    """A host wraps the repository's ``Session`` instead of calling ``super()`` (round 4 F1).
+
+    Both objects address the same storage; the host stores ``host copy`` in place
+    of the hook's mask and is aborted after the write, before its override
+    returns. The write is identified by the storage it reaches and the call it is
+    the result of, not by the ``Session`` object the harness called.
+    """
+
+    landed = asyncio.Event()
+    release = asyncio.Event()
+    parent = _parent
+
+    class HostSession(Session):
+        def __init__(self, inner: Session) -> None:
+            super().__init__(inner.get_storage())
+            self.inner = inner
+
+        async def forward(self, writer: Any, message: AgentMessage) -> Any:
+            if message.role != "toolResult":
+                return await writer(message)
+            stored = await writer(replace(message, content=[TextContent(text="host copy")]))
+            landed.set()
+            await release.wait()
+            return stored
+
+        async def append_message(self, message: AgentMessage) -> str:
+            return await self.forward(self.inner.append_message, message)
+
+        async def append_message_receipt(self, message: AgentMessage) -> MessageAppend:
+            return await self.forward(self.inner.append_message_receipt, message)
+
+    async def use_host(path: Path) -> tuple[HostSession, Any, Path]:
+        session, repo, file = await parent(path)
+        return HostSession(session), repo, file
+
+    async def listen(run: _Run) -> None:
+        if transcript:
+            run.harness.subscribe_transcript(lambda *_: None)
+
+    async def abort_twice(run: _Run) -> None:
+        await run.harness.abort(withdraw_unanswered=True)
+        try:
+            await asyncio.wait_for(landed.wait(), 5)
+            await run.harness.abort()
+        finally:
+            release.set()
+
+    monkeypatch.setattr(f"{__name__}._parent", use_host)
+    run = await _cancelled(tmp_path, rewrite="redact", before_prompt=listen, abort_with=abort_twice)
+    await run.harness.prompt("next")
+    expected = [("user", "delegate"), ("toolResult", "host copy"), ("user", "next")]
+    assert _user_and_tool_rows(run.seen[-1]) == _user_and_tool_rows(await run.reopen()) == expected
+
+
+@pytest.mark.parametrize("transcript", [False, True], ids=["classic", "transcript"])
+async def test_a_restamped_fallback_copy_is_delivered_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transcript: bool
+) -> None:
+    """The host writes the user-role fallback with its own timestamp (round 4 F2).
+
+    The result's write is refused, so the next prompt carries the report as a
+    user message; the host's writer restamps it and is aborted before returning.
+    The second prompt must not carry it again: within the harness's write of
+    that message, the entry the session builds for a message of the same role
+    is this write's, whatever the host changed on it.
+    """
+
+    landed = asyncio.Event()
+    release = asyncio.Event()
+    parent = _parent
+
+    class HostSession(Session):
+        async def forward(self, writer: Any, message: AgentMessage) -> Any:
+            if message.role != "user" or CANCEL_REPORT_HEAD not in _message_text(message):
+                return await writer(message)
+            entry = await writer(replace(message, timestamp=1.0))
+            landed.set()
+            await release.wait()
+            return entry
+
+        async def append_message(self, message: AgentMessage) -> str:
+            return await self.forward(super().append_message, message)
+
+        async def append_message_receipt(self, message: AgentMessage) -> MessageAppend:
+            return await self.forward(super().append_message_receipt, message)
+
+    async def use_host(path: Path) -> tuple[HostSession, Any, Path]:
+        session, repo, file = await parent(path)
+        return HostSession(session.get_storage()), repo, file
+
+    async def listen(run: _Run) -> None:
+        if transcript:
+            run.harness.subscribe_transcript(lambda *_: None)
+
+    monkeypatch.setattr(f"{__name__}._parent", use_host)
+    with _refuse_rows("toolResult"):
+        run = await _cancelled(tmp_path, before_prompt=listen)
+    turn = asyncio.create_task(run.harness.prompt("p1"))
+    try:
+        await asyncio.wait_for(landed.wait(), 5)
+        await run.harness.abort()
+    finally:
+        release.set()
+        await asyncio.wait_for(turn, 5)
+    await run.harness.prompt("p2")
+    assert _kinds(run.seen[-1]) == _kinds(await run.reopen()) == ["user"]
+
+
+async def test_a_hosts_read_view_of_attribute_records_sees_the_placed_result(
+    tmp_path: Path,
+) -> None:
+    """The extension's ``session=`` callback hands back a read view (round 4 F3).
+
+    Its ``get_branch()`` presents the branch's messages as attribute records
+    with the native ids and values, not as the message classes. The committed
+    masked result is recognised by its attributes, as before receipts, so no
+    second, user-role mask goes out.
+    """
+
+    from types import SimpleNamespace
+
+    async def install(run: _Run) -> None:
+        class Reader:
+            def __getattr__(self, name: str) -> Any:
+                if name.startswith("_"):
+                    raise AttributeError(name)
+                return getattr(run.session, name)
+
+            async def get_branch(self) -> list[Any]:
+                entries = await run.session.get_branch()
+                return [
+                    SimpleNamespace(id=e.id, message=SimpleNamespace(**vars(e.message)))
+                    if hasattr(e, "message")
+                    else e
+                    for e in entries
+                ]
+
+        view = Reader()
+        run.bench.ext.session = lambda: view
+
+    run = await _cancelled(tmp_path, rewrite="redact", before_prompt=install)
+    await run.harness.prompt("next")
+    assert _kinds(run.seen[-1]) == _kinds(await run.reopen()) == ["toolResult(redacted)"]
+
+
+@pytest.mark.parametrize("bypassed", ["toolResult", "user"], ids=["result", "copy"])
+async def test_a_writer_past_the_bundled_session_keeps_the_base_delivery_when_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bypassed: str
+) -> None:
+    """The narrowed configuration (ADR-0307, #839 note): a writer the receipt cannot see.
+
+    The host's writer builds the entry itself and appends it to the storage,
+    past ``Session``'s own builder, then is aborted before it returns. No entry
+    was claimed for the receipt, so the write is judged as the base judged every
+    write: the result by the first result for the call after its origin, the
+    copy by the leaf moved past its ``message_start``. One carrier either way.
+    """
+
+    from aelix_agent_core.session.entries import MessageEntry
+    from aelix_agent_core.session.session import _iso_now
+
+    landed = asyncio.Event()
+    release = asyncio.Event()
+    parent = _parent
+
+    class HostSession(Session):
+        async def append_message(self, message: AgentMessage) -> str:
+            if message.role != bypassed or (
+                bypassed == "user" and CANCEL_REPORT_HEAD not in _message_text(message)
+            ):
+                return await super().append_message(message)
+            entry = await self.get_storage().append_to_leaf(
+                lambda entry_id, parent_id: MessageEntry(
+                    id=entry_id, parent_id=parent_id, timestamp=_iso_now(), message=message
+                )
+            )
+            landed.set()
+            await release.wait()
+            return entry.id
+
+    async def use_host(path: Path) -> tuple[HostSession, Any, Path]:
+        session, repo, file = await parent(path)
+        return HostSession(session.get_storage()), repo, file
+
+    monkeypatch.setattr(f"{__name__}._parent", use_host)
+    if bypassed == "toolResult":
+
+        async def abort_twice(run: _Run) -> None:
+            await run.harness.abort(withdraw_unanswered=True)
+            try:
+                await asyncio.wait_for(landed.wait(), 5)
+                await run.harness.abort()
+            finally:
+                release.set()
+
+        run = await _cancelled(tmp_path, rewrite="redact", abort_with=abort_twice)
+        await run.harness.prompt("next")
+        expected = ["toolResult(redacted)"]
+    else:
+        with _refuse_rows("toolResult"):
+            run = await _cancelled(tmp_path)
+        turn = asyncio.create_task(run.harness.prompt("p1"))
+        try:
+            await asyncio.wait_for(landed.wait(), 5)
+            await run.harness.abort()
+        finally:
+            release.set()
+            await asyncio.wait_for(turn, 5)
+        await run.harness.prompt("p2")
+        expected = ["user"]
+    assert _kinds(run.seen[-1]) == _kinds(await run.reopen()) == expected

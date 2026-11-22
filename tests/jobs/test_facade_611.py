@@ -22,6 +22,7 @@ import pytest
 from aelix_coding_agent.extensions.api import ExtensionError, _ExtensionRuntime
 from aelix_coding_agent.extensions.loader import load_extension_from_factory
 from aelix_coding_agent.jobs import activation
+from aelix_coding_agent.jobs.contract import StopReason
 from aelix_coding_agent.jobs.registry import KindTaken
 from aelix_coding_agent.jobs.service import JobStartRefused
 
@@ -97,3 +98,29 @@ async def test_another_extension_cannot_take_a_kind_and_a_stale_facade_refuses(
     finally:
         await service.shutdown()
         activation.install_service(None)
+
+
+async def test_facade_preserves_the_legacy_service_stop_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aelix_coding_agent.jobs.facade import JobsFacade
+
+    monkeypatch.setattr(activation, "ACTIVE", True)
+    service = fast_service()
+    original_stop = service.stop
+    calls: list[tuple[str, StopReason, float | None]] = []
+
+    async def stop(job_id: str, *, reason: StopReason = "user", wait: float | None = None):
+        calls.append((job_id, reason, wait))
+        return await original_stop(job_id, reason=reason, wait=wait)
+
+    monkeypatch.setattr(service, "stop", stop)
+    try:
+        await service.bind(make_harness(await make_session(tmp_path)))
+        facade = JobsFacade(service, source="legacy-host")
+        facade.register_kind(_sleeper.SleeperAdapter(), _sleeper.Sleeper)
+        job_id = await facade.start(_sleeper.KIND, title="legacy", params={"seconds": 30})
+        await facade.stop(job_id, wait=0.0)
+        assert calls == [(job_id, "user", 0.0)]
+    finally:
+        await service.shutdown()

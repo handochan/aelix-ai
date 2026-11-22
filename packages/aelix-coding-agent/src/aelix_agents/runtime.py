@@ -104,6 +104,7 @@ from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
     REASON_CANCELLED,
+    REASON_STOPPED,
     build_result,
     child_end,
     declined_result,
@@ -2276,6 +2277,10 @@ class _SubagentRuntimeImpl:
                 "unconfirmed_files": unconfirmed,
                 "files_overflow": child.stream.files_overflow,
             }
+            # #855: a job-backed stop names its actor (``jobs_client._mark_stopped``).
+            attribution = getattr(child, "_stop_attribution", None)
+            if result.reason == REASON_STOPPED and attribution is not None:
+                facts["reason"] = attribution
             if all(getattr(result, name, None) == value for name, value in facts.items()):
                 return result
             return dataclasses.replace(result, **facts)
@@ -2367,7 +2372,7 @@ class _SubagentRuntimeImpl:
                 # resume the recorded tools it lost, not a new narrowing.
                 dropped_tools=plan.dropped_tools,
                 session_recorded=plan.session_path is not None,
-                reason=REASON_CANCELLED,
+                reason=getattr(child, "_stop_attribution", None) or REASON_CANCELLED,
             )
             return self._with_run_facts(result, child=child, receipt=receipt, plan=plan)
         except Exception:  # noqa: BLE001 — a report never costs the cancel its exit

@@ -61,6 +61,7 @@ from aelix_agent_core.types import (
     AfterToolCallResult,
     AgentContext,
     AgentMessage,
+    MessageCommit,
 )
 
 if TYPE_CHECKING:
@@ -302,6 +303,14 @@ class BeforeAgentStartResult:
 
     messages: list[AgentMessage] | None = None
     system_prompt: str | None = None
+
+
+@dataclass(frozen=True)
+class TrackedBeforeAgentStartResult(BeforeAgentStartResult):
+    """Opt-in receipts for the messages an extension injects."""
+
+    message_commits: dict[int, MessageCommit] = field(default_factory=dict)
+    """Optional receipts keyed by the identity of an injected message."""
 
 
 @dataclass(frozen=True)
@@ -1502,6 +1511,7 @@ async def _reducer_before_agent_start(
     """Collect messages from all handlers; chain ``system_prompt``."""
 
     collected: list[AgentMessage] = []
+    commits: dict[int, MessageCommit] = {}
     current_prompt = event.system_prompt
     modified_prompt = False
     for handler, mode in handlers:
@@ -1515,15 +1525,18 @@ async def _reducer_before_agent_start(
         if isinstance(raw, BeforeAgentStartResult):
             if raw.messages:
                 collected.extend(raw.messages)
+                if isinstance(raw, TrackedBeforeAgentStartResult):
+                    commits.update(raw.message_commits)
             if raw.system_prompt is not None:
                 current_prompt = raw.system_prompt
                 modified_prompt = True
     if not collected and not modified_prompt:
         return None
-    return BeforeAgentStartResult(
-        messages=collected or None,
-        system_prompt=current_prompt if modified_prompt else None,
-    )
+    messages = collected or None
+    system_prompt = current_prompt if modified_prompt else None
+    if commits:
+        return TrackedBeforeAgentStartResult(messages, system_prompt, commits)
+    return BeforeAgentStartResult(messages, system_prompt)
 
 
 async def _reducer_tool_call(

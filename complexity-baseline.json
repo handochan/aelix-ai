@@ -3,7 +3,7 @@
   "ruff": "0.15.13",
   "functions": {
     "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._make_stream_fn": 21,
-    "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._run": 42,
+    "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._run": 41,
     "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py::AgentHarness._try_overflow_recovery": 21,
     "packages/aelix-agent-core/src/aelix_agent_core/loop.py::_execute_tool_calls_parallel": 23,
     "packages/aelix-agent-core/src/aelix_agent_core/loop.py::_stream_assistant_response": 23,

@@ -14,6 +14,11 @@ children control in flight is ended when the worker's close begins, not when a r
 and K7 are lowered, and parts of D4–D8 were run live through ACP on macOS during the lane, at
 three of its local checkpoints before its final commit — "Note (2026-11-20, #612)" says which row
 ran at which checkpoint, measured how, and what was not run.
+Amended 2026-11-20 (#839): D2, K1 and K2 cover final masks and receipt-based retry as measured in the #839 note.
+Amended 2026-11-20 (#855): D4 names the RPC host in the spawned and adopted cases measured in the #855 note.
+Amended 2026-11-21 (#839, #855): the writer and stop compatibility cases in these notes cover legacy overrides.
+Amended 2026-11-22 (#839, #855): the receipt identifies a write by its storage and role, a write it cannot identify is
+judged as before receipts (the lead's call, a known limit), and the adopted job's context is read where it was before.
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -80,37 +85,29 @@ unchanged: "not user input" holds for a tool result too.
 
 ### D2. The owed record, and `loop.CUT_TEXT`
 
-The report is also recorded as `OwedReport(call_id, session, text, origin, copies)` in
-`AgentsExtension._owed`, keyed by the cancelled call's `toolCallId`, synchronously. `session` and
-`origin` are read when the call begins (`_call_origin`): the session it runs in and that session's
-leaf, after which its result is committed. At every `before_agent_start` (a prompt and a notice
-turn), `_owed_messages()` checks each record in order against the session's committed branch
-(`get_branch()`, the entries the next request is built from):
+When a cancelled delegation renders a report in a native session, it creates an `OwedReport`
+keyed by the identity of its receipt. The cancelled execution passes that receipt with its
+`ToolCancelled`. The harness records the reduced message before the append and the session
+assigns the attempted entry ID inside the write. The reused-ID and unreadable-leaf cases in
+`test_cancelled_report_owed_800.py` exercise capture and placement by that identity.
 
-1. the record's session is not the live one: retired, nothing sent;
-2. the first `toolResult` of the `agent` tool for `call_id` after `origin` is not `loop.CUT_TEXT`:
-   retired — the carrier landed, whatever a `tool_result` or `message_end` hook made of it. An
-   earlier result under a reused id, or another call's, is not the carrier (Codex review C-7);
-3. a copy this record injected is on the branch: retired. A copy is placed by the session entry it
-   was committed as, not by its text — its `message_start` hook reads the leaf, and the next
-   `message_start` or the run's `agent_end` reads it again (`_Copy`) — so a `message_end` hook that
-   rewrote the copy does not bring it back with every prompt (Codex review C-5). A copy committed as
-   the branch's first entry (the leaf had been moved to the root, so no entry was before it) is
-   placed too (verify round 2 F1: on `9acd9ea0` the next prompt sent it again);
-4. otherwise the report goes out as a user message ahead of the prompt (the base's message, in the
-   base's place) and the record stays.
+At `before_agent_start`, `_owed_messages()` checks each obligation against the settled active
+branch. The cases below are exercised in `test_cancelled_report_owed_800.py`.
 
-Only 1–3 retire a record, so a later `before_agent_start` handler that raises, a copy whose append
-fails, or an Esc that withdraws the copy leaves it for the next check. The helper returns at once when
-nothing is owed. A branch that cannot be read fails the prompt before anything is sent, with a message
-saying so, and every record stays (Codex review C-8: a check that read nothing injected the copy beside
-a carrier the request then read). At each `agent_end` a record whose report is not placed is told,
-naming the call (Codex review C-9): the report reaches the model at the next prompt in this process,
-and a reopen before that has none. It is told at DEBUG, and in one line on stderr only when the run
-has no UI (`ctx.has_ui`; a stale context counts as none, K4), as `runtime.py`'s `_report_unfinished` tells an unfinished cleanup: the tree
-installs no logging handler, so the WARNING fix round 1 logged reached `logging.lastResort` and was
-painted into the live TUI's input row (verify round 2 F3, #546). The loop's cut sentence is public as
-`aelix_agent_core.loop.CUT_TEXT`; `_CUT_TEXT` stays as its alias.
+1. A replaced session retires its old obligation (`test_a_record_of_another_session_injects_nothing`).
+2. A result whose receipt identifies an active entry, with the expected call ID and `agent`
+   or empty tool name, carries the report unless the text is exactly `loop.CUT_TEXT`. The
+   redacting, nameless and unreadable-leaf cases inspect the next request and reopened session.
+3. An active entry with the copy's own receipt settles the obligation. The rewritten-copy
+   and root-branch cases cover a `message_end` replacement and a first entry with no parent.
+4. Otherwise the next prompt injects the final text or the K1–K2 cancellation notice as a user
+   message. The failed-copy-append and prompt-rejection cases keep the obligation for retry.
+
+An unresolved write or unreadable branch blocks the prompt until delivery can be decided. The
+unreadable-branch test then restores reads and sees only the original result. During `agent_end`,
+the missing-result warning is best effort. The headless and UI legs of
+`test_a_report_whose_write_fails_is_told_and_reaches_the_next_prompt` see it at DEBUG, with an
+additional stderr line in the headless leg.
 
 ### D3. A session change or a quit seals the outgoing harness and settles its turn first
 
@@ -194,9 +191,9 @@ Six `aelix_control` methods, one `_families()` entry (`"children"`, ADR-0302 D9)
   ended row, "no agent '<id>' in this session" for an id this build never held. `children/stop`
   answers the state the hub holds when its door returned, or at `CHILD_STOP_ANSWER_BOUND` = 10 s
   while the stop goes on; the end is the terminal `aelix_child` `state` frame. A foreground row's
-  door is `runtime.stop`; a job row's is the job service's stop, asked by the user, which returns
-  before the job's stop legs, so it usually answers `running`. An open approval request is withdrawn
-  first (ADR-0308; the lead's call after part A).
+  door is `runtime.stop`. In the #855 spawned and adopted tests, the job stop latches the RPC host
+  and answers `running` before the stop finishes. The runner withdraws any open approval as
+  it marks the row stopped, as checked by the #855 approval tests and ADR-0308's note.
 - **`children/notices`** is the `/jobs send` door, `JobService.send_waiting()`, then a notice turn,
   answered with `PromptNoticesResult`'s `started`, `placed`, `reason` (`null`, `held`, `disposed`,
   `busy`, `nothing`, `refused`) and **`remaining`**, the inbox's pending count after the turn.
@@ -485,17 +482,16 @@ written; what the build does beyond them, the fence's boundary, and K5 and K7 as
 
 Each is a narrowing under the lead's rule for r5: outside the guarantee the behaviour is the base's.
 
-- **K1 — the report outside the call's result.** The report is not the call's result in the file
-  when a `tool_result` hook raises (one Esc is enough: the loop writes the cut text), when a second
-  cancel lands in the call's `tool_result` hooks, in its result's `message_end` before the commit, or
-  in its JSONL append before the bytes, or when that append fails before its bytes (told at the
-  run's end, D2). The model then gets it at the next prompt in the same process as a user message, as
-  before #800; a reopen in a new process before that prompt has no report. A harness with no session
-  is always in this case (D1).
-- **K2 — the copy is raw.** That user message is the report as rendered: a `tool_result` or
-  `message_end` hook's rewrite of the call's result is not applied to it (it never was), and a hook
-  that rewrites the report to exactly `loop.CUT_TEXT` is read as "not carried", so the raw copy
-  follows.
+- **K1 — a report outside its call.** The failed-append and interrupted-close-out cases in
+  `test_cancelled_report_owed_800.py` carry the finalized raw or masked report to the next
+  prompt in the same process. The second-cancel cases interrupt a reducer before finalization and
+  carry a content-free notice. A reopen before retry reads only already-written entries, as the
+  failed-copy-write case measures. The sessionless queue follows D1.
+- **K2 — the final mask.** In `test_fallback_uses_only_the_final_mask_or_a_cancellation_notice`,
+  a landed mask is the only carrier, and a refused append preserves the final text for the copy.
+  A hook that raises or leaves exactly `loop.CUT_TEXT` produces the notice when no later
+  `message_end` handler supplies a usable result. The exact-CUT-then-mask verifier control
+  retains just the masked tool result.
 - **K3 — copies of a session.** `/fork` and `/clone` (RPC `sessions/branch`) taken while a delegation
   runs copy the branch before the settle: the copy holds the `agent` call with no result; the report
   is in the outgoing session.
@@ -657,12 +653,12 @@ ADR-0308's.
   `aelix/notices`, is told a result waits (D5's amendment).*
 - (D7) A job start that a session end overtakes now fails with an outcome written, where at the base
   it registered and ran for an ended session.
-- (D4) A host's `children/stop` on a job row ends the job with the job service's generic stop reason,
-  "stopped by the session (stop, /new, /resume, /fork or quit)", which does not name the host
-  (seen in the live run, `.omc/probes/612/impl/C/live/README.md`; not changed here).
+- (D4) Historical #612 result, before #855: a host stop of a job row produced the session's
+  generic stop reason in the terminal event (live run in `.omc/probes/612/impl/C/live/README.md`).
+  The #855 note below records the replacement wording in the measured job paths.
 - Follow-ups, drafted in contract r5's Appendix A and not posted: F1 `children/resume` (owner r3 Q1);
   F2 aelix-acp reconciles an empty or partial table with the native (K6); F3 the kernel projects
-  `result` onto `ToolExecutionEndHookEvent` (K2); F4 an abort ends a prompt still in its input or
+  `result` onto `ToolExecutionEndHookEvent` (built in #839, K2); F4 an abort ends a prompt still in its input or
   `before_agent_start` handlers (K4); F5 a writer task with a bounded queue for RPC events (K8); F6
   `permissions/set {tighten: true}`; F7 a host method to read a child's session file; F8 `/fork` and
   `/clone` settle before the copy (K3); F9 one native abort per client cancel (K5); F10 the approval
@@ -1019,3 +1015,84 @@ the 2 s cadence and the 45 s close (r5 §8's proposals); the 45 s also for a nat
 `children/notices`, since background jobs need D7's session-end stages; the three answers
 `-33002`, `-32000 session_changing` and `-32603`; and the adapter's 330 s wait for a child's
 question, past native's 300 s (ADR-0308's note of the same date).
+
+## Note (2026-11-20, #839) — fallback after the result hooks
+
+The six cases of `test_fallback_uses_only_the_final_mask_or_a_cancellation_notice` inspect both
+the classic event's post-`tool_result` result and the later committed message. The receipt is
+set after `message_end` reduction and before an append or lifecycle subscriber can suspend.
+`test_a_finalized_report_survives_an_abort_in_agent_end` checks raw and redacted final text after
+a refused append and a second abort. `test_a_committed_copy_survives_two_aborts_without_duplication`
+checks an append interrupted after its bytes and a second abort during close-out. The receipt
+lets the next prompt find that copy once the session has settled the write.
+
+Known limits for D2. When a copy is needed, the `message_end_raises` and second-cancel cases
+show that it uses the generic notice if reduction of the originating tool result throws or is
+interrupted before final text is available. `test_a_result_with_the_wrong_call_binding_needs_a_generic_notice`
+checks the same notice when the final result names a different call ID or tool, whether that
+result was stored or its write was refused. `test_fallback_uses_only_the_final_mask_or_a_cancellation_notice`
+covers a result with no usable report text. The verifier's `test_copy_policy` probe shows that
+interrupting reduction of the user-role copy before it finalizes can rerun its hooks on the next
+prompt using the finalized tool result: a repeatable mask is applied again, while a one-shot
+mask can leave that result's text visible.
+The receipt is held in memory for the originating session. The failed-copy-append case shows a
+reopen before a retry has only the rows already written. K1 retains the pre-#800 queue for
+sessionless embedders.
+
+`test_a_transcript_listener_preserves_a_legacy_memory_writer` checks both stored messages and
+their `storageOnly` outcomes with the original `append_message(message)` override.
+`test_legacy_jsonl_writer_stores_one_report` checks the reopened file and subsequent requests for
+the report when the host overrides the original append methods, with and without a transcript
+listener and after a refused result write.
+`test_interrupted_legacy_writer_delivers_the_stored_result_once` adds interruption after the
+JSONL append and after the base writer returns to the override. Both public writer signatures
+are exercised with equal copies and writers that replace content and timestamps. The next two requests and the reopened
+file show one tool result with the host's stored text.
+
+How a write is identified (2026-11-22, verify round 4 F1–F3). While the harness's public writer
+call runs, the bundled `Session`'s builder claims the first entry it builds for the same storage
+that matches the message: a tool result by its call id and tool name, any other message by its
+role. It does not require the `Session` object the harness called (a host that wraps the
+repository's `Session` over the same storage forwards to it, `test_a_forwarding_writer_over_the_same_storage_delivers_its_copy_once`:
+one tool-role `host copy`, classic and transcript) nor the message's other fields (a host that
+restamps the user-role fallback, `test_a_restamped_fallback_copy_is_delivered_once`: one
+user-role report after an abort before the override returned). The placement check reads the
+branch by attributes, not by message class, so a host's `session=` read view that presents the
+branch as records with the native values sees the committed mask
+(`test_a_hosts_read_view_of_attribute_records_sees_the_placed_result`: one `toolResult`, no
+user-role copy). A refused write, or one that returned nothing the session claimed, did not
+land and the next prompt carries a copy.
+
+Known limit (the lead's call, 2026-11-22): a writer the receipt cannot see — a host writer that
+builds the entry itself and appends it to the storage past the bundled `Session`, or a host
+session that is not a `Session` — and that a cancel cuts before it returns leaves a receipt with
+no entry and `interrupted` set. That write is judged exactly as the base judged every write:
+the result by the first `agent` result for the call after the leaf read when the call began, the
+copy by the leaf moved past its `message_start` and read again at the next `message_start` or
+`agent_end`. `test_a_writer_past_the_bundled_session_keeps_the_base_delivery_when_cut` pins one
+tool-role mask and one user-role report for that writer, as the base delivers. The receipt's
+precision — a reused call id, an unreadable origin, a copy whose text a hook rewrote — applies
+only where the session claimed the entry.
+
+At Pi `cb1205e4`, `tool_execution_end` carries the result before the message pair and
+`agent-session.ts` persists at `message_end`. D2 adds Aelix's exact-entry retry for the
+failed-write and interrupted-close-out cases above.
+
+## Note (2026-11-20, #855) — the actor in a background stop
+
+`test_host_stop_reaches_the_child_event_and_job_result` measures host attribution in both the
+terminal `aelix_child` reason and the job result for a spawned child that stops cooperatively
+or requires service escalation. `test_host_stop_after_adoption_before_runner_start_keeps_the_actor`
+measures the same actor after the moved job is published and before its runner starts. A
+runner asked to stop before the service handed it its context reads the actor from the stop
+request in flight (`jobs/service.py`'s `current_stop_attribution`, for its own job id), so the
+adoption path reads the host facade's `ctx` where it did before #855 — after `announce_adopted`,
+then in `run_adopted` — and a host whose prepared handle has `ctx` only from `adopt` on still
+moves the run (`test_a_hosts_handle_whose_context_arrives_at_adopt_still_moves_the_run`,
+2026-11-22, verify round 4 F4). The control-v1 floor and additive-only
+checks cover the existing nullable string `reason` and pre-existing reply, end and outcome values.
+
+`test_a_hosts_stop_of_a_job_row_preserves_the_facade_override` and
+`test_host_stop_reaches_a_legacy_service_override` check the original stop calls with
+`reason="user"` and `wait=0.0`. The RPC actor travels within that request and the job
+service records it when the job accepts its first stop.

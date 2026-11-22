@@ -21,7 +21,7 @@ from aelix_ai.messages import (
     ToolResultMessage,
 )
 from aelix_ai.streaming import AssistantMessageEvent, Model
-from aelix_ai.tools import Tool, ToolResult
+from aelix_ai.tools import Tool, ToolCancelled, ToolResult
 
 if TYPE_CHECKING:
     # Issue #4 (FU3): CompactionEndEvent.result carries the compaction outcome.
@@ -31,6 +31,32 @@ if TYPE_CHECKING:
 
 # Custom message types extend this union in later phases.
 AgentMessage = Message
+
+
+@dataclass
+class MessageCommit:
+    """A process-local receipt for one message occurrence.
+
+    The harness records the reduced message before any persistence await.
+    The session assigns the attempted entry ID before writing, so a settled
+    branch can identify the entry even when the append never returned.
+    """
+
+    message: AgentMessage | None = None
+    entry_id: str | None = None
+    failure_text: str | None = None
+    """Safe replacement when the message reducer raises."""
+    interrupted: bool = False
+    """The write was cut (a cancel) before any entry was identified: whether a
+    host's writer put it on the file is not known from this receipt (#839)."""
+
+
+class TrackedToolCancelled(ToolCancelled):
+    """A cancelled execution whose result the harness may need to identify later."""
+
+    def __init__(self, result: ToolResult, commit: MessageCommit) -> None:
+        super().__init__(result)
+        self.commit = commit
 
 
 # F-11: single source of truth for the convert_to_llm callable shape.

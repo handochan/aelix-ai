@@ -245,7 +245,7 @@ class _StreamState:
     ``turn_end`` for a turn that printed none or when it says ``aborted``
     (:func:`_reduce_turn_end`): the harness's abort close-out ends its run with
     a ``turn_end`` holding an ``aborted`` message of its own, then ``agent_end``
-    (``harness/core.py:6288-6290``). Before this, a run 2 cut that way read as
+    (``harness/core.py:6322-6324``). Before this, a run 2 cut that way read as
     run 1's ``end_turn``, and a run 2 answer that reported no stop reason read
     as run 1's ``error`` (Codex review of #721, finding 3)."""
 
@@ -1318,7 +1318,7 @@ def _reduce_turn_end(state: _StreamState, message: Any) -> None:
 
     - A turn that printed no ASSISTANT ``message_end``. The harness's abort
       close-out emits ``turn_end`` with an ``aborted`` message of its own and
-      then ``agent_end`` (``harness/core.py:6288-6290``); a real print-mode
+      then ``agent_end`` (``harness/core.py:6322-6324``); a real print-mode
       child aborted mid-stream prints ``agent_start, turn_start,
       message_end(user), turn_end(aborted), agent_end``, so without this the
       run's verdict would be whatever an earlier one left.

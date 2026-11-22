@@ -26,10 +26,10 @@ run. The gate has to live here, keyed on what actually varies.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:626-647``, driven
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:640-661``, driven
 from ``:1012-1049``) while ``execute()`` runs in a task per call
-(``loop.py:1083-1086``) with ``tool_execution = "parallel"`` by default
-(``harness/core.py:326``). Two modals from one batch would collide on
+(``loop.py:1101-1104``) with ``tool_execution = "parallel"`` by default
+(``harness/core.py:329``). Two modals from one batch would collide on
 ``tui/chrome.py:978``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1775-1792``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1805-1822``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -929,7 +929,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:1096-1099``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:1097-1100``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The

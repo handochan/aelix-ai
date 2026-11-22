@@ -99,6 +99,7 @@ from aelix_agent_core.harness.hooks import (
     ToolExecutionStartHookEvent,
     ToolExecutionUpdateHookEvent,
     ToolResultPatch,
+    TrackedBeforeAgentStartResult,
     TurnEndHookEvent,
     TurnStartHookEvent,
     make_tool_call_event,
@@ -118,6 +119,7 @@ from aelix_agent_core.harness.inbox import (
 from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.loop import _occurrence_sink, _OccurrenceSink, agent_loop
 from aelix_agent_core.session.jsonl_storage import JsonlSessionStorage
+from aelix_agent_core.session.session import _capture_message_write
 from aelix_agent_core.session.transcript import ROLES, MessageAppendError, StoredMessage
 from aelix_agent_core.types import (
     AfterToolCallContext,
@@ -133,6 +135,7 @@ from aelix_agent_core.types import (
     BeforeToolCallResult,
     ConvertToLlmFn,
     InputWithdrawnEvent,
+    MessageCommit,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -527,6 +530,7 @@ class _UnansweredInputs:
     drained: list[AgentMessage]
     injected: list[AgentMessage]
     safe_leaf: str | None
+    message_commits: dict[int, MessageCommit] = field(default_factory=dict)
     committed: list[tuple[AgentMessage, AgentMessage]] = field(default_factory=list)
 
 
@@ -553,6 +557,20 @@ def _answers_input(message: AgentMessage) -> bool:
     if isinstance(message, ToolResultMessage):
         return True
     return isinstance(message, AssistantMessage) and message.stop_reason not in ("error", "aborted")
+
+
+def _record_message_commit(
+    commit: MessageCommit | None, reduced: AgentMessage | None, original: AgentMessage
+) -> None:
+    if commit is not None:
+        final = reduced if reduced is not None else original
+        commit.message = replace(final, content=list(final.content))
+
+
+def _withheld_message(commit: MessageCommit | None, original: AgentMessage) -> AgentMessage | None:
+    if commit is None or commit.failure_text is None:
+        return None
+    return replace(original, content=[TextContent(text=commit.failure_text)])
 
 
 class _MessageQueue:
@@ -1716,7 +1734,7 @@ class AgentHarness:
             # convert a handler exception into a raised ``AgentHarnessError``
             # (``_emit_queue_update`` and ``_emit_before_agent_start``, each
             # method's ``except``), while a handler's ``error_mode`` defaults to ``"throw"``
-            # (``hooks.py:2603-2610``). Either raise unwound the frame and the
+            # (``hooks.py:2616-2623``). Either raise unwound the frame and the
             # user's queued text existed on no queue, in no turn and in no
             # exception. The guard covers the region, not those two calls by name,
             # so an await added to this gap later is covered too.
@@ -1762,6 +1780,11 @@ class AgentHarness:
                     prompt=user_msg,
                     drained=list(drained_next),
                     injected=list(injected.messages) if injected and injected.messages else [],
+                    message_commits=(
+                        injected.message_commits
+                        if isinstance(injected, TrackedBeforeAgentStartResult)
+                        else {}
+                    ),
                     safe_leaf=(
                         await self._session.get_leaf_id() if self._session is not None else None
                     ),
@@ -5852,27 +5875,31 @@ class AgentHarness:
         notice: bool,
         tracked: bool,
         replaced: bool,
+        commit: MessageCommit | None,
     ) -> TranscriptOutcome | None:
         if self._session is None or notice:
             return None
         try:
-            if tracked:
-                receipt = await self._session.append_message_receipt(message)
-                entry_id = receipt.entry_id
-                outcome = TranscriptOutcome(
-                    "stored" if receipt.stored is not None else "storageOnly",
-                    receipt.stored,
-                    replaced,
-                )
-            else:
-                entry_id = await self._session.append_message(message)
-                outcome = None
+            with _capture_message_write(self._session, message, commit):
+                if tracked:
+                    receipt = await self._session.append_message_receipt(message)
+                    entry_id = receipt.entry_id
+                    outcome = TranscriptOutcome(
+                        "stored" if receipt.stored is not None else "storageOnly",
+                        receipt.stored,
+                        replaced,
+                    )
+                else:
+                    entry_id = await self._session.append_message(message)
+                    outcome = None
         except Exception as exc:  # noqa: BLE001 — classic listeners still receive the end
             _log.debug("session append raised on message_end", exc_info=True)
             if not tracked:
                 return None
             uncertain = isinstance(exc, MessageAppendError) and exc.uncertain
             return TranscriptOutcome("unknown" if uncertain else "notStored")
+        if commit is not None:
+            commit.entry_id = entry_id
         if answered is not None:
             answered.safe_leaf = entry_id
         return outcome
@@ -5883,6 +5910,7 @@ class AgentHarness:
         *,
         system_prompt: str,
         pending_inputs: list[AgentMessage] | None = None,
+        message_commits: dict[int, MessageCommit] | None = None,
     ) -> list[AgentMessage]:
         # #334 — runs under its ``prompt()``'s claim and flips nothing: the
         # phase is "turn" from the prompt's entry to its release, and this
@@ -5994,7 +6022,13 @@ class AgentHarness:
                 tools=active_tools,
             )
 
-            async def deliver(event: AgentEvent, stream_id: str | None) -> AgentMessage | None:
+            input_commits = message_commits or (
+                self._unanswered.message_commits if self._unanswered is not None else {}
+            )
+
+            async def deliver(
+                event: AgentEvent, stream_id: str | None, commit: MessageCommit | None
+            ) -> AgentMessage | None:
                 # P0 #7 Wave 3 (ADR-0145, supersedes ADR-0013 + ADR-0018) —
                 # ``message_end`` is now a REPLACEMENT reducer. The order is
                 # REORDERED vs the old observational path: the hook reduction
@@ -6006,6 +6040,7 @@ class AgentHarness:
                 # frozen dataclass, so aelix swaps by identity (loop return)
                 # instead — see ``loop.py`` ``_stream_assistant_response``.
                 if event.type == "message_end":
+                    commit = commit or input_commits.get(id(event.message))
                     # #572: what the adapter described, kept before any hook runs.
                     if isinstance(event.message, AssistantMessage):
                         self._error_record = _record_provider_error(event.message)
@@ -6026,7 +6061,8 @@ class AgentHarness:
                             exc,
                             exc_info=True,
                         )
-                        reduced = None
+                        reduced = _withheld_message(commit, event.message)
+                    _record_message_commit(commit, reduced, event.message)
                     final_message = (
                         reduced
                         if (reduced is not None and reduced is not event.message)
@@ -6087,6 +6123,7 @@ class AgentHarness:
                         notice=notice,
                         tracked=stream_id is not None,
                         replaced=final_message is not event.message,
+                        commit=commit,
                     )
                     await self._emit_to_subscribers(event, stream_id, outcome)
                     # 4) Close recovery before tools or later responses (#197).
@@ -6151,10 +6188,7 @@ class AgentHarness:
                 # Non-message_end events never carry a replacement.
                 return None
 
-            async def classic_emit(event: AgentEvent) -> AgentMessage | None:
-                return await deliver(event, None)
-
-            emit = _OccurrenceSink(deliver) if self._transcript_listener else classic_emit
+            emit = _OccurrenceSink(deliver, track_streams=bool(self._transcript_listener))
 
             try:
                 # Sprint 6a (Phase 4.1, ADR-0045 §D.1): if an explicit
@@ -6677,7 +6711,14 @@ class AgentHarness:
                 if injected and injected.system_prompt is not None
                 else self._state.system_prompt
             )
-            result = await self._run(prompts, system_prompt=system_prompt)
+            # #839: the receipts travel only when a handler asked for them, so a
+            # subclass's ``_run`` with the base's signature is called as before.
+            if isinstance(injected, TrackedBeforeAgentStartResult) and injected.message_commits:
+                result = await self._run(
+                    prompts, system_prompt=system_prompt, message_commits=injected.message_commits
+                )
+            else:
+                result = await self._run(prompts, system_prompt=system_prompt)
             await self._settle_runs(result, system_prompt, claim)
             return PromptNoticesResult(started=True, placed=len(placed))
         finally:

@@ -1094,8 +1094,8 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
 ) -> None:
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
-    ``_host_posture()`` is a live getter (``extension.py:846-852``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:1753``), and baked into
+    ``_host_posture()`` is a live getter (``extension.py:865-871``) but it is read
+    once per call, inside ``_grant_for`` (``extension.py:1783``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
     self.is_modal_open())`` (``chrome.py:1655-1658``). Under P2 the resulting window
@@ -1279,7 +1279,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:2728-2739``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:2733-2744``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1423,7 +1423,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1936``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1937``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.
@@ -1578,7 +1578,7 @@ async def test_l2_stop_all_mid_batch_leaves_no_process_behind(
     ``list`` / ``status`` / ``stop`` and a second ``stop_all`` could never reach
     them again. Those children hold the parent's API keys, which is precisely
     what ADR-0197 forbids, and on the ``AgentHarness.reload()`` path
-    (``harness/core.py:4623``, which emits ``session_shutdown`` and never aborts
+    (``harness/core.py:4646``, which emits ``session_shutdown`` and never aborts
     or disposes) they survive indefinitely.
 
     The in-process fake cannot show it: with no real child, ``abort_child``
