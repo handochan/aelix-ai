@@ -52,7 +52,7 @@ _SPAWN_ALLOWLIST = (
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
 # six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1692``,
-# ``rpc/rpc_mode.py:1656``, ``extensions/command_context.py:116``), so a
+# ``rpc/rpc_mode.py:1673``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -728,6 +728,8 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # unobserved. A user cancelling created the requirement; delegation did
         # not, and a stopped child keeps its task because it never passes True —
         # ``test_kernel_has_no_subagent_surface`` still passes.
+        # ADR-0310 (#865): native admission, request and settlement checkpoints.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/_input_observation.py",
         # ADR-0309 D1–D4 (#655): the JSONL projector, read-only snapshot,
         # commit coordinates, per-occurrence sink and outgoing writer
         # settlement are native session mechanics used by the RPC reader.

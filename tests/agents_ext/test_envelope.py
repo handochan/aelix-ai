@@ -148,7 +148,7 @@ def test_recovered_provider_error_does_not_become_the_answer() -> None:
 
     ``_reduce_message_end`` (``stream.py:1213-1221``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
-    auto-retry (``harness/core.py:616-617``, default ON) already recovered from.
+    auto-retry (``harness/core.py:622-623``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
     ``stop_reason='stop'``, exit 0.
 
@@ -184,7 +184,7 @@ def test_unrecovered_provider_error_is_still_the_summary() -> None:
     """QUADRANT: error + UNRECOVERED — the gate must not swallow a real failure.
 
     Measured with 12 consecutive 429s: auto-retry is exhausted, the adapter sets
-    ``stop_reason='error'`` AND ``error_message`` together (``loop.py:393-396``
+    ``stop_reason='error'`` AND ``error_message`` together (``loop.py:421-424``
     states that contract), and the exit code is STILL 0 — which is why
     ``stop_reason``, not the return code, is the load-bearing disjunct.
     """
@@ -988,7 +988,7 @@ def test_the_agent_card_footer_is_inside_the_capped_body() -> None:
     footer is therefore the first thing the cap eats. The threshold is
     CONDITIONAL, and each of the three rows below can invert while the others
     hold — measured through the real ``EventRenderer`` at width 80, with the
-    event's ``is_error`` wired off ``result.is_error`` exactly as ``loop.py:1073``
+    event's ``is_error`` wired off ``result.is_error`` exactly as ``loop.py:1102``
     wires it:
 
     | case | footer survives a summary of | @ the old cap of 12 |

@@ -33,7 +33,7 @@ import uuid
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, TypeGuard
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from aelix_ai.messages import (
     AssistantMessage,
@@ -50,6 +50,7 @@ from aelix_ai.tools import (
     validate_tool_arguments,
 )
 
+from aelix_agent_core.default_convert import default_convert_to_llm
 from aelix_agent_core.types import (
     AfterToolCallContext,
     AfterToolCallResult,
@@ -73,6 +74,9 @@ from aelix_agent_core.types import (
     TurnStartEvent,
 )
 
+if TYPE_CHECKING:
+    from aelix_agent_core.harness._input_observation import InputObservation
+
 # DEBUG throughout: the tree installs no logging handler, so a WARNING reaches
 # ``logging.lastResort`` and paints over a live TUI (``harness/core.py``, #546).
 _log = logging.getLogger(__name__)
@@ -86,6 +90,10 @@ _log = logging.getLogger(__name__)
 AgentEventSink = Callable[[AgentEvent], Awaitable[AgentMessage | None]]
 
 
+def _input_observer(emit: AgentEventSink) -> InputObservation | None:
+    return emit.observation if isinstance(emit, _OccurrenceSink) else None
+
+
 class _OccurrenceSink:
     """Route a single occurrence without changing the public event dataclasses."""
 
@@ -93,19 +101,32 @@ class _OccurrenceSink:
         self,
         emit: Callable[[AgentEvent, str | None], Awaitable[AgentMessage | None]],
         stream_id: str | None = None,
+        observation: InputObservation | None = None,
     ) -> None:
         self.emit = emit
         self.stream_id = stream_id
+        self.observation = observation
 
     def __call__(self, event: AgentEvent) -> Awaitable[AgentMessage | None]:
         return self.emit(event, self.stream_id)
 
     def occurrence(self) -> _OccurrenceSink:
-        return _OccurrenceSink(self.emit, uuid.uuid4().hex)
+        return _OccurrenceSink(self.emit, uuid.uuid4().hex, self.observation)
 
 
 def _occurrence_sink(emit: AgentEventSink) -> AgentEventSink:
     return emit.occurrence() if isinstance(emit, _OccurrenceSink) else emit
+
+
+def _input_slot(
+    emit: AgentEventSink, message: AgentMessage, position: int, initial_index: int | None = None
+) -> AgentEventSink:
+    if isinstance(emit, _OccurrenceSink):
+        occurrence = emit.occurrence()
+        if occurrence.observation is not None and occurrence.stream_id is not None:
+            occurrence.observation.select_slot(message, occurrence.stream_id, position, initial_index)
+        return occurrence
+    return emit
 
 
 def _is_replacement(
@@ -160,7 +181,7 @@ async def agent_loop(
     # ``current_context.messages[len(context.messages) + i]``.
     base = len(context.messages)
     for i, prompt in enumerate(prompts):
-        occurrence = _occurrence_sink(emit)
+        occurrence = _input_slot(emit, prompt, base + i, i)
         await occurrence(MessageStartEvent(message=prompt))
         replacement = await occurrence(MessageEndEvent(message=prompt))
         if _is_replacement(replacement, prompt):
@@ -256,7 +277,7 @@ async def _run_turns(
 
             if pending_messages:
                 for msg in pending_messages:
-                    occurrence = _occurrence_sink(emit)
+                    occurrence = _input_slot(emit, msg, len(current_context.messages))
                     await occurrence(MessageStartEvent(message=msg))
                     # P0 #7 Wave 3 (ADR-0145): apply a ``message_end``
                     # replacement to the steering/follow-up message BEFORE it is
@@ -350,10 +371,17 @@ async def _stream_assistant_response(
     stream_fn: StreamFn | None,
 ) -> AssistantMessage:
     messages = context.messages
+    observation = _input_observer(emit)
+    observation and observation.witness(messages)
     if config.transform_context is not None:
         messages = await config.transform_context(messages, signal)
 
-    llm_messages = await _maybe_await(config.convert_to_llm(messages))
+    # Base reads ``convert_to_llm`` once per request; a host's descriptor may bind a
+    # new converter on each read, so classify and call the one resolved value (#865 r5).
+    convert_to_llm = config.convert_to_llm
+    default_filter = convert_to_llm is default_convert_to_llm
+    observation and observation.arbitrary_context(not default_filter)
+    llm_messages = await _maybe_await(convert_to_llm(messages))
 
     llm_context = Context(
         system_prompt=context.system_prompt,
@@ -408,6 +436,7 @@ async def _stream_assistant_response(
         "toolcall_delta",
         "toolcall_end",
     })
+    observation and observation.request(llm_context.messages, default_filter=default_filter)
     async for event in fn(config.model, llm_context, options):
         if event.type == "start":
             partial = event.partial

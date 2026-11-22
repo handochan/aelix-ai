@@ -61,6 +61,21 @@ unwritten. Add them with the next release.
   startup, switch and branch-return refusals. On Windows, the generic text and
   unknown holder apply in beta.3, as specified in ADR-0316.
 
+- **Opt-in input observation on CLI-RPC (#865, ADR-0310).** Hosts with a
+  writer-owned R9 binding and transition fence can discover `inputs/observe` and receive bounded
+  post-reducer user placements before assistant output and terminal decisions
+  before native idle. As confirmed by the owner on 2026-11-21 (“이대로 확정”),
+  control-v1 discovery lists `inputs/observe` on an eligible CLI stdio binding
+  before a host enables observation. The control-v1 fixtures exercise discovery,
+  placement, settlement and binding retirement. The lead's compatibility bar
+  preserves the base's public surface, host call order and output bytes for
+  hosts using classic behavior, with that discovery addition. `agent_loop` reads
+  a config's `convert_to_llm` once per request, and the state this change adds to `RpcControlPlane`,
+  `TranscriptService` and `JsonlSessionStorage` lives under underscore names, so a
+  subclass that owns `input_observation`, `input_fence` or `settled_input_coordinates`
+  still constructs (`tests/rpc/test_input_observation_host_compat_865.py`, which also
+  pins the base's `resolve 1 → convert 1` with a per-request converter property).
+
 - **CLI-RPC can page stored messages and join live frames to their storage keys
   (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
   coordinates fit the reply bound, discover `transcript/list` to read stored

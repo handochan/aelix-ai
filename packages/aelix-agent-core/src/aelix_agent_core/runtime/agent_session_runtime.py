@@ -11,7 +11,7 @@ ADR-0078 (Sprint 6h₄c wires them when the 3 DEFERRED RPC handlers move).
 Architectural decision (P-302): Aelix adopts **harness-rebuild** instead
 of session-swap. Pi can swap ``_session`` directly because
 ``AgentSession`` is a stateless wrapper; Aelix ``AgentHarness`` captures
-``_state.session_id`` at ``__init__`` (``harness/core.py:839``) and binds
+``_state.session_id`` at ``__init__`` (``harness/core.py:846``) and binds
 runtime actions / merges tools / caches session_name during construction.
 The harness factory pattern preserves all of these invariants.
 
@@ -379,6 +379,7 @@ class AgentSessionRuntime:
         self._outgoing_writers: dict[str, tuple[JsonlSessionStorage, AgentHarness]] = {}
         self._transcript_install: Callable[[AgentHarness, bool], Awaitable[None]] | None = None
         self._transcript_retire: Callable[[], None] | None = None
+        self._transcript_fence: Callable[[], None] | None = None
 
     # === Public getters (Pi `:79-97`) ===========================================
 
@@ -419,6 +420,9 @@ class AgentSessionRuntime:
         self._transcript_install = install
         self._transcript_retire = retire
         await self._install_transcript()
+
+    def _set_input_observation_fence(self, fence: Callable[[], None] | None) -> None:
+        self._transcript_fence = fence
 
     @property
     def transcript_transitioning(self) -> bool:
@@ -1326,6 +1330,7 @@ class AgentSessionRuntime:
             raise RuntimeError(NESTED_TRANSITION_MESSAGE)
         async with self._lifecycle:
             self.transcript_epoch += 1
+            self._transcript_fence and self._transcript_fence()
             marker = object()
             self._transition_marker = marker
             token = _IN_TRANSITION.set(marker)
@@ -1652,7 +1657,7 @@ class AgentSessionRuntime:
 
             # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
             # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
-            # (``jsonl_storage.py:916`` reparents every later append onto it), so a
+            # (``jsonl_storage.py:949`` reparents every later append onto it), so a
             # turn the other terminal appends between our read and the moment we
             # own the file is reparented away by our next append — which is #137
             # itself, reproduced by the guard meant to prevent it. Review measured
@@ -2392,6 +2397,7 @@ class AgentSessionRuntime:
         # #800 (ADR-0307 D3) — pi's ``dispose`` begins with ``await
         # this.session.abort()``: the turn settles, bounded, before the emit.
         self.transcript_epoch += 1
+        self._transcript_fence and self._transcript_fence()
         seal = await self._seal_and_settle(CLOSING_MESSAGE)
         # Capture runner BEFORE invalidate/dispose — see P-340 race note.
         runner = self._harness.extension_runner

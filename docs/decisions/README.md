@@ -43,6 +43,8 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   #834.) Launch tests cover typed HTTP/SSE connection diagnostics, bounded
   JSON-RPC warnings, SDK metadata filtering, and tool discovery failure isolation
   in the CLI and the real RPC child.
+- [0310 — Opted-in RPC hosts place admitted inputs before assistant output and publish after settlement](0310-opted-in-rpc-input-observation.md)
+  (Accepted 2026-11-21, #865.) A writer-owned CLI binding can stream bounded input placement and claim settlement events through control-v1. The event fixtures exercise placements, terminals and epoch retirement.
 
 - [0309 — A stored message has one session-scoped identity across RPC replay and live output](0309-stored-message-identity-and-transcript.md)
   (Accepted 2026-11-20, #655.) A writer-owned CLI-RPC binding serves a pinned, paged projection of its stored user, assistant and tool-result rows. The new live occurrence link joins stored receipts to replay coordinates. Control-v1 fixtures cover reply variants and the four receipt outcomes.

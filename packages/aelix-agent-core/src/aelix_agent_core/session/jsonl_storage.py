@@ -752,6 +752,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         # What an interrupted :meth:`withdraw_tail` still has to write. Every
         # write finishes it before it does anything else (#721).
         self._replay: _Replay | None = None
+        self._input_replayed: Callable[[str, str, StoredMessage | None], None] | None = None
         self._outgoing: _Outgoing | None = None
         self._transcript_cut: tuple[str, TranscriptSnapshot] | None = None
         # A CLI-RPC binding prepares receipts at install. None defers the
@@ -843,6 +844,38 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         if outgoing is not self:
             self._outgoing = _Outgoing(outgoing, wait_idle, busy)
 
+    def _settled_input_coordinates(
+        self, wanted: set[str], *, limit: int
+    ) -> dict[str, tuple[str | None, int | None]]:
+        """One synchronous writer-owned cut, bounded from the active leaf backwards.
+
+        A missing candidate proves nothing. A found candidate with no R9 sequence
+        has active writer membership without qualified decoded readback.
+        """
+        if not wanted or self._lock.locked() or self.settlement_pending:
+            return {}
+        coordinates: dict[str, tuple[str | None, int | None]] = {}
+        leaf = self._current_leaf_id
+        for _ in range(limit):
+            if leaf is None or leaf not in self._by_id:
+                break
+            entry = self._by_id[leaf]
+            if leaf in wanted:
+                receipt = (
+                    self._receipt_index.receipt(entry)
+                    if leaf in self._receipt_index.sequences
+                    else None
+                )
+                sequence = (
+                    receipt.sequence if receipt is not None and self._transcript_header_readable
+                    else None
+                )
+                coordinates[leaf] = entry.parent_id, sequence
+                if len(coordinates) == len(wanted):
+                    break
+            leaf = entry.parent_id
+        return coordinates
+
     async def transcript_snapshot(self) -> TranscriptSnapshot:
         async with self._lock:
             if self.settlement_pending:
@@ -917,8 +950,12 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
 
     async def _write_locked(self, entry: SessionTreeEntry, what: str) -> None:
         line = await self._append_line(entry, what)
-        self._index_line(line)
+        decoded = self._index_line(line)
         self._commit_locked(entry)
+        if self._input_replayed is not None and self._replay is not None and self._replay.moved:
+            # Ordinary writes resolve the replay first. A write here is its
+            # current survivor, with the original ID still at the queue head.
+            _observe_input_replay(self, self._replay.survivors[0].id, entry.id, decoded)
 
     def _index_line(self, line: str) -> SessionTreeEntry | None:
         try:
@@ -1010,7 +1047,9 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             self._commit_locked(pending.entry)
         if replay is not None:
             if replay.moved:
-                replay.survivors.pop(0)
+                original = replay.survivors.pop(0)
+                if self._input_replayed is not None:
+                    _observe_input_replay(self, original.id, landed.id, landed)
             else:
                 replay.moved = True
 
@@ -1364,3 +1403,13 @@ __all__ = [
     "SessionRecovery",
     "load_jsonl_session_metadata",
 ]
+
+
+def _observe_input_replay(
+    storage: JsonlSessionStorage, old_id: str, new_id: str, decoded: SessionTreeEntry | None
+) -> None:
+    callback = storage._input_replayed
+    if callback is not None:
+        index = storage._receipt_index
+        receipt = index.receipt(decoded) if decoded is not None and decoded.id in index.sequences else None
+        callback(old_id, new_id, receipt)

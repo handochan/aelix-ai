@@ -193,6 +193,7 @@ every case.
 | `extension_ui_request` | `childApproval` (#612, ADR-0308): a delegated child's approval request | `id` (the answer's id); `title` (shown only to a client that did not declare `aelix/nestedToolCalls`); `child.id`, `child.epoch`, `child.cwd`, `child.parentToolCallId`, `child.profile`, `child.jobId`, `child.background`; `tool.callId`, `tool.name`, `tool.args`; `choices[].kind`, `choices[].id` (each type-checked into one `session/request_permission`; only an offered kind becomes an option, and only a selected offered option is answered with its choice's `id`) | — | `03b9e32`: `session.py:750`, `:871-878`, `:1020-1022`, `:1032-1092`, sent only after `ui/enable` with `childApprovals: true` (§3.1). Under `16d6555b` it is never sent: aelix-acp does not send `childApprovals` (`session.py:282-284`), and the row above would forward it as a dialog |
 | `aelix_child` | any (#612, ADR-0307) | `event` (one of the seven; any other drops the frame); `data.id`, `data.seq`, `data.epoch` (the route's key and its dedupe: `runtime/children.py:41-49`); `data.parentToolCallId` (on `state`, the card the child's frames reach: `runtime/children.py:141-162`); `data.profile`, `data.state`, `data.wrappingUp`, `data.text`, `data.stuck`, `data.requested`, `data.end` (onto the child's entry in the parent card's `_meta["aelix/subagents"]`, for every client); `data.callId`, `data.name`, `data.args`, `data.status`, `data.step` (a child's own call: the entry's `currentTool`, a nested tool call for a client that declared `aelix/nestedToolCalls`, and a `withdrawn` or `denied` step ends an open question) | — | `03b9e32`: `session.py:732-733`, `:800-869`, `:898-915`; `runtime/children.py`. Under `16d6555b`, dropped: `Session.event` has no branch for it (`session.py:463-522`) |
 | `aelix_notice` | any (#612, ADR-0307) | — | `_aelix/notice`, as `{"jsonrpc": "2.0", "method": "_aelix/notice", "params": {"sessionId", "event", "data"}}`, only to a client that declared `clientCapabilities._meta["aelix/notices"]` (a `data` that is not an object is sent as `{}`); not recorded | `03b9e32`: `session.py:734-741`. Under `16d6555b`, dropped: `Session.event` has no branch for it (`session.py:463-522`) |
+| `aelix_input` | #865 (ADR-0310), §8 | — | — | Intended for ACP #41 phase 2 |
 | `extension_ui_response` (client → host) | ACP writes `{"type": "extension_ui_response", "id", …answer}`: the client's whole dialog reply (`value`, `confirmed`, `cancelled`), or `{"cancelled": true}` | — | — | `session.py:629-636`; the write at `:635` |
 
 The fixtures are `tests/rpc/control_v1/fixtures/event.aelix_subagent.json` (frames emitted while an
@@ -277,6 +278,7 @@ PR #39 (`03b9e32`) reads them.
 | `permissions/evaluate` | #594 | none (aelix-acp names it only in `READ_ONLY_CONTROLS`) | `permissions.evaluate.json` |
 | `selections/list`, `selections/set` (and `capabilities.selectionKinds`) | #624 (ADR-0305), in the freeze commit itself | Studio #7, through aelix-acp's `_aelix/manage`. Its allowlist (`server.py:303`) and `READ_ONLY_CONTROLS` (`session.py:45-47`) do not list them yet. When aelix-acp adds `selections/set`, its default 60 s timeout is short: the consent dialog alone is bounded at 45 s (`rpc/control_selection.py` `CONSENT_TIMEOUT_SECONDS`), and settings-lock contention can add 30 s (ADR-0305 D4). So the request is to give it at least 90 s, or to send `commands/cancel` with its `requestId` on timeout. | `selections.list.json`, `selections.set.json`, `capabilities.json` |
 | `transcript/list` | #655 (ADR-0309) | aelix-acp #22 for CLI-to-Studio replay | `transcript.list.json` |
+| `inputs/observe` | #865 (ADR-0310) | ACP #41 phase 2 for CLI-to-Studio user rows | `inputs.observe.json` |
 
 ### 6.1 `transcript/list`
 
@@ -399,3 +401,115 @@ matches typed replies by the pending request's ID and command. The existing
 `-33001` error retains its shape, including null holder for unknown or unopted
 clients. A branch failure or uncertain outcome requires settlement and an
 original-binding readback before subsequent writes on the same worker.
+## 8. Input observation on CLI stdio (#865)
+
+An eligible CLI stdio host advertises `inputs/observe` in version 1
+`capabilities.methods`. It uses the same stable, writer-owned JSONL binding
+as `transcript/list` and requires runtime support for the binding-transition
+fence. Server WebSocket and sessions without that binding omit the method.
+A change requires idle with empty native input and notice
+queues and no pending binding or session mutation. Repeat sets on a stable
+binding preserve the current state and sequence. Discovery and rebind are
+covered by the #865 control-v1 fixtures.
+
+Send exactly one boolean `enabled` in params. Request IDs use the
+`transcript/list` bound of 1,024 bytes for the quoted JSON token as well as
+strict UTF-8 and a nonempty string. An invalid ID on this method is omitted
+from its bounded error response. A clean enable acknowledges the epoch before
+its first frame. A rejected enable leaves classic input unobserved. An enabled
+epoch observes the input admitted by the host's public `prompt`, `steer` and
+`follow_up` methods, including inputs transformed by overrides. The #865
+embedding tests cover both guarantees. A clean disable returns the same
+shape with `enabled: false` and both IDs null.
+
+```jsonl
+{"type":"aelix_control","id":"enable","method":"inputs/observe","params":{"enabled":true}}
+{"type":"response","id":"enable","command":"aelix_control","success":true,"data":{"enabled":true,"subscriptionId":"s1","bindingId":"b1"}}
+```
+
+Each event has `type: "aelix_input"`, `event`, `subscriptionId`, `bindingId`
+and a consecutive positive `seq` starting at 1 for the epoch. An input
+occurrence has an `inputId` and an `attempt` starting at 1. A fresh submission
+has a fresh ID even if its body or classic request ID repeats. Reinsertion
+advances the attempt on the same input ID and keeps its original source,
+route and classic correlation. Clients that need correlation should keep
+classic request IDs unique across the subscription. Input origins are
+`rpc`, `extension` and `native`. Routes are `prompt`, `steer`, `followUp`,
+`nextTurn` and `prefix`. Optional `requestId` appears only for a valid classic
+RPC correlation ID. These fields and routes are exercised by the #865
+control-v1 fixtures and native RPC tests.
+
+| Event | Event-specific fields and timing |
+| --- | --- |
+| `prompt_started` | `promptId`, `promptKind` of `prompt` or `notice`, and optional `input` for a direct slot. The slot has `inputId`, `attempt`, `source`, `route` and optional `requestId`. This event marks the actual native claim. |
+| `queued` | The slot fields and `queuedPromptId`, the claim at actual enqueue or null if idle. An enqueue can occur before an error reply from a queue-update hook. |
+| `consumed` | The slot fields, `queuedPromptId`, `consumedPromptId`, one-based `turnIndex` and `inputIndex`, and R9 `streamId`. `placement: "available"` carries a complete post-reducer user `message` from a verified position in the first generic model request. `placement: "unavailable"` carries a `reason` of `contextMismatch`, `noModelRequest`, `bodyTooLarge` or `bodyUnencodable` without a body. |
+| `input_settled` | `inputId`, `attempt`, `promptId` and `outcome`. A placement's owning claim is its consuming claim. An idle removal uses a null `promptId`. `committed` adds `nativeSessionId`, `entryId`, `parentEntryId`, and `sequence` from the settled active path. Other outcomes are `withdrawn`, `notAdmitted`, `notStored`, `storageOnly` and `unknown`. |
+| `prompt_settled` | `promptId` and `outcome` of `complete`, `aborted`, `failed`, `handled` or `noWork`. It follows all known placement and terminal decisions for the claim, before native idle and the next claim. Untouched queued inputs can outlive the claim that queued them. |
+| `stream_gap` | `reason` of `bindingChanged`, `budgetExceeded` or `unverifiable` on the old epoch. Rediscover and enable on the new stable clean binding. |
+
+For example, a steer queued under one claim can be placed under a later
+claim. Its `consumed` precedes the next dependent assistant start, update or
+end. The terminal describes the exact stored occurrence if the active path
+qualifies it after native cleanup.
+
+```jsonl
+{"type":"aelix_input","event":"queued","subscriptionId":"s1","bindingId":"b1","seq":3,"inputId":"i2","attempt":1,"source":"rpc","route":"steer","requestId":"steer-2","queuedPromptId":"p1"}
+{"type":"aelix_input","event":"consumed","subscriptionId":"s1","bindingId":"b1","seq":8,"inputId":"i2","attempt":1,"source":"rpc","route":"steer","requestId":"steer-2","queuedPromptId":"p1","consumedPromptId":"p2","turnIndex":1,"inputIndex":2,"streamId":"u2","placement":"available","message":{"role":"user","content":[{"type":"text","text":"Use the revised total.","text_signature":""}],"timestamp":null}}
+{"type":"aelix_input","event":"input_settled","subscriptionId":"s1","bindingId":"b1","seq":10,"inputId":"i2","attempt":1,"promptId":"p2","outcome":"committed","nativeSessionId":"session","entryId":"entry-3","parentEntryId":"entry-2","sequence":3}
+{"type":"aelix_input","event":"prompt_settled","subscriptionId":"s1","bindingId":"b1","seq":11,"promptId":"p2","outcome":"complete"}
+```
+
+The placement check includes the preceding context interval. A context
+callback can retain the same user message and move it ahead of a preceding
+assistant. That placement is unavailable even if the independently qualified
+R9 body still commits. `withdrawn` covers a logically withdrawn occurrence
+even if its old entry is still addressable. `notAdmitted` retires an announced
+slot that never entered context. An extension prefix first appears in
+`consumed`. A prefix cancelled before admission leaves no observation event.
+`notStored` denotes a definitive write refusal.
+`storageOnly` denotes confirmed active storage without a qualified complete
+readback or terminal coordinates. `unknown` covers unproved write or active
+membership. The writer checks membership by walking at most 8,192 entries
+of its active index and uses the R9 readback qualification described in §5.
+A consumer can independently read the settled entry with `transcript/list`.
+The #865 reorder, abort and storage tests exercise these distinctions.
+
+In the #865 partial-response abort test, the classic assistant
+`message_start` and `message_update` are followed by `turn_end` with
+`stop_reason: "aborted"` and then `agent_end`. If an assistant interval
+still lacks `message_end`, observation ends the epoch with a
+`stream_gap` of reason `unverifiable` at claim release. The interrupted
+claim emits no settlement marker. Discard its staged rows and dependent
+assistant output and keep publications from earlier settled claims.
+
+The #865 byte-bound tests cover 1 MiB per complete strict UTF-8, finite JSON
+line including LF. The observer has room for 128 outstanding attempts and
+4 MiB for retained body snapshots and tracking metadata, including live
+positional witnesses. The #865 retained-budget tests measure the backing
+storage of four near-limit snapshots and check exhaustion while a context
+hook holds the witness and more steers arrive. The 1 KiB gap frame has its
+own limit. A sequence jump, invalid frame, gap or EOF before a claim
+marker invalidates that unfinished publication. The native model call
+continues when a placement body cannot be encoded or fit.
+
+**ACP #41 phase 2 consumer policy.** Stage an available placement and its
+order-dependent assistant and lifecycle suffix until the consuming claim's
+marker and a `committed` terminal arrive in the same contiguous epoch.
+Continue to drain stdout while staging. Require an assistant interval's
+`message_end` before publishing its buffered updates. Before answering the
+ACP prompt, release eligible staged updates in their original order. The
+owner's 2026-11-21 decision was “RPC 사용자 입력만 (권장)”. Publish additional
+user rows only for eligible RPC steer and follow-up inputs with request
+correlation, including those routed from a busy prompt. Keep the existing
+composer row once. Use `transcript/list` on the current binding to verify
+the durable session, entry key, full body and active coordinates when
+reconciling. After reopen use the new live binding to qualify the original
+durable session and key. Live ACP/H1 consumption is a phase-2 integration
+target in [ACP #41](https://github.com/handochan/aelix-acp/issues/41).
+
+The native held-hook probe found that a pre-run extension hook can keep the
+claim pending after abort (#851). Keep staging until native settlement. The
+paused-reader probe found that a full pipe can stall native delivery and
+cancellation (#852). Resume draining for delivery to progress and discard
+unfinished rows after interruption. [ADR-0310](../decisions/0310-opted-in-rpc-input-observation.md)

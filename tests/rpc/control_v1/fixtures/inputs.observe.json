@@ -1,0 +1,128 @@
+{
+  "contract": "control-v1",
+  "since": "#865",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "input-observation",
+  "consumers": [],
+  "method": "inputs/observe",
+  "params": {
+    "enabled": {
+      "type": "boolean",
+      "required": true
+    }
+  },
+  "cases": [
+    {
+      "name": "enable on a clean binding",
+      "since": "#865",
+      "rig": "input-observation",
+      "params": {
+        "enabled": true
+      },
+      "sensitive": {
+        "enabled": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "subscriptionId",
+          "bindingId"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          },
+          "subscriptionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bindingId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "disable returns no epoch",
+      "since": "#865",
+      "rig": "input-observation",
+      "before": [
+        {
+          "method": "inputs/observe",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "params": {
+        "enabled": false
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "subscriptionId",
+          "bindingId"
+        ],
+        "properties": {
+          "enabled": {
+            "const": false
+          },
+          "subscriptionId": {
+            "const": null
+          },
+          "bindingId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "name": "enabled must be a boolean",
+      "since": "#865",
+      "rig": "input-observation",
+      "params": {
+        "enabled": "true"
+      },
+      "error": {
+        "const": "Invalid input observation params"
+      }
+    },
+    {
+      "name": "enabled is required",
+      "since": "#865",
+      "rig": "input-observation",
+      "params": {},
+      "error": {
+        "const": "Invalid input observation params"
+      }
+    },
+    {
+      "name": "additional params are rejected",
+      "since": "#865",
+      "rig": "input-observation",
+      "params": {
+        "enabled": true,
+        "extra": true
+      },
+      "error": {
+        "const": "Invalid input observation params"
+      }
+    },
+    {
+      "name": "service absent",
+      "since": "#865",
+      "rig": "bare",
+      "params": {
+        "enabled": true
+      },
+      "error": {
+        "const": "Unsupported runtime control method: inputs/observe"
+      }
+    }
+  ]
+}

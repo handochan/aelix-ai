@@ -1,0 +1,615 @@
+{
+  "contract": "control-v1",
+  "since": "#865",
+  "hosts": [
+    "cli-rpc"
+  ],
+  "requires": "input-observation",
+  "consumers": [],
+  "event": "aelix_input",
+  "frameType": "aelix_input",
+  "frame": {
+    "type": "object",
+    "required": [
+      "type",
+      "event",
+      "subscriptionId",
+      "bindingId",
+      "seq"
+    ],
+    "properties": {
+      "type": {
+        "const": "aelix_input"
+      },
+      "event": {
+        "type": "string",
+        "enum": [
+          "prompt_started",
+          "queued",
+          "consumed",
+          "input_settled",
+          "prompt_settled",
+          "stream_gap"
+        ]
+      },
+      "subscriptionId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "bindingId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "seq": {
+        "type": "integer"
+      }
+    },
+    "anyOf": [
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "promptId",
+          "promptKind"
+        ],
+        "properties": {
+          "event": {
+            "const": "prompt_started"
+          },
+          "promptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "promptKind": {
+            "enum": [
+              "prompt",
+              "notice"
+            ]
+          },
+          "input": {
+            "type": "object",
+            "required": [
+              "inputId",
+              "attempt",
+              "source",
+              "route"
+            ],
+            "properties": {
+              "inputId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "attempt": {
+                "type": "integer"
+              },
+              "source": {
+                "enum": [
+                  "rpc",
+                  "extension",
+                  "native"
+                ]
+              },
+              "route": {
+                "enum": [
+                  "prompt",
+                  "steer",
+                  "followUp",
+                  "nextTurn",
+                  "prefix"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "inputId",
+          "attempt",
+          "source",
+          "route",
+          "queuedPromptId"
+        ],
+        "properties": {
+          "event": {
+            "const": "queued"
+          },
+          "inputId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "rpc",
+              "extension",
+              "native"
+            ]
+          },
+          "route": {
+            "enum": [
+              "prompt",
+              "steer",
+              "followUp",
+              "nextTurn",
+              "prefix"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "queuedPromptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "inputId",
+          "attempt",
+          "source",
+          "route",
+          "queuedPromptId",
+          "consumedPromptId",
+          "turnIndex",
+          "inputIndex",
+          "streamId",
+          "placement",
+          "message"
+        ],
+        "properties": {
+          "event": {
+            "const": "consumed"
+          },
+          "inputId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "rpc",
+              "extension",
+              "native"
+            ]
+          },
+          "route": {
+            "enum": [
+              "prompt",
+              "steer",
+              "followUp",
+              "nextTurn",
+              "prefix"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "queuedPromptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consumedPromptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "turnIndex": {
+            "type": "integer"
+          },
+          "inputIndex": {
+            "type": "integer"
+          },
+          "streamId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "placement": {
+            "const": "available"
+          },
+          "message": {
+            "type": "object",
+            "required": [
+              "role",
+              "content",
+              "timestamp"
+            ],
+            "properties": {
+              "role": {
+                "const": "user"
+              },
+              "content": {
+                "type": "array"
+              },
+              "timestamp": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "inputId",
+          "attempt",
+          "source",
+          "route",
+          "queuedPromptId",
+          "consumedPromptId",
+          "turnIndex",
+          "inputIndex",
+          "streamId",
+          "placement",
+          "reason"
+        ],
+        "properties": {
+          "event": {
+            "const": "consumed"
+          },
+          "inputId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "rpc",
+              "extension",
+              "native"
+            ]
+          },
+          "route": {
+            "enum": [
+              "prompt",
+              "steer",
+              "followUp",
+              "nextTurn",
+              "prefix"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "queuedPromptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consumedPromptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "turnIndex": {
+            "type": "integer"
+          },
+          "inputIndex": {
+            "type": "integer"
+          },
+          "streamId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "placement": {
+            "const": "unavailable"
+          },
+          "reason": {
+            "enum": [
+              "contextMismatch",
+              "noModelRequest",
+              "bodyTooLarge",
+              "bodyUnencodable"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "inputId",
+          "attempt",
+          "promptId",
+          "outcome",
+          "nativeSessionId",
+          "entryId",
+          "parentEntryId",
+          "sequence"
+        ],
+        "properties": {
+          "event": {
+            "const": "input_settled"
+          },
+          "inputId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "promptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "const": "committed"
+          },
+          "nativeSessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parentEntryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sequence": {
+            "type": "integer"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "inputId",
+          "attempt",
+          "promptId",
+          "outcome"
+        ],
+        "properties": {
+          "event": {
+            "const": "input_settled"
+          },
+          "inputId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "promptId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "withdrawn",
+              "notAdmitted",
+              "notStored",
+              "storageOnly",
+              "unknown"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "promptId",
+          "outcome"
+        ],
+        "properties": {
+          "event": {
+            "const": "prompt_settled"
+          },
+          "promptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "enum": [
+              "complete",
+              "aborted",
+              "failed",
+              "handled",
+              "noWork"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [
+          "event",
+          "reason"
+        ],
+        "properties": {
+          "event": {
+            "const": "stream_gap"
+          },
+          "reason": {
+            "enum": [
+              "bindingChanged",
+              "budgetExceeded",
+              "unverifiable"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "placements and terminals follow the claim",
+      "since": "#865",
+      "rig": "input-observation",
+      "before": [
+        {
+          "method": "inputs/observe",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "setup": "input-observation",
+      "trigger": {
+        "classic_prompt": {
+          "message": "direct fixture input"
+        },
+        "until": "native_idle"
+      },
+      "frameType": "aelix_input",
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "prompt_started"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "queued"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "consumed"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "consumed"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "input_settled"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "input_settled"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "prompt_settled"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "binding swap retires the epoch",
+      "since": "#865",
+      "rig": "input-observation",
+      "before": [
+        {
+          "method": "inputs/observe",
+          "params": {
+            "enabled": true
+          }
+        }
+      ],
+      "trigger": {
+        "classic_swap": true
+      },
+      "frames": [
+        {
+          "frame": {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "stream_gap"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

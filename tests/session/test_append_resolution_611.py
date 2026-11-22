@@ -470,6 +470,44 @@ async def test_a_survivor_that_landed_and_raised_is_not_written_twice_and_the_re
     assert (in_file.count("n1"), in_file.count("n2")) == (2, 2), "one copy each"
 
 
+async def test_resolving_a_landed_survivor_does_not_reread_the_original_id(
+    tmp_path: Path,
+) -> None:
+    id_reads: list[str] = []
+
+    class HostEntry(CustomEntry):
+        stable_id: str
+
+        @property
+        def id(self) -> str:
+            id_reads.append(self.stable_id)
+            return self.stable_id
+
+        @id.setter
+        def id(self, value: str) -> None:
+            object.__setattr__(self, "stable_id", value)
+
+    fs = _PlanFs()
+    path = tmp_path / "session.jsonl"
+    storage = await JsonlSessionStorage.create(fs, str(path), cwd=str(tmp_path), session_id="demo")
+    await storage.append_entry(
+        HostEntry(
+            id="original", parent_id=None, timestamp="2026-11-22T00:00:00Z", custom_type="host"
+        )
+    )
+    fs.arm(_whole, OSError(errno.EIO, "survivor landed (injected)"), skip=1)
+    with pytest.raises(SessionError) as exc:
+        await storage.withdraw_tail(None, lambda entry: False)
+    assert exc.value.code == "outcome_unknown"
+
+    id_reads.clear()
+    await storage.resolve_pending()
+    assert "original" not in id_reads
+    branch = await Session(storage).get_branch()
+    assert len(branch) == 1 and isinstance(branch[0], CustomEntry)
+    assert branch[0].id != "original" and branch[0].custom_type == "host"
+
+
 async def test_a_survivor_that_was_not_attempted_is_written_by_the_next_write(
     tmp_path: Path,
 ) -> None:

@@ -39,6 +39,7 @@ def _served_on(host: str) -> set[str]:
 
 async def _plane(tmp_path: Path, drop: str | None = None) -> tuple[Any, RpcControlPlane]:
     from aelix_agent_core.session import JsonlSessionCreateOptions, JsonlSessionRepo
+    from aelix_coding_agent.rpc.control_inputs import InputObservationService
     from aelix_coding_agent.rpc.control_transcript import TranscriptService
     from aelix_coding_agent.rpc.rpc_mode import _make_passthrough_runtime
 
@@ -56,9 +57,13 @@ async def _plane(tmp_path: Path, drop: str | None = None) -> tuple[Any, RpcContr
     transcript = TranscriptService(runtime, lambda *_: None)
     await transcript.start()
     services["transcript"] = transcript
+    services["input_observation"] = InputObservationService(transcript, lambda _: None)
     if drop in rigs.REQUIRES:
         services.pop(rigs.REQUIRES[drop])
-    return harness, RpcControlPlane(runtime, **services)
+    input_observation = services.pop("input_observation", None)
+    plane = RpcControlPlane(runtime, **services)
+    plane._input_observation = input_observation
+    return harness, plane
 
 
 async def test_a_host_with_every_service_lists_every_cli_rpc_method(tmp_path: Path) -> None:

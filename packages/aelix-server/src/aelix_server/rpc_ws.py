@@ -14,7 +14,7 @@ concurrent connection is rejected with ``close(code=1013)`` BEFORE
 across concurrent connections.
 
 Empty-line note (W1 verification): ``run_rpc_mode``'s internal ``_on_line``
-guards empty lines (``rpc_mode.py:2419-2421`` — ``if not line.strip():
+guards empty lines (``rpc_mode.py:2437-2439`` — ``if not line.strip():
 return``), so feeding ``text.encode() + b"\\n"`` is safe even when a client
 frame already ends in a newline. We additionally strip a single trailing
 newline from the received text before re-adding exactly one ``\\n`` so each

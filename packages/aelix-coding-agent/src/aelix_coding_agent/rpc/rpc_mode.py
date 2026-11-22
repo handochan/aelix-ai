@@ -152,6 +152,8 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from aelix_agent_core.harness._input_observation import call_with_input_origin
+from aelix_agent_core.harness.core import _BASE_INPUT_METHODS
 from aelix_agent_core.session.session_lock import SessionLockContention
 from aelix_ai.messages import ImageContent
 from aelix_ai.utils._child_output import decode_child_output
@@ -161,6 +163,8 @@ from aelix_coding_agent.rpc._jsonl import (
     encode_json_line,
 )
 from aelix_coding_agent.rpc._session_lock_errors import lock_error_details
+from aelix_coding_agent.rpc.control_inputs import METHOD as INPUTS_METHOD
+from aelix_coding_agent.rpc.control_inputs import InputObservationService
 from aelix_coding_agent.rpc.control_transcript import (
     BINDING_CHANGING,
     TRANSCRIPT_REPLY_MAX_BYTES,
@@ -335,6 +339,15 @@ def _takes_on_accept(prompt: Any) -> bool:
     )
 
 
+def _call_rpc_input(
+    harness: AgentHarness, method: str, request_id: str | None, call: Any, text: str, **kwargs: Any
+) -> Awaitable[Any]:
+    return call_with_input_origin(
+        getattr(harness, "_input_observation", None), method, "rpc", request_id,
+        harness, _BASE_INPUT_METHODS[method], call, text, **kwargs
+    )
+
+
 async def _handle_prompt(
     harness: AgentHarness,
     cmd: RpcCommandPrompt,
@@ -372,7 +385,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1598-1603``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1613-1618``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -380,12 +393,14 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1580-1582``).
+        # enqueue-only regardless of phase (``core.py:1595-1597``).
         if cmd.streaming_behavior == "steer":
-            await harness.steer(cmd.message, images=images)
+            await _call_rpc_input(harness, "steer", cmd.id, harness.steer, cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
         if cmd.streaming_behavior == "followUp":
-            await harness.follow_up(cmd.message, images=images)
+            await _call_rpc_input(
+                harness, "follow_up", cmd.id, harness.follow_up, cmd.message, images=images
+            )
             return RpcSuccessResponse(id=cmd.id, command="prompt")
         return RpcErrorResponse(
             id=cmd.id,
@@ -428,7 +443,9 @@ async def _handle_prompt(
         # stderr so the operator sees failures and ``wait_for_idle``
         # callers don't hang on a dropped error.
         try:
-            await harness.prompt(cmd.message, **prompt_kwargs)
+            await _call_rpc_input(
+                harness, "prompt", cmd.id, harness.prompt, cmd.message, **prompt_kwargs
+            )
         except Exception as exc:  # noqa: BLE001
             if not verdict.done():
                 # Rejected before acceptance (the #376 check, a busy harness, a
@@ -1219,7 +1236,7 @@ async def _handle_steer(
     """
 
     images = _decode_images(cmd.images)
-    await harness.steer(cmd.message, images=images)
+    await _call_rpc_input(harness, "steer", cmd.id, harness.steer, cmd.message, images=images)
     return RpcSuccessResponse(id=cmd.id, command="steer")
 
 
@@ -1231,7 +1248,7 @@ async def _handle_follow_up(
     (delegates to ``agent-session.ts:1206-1215`` ``session.followUp``)."""
 
     images = _decode_images(cmd.images)
-    await harness.follow_up(cmd.message, images=images)
+    await _call_rpc_input(harness, "follow_up", cmd.id, harness.follow_up, cmd.message, images=images)
     return RpcSuccessResponse(id=cmd.id, command="follow_up")
 
 
@@ -2351,6 +2368,7 @@ async def run_rpc_mode(
         transcript=transcript,
         session_lock_errors=session_lock_errors,
     )
+    control._input_observation = InputObservationService(transcript, write_sink)
 
     # The transcript service tracks the producer through disposal. This
     # capture follows the harness used by classic handlers and #612 controls.
@@ -2677,6 +2695,8 @@ async def _control_response(
             and isinstance(exc, BranchReturnContention)
         ):
             details = lock_error_details(exc.holder_kind)
+    if method == INPUTS_METHOD and not request_id_valid(request_id):
+        request_id = None
     return RpcErrorResponse(
         id=request_id, command="aelix_control", error=error, error_details=details
     )

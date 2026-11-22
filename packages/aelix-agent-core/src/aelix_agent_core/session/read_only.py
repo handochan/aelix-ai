@@ -23,7 +23,7 @@ moment it opened.
 
 **Why the two private passthroughs.** ``Session.session_file``
 (``session/session.py:140-145``), ``AgentSessionRuntime.cwd``
-(``runtime/agent_session_runtime.py:485-487``) and
+(``runtime/agent_session_runtime.py:489-491``) and
 ``AgentHarness.session_id``/``session_file`` (``harness/core.py:837,1276``) all
 read ``_metadata`` / ``_file_path`` off the storage object directly rather than
 through the Protocol, because ``get_metadata`` is async and those are

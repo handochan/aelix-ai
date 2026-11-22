@@ -56,6 +56,11 @@ from aelix_coding_agent.rpc.control_children import (
     children_call,
     intervene,
 )
+from aelix_coding_agent.rpc.control_inputs import METHOD as _INPUTS_METHOD
+from aelix_coding_agent.rpc.control_inputs import UNSUPPORTED as _INPUTS_UNSUPPORTED
+from aelix_coding_agent.rpc.control_inputs import (
+    InputObservationService as _InputObservationService,
+)
 from aelix_coding_agent.rpc.control_mcp import RpcMcpController
 from aelix_coding_agent.rpc.control_transcript import (
     BINDING_CHANGING,
@@ -109,6 +114,7 @@ READ_ONLY_METHODS = frozenset(
     {
         "capabilities",
         TRANSCRIPT_METHOD,
+        _INPUTS_METHOD,
         "resources/list",
         "settings/get",
         "permissions/get",
@@ -287,6 +293,7 @@ class RpcControlPlane:
         self.runtime = runtime_host
         self.session_lock_errors = session_lock_errors
         self.transcript = transcript
+        self._input_observation: _InputObservationService | None = None
         self._transcript_epoch = 0
         self.posture = permission_posture
         self.settings = settings_manager
@@ -332,6 +339,8 @@ class RpcControlPlane:
     async def handle(
         self, method: object, params: object, request_id: object = None
     ) -> dict[str, Any]:
+        if method == _INPUTS_METHOD:
+            return self._configure_inputs(params, request_id)
         if not isinstance(method, str) or not isinstance(params, dict):
             raise ValueError("Control method and params must be a string and object")
         if method == "commands/cancel":
@@ -381,6 +390,7 @@ class RpcControlPlane:
             )
         self.transitioning += 1
         self._transcript_epoch += 1
+        self._input_observation and self._input_observation.fence()
         try:
             return await _finish_uncancelled(self._settled_then(start))
         finally:
@@ -467,6 +477,7 @@ class RpcControlPlane:
         if command_type in CLASSIC_SWAPS:
             self.classic_swapping += 1
             self._transcript_epoch += 1
+            self._input_observation and self._input_observation.fence()
         return None, True
 
     def classic_done(self, command_type: object = None) -> None:
@@ -563,6 +574,29 @@ class RpcControlPlane:
             raise TranscriptError(BINDING_CHANGING)
         return result
 
+    def _configure_inputs(self, params: object, request_id: object) -> dict[str, Any]:
+        service = self._input_observation
+        if service is None:
+            raise ValueError(_INPUTS_UNSUPPORTED)
+        stable = not (self.closing or self.transitioning or self.classic_swapping)
+        return service.configure(
+            params, request_id, stable=stable,
+            clean=not (self.classic_inflight or self.lock.locked()),
+        )
+
+    def _input_methods(self, transcript_available: bool) -> list[str]:
+        service = self._input_observation
+        if service is None:
+            return []
+        if service.transcript is self.transcript:
+            available = transcript_available and service._set_fence is not None
+        else:
+            # A separately attached input service owns its availability snapshot.
+            available = service.available and not (
+                self.closing or self.transitioning or self.classic_swapping
+            )
+        return [_INPUTS_METHOD] if available else []
+
     def capabilities(self) -> dict[str, Any]:
         methods = [
             "commands/run",
@@ -601,8 +635,11 @@ class RpcControlPlane:
             ]
         if self.jobs is not None:
             methods.append("children/notices")
-        if self.transcript_available:
+        transcript_available = self.transcript_available
+        if transcript_available:
             methods.append(TRANSCRIPT_METHOD)
+        if self._input_observation is not None:
+            methods.extend(self._input_methods(transcript_available))
         model = self.harness.current_model
         return {
             "version": 1,

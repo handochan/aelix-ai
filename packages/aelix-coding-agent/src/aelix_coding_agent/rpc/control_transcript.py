@@ -388,6 +388,7 @@ class TranscriptService:
         self.output = output
         self.binding: _Binding | None = None
         self._unsubscribe: Callable[[], None] | None = None
+        self._input_fence: Callable[[], None] | None = None
 
     async def start(self) -> None:
         await self.runtime.set_transcript_observer(self.install, self.unbind)
@@ -408,7 +409,12 @@ class TranscriptService:
             annotation = (
                 binding.annotation(event, stream, outcome) if self.binding is binding else None
             )
+            observation = getattr(harness, "_input_observation", None)
+            if observation is not None and stream is not None and outcome is not None:
+                observation.qualify(stream, annotation is not None and annotation.get("status") == "stored")
             self.output(event, annotation)
+            if observation is not None:
+                observation.after_classic_event(event)
 
         self._unsubscribe = harness.subscribe_transcript(output)
 
@@ -417,6 +423,8 @@ class TranscriptService:
             self.retire()
 
     def unbind(self) -> None:
+        if self._input_fence is not None:
+            self._input_fence()
         if self.binding is not None:
             self.binding.storage.release_transcript_cut()
             self.binding = None

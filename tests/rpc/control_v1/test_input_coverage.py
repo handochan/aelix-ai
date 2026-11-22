@@ -492,7 +492,14 @@ def _transcript_unavailable() -> list[str]:
     return [UNAVAILABLE]
 
 
+def _input_events() -> list[str]:
+    from aelix_agent_core.harness._input_observation import InputEvent
+
+    return list(get_args(InputEvent))
+
+
 CODE_VALUES: dict[tuple[str, str, str], Any] = {
+    ("events", "aelix_input", "frame.event"): _input_events,
     ("methods", "transcript/list", "frame.transcript.status"): _transcript_statuses,
     ("methods", "transcript/list", "data.entries[].message.role"): _transcript_roles,
     ("methods", "transcript/list", "data.entries[].role"): _transcript_roles,
