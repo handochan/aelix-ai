@@ -953,9 +953,9 @@ class AgentSessionRuntime:
         turns, once the settle has ended.
         """
 
-        harness = self._harness
-        if getattr(harness, "phase", "idle") == "idle":
-            return None
+        harness, handed = self._harness, self._handed_seal()  # #854: a fork settled first
+        if handed is not None or getattr(harness, "phase", "idle") == "idle":
+            return handed
         hold: Callable[..., None] | None = getattr(harness, "hold_turns", None)
         abort_until_idle: Callable[[], Awaitable[None]] | None = getattr(
             harness, "abort_until_idle", None
@@ -2084,6 +2084,33 @@ class AgentSessionRuntime:
             self._reload_phase = "resources"
         await self._harness.reload_resources()
 
+    #: #854 — the seal :meth:`fork` put up before its copy, for its teardown to take.
+    _copy_seal: _Seal | None = None
+
+    def _handed_seal(self) -> _Seal | None:
+        """#854 (ADR-0307 D3) — the seal :meth:`fork` handed its teardown, taken once.
+
+        :meth:`fork` seals and settles the outgoing harness before it copies the
+        branch, so the copy holds what the settle wrote; its teardown's step 0
+        (:meth:`_seal_and_settle`) then takes that seal instead of sealing again: a
+        settle past its bound is not waited for a second time, and an interruption
+        in ``session_shutdown`` undoes it (:meth:`_abandon`).
+
+        Only the fork's own transition takes it (``_IN_TRANSITION`` is its marker):
+        a :meth:`dispose` — which runs outside the transition lock — that came while
+        the fork waited between the hand-off and its teardown seals on its own and
+        leaves the fork's seal up. In round 1 that quit took the seal, and a
+        quit then cancelled in ``session_shutdown`` undid it: the outgoing harness
+        took prompts while the fork was still running (Codex review C3).
+        """
+
+        seal = self._copy_seal
+        marker = self._transition_marker
+        if seal is None or marker is None or _IN_TRANSITION.get() is not marker:
+            return None
+        self._copy_seal = None
+        return seal
+
     async def fork(
         self,
         entry_id: str,
@@ -2126,6 +2153,20 @@ class AgentSessionRuntime:
           6. ``_finish_session_replacement(new_session)``.
           7. Return ``RuntimeReplaceResult(cancelled=False,
              selected_text=selected_text)``.
+
+        #854 (ADR-0307 D3, K3) — between 3 and 4 the outgoing harness is sealed and
+        its turn settled (:meth:`_seal_and_settle`), after the veto and the entry's
+        checks, so a vetoed or refused fork touches no turn, and before the copy, so
+        a cancelled delegation's report, the ``agent`` call's result, is in it; the
+        steer and follow-up lines queued on that turn come back on ``input_withdrawn``
+        just before (:meth:`_give_back_queued`), so a copy that then fails has given
+        them back too. A copy ``at`` the leaf the session had when the fork began is
+        taken at the leaf the settle left (the result is written under that leaf); any
+        other entry is copied where it is. The teardown takes the seal
+        (:meth:`_handed_seal`); a copy that fails before it puts the gate back
+        (:meth:`_abandon`) with the turn already settled. pi copies before its ``teardownCurrent`` aborts
+        (``agent-session-runtime.ts`` ``fork``, ``origin/main`` ``780bf31f``): a
+        divergence, the lead's call (2026-11-22).
         """
 
         async with self._transition():
@@ -2143,6 +2184,9 @@ class AgentSessionRuntime:
                 raise ValueError("Invalid entry ID for forking")
 
             selected_text: str | None = None
+            # #854 — the leaf the settle below may extend; read only when there is a turn.
+            busy = getattr(self._harness, "phase", "idle") != "idle"
+            leaf_before = await self.session.get_leaf_id() if busy and position == "at" else None
             if position == "at":
                 target_leaf_id: ForkEntryId = selected_entry.id
             else:
@@ -2160,24 +2204,37 @@ class AgentSessionRuntime:
                     selected_entry.message.content  # type: ignore[union-attr]
                 )
 
-            # P-342 — snapshot BEFORE teardown / get_metadata so the value
-            # comes from the OLD session.
-            previous_session_file = self.session.session_file
+            # #854 — the turn settles into the session before the copy reads it. The
+            # lines queued on it go back first, as a swap gives them (#681): the
+            # settle's abort clears the queues (fix round 1, verify F1, Codex C1).
+            if getattr(self._harness, "phase", "idle") != "idle":
+                await self._give_back_queued()
+            seal = await self._seal_and_settle(REPLACING_MESSAGE)
+            try:
+                if leaf_before is not None and target_leaf_id == leaf_before:
+                    target_leaf_id = await self.session.get_leaf_id() or target_leaf_id
+                # P-342 — snapshot BEFORE teardown / get_metadata so the value
+                # comes from the OLD session.
+                previous_session_file = self.session.session_file
 
-            metadata = await self.session.get_metadata()
-            new_session = await self._repo.fork(
-                source=metadata,
-                options=ForkOptions(
-                    cwd=metadata.cwd,
-                    entry_id=target_leaf_id,
-                    position="at",
-                    parent_session_path=metadata.path,
-                ),
-            )
-            # #137 — same as ``new_session``: the fork is a fresh file, so this
-            # cannot contend, but the lock must follow us onto it and off the
-            # file we forked away from.
-            new_lock = await self._writer_lock_for_new_file(new_session)
+                metadata = await self.session.get_metadata()
+                new_session = await self._repo.fork(
+                    source=metadata,
+                    options=ForkOptions(
+                        cwd=metadata.cwd,
+                        entry_id=target_leaf_id,
+                        position="at",
+                        parent_session_path=metadata.path,
+                    ),
+                )
+                # #137 — same as ``new_session``: the fork is a fresh file, so this
+                # cannot contend, but the lock must follow us onto it and off the
+                # file we forked away from.
+                new_lock = await self._writer_lock_for_new_file(new_session)
+            except BaseException:
+                await self._abandon(seal)
+                raise
+            self._copy_seal = seal
             try:
                 await self._finish_session_replacement(
                     new_session,
@@ -2188,10 +2245,15 @@ class AgentSessionRuntime:
                 )
             except BaseException:
                 try:
+                    if self._copy_seal is seal:  # the teardown did not take it
+                        self._copy_seal = None
+                        await self._abandon(seal)
                     await self._discard_unadopted_file(new_session.session_file)
                 finally:
                     self._release_unadopted(new_lock)
                 raise
+            finally:
+                self._copy_seal = None
         await self._run_with_session(with_session)
         return RuntimeReplaceResult(
             cancelled=False, selected_text=selected_text

@@ -1222,8 +1222,8 @@ unwritten. Add them with the next release.
   stopped; an `abort` handler that swallows that stop keeps it refusing them until then
   (`test_an_abort_hook_that_swallows_the_cancel_keeps_the_seal_until_the_settle_ends`); a hold that
   saved the gate meanwhile and restores it after that end puts back the gate the seal replaced
-  (#849). A swap an extension vetoes aborts nothing; `/reload` still waits for the turn to end.
-  `/fork` and `/clone` copy the branch before the turn settles (K3), and a prompt still inside a
+  (#849). A swap an extension vetoes aborts nothing; `/reload` still waits for the turn to end. A
+  fork or clone taken during a turn settles it before the copy (#854), and a prompt still inside a
   `before_agent_start` handler holds a swap as before (K4).
 
 - **`SLICE-STATUS.md` records the win32 stdin pump under every delegated child's command inbox
@@ -2004,6 +2004,18 @@ unwritten. Add them with the next release.
   method: `AgentHarness.release_turns(gate, restore)`, the end of a hold that saved the gate it
   replaced (`LateRouteHold.apply` ends through it); `hold_turns(gate)` still sets the gate it is given, except that a spent seal, or a retired
   hold's gate, puts up the gate it replaced.
+- **A clone taken while a delegation runs holds the cancelled delegation's report (#854, ADR-0307
+  K3).** RPC `clone` and `fork` and an extension command's `ctx.fork` now ask `session_before_fork`,
+  then stop and settle the turn, then copy, so the copy holds the `agent` call's result. Before, the
+  copy was taken first and held the call with no result, and the report was only in the session left
+  behind (`tests/runtime/test_copy_settles_first_854.py`; live, a real `--mode rpc` parent on
+  `openai/gpt-4.1-mini` and its child: the reopened copy lists the report). The steer and follow-up
+  lines queued on that turn come back on `input_withdrawn` just before the settle, as a swap gives
+  them back, also when the copy then fails (live: `input_withdrawn` carried both lines, then the copy
+  held the report). A `fork` copy, which ends before the turn's user message, holds nothing of the
+  turn, as before. A vetoed fork touches no turn. The TUI's `/fork` and `/clone` and RPC
+  `sessions/branch` are refused during a turn, as before ("/clone can't run until the answer ends —
+  …", "Runtime mutations require an idle session").
 - **Shell commands run by a delegated agent inherit the user's `PYTHONPATH`
   (#803, ADR-0197).** In the macOS CLI probe, delegated `bash` passed through
   the two user-supplied paths unchanged and left the variable unset when it

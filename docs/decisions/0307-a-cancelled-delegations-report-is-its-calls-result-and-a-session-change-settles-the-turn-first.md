@@ -19,11 +19,14 @@ Amended 2026-11-22 (#857): `children/notices` also answers `placedInTurn`, every
 placed, boundary drains included; `placed` is unchanged. See the note "(2026-11-22, #857)".
 Amended 2026-11-22 (ADR-0318, #836): the `children/` family gains `children/resume`, a host's resume
 of a stopped agent the model delegated. See the note "(2026-11-22, #836)".
-Amended 2026-11-22 (#849):
+Amended 2026-11-22 (#849, #854):
 a seal kept past an interrupted swap is spent when its settle ends, so a hold that saved and
-restores it puts back the gate it replaced (D3, and K4 loses that case); the note of 2026-11-22
-says how it was measured. Its fix round 1 leaves a gate up that went up after a hold that ends; a
-later round forgets the retired gates once no gate is up.
+restores it puts back the gate it replaced (D3, and K4 loses that case); a fork seals and settles
+the turn after its veto and before its copy, so a clone taken during a delegation holds the report
+(D3, K3). K3 is rewritten to what still holds; the two notes of 2026-11-22 say how each was
+measured. Their fix round 1 gives a fork's queued lines back before its settle and hands its seal
+only to its own teardown, and leaves a gate up that went up after a hold that ends; a later round
+forgets the retired gates once no gate is up.
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -145,8 +148,11 @@ is not idle:
 
 Then the order is ADR-0081 P-340's: `session_shutdown`, invalidate, `harness.dispose()`. The veto
 (`session_before_switch`, `session_before_fork`) runs before the teardown, so a vetoed swap never
-seals or aborts. A swap or quit interrupted before the invalidation — in step 0 or inside an awaited
-`session_shutdown` handler — did not happen: `_abandon` stops the settle and waits for it (at most
+seals or aborts. A fork takes step 0 earlier, after its veto and its entry's checks and before it
+copies the branch, gives the lines queued on the turn back just before it, and its own teardown
+takes that seal (note of 2026-11-22, #854). A swap or quit interrupted before the invalidation — in
+step 0 or inside an awaited `session_shutdown` handler — did not happen: `_abandon` stops the
+settle and waits for it (at most
 `SWAP_SETTLE_SECONDS`), then puts back the turn gate the harness had before the seal, so the harness
 left installed takes prompts and no re-abort of that settle reaches them (Codex review C-2). A settle
 still alive past that bound — an `abort` handler that swallows its cancel — keeps the seal until it
@@ -509,9 +515,19 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
   `message_end` hook's rewrite of the call's result is not applied to it (it never was), and a hook
   that rewrites the report to exactly `loop.CUT_TEXT` is read as "not carried", so the raw copy
   follows.
-- **K3 — copies of a session.** `/fork` and `/clone` (RPC `sessions/branch`) taken while a delegation
-  runs copy the branch before the settle: the copy holds the `agent` call with no result; the report
-  is in the outgoing session.
+- **K3 — copies of a session.** *Rewritten 2026-11-22 (#854).* A fork now settles the outgoing turn
+  before it copies (D3), so a clone taken while a delegation runs holds the `agent` call's result,
+  the report. What still holds: a copy `at` any entry other than the leaf the session had when the
+  fork began is taken at that entry, so a leaf a host read before a result was written there (RPC
+  `clone` reads it before it calls the fork) is copied without that result; a settle past its 10 s
+  bound leaves the copy what was written by then; a `before` fork ends before the turn's user message
+  and so holds nothing of the turn; and a copy that fails after the settle leaves the turn settled,
+  its queued lines already given back.
+  Entry points, corrected to what #854 found: RPC classic `clone` (`at` the leaf) and `fork`
+  (`before`) are admitted during a turn and reach the fork, and so does an extension command's
+  `ctx.fork`, which the TUI runs mid-turn (ADR-0292); RPC `sessions/branch` is refused during a turn
+  ("Runtime mutations require an idle session") and the TUI's `/fork` and `/clone` refuse while a
+  turn runs ("/clone can't run until the answer ends…"); both were run live by #854's verify round 1.
 - **K4 — the swap's bound.** *Amended 2026-11-22 (#849).* Step 0 waits for the settle at most
   `SWAP_SETTLE_SECONDS` (10 s); past it the swap goes on in today's order. A prompt still inside a
   `before_agent_start` handler (a dialog nobody answers) holds a swap or quit in `dispose()` until the
@@ -684,7 +700,8 @@ ADR-0308's.
   `/clone` settle before the copy (K3); F9 one native abort per client cancel (K5); F10 the approval
   channel's version fallback (ADR-0308 K10). *Amended 2026-11-20 (#612, lane L3): aelix-acp PR #39
   builds F9 as one abort at once per cancel and a re-abort only 2 s later while the turn still
-  streams (K5's amendment).*
+  streams (K5's amendment).* *Amended 2026-11-22: #854 builds F8 for every fork that copies during a
+  turn.*
 - Complexity (ruff 0.15.13, `--isolated --select C901`; part A's `c901-diff.txt`, part B's): no
   listed score rose (`run_rpc_mode` 45, `RpcControlPlane._dispatch` 26 → 25, `runtime._run` 21,
   `_async_main` 156); `CommandWire.request` 9 → 10, `handle` 9 → 10, `capabilities` 7 → 9; no new
@@ -1156,3 +1173,81 @@ as written after such a moment. `test_the_retired_gates_are_forgotten_once_no_ga
 while a gate is still up, empty once none is, a hold retired afterwards followed as before; on
 fix round 1's head the entry stays. Mutants of these lines: 5 of 5 killed; the file's other tests pass
 unchanged.
+
+## Note (2026-11-22, #854): a fork settles the turn before it copies
+
+K3, and contract r5's F8. `AgentSessionRuntime.fork` copied the branch (`repo.fork`) and then tore
+the outgoing harness down, and since #800 the teardown seals and settles the turn: a clone taken
+during a delegation held the `agent` call and no result, and the report was only in the outgoing
+file. The issue's probe on `0436193c`: copy roles `user, assistant` for `at` and none for `before`.
+
+**The change** (the lead's call: the veto first, then the settle, then the copy). After
+`session_before_fork` and the entry's checks (an unknown entry, a `before` fork of an entry that is
+not a user message), `fork` runs step 0 (`_seal_and_settle`) before it reads the branch, so a
+vetoed or refused fork touches no turn. Just before step 0, a fork during a turn gives the steer and
+follow-up lines queued on it back on `input_withdrawn` (`_give_back_queued`, #681), since the
+settle's abort clears the queues; a copy that then fails has given them back too (fix round 1,
+verify F1 and Codex C1: in round 1 they were cleared and given back nowhere, a regression against
+`0436193c`, which gave them back inside `_finish_session_replacement`). A copy `at` the leaf the
+session had when the fork began is
+taken at the leaf the settle left, under which the call's result was written; any other entry is
+copied where it is. The teardown takes the seal the fork made (`_handed_seal`) instead of sealing
+again, so a settle past its bound is not waited for twice and an interruption in `session_shutdown`
+still undoes it. Only the fork's own transition takes it (fix round 1, Codex C3): a quit, which runs
+outside the transition lock, that comes while the fork waits between the hand-off and its teardown
+seals on its own and leaves the fork's seal up; in round 1 it took the seal, and a quit then
+cancelled in `session_shutdown` lifted it, so the outgoing harness ran a prompt while the fork was
+still running; a copy that fails before the teardown puts the gate back (`_abandon`), with the
+turn already settled. pi copies before its `teardownCurrent` aborts (`agent-session-runtime.ts`
+`fork` at `780bf31f`, read): a divergence.
+
+**Entry points**, the issue's list checked: RPC classic `clone` (`at` the leaf read by
+`_handle_clone`) and `fork` (`before`) are admitted during a turn and reach this fork; an extension
+command's `ctx.fork` (`ExtensionCommandContext.fork`) reaches it, and the TUI runs an extension's
+command mid-turn (ADR-0292); RPC `sessions/branch` is refused during a turn by `classic_gate`'s idle
+rule, and the TUI's `/fork` and `/clone` are refused mid-turn (`tui/commands.py`'s
+`_MID_TURN_REFUSED`, read). No other path copies the current branch.
+
+**How it is held.** `tests/runtime/test_copy_settles_first_854.py`: the probe `at` (the copy is
+`user, assistant, toolResult`, the report, and the old harness asked its model once; on `0436193c`
+`user, assistant`); the same through `ExtensionCommandContext.fork(leaf, {"position": "at"})` (on
+`0436193c` no report in the copy); a copy that fails after the settle leaves the harness installed
+with no gate (on `0436193c` the failed copy left the delegation running, and the prompt was still
+running at the test's 20 s bound); a fork whose replacement raises after it handed its seal on and
+before its teardown took it leaves a harness that takes the next prompt (it kills a fork that leaves
+that seal up; on `0436193c` nothing is handed and nothing raises, and the test fails at
+`pytest.raises`; round 1's note listed it among guards passing on both, verify F3). Guards, passing
+on both: the probe `before` (the copy holds nothing of the turn, the outgoing file the report); an
+`at` copy of an earlier entry ends there; a vetoed fork, `at` and `before`, seals, aborts and copies
+nothing and the delegation goes on; an invalid `before` entry is refused before the settle; a fork
+cancelled in an awaited `session_shutdown` handler leaves a harness that takes the next prompt (it
+kills a fork that keeps its seal from its teardown); and a fork whose turn ignores the settle's
+cancels past the 0.3 s bound (a patched bound) reaches `session_shutdown` with one settle alive and
+the fork's seal up, and waits that bound once (it kills a teardown that seals and settles again, and
+one that waits on the handed settle again: Codex C8, `[0.3, 0.3]`).
+
+Fix round 1 adds, each failing in round 1: the queued steer and follow-up lines come back on
+`input_withdrawn` for a fork `at` and `before` (verify F1's probe; `0436193c` gave them back too)
+and for a copy that fails (Codex C1's variant); and a quit cancelled in `session_shutdown` while the
+fork waits after its hand-off leaves the fork's seal up and a prompt refused, and the fork completes
+(Codex C3's probe). Mutants of the fix round's #854 lines: 4 of 4 killed; round 1's M854-8, M854-9
+and M854-10 are equivalent or redundant (the `finally` and `_handed_seal` each clear `_copy_seal`
+alone; a `before` target cannot be the leaf; verify F8).
+
+**Live** (`.omc/probes/b8-1122/849-851-854/854-live/`; macOS, a real `--mode rpc --agents` parent,
+`openai/gpt-4.1-mini` on OpenRouter, the scratch `models.json` sending `openRouterRouting`
+`{"order": ["openai"], "allow_fallbacks": false}` (the upstream that served was not read), a real
+delegated child running `sleep 40`): `clone` sent 3 s after the child entered `bash` returned
+`{"cancelled": false}` in 0.11 s; the copy, reopened with `--session` in a second process, lists
+`user`, the assistant's `agent` call and the `toolResult` that is the report. On `0436193c` the same
+run's copy lists `user` and the `agent` call only; the outgoing file holds the report on both.
+
+Fix round 1's head, the same driver with the verifier's steer and follow-up
+(`.omc/probes/b8-1122/849-851-854/fix-r1/live/854-clone/`): after `steer` "STEER-LINE-854" and
+`follow_up` "FOLLOW-LINE-854", `clone` returned `{"cancelled": false}` in 0.11 s, the first event
+after it was `input_withdrawn` carrying both lines, and the copy, reopened with `--session`, lists
+`user`, the assistant's call and the `toolResult` that is the report (in round 1, by verify round 1:
+no `input_withdrawn`, and the lines in neither file). The same driver on this change's final code
+(`.omc/probes/b8-1122/849-854-split/live-854-clone/`, macOS, 2026-11-23): `clone` returned `{"cancelled": false}` in 0.17 s, `input_withdrawn` carrying both
+lines was the first event after it, and the copy, reopened with `--session`, lists `user`, the
+assistant's `agent` call and the `toolResult` that is the report.
