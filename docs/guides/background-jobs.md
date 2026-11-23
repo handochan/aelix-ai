@@ -284,9 +284,10 @@ refused, "children/resume resumes only an agent the model delegated, and a perso
 …". The two doors differ in one check: the session's `agents` lists (`/agents`) do not filter the
 host's door, as they do not filter `/agents run`. An agent whose profile they turn off is refused
 to the model and resumed for the host, and the host's listing of resumable agents names it. The
-host's resume is consented as `agents/run` is: on the host's dialogs when it enabled them, also in
-a process that reopened the session and has not prompted yet, and never wider than the agent's
-first run was granted. After the dialog the profile must still be the file that was approved,
+host's resume is consented on the host's dialogs when it enabled them, as `agents/run` is once the
+session has prompted, but also in a process that reopened the session and has not prompted yet,
+where `agents/run` still asks nothing (ADR-0318 L5), and never wider than the agent's first run was
+granted. After the dialog the profile must still be the file that was approved,
 "the approved profile and the resolved profile do not match" otherwise. It is not charged against
 the model's delegation budget. Run live against a real `--mode rpc` parent and through aelix-acp's
 `_aelix/manage children/resume`, both on macOS with a real model, and in a second process that
