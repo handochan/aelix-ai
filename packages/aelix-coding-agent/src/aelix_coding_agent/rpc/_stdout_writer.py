@@ -455,7 +455,12 @@ class ThreadedFrameWriter:
         return True
 
     def _fail(self, exc: BaseException) -> None:
-        """The stream ended: drop the queue, wake every waiter, start the shutdown (#57)."""
+        """The stream ended: drop the queue, wake every waiter, start the shutdown (#57).
+
+        The stderr line is handed to :func:`tell_stderr` first, so a stream with no
+        descriptor has it before the shutdown starts; a real descriptor gets it from a
+        thread, as before. The shutdown starts even if the line cannot be made.
+        """
 
         with self._lock:
             if self._failure is not None:
@@ -465,9 +470,11 @@ class ThreadedFrameWriter:
             self._frames.clear()
             self._queued = 0
             drained = self._drained
-        self._call_on_loop(self._closed_on_loop, drained)
-        if not pipe_closed(exc):
-            tell_stderr(f"[rpc] stdout cannot be written ({exc!r}); the mode ends\n")
+        try:
+            if not pipe_closed(exc):
+                tell_stderr(f"[rpc] stdout cannot be written ({exc!r}); the mode ends\n")
+        finally:
+            self._call_on_loop(self._closed_on_loop, drained)
 
     def _call_on_loop(self, callback: Callable[..., None], *args: Any) -> None:
         with contextlib.suppress(RuntimeError):  # the loop has closed

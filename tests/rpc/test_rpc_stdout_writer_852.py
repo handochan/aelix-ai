@@ -2125,3 +2125,50 @@ async def test_the_drain_runs_when_a_retire_raises(
     thread = writer._thread
     await asyncio.to_thread(thread.join, 5)
     assert not thread.is_alive()
+
+
+async def test_the_stderr_line_is_out_before_the_shutdown_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CI on windows-latest (py3.11, py3.14): the thread started the shutdown before it wrote
+    its stderr line, so the two tests above, which read stderr once the shutdown began, found
+    it empty. A stderr with no descriptor, as here, now has the line before the shutdown
+    starts, however slow the line is; a real descriptor gets it from a thread, as before."""
+
+    tell = _stdout_writer.tell_stderr
+
+    def tell_slowly(text: str, *, wait: float = 0.0) -> None:
+        time.sleep(0.3)
+        tell(text, wait=wait)
+
+    monkeypatch.setattr(_stdout_writer, "tell_stderr", tell_slowly)
+
+    def sink(data: memoryview) -> int:
+        raise RuntimeError("not an OSError")
+
+    closed: list[bool] = []
+    writer = ThreadedFrameWriter(sink, lambda: closed.append(True))
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        writer.write(b"frame\n")
+        await _until(lambda: closed == [True], 5, "the shutdown did not start")
+        line = err.getvalue()
+    assert "[rpc] stdout cannot be written (RuntimeError" in line, "the shutdown started before the line"
+
+
+async def test_an_error_that_cannot_be_printed_still_starts_the_shutdown() -> None:
+    """Delta verify F2: an ``OSError`` whose ``repr`` raises still starts the shutdown. With the
+    line made before the shutdown was scheduled and nothing around it, the thread left ``_fail``
+    on the ``repr``'s error and the shutdown never started."""
+
+    class _Unprintable(OSError):
+        def __repr__(self) -> str:
+            raise ValueError("no repr")
+
+    def sink(data: memoryview) -> int:
+        raise _Unprintable(errno.EIO, "Input/output error")
+
+    closed: list[bool] = []
+    writer = ThreadedFrameWriter(sink, lambda: closed.append(True))
+    writer.write(b"frame\n")
+    await _until(lambda: closed == [True], 5, "the shutdown did not start")
+    assert isinstance(writer.failure, _Unprintable)
