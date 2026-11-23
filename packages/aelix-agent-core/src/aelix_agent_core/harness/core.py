@@ -1285,7 +1285,7 @@ class AgentHarness:
         gate: its launch model is resolved before any ``session_start``.
         """
 
-        self._turn_gate = reason
+        self._turn_gate = reason = self._unretired(reason)  # #849: an ended gate's own
         if reason is None and self._notices_enabled:
             # #722 — a notice that waited for the gate can be taken now.
             self._inbox.notify("released")
@@ -6914,6 +6914,54 @@ class AgentHarness:
 
         return self._abort_requested or self._turn_cancelled
 
+    #: #849 — gates whose holds ended while another gate was up (:meth:`release_turns`),
+    #: until no gate is up (:meth:`_unretired`).
+    _retired_gates: dict[int, tuple[str, str | None]] | None = None
+
+    def release_turns(self, gate: str, restore: str | None) -> None:
+        """#849 (ADR-0307 D3) — a save/restore hold ends: ``gate``, which it put up, gives way to ``restore``.
+
+        ``restore`` is the gate the hold saved when it began (``LateRouteHold.apply``).
+        While ``gate`` is still up it is lifted for ``restore`` (:meth:`hold_turns`),
+        as a plain restore did. When another gate went up after it and is still up —
+        a swap's seal, another hold — that gate stays, and ``gate`` is retired: from
+        now on a restore of it, by whatever replaced it (a seal's
+        ``_unseal_when_settled``, a hold that saved it), puts back ``restore``
+        instead (:func:`_unspent`). On ``0436193c`` the restore went up whatever was
+        up: a live seal came down while its settle could still re-abort the next
+        prompt (Codex review C5 of #849, also on the base), and another hold's gate
+        came down while that hold ran; in round 1 a hold that had saved a seal
+        over this one then put this expired gate back after both ended, and every
+        prompt was refused (Codex C4).
+        """
+
+        if self._turn_gate is gate:
+            self.hold_turns(restore)
+            return
+        retired = self._retired_gates
+        if retired is None:
+            retired = self._retired_gates = {}
+        retired[id(gate)] = (gate, restore)
+
+    def _unretired(self, gate: str | None) -> str | None:
+        """#849 — the gate :meth:`hold_turns` puts up for ``gate`` (:func:`_unspent`), and the retired gates' end.
+
+        When the answer is no gate, the retired gates are forgotten (verify round 2
+        N3: the map only grew, one entry for each hold that ended under another
+        gate). No hold or seal can put one back from then
+        on: a hold restores the gate it saved only while its own gate is up
+        (:meth:`release_turns`), a seal only while it is the gate
+        (``_unseal_when_settled``), and with no gate up neither is; one that began
+        earlier and ends later finds its gate gone and restores nothing. A caller
+        that restores a gate it saved with a plain :meth:`hold_turns` of its own
+        (none in this repository) gets that gate as written after such a moment.
+        """
+
+        gate = _unspent(gate, self._retired_gates)
+        if gate is None:
+            self._retired_gates = None
+        return gate
+
 
 # === AgentEvent → HookEvent mapping ===
 
@@ -7924,9 +7972,53 @@ class TurnSeal(str):
     The refused turn of :meth:`AgentHarness.hold_turns` is for the CLI's holds,
     whose ``session_start`` handlers may await their turn. Defined here, after the
     code the repository's line citations point at, so that none of them moves.
+
+    #849 (ADR-0307 D3): a seal kept past its swap's end is lifted when its settle
+    ends (``AgentSessionRuntime``'s ``_unseal_when_settled``), which then marks it
+    spent (:meth:`spend`). A hold that saved the gate while the seal was up and
+    restores it after that (``LateRouteHold.apply``) puts back a spent seal, and
+    :meth:`AgentHarness.hold_turns` puts back the gate the seal replaced instead
+    (:func:`_unspent`): on ``0436193c`` such a harness refused every prompt with
+    the seal's reason until the next swap. A seal that is not spent is put back as
+    itself and refuses until its settle ends. When the gate it replaced was a hold
+    that has ended since (:meth:`AgentHarness.release_turns`), the gate that hold
+    saved goes up instead (fix round 1, Codex C4: in round 1 the expired hold
+    came back and refused every prompt).
     """
 
-    __slots__ = ()
+    #: Set by :meth:`spend`, once: the settle this seal waited for has ended.
+    spent: bool = False
+    #: The gate this seal replaced, which a restore of the spent seal puts back.
+    replaced: str | None = None
+
+    def spend(self, replaced: str | None) -> None:
+        """The seal's settle ended: a restore of it from now on puts back ``replaced``."""
+
+        self.replaced = replaced
+        self.spent = True
+
+
+def _unspent(
+    gate: str | None, retired: dict[int, tuple[str, str | None]] | None = None
+) -> str | None:
+    """#849 — the gate :meth:`AgentHarness.hold_turns` puts up for ``gate``.
+
+    ``gate`` itself, unless its owner has ended: a spent :class:`TurnSeal` stands for
+    the gate it replaced, and a hold's gate in ``retired`` (:meth:`AgentHarness.release_turns`)
+    for the gate that hold saved, followed through every ended gate under it (a cycle,
+    which no path makes, stops at the gate it comes back to).
+    """
+
+    seen: set[int] = set()
+    while gate is not None and id(gate) not in seen:
+        seen.add(id(gate))
+        if isinstance(gate, TurnSeal) and gate.spent:
+            gate = gate.replaced
+        elif retired is not None and retired.get(id(gate), (None,))[0] is gate:
+            gate = retired[id(gate)][1]
+        else:
+            break
+    return gate
 
 
 def _refuses_a_trigger(gate: str | None) -> bool:

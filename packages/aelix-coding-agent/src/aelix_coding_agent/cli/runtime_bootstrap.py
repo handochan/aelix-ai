@@ -2809,14 +2809,25 @@ class LateRouteHold:
         exit, for the caller to lift; a gate this call put up is lifted here.
         No await between the check and the restore. Returns what
         :meth:`_put_on` returns.
+
+        #849 (ADR-0307 D3) — the exit is ``AgentHarness.release_turns``: when a
+        gate went up after this hold's and is still up (a swap's seal, another
+        hold), that gate stays, and lifting it later puts back ``caller_gate``
+        instead of this hold's. A harness without ``release_turns`` gets the
+        plain restore.
         """
 
         caller_gate = harness.turns_held
-        harness.hold_turns(f"{HOLD_GATE} {self.reason}")
+        gate = f"{HOLD_GATE} {self.reason}"
+        harness.hold_turns(gate)
         try:
             return await self._put_on(harness)
         finally:
-            harness.hold_turns(caller_gate)
+            release = getattr(harness, "release_turns", None)
+            if callable(release):
+                release(gate, caller_gate)
+            else:
+                harness.hold_turns(caller_gate)
 
     async def _put_on(self, harness: Any) -> Exception | None:
         """Set the placeholder, wait out a refused turn, check it held (gated by :meth:`apply`).

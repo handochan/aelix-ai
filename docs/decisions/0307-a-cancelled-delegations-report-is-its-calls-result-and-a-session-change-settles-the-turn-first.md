@@ -19,6 +19,11 @@ Amended 2026-11-22 (#857): `children/notices` also answers `placedInTurn`, every
 placed, boundary drains included; `placed` is unchanged. See the note "(2026-11-22, #857)".
 Amended 2026-11-22 (ADR-0318, #836): the `children/` family gains `children/resume`, a host's resume
 of a stopped agent the model delegated. See the note "(2026-11-22, #836)".
+Amended 2026-11-22 (#849):
+a seal kept past an interrupted swap is spent when its settle ends, so a hold that saved and
+restores it puts back the gate it replaced (D3, and K4 loses that case); the note of 2026-11-22
+says how it was measured. Its fix round 1 leaves a gate up that went up after a hold that ends; a
+later round forgets the retired gates once no gate is up.
 Date: 2026-11-19
 Issue: #800 (a cancelled delegation's report does not reach an ACP client and is gone after a
 reopen), taken into #612's lane by the owner (2026-11-18: "네 진행하세요"; lane b7f landed first).
@@ -148,7 +153,10 @@ still alive past that bound — an `abort` handler that swallows its cancel — 
 ends: meanwhile the harness refuses a prompt with the seal's reason, and when the settle ends the
 gate goes back, only if it is still the seal, so a hold set since is kept (`_unseal_when_settled`;
 verify round 2 F2: on `9acd9ea0` the gate went back at the bound and the settle's re-abort ended the
-next prompt). A hold that saves and restores the gate across the settle's end is the exception (K4).
+next prompt). The seal is spent when its settle ends, so a hold set meanwhile that saved it and
+restores it after that end (`LateRouteHold.apply`) puts back the gate the seal replaced, and a hold
+that ends while a seal or another hold put up after it is still up leaves that gate up (note of
+2026-11-22, #849; until then this was K4's exception).
 
 A switch to the file the outgoing session is on opens it again after the teardown and before the
 install (`_finish_session_replacement(reopen=…)`, the caller's own way of opening that file), so the
@@ -504,18 +512,16 @@ Each is a narrowing under the lead's rule for r5: outside the guarantee the beha
 - **K3 — copies of a session.** `/fork` and `/clone` (RPC `sessions/branch`) taken while a delegation
   runs copy the branch before the settle: the copy holds the `agent` call with no result; the report
   is in the outgoing session.
-- **K4 — the swap's bound.** Step 0 waits for the settle at most `SWAP_SETTLE_SECONDS` (10 s); past it
-  the swap goes on in today's order. A prompt still inside a `before_agent_start` handler (a dialog
-  nobody answers) holds a swap or quit in `dispose()` until the handler returns, as before #800; on
-  RPC such a dialog ends at 300 s. Two cases past the bound are worse than the base, both needing an
-  `abort` handler that swallows its cancel or a teardown that outlives the bound, which no shipped
-  extension does (the lead's narrow-and-finish call, lane verify round 3): a hold that saves and
-  restores the gate across the settle's end (`LateRouteHold.apply`: `/agents use`, a late-route settle)
-  restores the kept seal after `_unseal_when_settled` ran, and the harness refuses prompts until the
-  next swap (verify round 3 F1, `.omc/probes/800/verify-r3/probes3/test_v3_seal.py::test_s4`); and a
-  run's end on a stale context counts as headless, so the "did not land" line goes to stderr under the
-  TUI too, reachable only from an extension command that swaps mid-turn because the TUI refuses its own
-  swaps while a turn runs (verify round 3 F2, `probes3/test_v3_stale_ctx.py`).
+- **K4 — the swap's bound.** *Amended 2026-11-22 (#849).* Step 0 waits for the settle at most
+  `SWAP_SETTLE_SECONDS` (10 s); past it the swap goes on in today's order. A prompt still inside a
+  `before_agent_start` handler (a dialog nobody answers) holds a swap or quit in `dispose()` until the
+  handler returns, as before #800; on RPC such a dialog ends at 300 s. One case past the bound is
+  worse than the base, needing a teardown that outlives the bound, which no shipped extension does
+  (the lead's narrow-and-finish call, #800's lane verify round 3): a run's end on a stale context
+  counts as headless, so the "did not land" line goes to stderr under the TUI too, reachable only
+  from an extension command that swaps mid-turn because the TUI refuses its own swaps while a turn
+  runs (verify round 3 F2, `.omc/probes/800/verify-r3/probes3/test_v3_stale_ctx.py`). The other
+  case it named, a hold that saves and restores the gate across the settle's end, is gone (#849).
 - **K5 — ACP, one cancel, several aborts.** aelix-acp re-aborts a cancelled turn while the native
   streams (every 50 ms at `16d6555b`). A native whose cut path waits longer than that in a hook or its
   append reaches K1, and the next prompt's copy is not in the adapter's table. *Amended 2026-11-20
@@ -1073,3 +1079,80 @@ stopped`, and that resume answered `status: aborted`; and `commands/cancel` ende
 the fences and the notice wake are unchanged; since #853's fix round 1 a `permissions/set {tighten:
 true}` that narrows is admitted before the lock too (ADR-0306's note of 2026-11-22).
 
+
+## Note (2026-11-22, #849): a spent seal puts back the gate it replaced
+
+K4's first case past the bound. An interrupted swap or quit whose settle outlives its join keeps
+its seal; `_unseal_when_settled` lifts it when the settle ends, only while the gate is still that
+seal. `LateRouteHold.apply` (`/agents use`, a late-route settle) saves the gate, holds the turns,
+awaits and restores what it saved: when the settle ended inside that await, the callback saw the
+hold and did nothing, and `apply` restored the seal. The issue's probe S4, the real `apply` called
+unbound, on `0436193c`: `settles_left=0 gate_after=TurnSeal:'the session is being replaced'
+prompt=refused`.
+
+**The change** (the lead's call: the issue's first candidate). `_unseal_when_settled` marks the seal
+spent when its settle has ended (`TurnSeal.spend(previous)`), and `AgentHarness.hold_turns` puts up
+`_unspent(reason)`: a spent seal stands for the gate it replaced, followed through every spent seal
+under it. A seal whose settle still lives is put back as itself and refuses until the settle ends.
+The `turns_held is seal.gate` check stays, so a hold set while the settle lives is kept when it
+ends. The two other candidates were not taken: one needs `_unseal_when_settled` to know every hold
+that saved the seal, and the other changes `apply` alone, not every path that restores a gate.
+
+**Every path that saves and restores the gate**, read in `packages/` at `0436193c`:
+`LateRouteHold.apply` (`cli/runtime_bootstrap.py`; covered, and since fix round 1 it ends through
+`release_turns`, below); `AgentSessionRuntime._abandon` through
+`_unseal_when_settled`, which restores `previous` (covered: a `previous` that is a spent seal
+resolves too); `_settle_late_route`'s `finally` (`cli/entry.py`) lifts the rebuilt harness's gate
+with `None` and the launch gate is set and lifted with `None` (no restore of a saved gate);
+`AgentHarness.stop` sets the gate of a harness given up on (no restore). No other `hold_turns`
+caller restores a saved value.
+
+**How it is held.** `tests/runtime/test_kept_seal_restored_849.py`: the probe S4 (the gate is `None`
+and the next prompt runs to its answer, not aborted by the old settle; on `0436193c` the gate is the
+seal and the prompt is refused), a gate saved while the seal was kept and restored after its
+settle ended, and a seal that had replaced a hold ("held by the launch") restored after its settle
+ended, which puts that hold back (on `0436193c` the seal comes back in both); a guard, passing on
+both, puts the seal back while its settle lives (refused with its reason, lifted when the settle
+ends), and a unit test pins `_unspent` through two spent seals. The issue's S1–S3 print what
+they printed on `0436193c`, and S4 prints `gate_after=NoneType:None prompt=ran`
+(`.omc/probes/b8-1122/849-851-854/849/`); `tests/runtime/test_swap_settles_first_800.py` passes whole,
+`test_a_hold_set_while_the_settle_lives_is_kept_when_it_ends` among it.
+
+**Fix round 1** (Codex review C4 and C5, verify F9). A hold's end could put up a gate whose owner
+had ended, or take down one that was still live. Hold A was up when a swap sealed; the swap was
+interrupted with its settle alive; hold B saved the seal; A ended while B ran, and its restore put
+`None` up over B's gate; then the settle ended, and B's restore of the spent seal put back A's hold,
+which nobody would lift: every prompt was refused (C4, in round 1; on `0436193c` the seal itself
+came back). And a hold up before an interrupted swap that ended while the settle still lived put
+`None` up over the live seal, so the next prompt reached the model and the settle's re-abort ended
+it (C5, on `0436193c` too). The change (the lead's call: C5 has C4's cause and is fixed with it):
+`LateRouteHold.apply` ends through `AgentHarness.release_turns(gate, restore)`. While the hold's own
+gate is up it is lifted for the gate the hold saved, as before; when a gate put up after it is still
+up (a seal, another hold), that gate stays and the hold's gate is retired, and `_unspent` resolves a
+retired hold's gate to the gate that hold saved, as it resolves a spent seal to the gate it
+replaced, through every ended gate under it. A harness with no `release_turns` gets the plain
+restore. And two swaps interrupted on a turn whose model ignores their cancels do stack two seals
+(verify F9; this note's test file said no path did).
+
+Held by `tests/runtime/test_kept_seal_restored_849.py`:
+`test_a_spent_seal_does_not_put_back_a_hold_that_has_ended` (C4's probe: B's gate stays up while B
+runs and no gate is left after both; in round 1 A's end took B's gate down to `None`),
+`test_a_hold_that_ends_under_a_live_seal_leaves_the_seal_up` (C5's: a prompt is refused with the
+seal's reason until the settle ends, then the next prompt runs and is not re-aborted; in round 1 and
+on `0436193c` the gate was `None` at the hold's end), and
+`test_two_interrupted_swaps_stack_their_seals_and_a_hold_across_both_puts_back_neither` (the
+verifier's stacked case, and one whose outer seal stays up; it passes in round 1, fails on
+`0436193c` with a seal put back, and kills an `_unspent` that follows one ended gate only). Mutants
+of the fix round's #849 lines: 7 of 7 killed.
+
+**Verify round 2, N3.** The retired gates were never forgotten: one entry for every hold that
+ended under another gate, for the life of the harness. `AgentHarness.hold_turns` now forgets them when the gate it puts up is none
+(`AgentHarness._unretired`). Nothing can put a retired gate back from then on: a hold restores the
+gate it saved only while its own gate is up (`release_turns`), a seal only while it is the gate
+(`_unseal_when_settled`), and with no gate up neither is; a hold or a seal that began earlier and
+ends later finds its gate gone and restores nothing. A caller that restores a saved gate with a
+plain `hold_turns` of its own, of which `packages/` has none (this note's list of paths), gets it
+as written after such a moment. `test_the_retired_gates_are_forgotten_once_no_gate_is_up`: kept
+while a gate is still up, empty once none is, a hold retired afterwards followed as before; on
+fix round 1's head the entry stays. Mutants of these lines: 5 of 5 killed; the file's other tests pass
+unchanged.

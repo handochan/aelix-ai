@@ -1220,11 +1220,11 @@ unwritten. Add them with the next release.
   starts no turn: a session change hands it back, and a quit leaves it unsent, as before. A swap or
   quit interrupted before the old session is torn down leaves it taking prompts once its turn has
   stopped; an `abort` handler that swallows that stop keeps it refusing them until then
-  (`test_an_abort_hook_that_swallows_the_cancel_keeps_the_seal_until_the_settle_ends`), or, if a hold
-  that saves and restores the gate spans that end, until the next swap (K4). A swap an
-  extension vetoes aborts nothing; `/reload` still waits for the turn
-  to end. `/fork` and `/clone` copy the branch before the turn settles (K3), and a prompt still
-  inside a `before_agent_start` handler holds a swap as before (K4).
+  (`test_an_abort_hook_that_swallows_the_cancel_keeps_the_seal_until_the_settle_ends`); a hold that
+  saved the gate meanwhile and restores it after that end puts back the gate the seal replaced
+  (#849). A swap an extension vetoes aborts nothing; `/reload` still waits for the turn to end.
+  `/fork` and `/clone` copy the branch before the turn settles (K3), and a prompt still inside a
+  `before_agent_start` handler holds a swap as before (K4).
 
 - **`SLICE-STATUS.md` records the win32 stdin pump under every delegated child's command inbox
   (#829).** Since #123 the RPC thread pump (W4) also reads a child's inbox on Windows, and the
@@ -1989,6 +1989,21 @@ unwritten. Add them with the next release.
   only past that bound or after a closed or broken stdout. The WebSocket host and the wire are
   unchanged.
 
+- **After an interrupted swap, `/agents use` or a late-route settle no longer leaves the session
+  refusing every prompt (#849, ADR-0307 D3).** When a swap or quit was interrupted while an `abort`
+  handler swallowed its cancel, the session kept its seal until that stop ended; a hold that saved
+  the turn gate meanwhile (`/agents use`, a late-route settle) and restored it after the stop ended
+  put the seal back, and every prompt was refused "the session is being replaced" until the next
+  swap. The seal is spent when its settle ends, and restoring it puts
+  back the gate it replaced (`tests/runtime/test_kept_seal_restored_849.py`: the next prompt runs to
+  its answer). A hold that ends while a gate put up after it is still up (a swap's seal, another
+  hold) now leaves that gate up; before, its end put its saved gate up over it, so a live seal came
+  down and the old settle's re-abort ended the next prompt
+  (`test_a_hold_that_ends_under_a_live_seal_leaves_the_seal_up`), and another hold's gate came down
+  while that hold ran (`test_a_spent_seal_does_not_put_back_a_hold_that_has_ended`). New public
+  method: `AgentHarness.release_turns(gate, restore)`, the end of a hold that saved the gate it
+  replaced (`LateRouteHold.apply` ends through it); `hold_turns(gate)` still sets the gate it is given, except that a spent seal, or a retired
+  hold's gate, puts up the gate it replaced.
 - **Shell commands run by a delegated agent inherit the user's `PYTHONPATH`
   (#803, ADR-0197).** In the macOS CLI probe, delegated `bash` passed through
   the two user-supplied paths unchanged and left the variable unset when it

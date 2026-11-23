@@ -2537,12 +2537,18 @@ def _unseal_when_settled(seal: _Seal) -> None:
     harness took meanwhile (verify round 2 F2), so the seal stays until the settle
     ends. The gate goes back only while it is still the seal: a hold set since (the
     CLI's, a ``stop``) is kept.
+
+    #849 — and the seal is spent then (:meth:`TurnSeal.spend`): a hold set since that
+    saved it and restores it later (``LateRouteHold.apply``) puts back ``previous``,
+    not the seal, which nothing would lift any more.
     """
 
     settle = seal.settle
     if settle is not None and not settle.done():
         settle.add_done_callback(lambda _settle: _unseal_when_settled(seal))
         return
+    if seal.gate is not None:
+        seal.gate.spend(seal.previous)
     if seal.harness.turns_held is seal.gate:
         seal.harness.hold_turns(seal.previous)
 
