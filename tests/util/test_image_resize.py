@@ -80,6 +80,29 @@ async def test_oversized_image_resized_with_aspect_ratio() -> None:
     # Aspect 2:1 preserved at max_width=2000.
     assert result.width == 2000
     assert result.height == 1000
+    with Image.open(io.BytesIO(base64.b64decode(result.data))) as decoded:
+        assert decoded.mode == "RGB"
+        assert decoded.getpixel((0, 0)) == (10, 20, 30)
+
+
+async def test_resize_signed_grayscale_as_16_bit_png() -> None:
+    image = Image.new("I", (4, 2), color=4097)
+    buffer = io.BytesIO()
+    image.save(buffer, format="TIFF")
+    content = ImageContent(
+        mime_type="image/tiff", data=base64.b64encode(buffer.getvalue()).decode("ascii")
+    )
+
+    result = await resize_image(content, ImageResizeOptions(max_width=2))
+
+    assert result is not None
+    assert result.was_resized
+    assert result.mime_type == "image/png"
+    with Image.open(io.BytesIO(base64.b64decode(result.data))) as decoded:
+        assert decoded.format == "PNG"
+        assert decoded.mode == "I;16"
+        assert decoded.size == (2, 1)
+        assert decoded.getpixel((0, 0)) == decoded.getpixel((1, 0)) == 4097
 
 
 async def test_tall_image_resized_with_aspect_ratio() -> None:

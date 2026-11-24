@@ -4004,9 +4004,9 @@ async def run_tui(
             # Windows path is single-separator — the model receives the bare
             # absolute path and expects platform-correct separators.
             path = os.path.join(tempfile.gettempdir(), f"aelix-clipboard-{uuid.uuid4()}.png")
-            # pi normalizes to png as the ``?? "png"`` fallback; Aelix writes
-            # PNG unconditionally for lossless quality + universal support.
-            grabbed.save(path, "PNG")
+            from aelix_coding_agent.util.image_resize import save_png
+
+            save_png(grabbed, path)
         except Exception:  # noqa: BLE001 — write failure: silent (pi parity)
             return
         out_chrome.paste_to_editor(path)

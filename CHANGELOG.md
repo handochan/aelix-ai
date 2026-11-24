@@ -4780,6 +4780,18 @@ unwritten. Add them with the next release.
   google-auth's RSA signing. A grep of the locked environment's site-packages outside
   cryptography itself finds no reference to either affected API.
 
+- **New installs require Pillow 13 for image handling (ADR-0092).** Pillow
+  13.0.0 is the first PyPI release outside all 60 affected ranges in the
+  2026-11-24 Dependabot snapshot. The package allows `Pillow>=13.0.0,<14.0`
+  and the lock selects 13.0.0. Ctrl+V pastes signed grayscale clipboard
+  images again with Pillow 13, and the shared image resizer can write signed
+  grayscale inputs. Both paths are tested and both tests check the PNG
+  mode. The clipboard test feeds -1, 0, 4097, 65535 and 65536 and checks
+  that the decoded values are clipped to 0..65535, as Pillow 11.3.0 clipped
+  them. The resizer test checks that 4097 comes back as 4097. In the macOS `read` and `@file`
+  comparison, both versions produced the same MIME types, dimensions and
+  notes for PNG, EXIF-oriented JPEG, oversized PNG, GIF and WebP fixtures.
+
 - **MCP launch warnings identify connection and tool discovery failures (#834,
   ADR-0101).** The loopback launch tests show HTTP and SSE 401, Streamable HTTP
   499, connection refusal and invalid endpoints without echoing the endpoint.

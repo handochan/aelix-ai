@@ -77,11 +77,19 @@ class _EncodedCandidate:
     mime_type: str
 
 
+def save_png(image: Image.Image, destination: str | io.BytesIO) -> None:
+    """Write a PNG with Pillow 11.3's clipping of signed grayscale to 0..65535."""
+
+    if image.mode == "I":
+        image = image.convert("I;16")
+    image.save(destination, format="PNG")
+
+
 def _encode_png(image: Image.Image) -> _EncodedCandidate:
     """Encode ``image`` as PNG and wrap as :class:`_EncodedCandidate`."""
 
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    save_png(image, buf)
     raw = buf.getvalue()
     data = base64.b64encode(raw).decode("ascii")
     return _EncodedCandidate(
@@ -318,4 +326,5 @@ __all__: list[str] = [
     "ResizedImage",
     "format_dimension_note",
     "resize_image",
+    "save_png",
 ]

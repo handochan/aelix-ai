@@ -1,6 +1,6 @@
 # 0092. Sprint 6h₈ Phase 5a-iv — Image + Migrations + --continue Closure
 
-Status: Accepted (Sprint 6h₈ / Phase 5a-iv / W6 shipped)
+Status: Accepted (Sprint 6h₈ / Phase 5a-iv / W6 shipped) — Amended 2026-11-24 (Pillow security floor)
 Date: 2026-05-22
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -330,3 +330,40 @@ Gates: `tests/session/test_find_most_recent.py` — a fork under a deep cwd is
 found and is what `--continue` resolves to; a header between 512 bytes and the
 cap sniffs; a line that runs past the cap is refused; a line ending exactly on
 the cap is accepted; an unterminated header and a CRLF header both still sniff.
+
+## Note (2026-11-24): Pillow security floor before beta.3
+
+On 2026-11-24, the owner chose “beta.3 전에 상한 올리기 (권장)”. Of the 91
+open alerts in that day's Dependabot snapshot, 60 name Pillow. The floor is
+the lowest stable, non-yanked PyPI release outside all 60 affected ranges.
+Counting matches gives 60 for 11.3.0, 42 for 12.3.0 and zero for 13.0.0,
+the first release with zero matches. The cap is one major above the
+floor, as the previous `Pillow>=11.0,<12.0` was, so the range ends below 14.0.
+
+`aelix-coding-agent` now requires `Pillow>=13.0.0,<14.0` and `uv.lock` selects
+13.0.0. PyPI metadata gives `Requires-Python: >=3.11` and lists wheels for
+CPython 3.11 through 3.14 on macOS arm64, Linux x86-64 and Windows x86-64.
+[Pillow 13.0.0 release files](https://pypi.org/project/pillow/13.0.0/#files)
+
+The five Pillow and image-path test files passed in full on CPython 3.11 and
+3.14 on macOS arm64 and in Linux arm64 Docker. The macOS `read` and `@file`
+probe with identical PNG, EXIF JPEG, oversized PNG, GIF and WebP inputs
+returned the same MIME, decoded dimensions and note text on Pillow 11.3.0
+and 13.0.0. For both paths, the oversized PNG shrank from 4000×3000 to
+2000×1500.
+
+Pillow 13 removed direct PNG saving for signed grayscale images (mode
+`I`). Clipboard paste and the resizer's PNG encoder explicitly convert
+those images to unsigned 16-bit grayscale before writing. The Ctrl+V and
+resize regression tests verify the decoded PNG mode and pixel values
+against the behavior of Pillow 11.3.0. [Pillow 13.0.0 release notes](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html#saving-i-mode-images-as-png)
+
+One known difference comes from Pillow itself. Calling the resizer directly on a
+big-endian 16-bit TIFF (mode `I;16B`, 2005×5) returns different decoded pixel
+values on 13.0.0 than on 11.3.0: 1,470 of 10,000 samples differ. Pillow 13.0.0
+gives the same values with or without this change (independent verify, round 2,
+2026-11-24). `read` and `@file` treat a TIFF as text, so neither reaches this.
+
+Pi's image resize core at `8209929fb553e7a8c91dc0894569f9ec43dd201f` uses
+Photon WASM. Aelix continues to use Pillow as recorded in §B.
+[Pi image resize core](https://github.com/earendil-works/pi/blob/8209929fb553e7a8c91dc0894569f9ec43dd201f/packages/coding-agent/src/utils/image-resize-core.ts)
