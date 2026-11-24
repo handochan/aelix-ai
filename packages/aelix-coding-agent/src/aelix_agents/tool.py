@@ -418,14 +418,14 @@ session pays today, and the background paragraph is paid only where the
 background actions exist (#611 S1c). Measured at 627 bytes."""
 
 _BACKGROUND_HEAD = (
-    'action="spawn" starts ONE agent in the background instead: pass '
-    "'profile' and one 'task'. The call returns its id once the agent has "
-    "started, and you can go on with other work: its result comes back to you "
-    "once, later, as a system notice. Do not poll or sleep for it. "
+    'action="spawn" starts one background agent with '
+    "'profile' and one 'task'. It returns the id at launch. "
+    "Go on with other work. The result comes once as a system notice. "
+    "Do not poll or sleep for it. "
     'action="status" shows how one (\'id\') or each is doing; '
-    'action="wait" waits up to \'timeout\' seconds '
-    f"({int(WAIT_MIN_SECONDS)}–{int(WAIT_MAX_SECONDS)}, default "
-    f"{int(WAIT_DEFAULT_SECONDS)}) and never stops it; "
+    f'action="wait" waits up to timeout seconds ({int(WAIT_MIN_SECONDS)}–{int(WAIT_MAX_SECONDS)}, '
+    f"default {int(WAIT_DEFAULT_SECONDS)}). A queued steer (not a follow-up) can end the wait early. "
+    "The child keeps running. "
     'action="stop" stops it, and its partial result still comes back; '
     'action="result" reads a finished agent\'s whole result again '
     "(\'offset\' pages it). Spawned agents count against the same limit "

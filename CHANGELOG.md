@@ -1183,6 +1183,14 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **Parent steering can end a background-agent wait early (#913, ADR-0320).**
+  When the user steers a parent that is waiting in `agent(action="wait")`, the
+  wait can return successfully before the child finishes and the parent can
+  send its next model request as soon as the tool batch finishes. The wait
+  says “Wait ended early because input is pending.” The child keeps running
+  and delivers its usual completion notice. Explicit follow-up input still
+  waits for the parent task to finish.
+
 - **The ADR index has an entry for every ADR (#845).** `docs/decisions/README.md` had no entry
   for 100 of its 300 ADR files (most of 0094 to 0216, ADR-0157 among them). Each now has a table
   row with the title from its first heading, its `Status:` line as written (with a `Date:` added
@@ -1968,6 +1976,9 @@ unwritten. Add them with the next release.
   permissions, delegated-agent approvals and offline catalog behavior were corrected
   against the code.
 
+- **Job waits observe changes that arrive before the waiter starts (#913, ADR-0320).**
+  In the job notification regression, one transition to unresolved wakes the
+  wait even when it runs before the change coroutine gets its first turn.
 - **Startup and status skip auto-discovered MCP files in untrusted projects (#835, ADR-0282).**
   When Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, startup prints a
   presence notice and status reports it as skipped. Open-spy tests cover both

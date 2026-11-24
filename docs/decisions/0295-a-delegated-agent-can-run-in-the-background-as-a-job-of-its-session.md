@@ -10,6 +10,7 @@ note at the end. **Active since #611 S3 (#779, 2026-11-17):** `aelix_coding_agen
 the note of 2026-11-17 (#779) at the end.
 Amended 2026-11-19 (#612, ADR-0307): the background actions are offered on RPC (and so under ACP)
 too, owner r2 Q4; see the note "(2026-11-19, ADR-0307, #612)".
+Amended 2026-11-24 (#913, ADR-0320): Pending parent steering can end a wait early and preserve its empty-wait streak.
 Date: 2026-11-08
 Issue: #723 (#611 slice S1c). Parent: #611. Design: `.omc/specs/611-design-r6-s1-contract-2026-11-07.md`
 (round 6, the S1 contract: §2.2's A rows, §2.3, §2.4, §2.10), with rounds 3–5 and Codex's reviews
@@ -701,3 +702,11 @@ test that pinned the refusal is kept as the guard for an embedder whose host ans
 A host sees a spawned child as `aelix_child` frames (never `aelix_subagent`) and reaches it with
 `children/steer`, `children/wrap_up` and `children/stop` (ADR-0307 D4, D5); its question, under a
 `default` parent and a host that opted in, is ADR-0308's `childApproval`.
+
+## Note (2026-11-24, #913): Pending parent steering can end a wait early and preserve its empty-wait streak
+
+A parent steer can end an active wait successfully while the selected child runs. The wait
+preserves the current empty-wait count. The #913 clamped-wait test records an ordinary
+empty timeout, an early successful steer return and another empty timeout, then checks
+that the next wait is refused. The 30–1800 s limits and 120 s default still apply.
+See [ADR-0320](0320-pending-parent-steering-can-end-a-background-agent-wait.md).

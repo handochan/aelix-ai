@@ -3607,8 +3607,8 @@ async def _async_main(argv: list[str], startup: contextlib.AsyncExitStack) -> in
                 # overlay and True→False on the next reset.
                 no_context_files=lambda: parsed.no_context_files,
                 session=lambda: _live_session_of(session_host),  # #199: live host session
-                # #304 — the parent's EFFECTIVE model, the same late-bound way
-                # and through the same holder. #199 gave ``session`` this
+                wait_steering=lambda: _live_harness_of(session_host),
+                # #304 — the parent's effective model. #199 gave ``session`` this
                 # treatment and left ``model`` on the hook-context path, where
                 # it was wrong in three measured states: no context at all
                 # (``/agents run`` first in a fresh TUI), a stale one (right
@@ -6421,3 +6421,8 @@ __all__ = [
     "resolve_app_mode",
     "to_print_output_mode",
 ]
+
+
+def _live_harness_of(host: dict[str, Any]) -> AgentHarness | None:
+    runtime: AgentSessionRuntime | None = host.get("runtime")
+    return runtime.harness if runtime is not None else None

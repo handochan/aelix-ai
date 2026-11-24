@@ -46,8 +46,8 @@ THE ACTIONS (owner, 2026-11-07, and #604's one tool with an ``action``):
   :data:`~aelix_agents.tool.WAIT_MAX_SECONDS`, default
   :data:`~aelix_agents.tool.WAIT_DEFAULT_SECONDS`; never stops anything, never
   returns the result (the notice is the one delivery); the third empty wait in
-  a row in one prompt is refused; it ends early, once per notice, when a
-  waited agent marked stuck has its attention notice posted (#123 D1);
+  a row in one prompt is refused; it can end on a parent steer (#913) or,
+  once per notice, when a waited agent's stuck attention is posted (#123 D1);
 * ``status`` / ``stop`` — through the service, for this session's agents only;
 * ``result`` — the whole result again, paged; after a restart, from the
   parent's settle and the child's own file under the recovery rules below.
@@ -92,7 +92,7 @@ import sys
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from aelix_coding_agent.jobs import evidence as ev
 from aelix_coding_agent.jobs.cells import cut
@@ -1448,14 +1448,63 @@ the notice is placed right after the wait's own result (``_complete`` writes the
 outcome fact between the two)."""
 
 
-async def wait_for_agents(
-    service: Any, jobs: DelegationJobs, job_ids: list[str], *, requested: float | None
-) -> tuple[str, bool]:
-    """``agent(action="wait")``: the status lines, and whether this wait was EMPTY.
+class SteeringSource(Protocol):
+    """The background wait observes this parent harness's steering queue."""
 
-    Never stops anything and never returns a result: the notice is the one
-    delivery, posted before the waiter wakes, so it is placed right after this
-    call's result. Built on ``asyncio.wait`` with a timeout, never
+    def watch_steering(self) -> contextlib.AbstractContextManager[asyncio.Future[None]]: ...
+
+    def has_pending_steering(self) -> bool: ...
+
+
+async def _wait_for_change(
+    service: Any, timeout: float, steer_wake: asyncio.Future[None] | None = None
+) -> None:
+    changed = asyncio.ensure_future(service.changed())
+    waiters = {changed} if steer_wake is None else {changed, steer_wake}
+    try:
+        await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        changed.cancel()
+        await asyncio.gather(changed, return_exceptions=True)
+
+
+async def _wait_for_activity(
+    service: Any,
+    jobs: DelegationJobs,
+    snaps: Callable[[], list[JobSnapshot]],
+    deadline: float,
+    steering: SteeringSource | None,
+) -> bool:
+    """Whether a pending steer, by itself, ended the wait."""
+
+    loop = asyncio.get_running_loop()
+    while True:
+        watch = steering.watch_steering() if steering is not None else contextlib.nullcontext()
+        with watch as steer_wake:
+            current = snaps()
+            if not current or any(_settled(s) for s in current) or _attention_due(jobs, current):
+                return False
+            if steering is not None and steering.has_pending_steering():
+                return True
+            left = deadline - loop.time()
+            if left <= 0:
+                return False
+            await _wait_for_change(service, left, steer_wake)
+
+
+async def wait_for_agents(
+    service: Any,
+    jobs: DelegationJobs,
+    job_ids: list[str],
+    *,
+    requested: float | None,
+    steering: SteeringSource | None = None,
+) -> tuple[str, bool | Literal["steer"]]:
+    """Return the wait status and whether it was empty or ended early on a steer.
+
+    The child keeps running on a steer wake and reports through its notice.
+    A wait that sees a job end gives its notice time to post, so the notice
+    can follow this call's result. Built on ``asyncio.wait`` with a timeout, never
     ``wait_for`` (the py3.11 extra-turn trap). Esc cancels the wait, not the
     child: nothing here owns the job.
     """
@@ -1467,30 +1516,22 @@ async def wait_for_agents(
     def snaps() -> list[JobSnapshot]:
         return [s for s in (service.snapshot(j) for j in job_ids) if s is not None]
 
-    while True:
-        current = snaps()
-        if not current or any(_settled(s) for s in current) or _attention_due(jobs, current):
-            break
-        left = deadline - loop.time()
-        if left <= 0:
-            break
-        changed = asyncio.ensure_future(service.changed())
-        try:
-            await asyncio.wait({changed}, timeout=left)
-        finally:
-            changed.cancel()
+    steered = await _wait_for_activity(service, jobs, snaps, deadline, steering)
     current = snaps()
+    if steered:
+        lines = ["Wait ended early because input is pending."]
+        if clamped:
+            lines.append(f"The wait limit was {int(seconds)} s {clamped}.")
+        lines.extend(_status_line(jobs, s) for s in current)
+        lines.append("Each agent's result arrives as a notice when it finishes.")
+        return "\n".join(lines), "steer"
     finished = [s for s in current if _settled(s)]
     settle_by = loop.time() + _NOTICE_SETTLE_SECONDS
     while any(s.state in TERMINAL_STATES and s.notice_state == "none" for s in finished):
         left = min(settle_by, deadline + _NOTICE_SETTLE_SECONDS) - loop.time()
         if left <= 0:
             break
-        changed = asyncio.ensure_future(service.changed())
-        try:
-            await asyncio.wait({changed}, timeout=left)
-        finally:
-            changed.cancel()
+        await _wait_for_change(service, left)
         current = snaps()
         finished = [s for s in current if _settled(s)]
     # After the settle loop: an agent that ended meanwhile is not "still running".

@@ -84,7 +84,7 @@ import logging
 import shutil
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -2629,10 +2629,21 @@ class JobService:
 
         return remove
 
-    async def changed(self) -> None:
+    def changed(self, *, check: Callable[[], None] | None = None) -> Coroutine[Any, Any, None]:
+        """Capture the current signal now and validate a scoped waiter around its wait."""
+
         if self._changed is None:
             self._changed = asyncio.Event()
-        await self._changed.wait()
+        event = self._changed
+
+        async def wait() -> None:
+            if check is not None:
+                check()
+            await event.wait()
+            if check is not None:
+                check()
+
+        return wait()
 
     def _touch(self) -> None:
         event, self._changed = self._changed, None

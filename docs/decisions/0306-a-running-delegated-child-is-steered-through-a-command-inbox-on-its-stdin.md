@@ -19,6 +19,7 @@ turn when the mode blocks at least what the current one blocks (from `auto` only
 itself), ahead of
 the mutation lock, and reaches what shift+tab reaches then, a child granted but not yet started
 included; see the note "(2026-11-22, #853)".
+Amended 2026-11-24 (#913, ADR-0320): A parent steer can end its wait after the job and stuck-notice checks.
 Date: 2026-11-18
 Issue: #123 (intervening in a running delegated child; #604 stage 3).
 Design: `.omc/specs/123-612-contract-r2-2026-11-18.md` (contract r2, Part A and §12's Lane A block),
@@ -727,3 +728,11 @@ widens and one with `tighten: false`, from `auto` a turn refuses one to `default
 to `plan`, and idle, a tighten that widens sets the mode (in process) and one that narrows sets the
 real child's (replayed). The v1 case "refused during a turn" (`{mode: "plan"}`) is unchanged, and
 so is the v1 digest. aelix-acp does not send `tighten` (control-v1 contract §6.2).
+
+## Note (2026-11-24, #913): A parent steer can end its wait after the job and stuck-notice checks
+
+A steer addressed to the waiting parent can end its wait while the child keeps running.
+The #913 precedence cases preserve a coincident stuck-attention return and the terminal
+notice-posting grace. The user's message travels through the parent's queue. A child-directed
+`agent(action="send")` uses the command inbox described above.
+See [ADR-0320](0320-pending-parent-steering-can-end-a-background-agent-wait.md).

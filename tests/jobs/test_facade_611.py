@@ -14,6 +14,7 @@ On ``a80e81fa`` extension B replaced A's kind and rendered A's results
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,39 @@ async def test_another_extension_cannot_take_a_kind_and_a_stale_facade_refuses(
         assert service.registry.get(_sleeper.KIND) is None, "no new job on a dead registration"
         assert service.snapshot(job_id).state == "running", "the running job keeps its own"
         await service.stop(job_id)
+    finally:
+        await service.shutdown()
+        activation.install_service(None)
+
+
+@pytest.mark.parametrize("started", [False, True], ids=["deferred", "subscribed"])
+async def test_job_change_wait_rechecks_the_extension_lifetime(
+    monkeypatch: pytest.MonkeyPatch, started: bool
+) -> None:
+    monkeypatch.setattr(activation, "ACTIVE", True)
+    service = fast_service()
+    activation.install_service(service)
+    runtime = _ExtensionRuntime()
+    facades: list[Any] = []
+
+    def setup(api: Any) -> None:
+        facades.append(api.jobs)
+
+    try:
+        await load_extension_from_factory(setup, name="probe", runtime=runtime)
+        change = facades[0].changed()
+        if started:
+            waiting = asyncio.create_task(change)
+            await asyncio.sleep(0)
+            assert not waiting.done()
+            runtime.invalidate("old session expired")
+            service._touch()
+        else:
+            runtime.invalidate("old session expired")
+            waiting = asyncio.create_task(change)
+        with pytest.raises(ExtensionError, match="old session expired"):
+            async with asyncio.timeout(1):
+                await waiting
     finally:
         await service.shutdown()
         activation.install_service(None)

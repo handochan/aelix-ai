@@ -98,6 +98,13 @@ and how to read the rest. The notice is placed at the next boundary — after th
 the model is writing, never inside it — and is placed once, even across a restart
 (ADR-0293 §8).
 
+- **While the parent is in `agent(action="wait")`**, Enter in the TUI, a steer
+  over RPC or negotiated ACP, or an extension's `send_message(deliver_as="steer")`
+  can end the wait early. The result says “Wait ended early because input is
+  pending.” The parent receives the queued input at the next tool-batch
+  boundary, and the child keeps running. Alt+Enter or an explicit follow-up
+  waits for the parent task to finish. A third empty wait in one prompt is
+  refused. A steer wake preserves that count (#913, ADR-0320).
 - **In the TUI** an idle session starts a turn for it. It never starts one while a dialog
   is open: an approval, a selection or a confirmation waits for your answer first, and the
   notice waits for the turn after it (`tests/tui/test_notice_never_touches_dialogs_611.py`).
