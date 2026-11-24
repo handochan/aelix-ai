@@ -206,15 +206,19 @@ machine that has the file and passes on CI's empty home. Nor does it see a
 rename of the home or, on POSIX, an `rmtree` of it, `touch` or `utime`, `chflags`, `mkfifo`, `sqlite3`, sockets, paths relative to a
 directory descriptor, or a symlink into the root from outside it
 (`tests/session_root_guard.py` lists what it judges and what it misses).
-Children are not checked. A child whose environment you build by hand must
-sandbox the home (`child_env`) or pass `--session-dir`. A shell, `env` or
-`uv run` wrapper that drops the variable, and an `aelix-server` child (its
-`/rpc` ignores the variable), would write to the real root unchecked.
+The guard covers the test process. Use `child_env` for a CLI subprocess, or
+give it a scratch agent directory and session root or a fully isolated home.
+In `cli/entry.py`, `--session-dir` sets the JSONL root while authentication
+still opens `auth.json` from the agent directory. Use `--session-dir` alone
+only for a child that accesses session storage exclusively. Preserve the
+sandbox through any shell or `uv run` wrapper. For an `aelix-server` child,
+isolate the home because its `/rpc` ignores the session-root variable.
 
 Some paths cannot be unit-tested and have to be exercised for real:
 
-- **TUI changes** — run `uv run aelix` and look at it. Rendering, colour,
-  layout and key handling are not covered by unit tests.
+- **TUI changes** — run `uv run aelix` in the target terminal to check integration
+  and display. Component tests exercise rendering, layout and keys, for example
+  `tests/tui/test_jobs_steer_123.py` checks panel output and key labels across widths.
 - **Provider, streaming, session or tool-execution changes** — run against a
   real model, not a mock.
 

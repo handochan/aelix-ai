@@ -20,13 +20,16 @@ aelix --provider anthropic --model claude-sonnet-4-6 "..."
 Discover what is available:
 
 ```bash
-aelix --list-models            # every model in the catalog
-aelix --list-models claude     # filter by substring
+aelix --list-models            # catalog rows available with your credentials and settings
+aelix --list-models claude     # fuzzy-filter by pattern
 ```
 
 Inside the interactive TUI, `/model` opens a picker to switch the active model
-mid-session. The picker lists every provider you have a key for, a project
-`.env` key included — choosing one there is your own pick. `/model <id>` and
+mid-session. A key, a project `.env` key too, makes a provider's rows
+eligible; the picker shows those `/scoped-models` allows (all, with a warning,
+if none match), minus rows this build
+[cannot run](#adapter-coverage--what-this-build-can-actually-run) (counted).
+Picking a `.env`-only row is your call. `/model <id>` and
 `/model <provider>/<id>` follow the same two rules as the launch below. While
 you hold a credential of your own anywhere (an `--api-key` counts, and so does
 a key for a provider that lists no models), a project `.env` key never decides
@@ -530,17 +533,15 @@ for six of them. A provider is usable only if its protocol has an adapter.
 | `mistral-conversations`   | ❌ | **not supported** | `mistral` |
 
 The three unsupported protocols have no adapter in this build, so
-`amazon-bedrock`, `azure-openai-responses` and `mistral` cannot run. Rather than
-let them fail at the first turn, Aelix hides them: they do not appear in
-`--list-models` or the `/model` picker. `MISTRAL_API_KEY` and
-`AZURE_OPENAI_API_KEY` are still listed in `_env_api_keys.py`, but there is
-nothing for them to authenticate. Mistral and Azure models reached **through** a
+`amazon-bedrock`, `azure-openai-responses` and `mistral` are hidden in the
+`/model` picker and refused at dispatch. `--list-models`
+(`cli/list_models.py`) does not filter by adapter: offline, a dummy
+`MISTRAL_API_KEY` lists `mistral / codestral-2508`. Mistral and Azure models reached **through** a
 supported gateway — `openrouter`, say — work normally, because those ride
 `openai-completions`.
 
-`github-copilot` is the one provider that spans three protocols
-(`openai-completions`, `anthropic-messages`, `openai-responses`) and routes
-per-model, which is why its models behave differently from one another.
+`github-copilot` routes per model across `openai-completions`,
+`anthropic-messages` and `openai-responses` (generated catalog).
 
 To reproduce this table, enumerate the registered protocols after
 `runtime_bootstrap.register_providers()` and compare against the `api` field in

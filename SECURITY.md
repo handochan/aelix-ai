@@ -61,7 +61,7 @@ consent very much is:
   extensions**, driven by a language model's output. A model that is prompted (or
   prompt-injected) into destructive behaviour can act on that within whatever
   permissions the operator granted.
-- **Headless modes auto-approve mutating tools by default, including `bash`.**
+- **A headless parent's default gate auto-approves mutating tools, including `bash`.**
   `--print`, `--mode json` and RPC mode have no interactive approval prompt to show,
   so the built-in permission gate falls through to allow
   (`builtin/permission.py`, `headless_default = "allow"`). That covers every tool
@@ -69,6 +69,9 @@ consent very much is:
   of Aelix's own read-only tools as mutating, and `--permission-mode plan` blocks
   all of them, headless included
   ([ADR-0253](docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-not-know-as-mutating.md)).
+  A child delegated under `default` falls back to `plan` without an approver.
+  An opted-in RPC host can answer its requests
+  ([child approvals](docs/guides/agent-approvals.md), #612).
   Do not point a headless Aelix at untrusted input on a machine you care about.
 - **In `yolo` posture a delegated subagent starts without a confirmation, at a
   posture that can write.** Every other posture opens a spawn-consent dialog

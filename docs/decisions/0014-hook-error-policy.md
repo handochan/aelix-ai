@@ -1,6 +1,6 @@
 # 0014. Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log
 
-Status: Accepted (Phase 1.2 임시 결정)
+Status: Superseded by ADR-0019
 Superseded by: ADR-0019 (Hook Error Policy v2 — Pi continue default, Phase 2.1)
 
 ## Context

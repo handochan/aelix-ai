@@ -96,7 +96,9 @@ patches `sys.platform` for the one call and uses an `os.pipe()` as fd 0), which
 ADR-0306 records as "Native Windows was not run in fix round 1". That test has no
 platform mark, so the `windows-latest` legs collect it; their logs were not read
 for it. Nobody has watched a steer, a wrap-up or the inbox's EOF on a Windows desk.
-The post-EOF path of a delegated child on Windows is the open #729.
+The post-EOF path of a delegated child on Windows is the open #729. Since #612,
+`aelix_agents/print_channel.py` selects inbox version 2 when the parent answers
+child approvals. Both versions use stdin.
 
 The Windows RPC host uses the shared JSONL writer. In the macOS stdio probe, #844
 replies with healthy inventory and the failed import, writing U+FFFD for lone
@@ -369,10 +371,12 @@ survivors regardless. The same containment covers the three places Aelix runs a
 bounded command of its own — an extension's `exec`, the catalog `git clone` and
 the `fd` tree scan (#221).
 
-That idle rule has a cost, and it is open as
-[#260](https://github.com/handochan/aelix-ai/issues/260): with the reader thread
-starved across the process's exit, the success path can drop up to ~64 KiB from
+The beta.2 record for [#260](https://github.com/handochan/aelix-ai/issues/260)
+described a cost of that idle rule: with the reader thread
+starved across the process's exit, the success path could drop up to ~64 KiB from
 the **tail** of output the command really produced, with `exit_code` 0 and
 nothing saying anything was lost — and the tail is the part the tool shows the
 model. It did not reproduce in ordinary conditions (~3,300 rounds, 0 failures).
-It is one line in the README's *Known limitations (beta)*.
+For the current behavior, see the README's *Known limitations (beta)*. Since
+#260, `tools/bash.py` reports `Output may be incomplete` when the drain cannot
+confirm all output. Windows retains a narrow race at the last pipe check.

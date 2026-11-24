@@ -19,7 +19,28 @@
       ]
     }
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "5268d8f",
+      "status": "derived",
+      "how": "direct",
+      "at": [
+        "src/aelix_acp/runtime/managed_extensions.py:79-81",
+        "src/aelix_acp/runtime/managed_extensions.py:106-115",
+        "src/aelix_acp/runtime/managed_extensions.py:184-207"
+      ],
+      "sends": [
+        "kind"
+      ],
+      "reads": [
+        "items",
+        "items[].path",
+        "items[].problem",
+        "items[].description"
+      ]
+    }
+  ],
   "cases": [
     {
       "name": "lists the skills",
