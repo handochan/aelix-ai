@@ -17,7 +17,7 @@ do NOT hand-edit.
 |---|---|---|
 | `manifest.schema.json` | `PluginManifest` | aelix-plugin.toml validators (host + IDE + marketplace) |
 | `descriptor-envelope.schema.json` | `DescriptorEnvelope` | TUI/Web descriptor host renderers, cross-repo validation |
-| `primitives.schema.json` | composite ($defs of 8 primitives + ActionDescriptor) | Tier 2 descriptor host renderers, Phase 6 Web slots |
+| `primitives.schema.json` | `TextPrimitive`, `BadgePrimitive`, `MetricPrimitive`, `TablePrimitive`, `GridPrimitive`, `FormPrimitive`, `GatePrimitive` and `ActionDescriptor` in shared `$defs`, with their supporting definitions | Tier 2 descriptor host renderers, Phase 6 Web slots |
 | `slot-taxonomy.schema.json` | `SLOT_MULTIPLICITY` + `SLOT_PAYLOAD_TIER` | Slot registry validators (host + Phase 6 aelix-web) |
 | `control-v1.md` | none: hand-written, not generated (`scripts/generate_contracts_schemas.py` writes only the four schemas above) | aelix-acp and Aelix Studio: who reads which part of the `aelix_control` runtime-control API, version 1 (ADR-0302). `tests/rpc/control_v1/test_consumer_list.py` fails while it and `tests/rpc/control_v1/fixtures` or `floor_v1.json` disagree |
 
@@ -60,14 +60,14 @@ See ADR-0095 §"Versioning policy" and ADR-0096 §"API_LEVEL policy".
 
 ## Cross-repo consumption
 
-Phase 6 `aelix-web` (separate repo per ADR-0097) consumes these schemas:
+The workspace's local single-user server serves the committed artifacts at
+`GET /schemas/{name}` (`aelix_server/schemas.py`). It defaults to localhost
+(`aelix_server/config.py`) and the WebSocket RPC service allows one active
+connection (`aelix_server/rpc_ws.py`).
 
-1. **Build-time**: fetch from a pinned Aelix release tarball / npm artifact.
-2. **Runtime**: `GET /schemas/{name}` endpoint on aelix-server (Phase 6
-   multi-tenant gateway).
-
-JSON Schema is the lingua franca; aelix-web does not need a Python
-dependency.
+External consumers can fetch the schema files from a pinned source revision
+and validate them with JSON Schema. Multi-tenancy is part of the Phase 6 design
+in [ADR-0097](../decisions/0097-multi-frontend-architecture.md).
 
 ## Current API level
 

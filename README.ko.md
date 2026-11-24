@@ -40,7 +40,9 @@ Aelix는 작은 코어입니다. 플러그인과 확장이 생태계이고, 확�
 `/model`이 아무것도 찾지 못했을 때, `/login` 뒤에, 4시간에 최대 한 번, 그리고 `aelix update --models`를
 실행할 때마다; aelix 버전을 보냅니다; `/settings`의 **Check model catalogs**를 끄면 명령만
 남습니다), 최초 사용 시의 `ripgrep`/`fd` 다운로드, 그리고
-확장 카탈로그 fetch. `--offline`이 이들을 끕니다.
+확장 카탈로그 조회입니다. `--offline`은 확인 요청, 다운로드, HTTP(S) 카탈로그 갱신을
+건너뜁니다. 등록한 Git-over-SSH 카탈로그는 갱신될 수 있고, 명시한 Git 소스와 설정한
+모델 엔드포인트에는 연결합니다. [신뢰와 자체 호스팅](#신뢰와-자체-호스팅)을 참고하세요.
 
 ## 설치
 
@@ -85,17 +87,12 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 3.14를 테스트합니다. 그래도 권장 경로는 설치 스크립트입니다 — `SHA256SUMS`를 검사하는
 것은 그것뿐입니다.
 
-> **`0.1.0b2` 전까지 PyPI에는 플레이스홀더가 올라가 있습니다.** 지금은 네 이름 모두
-> 메타데이터만 있는 `0.0.0a0` 선점본이라, `pip install aelix`는 **exit 0으로 끝나면서
-> 실행 가능한 것을 아무것도 설치하지 않고**(`aelix` 명령도 없고 `import aelix`는
-> `ModuleNotFoundError`), `uv tool install aelix@latest`는 **기존 설치를 지웁니다.**
-> `0.1.0b2`부터 그 함정이 닫힙니다: 인덱스의 후보가 전부 pre-release가 되고, 그럴 때
-> pip과 uv는 둘 다 그중 가장 새것을 고르므로 `uv tool install 'aelix[tui]'`와
-> `pipx install aelix`가 진짜를 받아옵니다
+> [PyPI에 실행 가능한 beta.2 패키지(`0.1.0b2`)](https://pypi.org/project/aelix/0.1.0b2/#files)가
+> 게시되어 있습니다. `uv tool install 'aelix[tui]'`와 `pipx install aelix`로 설치할 수 있습니다
 > ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
-> 그래도 권장 경로는 위 설치 스크립트입니다 — 릴리즈의 `SHA256SUMS`를 검사하는 것은
-> 그것뿐이고, 그렇게 설치한 것은 `uv tool upgrade`가 아니라 스크립트를 다시 실행해서
-> 업그레이드합니다.
+> `0.1.0b2` 전에는 네 PyPI 이름에 메타데이터만 담은 `0.0.0a0` 선점본이 올라가 있었습니다.
+> 위 권장 설치 스크립트는 릴리즈의 `SHA256SUMS`를 확인합니다. 이 스크립트로 설치했다면
+> 업그레이드할 때도 같은 스크립트를 다시 실행하세요.
 
 ## 플랫폼 지원
 
@@ -104,12 +101,16 @@ macOS, Linux, Windows. macOS와 Linux에서는 CI가 `install.sh`를 end to end�
 Ubuntu와 Windows에서 돕니다. Windows는 `v0.1.0-beta.2`에서 쓸 수 있게 됐고, 셋 중 근거가
 가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12/3.13/3.14로 전체
 스위트를 돌리고 `install.ps1`을 pwsh와 Windows PowerShell 5.1 양쪽에서 end to end로
-실행하며, 2026-09-09에 사람 한 명이 이 후보를 Windows 머신 한 대에서 직접 돌렸습니다 —
+실행하며, 2026-09-09에 사람 한 명이 beta.2 후보를 Windows 머신 한 대에서 직접 돌렸습니다 —
 `bash` 호출이 낸 한국어 출력이 한국어로 나왔고, 모델은 자기가 PowerShell 위에 있다고
 바르게 보고하며 `&&` 대신 PowerShell 문법을 썼고, TUI는 Windows 콘솔에서 제대로
-그려졌습니다. 그게 전부입니다 — 사람 하나, 머신 하나, 로케일 하나, 그리고 초록 레그
-하나. 오래 돌려 본 적도, 두 번째 머신도, 세 번째 로케일도 없고, 이번 릴리즈의 Windows
-수정 중 셋은 소스와 CI만으로 논증한 것입니다.
+그려졌습니다. beta.2의 Windows 근거는 그게 전부입니다 — 사람 하나, 머신 하나, 로케일 하나, 그리고 초록 레그
+하나. 오래 돌려 본 적도, 두 번째 머신도, 세 번째 로케일도 없고, beta.2의 Windows
+수정 중 셋은 소스와 CI만으로 논증한 것입니다. beta.3에서는
+[`release.yml`](.github/workflows/release.yml)의 `candidate-smoke` 잡이 후보 wheel을
+Windows·macOS·Linux에 설치하고, 게시 전에 설치된 명령으로 로컬 stub을 상대로 한 one-shot
+print 턴을 요구합니다. 이 게이트는 워크플로가 정의할 뿐이고, 그 자체가 beta.3 후보가
+통과했다는 기록은 아닙니다.
 
 Windows 콘솔을 직접 여는 프로그램 — git 자격 증명 프롬프트,
 `Read-Host -AsSecureString`, `Get-Credential` — 은 거기서 여전히 프롬프트를 띄우고
@@ -155,7 +156,7 @@ aelix docs                                       # 휠에 함께 실린 가이�
   Cloudflare, 그리고 이미 로그인해 쓰는 GitHub Copilot 좌석. 싼 작업과 어려운 추론을 한
   세션에서 다른 모델로 라우팅하세요. 종량제 크레딧도, 새 벤더도 없습니다.
 - 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음, 폐쇄망을 전제로 한 설계.
-  `--offline`은 Aelix가 스스로 내보내는 요청을 끕니다. 신뢰는 직접 읽을 수 있는
+  `--offline`은 자동 다운로드와 HTTP(S) 카탈로그 갱신을 건너뜁니다. 신뢰는 직접 읽을 수 있는
   코드에서 나옵니다 — *"내가 만들지 않은 에이전트를 왜 돌리는가?"* 에 대한 답입니다.
 - ⚙️ **스크립트·헤드리스 구동.** `--print`, 라인 단위 `--mode json`, `--mode rpc` JSONL
   프로토콜로 파이프라인·CI·평가 루프에 그대로 임베드됩니다.
@@ -207,8 +208,9 @@ aelix --mode json "평가 스위트를 돌리고 실패를 요약해줘"   # 라
 ```
 
 전체 확장 표면은 [확장 작성 가이드](docs/guides/extension-authoring.md)를, 공식 카탈로그는
-[Aelix 마켓플레이스](https://handochan.github.io/aelix-marketplace/)를 보세요. 베타 동안은
-비어 있고, 등록 제안을 받고 있습니다.
+[Aelix 마켓플레이스](https://handochan.github.io/aelix-marketplace/)를 보세요. 현재 공식
+카탈로그의 캐시는 `aelix extension discover`로 확인하고,
+`aelix extension discover --refresh`로 갱신할 수 있습니다.
 
 ## 프로바이더
 
@@ -248,7 +250,8 @@ Copilot Enterprise는 호스트 해석·도메인 입력·영속화까지 구현
 갱신할 수 있습니다. 명시하거나 등록한 인덱스가 없으면 확장 설치와
 업데이트 시 패키지 인덱스 조회를 끕니다(#806). 설정한 모델 프로바이더에는 접근 가능한
 엔드포인트가 필요합니다. `aelix --offline status`, `aelix --offline docs`,
-`aelix --offline extension …`은 해당 명령을 실행합니다. 이 root 명령 앞에는
+`aelix --offline extension …`은 해당 명령을 실행합니다.
+`aelix --offline update --models`는 업데이트 명령을 실행하고 갱신은 건너뜁니다. 이 root 명령 앞에는
 `--offline`만 허용하며, 다른 실행 옵션을 붙이면 usage error(exit 2)로 거부합니다.
 의도적으로 에이전트에게 묻는 경우에는 `aelix -p status` 또는 `aelix -- status`를 쓰세요.
 `status`와 `docs`는 `--offline`을 명령 앞에만 받으며, 뒤에 붙이면 기존 파서가 거부합니다.
@@ -289,7 +292,7 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 제한이 없습니다. 끝나거나 멈출 때까지 돌며, 턴 중에도 `/agents run` 중에도 `Esc`나
 `Ctrl+C`로 멈춥니다 ([#604](https://github.com/handochan/aelix-ai/issues/604)).
 
-**헤드리스 모드는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`,
+**헤드리스 부모의 기본 권한 게이트는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`,
 `--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서 `write`·`edit`·`bash`와 MCP
 서버·확장이 제공한 모든 툴이 묻지 않고 실행됩니다. 다만 `--permission-mode plan`은
 여기서도 지켜집니다 — [#188](https://github.com/handochan/aelix-ai/issues/188) 이후
@@ -299,11 +302,15 @@ MCP·확장 툴도 차단하고 대화형 실행은 그런 툴마다 먼저 묻�
 `GuardrailExtension`의 하드 거부 패턴은 여전히 툴을 누가 등록했든 이름만 보고
 판단합니다 — `shell`이나 `write_file`이라는 이름의 확장 툴은 검사하지만, 항상
 `<server>__<tool>` 이름을 받는 MCP 툴은 검사하지 않습니다. 헤드리스 실행에는
-컨테이너나 버려도 되는 체크아웃을 주세요.
+컨테이너나 버려도 되는 체크아웃을 주세요. `default` 권한의 위임 자식은 승인자가
+없으면 `plan`으로 실행됩니다. 명시적으로 활성화한 RPC 호스트는
+[자식 승인 요청](docs/guides/agent-approvals.md)에 응답할 수 있습니다.
 
-**세션 하나에 터미널 하나.** 세션 JSONL은 append-only이고 파일 잠금이 없어서, 같은
-세션을 두 번 열면 한쪽 터미널의 작업이 어떤 `--resume`도 따라가지 않는 가지가 됩니다 —
-디스크상으로는 멀쩡하지만 트랜스크립트에서는 사라집니다
+**영구 세션마다 쓰기 프로세스는 하나입니다.** 파일 잠금을 지원하는 파일시스템에서 다른
+터미널이 사용 중인 세션을 열면 대화형 시작 화면에서 **Fork**, **Open read-only**,
+또는 **Cancel**을 선택할 수 있습니다. 헤드리스 시작은 해당 세션 열기를 거부하고 다른 세션이나
+`--fork`를 제안합니다.
+[두 터미널에서 세션 열기](docs/guides/getting-started.md#two-terminals-on-one-session)를 참고하세요
 ([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
 **트랜스크립트는 전부, 영구히, 원문 그대로 남습니다.** 모든 프롬프트·툴 인자·툴 결과가
@@ -313,16 +320,16 @@ MCP·확장 툴도 차단하고 대화형 실행은 그런 툴마다 먼저 묻�
 노출 대상은 홈 디렉터리를 복사해 가는 것들, 즉 백업·동기화 클라이언트·지원 번들입니다
 ([#138](https://github.com/handochan/aelix-ai/issues/138)).
 
-**성공한 `bash` 호출이 자기 출력의 꼬리를 조용히 잃을 수 있습니다.** 명령이 종료하는
-구간에서 읽기 스레드가 굶으면 출력 끝에서 최대 64 KiB가량이 버려질 수 있습니다 —
-`exit_code`는 0이고 무엇이 사라졌다는 표시도 없으며, 하필 그 꼬리가 모델에게 보여 주는
-부분입니다. 평범한 조건의 약 3,300회 반복에서는 재현되지 않았습니다
-([#260](https://github.com/handochan/aelix-ai/issues/260)).
+**출력 수집 한도에 도달하면 `bash` 출력을 확인하세요.** 끝까지 수집했는지 확인할 수
+없으면 `Output may be incomplete`가 표시됩니다. Windows에서는 마지막 파이프 점검
+시점에 읽기 스레드가 지연되면 출력 끝부분이 빠질 수 있습니다. 끝부분이 중요하면
+파일로 리디렉션하세요 ([#260](https://github.com/handochan/aelix-ai/issues/260)).
 
-**위임의 정리(cleanup)는 OS마다 같지 않습니다.** 헤드리스 부모는 스폰 동의를 스스로
-처리합니다. Aelix 자신이 죽었을 때 자식을 끝내는 것은 Linux에서는 `PR_SET_PDEATHSIG`,
-Windows에서는 job object의 `kill_on_close`이고, macOS는 둘 다 없어서, 자기 세션을 만든
-손자는 거기서 유일한 봉쇄 수단인 프로세스 그룹을 빠져나갑니다
+**위임 정리는 플랫폼마다 다릅니다.** macOS에서 부모가 종료되면 명령 inbox가 닫히면서
+위임된 자식이 종료됩니다(#123).
+[정리 실측 결과](docs/guides/background-jobs.md#if-aelix-itself-dies)에는 테스트한 위임
+사례와 최상위 백그라운드 `bash` 사례가 나와 있습니다.
+[정리 대상에서 벗어나는 프로세스](docs/guides/agent-profiles.md#resuming-an-agent)도 참고하세요
 ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## 아키텍처

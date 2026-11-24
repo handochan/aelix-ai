@@ -16,7 +16,26 @@
       "required": true
     }
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "repo": "handochan/aelix-acp",
+      "ref": "5268d8f",
+      "status": "derived",
+      "how": "forwarded",
+      "at": [
+        "src/aelix_acp/server.py:49",
+        "src/aelix_acp/server.py:548-556",
+        "src/aelix_acp/server.py:585-608",
+        "src/aelix_acp/session.py:69",
+        "src/aelix_acp/session.py:709-715"
+      ],
+      "via": [
+        "_aelix/manage under the session lock"
+      ],
+      "sends": [],
+      "reads": []
+    }
+  ],
   "cases": [
     {
       "name": "resumes an agent the model delegated",

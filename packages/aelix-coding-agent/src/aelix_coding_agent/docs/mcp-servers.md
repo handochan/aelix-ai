@@ -222,9 +222,11 @@ you can do:
   - in a trusted project with its own `.aelix/mcp.json`, that file's only: it
     replaces the global one there, so put the entry in the project file too;
   - for a delegated agent, also every name its parent's file declares.
-- **Turning a whole extension off** is the `extensions` settings list, which is
-  not applied yet: aelix warns about a non-empty one rather than half-applying
-  it.
+- **Turn a selectable pack off** in `/extension` or in the `extensions` list
+  in your global or trusted-project settings (#25). Reload hides its MCP tools.
+  Existing connections remain until restart. A pack disabled at startup needs
+  a new launch with the pack enabled to connect. The `mcp.json` controls apply
+  to individual servers.
 
 ## Not covered by `mcp.json`
 

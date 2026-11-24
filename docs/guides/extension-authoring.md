@@ -100,14 +100,14 @@ existing session grants, automatic postures and headless policy are unchanged.
 
 Over `--mode rpc`, a host that enables dialogs (`aelix_control` `ui/enable`,
 [ADR-0275](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0275-acp-runtime-controls-use-a-separate-rpc-envelope.md))
-gets one only while its `commands/run` or `agents/run` request runs. There
-`ctx.has_ui` is true: `select` / `confirm` / `input` / `editor` go to the host
-and come back as a timeout or cancel when nobody answers, `notify`, `set_status`,
+receives dialogs during `commands/run` and `agents/run`. With `ctx.has_ui`,
+`select` / `confirm` / `input` / `editor` go to the host and come back as a timeout or cancel when nobody answers, `notify`, `set_status`,
 `set_title` and line-list `set_widget` reach it as notices, and terminal-only
 methods (`custom`, editor control, working indicators, themes) do nothing. That
-dialog channel does not approve tool calls: the permission gate keeps its
-`--mode rpc` verdict in the table above, and the host approves through its own
-`tool_call` hook.
+dialog channel leaves the parent's default permission gate as shown above.
+A child delegated under `default` falls back to `plan` without an approver.
+A host that sends `ui/enable {"enabled": true, "childApprovals": true}` can answer
+that child's approval requests (#612). See [agent approvals](agent-approvals.md).
 
 There is no flag your tool can set to skip this. For an MCP tool, a
 `readOnlyHint` annotation does not skip it either, because a hint is the tool
@@ -248,12 +248,12 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | Surface | Status | How it reaches the runtime |
 | ------- | ------ | -------------------------- |
 | `register_tool` | Live | Refreshes the harness tool registry and auto-activates the tool. |
-| `register_command` | Live in **both** the TUI and RPC | The TUI resolves it through `CommandDispatchService` after built-ins; RPC exposes it via `get_registered_commands`. |
+| `register_command` | Live in **both** the TUI and RPC | The TUI resolves it through `CommandDispatchService` after built-ins; RPC clients send `{"id":"1","type":"get_commands"}` and read `data.commands`. Execute it with the `aelix_control` method `commands/run` on hosts that advertise that method. |
 | `register_setting` | Live in the TUI | `/settings` reads current runner contributions each time it opens/reopens. The getter reads the owner's persisted value; the setter can be synchronous or async and completes before the menu reports success. |
 | `register_provider` / `unregister_provider` | Live | `setup()` registrations bind before launch lookup and replay on rebuilds (ADR-0249). Late registrations reach the registry but cannot claim a pending launch. See [Launch and rebuilds](extension-providers.md#launch-and-rebuilds) and [ownership notes](extension-providers.md#custom-providers-with-their-own-login-method). |
-| `register_login_provider` | Live (interactive TTY only) | The `/login` wizard reads the registry to build its method list. Not available under `--print` / `--json` / `--mode rpc`, which have no wizard. |
+| `register_login_provider` | Live (interactive TTY only) | The `/login` wizard reads the registry to build its method list. Not available under `--print` / `--mode json` / `--mode rpc`, which have no wizard. |
 | `register_api_adapter` | Live, and re-applied across `/reload` | Fanned out to the process-global api registry, and replayed on every harness rebuild (the reload resets that registry). |
-| `register_flag` / `get_flag` | Registration live, **no way to set one** | The declared default seeds the runtime flag values and `get_flag` reads them back — but nothing threads a command line into that dict, so `get_flag` only ever returns your default. See the warning below. |
+| `register_flag` / `get_flag` | Live | CLI values are available during first-build setup. A valueless flag supplies `True`, an omitted flag uses its declared default, and `/reload` restores the prior values. See [Flags](#flags). |
 | `on(...)` hooks | Live | Dispatched by the harness hook bus — the built-in Guardrail / Permission extensions use the same path. |
 | `register_shortcut` | Live | Aggregated by `get_shortcuts` and read live by the TUI chrome at key-fire time, so `/reload` handler swaps take effect. First registration wins a key collision. |
 | `register_message_renderer` | Live | Looked up live per custom message by `get_message_renderer`; first extension in load order wins. A renderer that raises falls back to default rendering. |
@@ -320,12 +320,9 @@ builder used by `render_tool_result` and management modals.
 
 ### Flags
 
-`register_flag` declares a flag and `get_flag` reads it, and a value given on the
-command line reaches the extension on its first build. Measured against the
-shipped CLI — an extension registering `probe-flag` with `default="DEFAULT"`,
-launched as `aelix -e probe.py --probe-flag FROM_CLI --print …` — printed
-`get_flag('probe-flag') = 'FROM_CLI'`; the same extension launched with no flag
-printed `'DEFAULT'`. A valueless `--probe-bool` arrives as `True`.
+For a flag declared by `register_flag`, `get_flag` reads its launch value.
+The first-build tests cover `--probe-flag FROM_CLI`, a valueless toggle (`True`)
+and an omitted flag (its declared default) in `test_ext_flag_first_build.py`.
 
 The parser puts an unrecognised `--` token into `Args.unknown_flags` with no
 diagnostic, and the first harness build seeds that dict into the runtime's flag
@@ -868,7 +865,7 @@ gated set of declarations rather than a black-box entry-point pack. An arbitrary
 
 The official index is the **[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)**,
 which is `DEFAULT_CATALOG_URL` — registered out of the box, though nothing is
-fetched until you ask. It ships empty and is open for submissions:
+fetched until you ask. Refresh it to browse the current entries:
 
 ```bash
 aelix extension discover --refresh       # fetch the default catalog (network)

@@ -14,7 +14,7 @@ system prompt.
 ---
 name: reviewer
 description: Reviews a diff for correctness and reports findings. Read-only.
-tools: [read, grep, glob, list]
+tools: [read, grep, find, ls]
 role: leaf
 ---
 
@@ -57,13 +57,15 @@ reported as a warning naming both files:
 | `project` | `<cwd>/.aelix/agents/` | **Only when the directory is trusted** (`--approve`, or the trust dialog). |
 
 Aelix ships two bundled starters: **`explorer`**, a read-only investigator
-(`read`/`grep`/`glob`/`list` only — it cannot edit or run anything), and
+(`read`, `grep`, `find` and `ls`, as listed in the bundled `explorer.md`), and
 **`general-purpose`**, a full-toolset worker that reads, edits, and runs commands
 to take on a task whole. Both are `leaf` profiles (they do not delegate further)
-and both inherit your approval policy, so a delegated child's edits and commands
-go through the same consent you are under — including `yolo`, where that means
-no prompt at all. Delegation is off by default; enable
-it as described above.
+and both declare `approval_mode: inherit`, which caps the child at your mode.
+Under a `default` parent it asks about changes its gate still needs approved when
+someone can answer (the TUI, or an RPC host that opted in) and runs `plan`
+otherwise; under `auto` it runs
+`auto-accept-edits` (`test_approval_clamp_612.py`,
+[agent approvals](agent-approvals.md)). Delegation is off by default.
 
 Writing `~/.aelix/agent/agents/explorer.md` replaces the bundled `explorer`
 outright — the bundled tier is a starting point, not something you have to work
@@ -596,12 +598,17 @@ fork. On macOS such a process — one that left its process group and cleared it
 environment, or left its group and is a system binary like `/bin/sleep` — is
 not found and keeps running. Your own `bash` calls, outside a delegation, still
 leave such helpers running. A delegation's result can come up to a few seconds
-later while what it left is stopped. If aelix itself is killed with SIGKILL, on
-macOS the agent and its commands run on.
+later while what it left is stopped. On macOS, killing aelix with SIGKILL
+closes the delegated child's command inbox (#123). See the
+[parent-death measurements](background-jobs.md#if-aelix-itself-dies) for
+delegated processes and a top-level background `bash`.
 A resumed agent is told that it is being resumed, that it
 should not redo work it already finished, and that a tool call showing no
-result may or may not have run. Resuming is the model's call, through its
-`agent` tool; no command does it (`/agents run` cannot).
+result may or may not have run. The model can use `agent(action="resume")`.
+An idle RPC host can send `children/resume {id, task}` when its runtime supplies
+`HostResume` and advertises the method (#836). Both paths require a model-delegated
+agent, not one started with `/agents run` or `agents/run`.
+See [Over RPC and ACP](background-jobs.md#over-rpc-and-acp).
 
 **A resumed agent runs inside the limits it was first delegated with, and they
 never widen.** Each delegation records them in your session: the permission
@@ -732,7 +739,7 @@ it is still the `--mode json -p` process it was, with the same result.
   (`tests/agents_ext/test_stuck_123.py`); in the background the parent model is told once.
 
 `stop` is unchanged (ADR-0291). An RPC host reaches these doors too ([background-jobs.md](background-jobs.md#over-rpc-and-acp)).
-Under a `default` parent a child asks you before each change in the TUI ([agent-approvals.md](agent-approvals.md)).
+A `default` parent's TUI child asks about changes its gate still needs approved ([agent-approvals.md](agent-approvals.md)).
 
 ### How many run at once
 
@@ -749,17 +756,9 @@ names the setting.
 
 ### If aelix is killed while an agent runs
 
-Measured for #777 (ADR-0293's 2026-11-17 note, `tests/cli/test_parent_death_611.py`):
-
-| Platform | A `-p` background agent | An agent Ctrl+B moved | A TUI agent not moved |
-| --- | --- | --- | --- |
-| Linux | gone within 5 s (20 of 20 runs) | gone within 5 s (20 of 20) | gone within 5 s (10 of 10) |
-| Windows | every watched process gone within 10 s (CI run 44023793108) | the same | the same |
-| macOS | recorded only: alive 5 s after the kill (20 of 20) | recorded only: alive 5 s after the kill (20 of 20) | recorded only: alive 5 s after the kill (10 of 10) |
-
-On macOS quit aelix instead of killing it, or stop what is left yourself. The
-background `bash` rows and the details are in
-[background-jobs.md](background-jobs.md#if-aelix-itself-dies).
+See the [platform measurements](background-jobs.md#if-aelix-itself-dies).
+In the #123 macOS probe, the child, shell and sleeper exited in 0.4 s or less
+in 10 of 10 runs per delegation case. The top-level background `bash` survived.
 
 ## A second example
 

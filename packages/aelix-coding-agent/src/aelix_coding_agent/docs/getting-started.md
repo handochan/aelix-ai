@@ -104,23 +104,21 @@ Extras:
 
 `tui` is the only extra.
 
-> **`pip install aelix` is a trap below `0.1.0b2`.** Until that version the four
-> distribution names hold exactly one file each: a metadata-only `0.0.0a0`
-> release published to reserve them (checked against pypi.org on 2026-09-09 —
-> `aelix` lists `0.0.0a0` and nothing else). pip and uv both take the newest
-> candidate when *every* candidate is a pre-release, so `pip install aelix`,
-> `pipx install aelix` and `uv tool install aelix` all resolve that placeholder.
-> They do not fail, which is the problem: each prints a success message and
-> installs nothing runnable. `uv tool install` is worse than a no-op — finding no
-> entry points in the placeholder it removes the working `aelix` you were trying
-> to upgrade.
+> **[PyPI publishes the runnable beta.2 package (`0.1.0b2`)](https://pypi.org/project/aelix/0.1.0b2/#files).**
+> ADR-0240 removed the workflow gate that kept pre-release tags off PyPI, so
+> `v0.1.0-beta.2` publishes `0.1.0b2` to all four names. pip and uv both take the
+> newest candidate when *every* candidate is a pre-release, so `pip install aelix`,
+> `pipx install aelix` and `uv tool install aelix` resolve `0.1.0b2` or a newer
+> pre-release rather than the placeholder below. The
+> installer above stays the recommended path: it is the only one that checks the
+> wheels against the release's `SHA256SUMS`.
 >
-> **From `0.1.0b2` on those commands resolve the real thing.** ADR-0240 removed
-> the workflow gate that kept pre-release tags off PyPI, so `v0.1.0-beta.2`
-> publishes `0.1.0b2` to all four names, and the same "newest pre-release wins"
-> rule that used to pick the placeholder now picks the real release. The
-> installer above stays the recommended path either way: it is the only one that
-> checks the wheels against the release's `SHA256SUMS`.
+> **Before `0.1.0b2` those commands were a trap.** Each of the four PyPI names
+> carried one reservation release, a metadata-only `0.0.0a0` (pypi.org on
+> 2026-09-09 listed nothing else for `aelix`), and the same rule resolved it.
+> uv's own suggested upgrade, `uv tool install aelix@latest`, then found no entry
+> points and removed the working `aelix` you were trying to upgrade
+> (`update_check.py`).
 
 ### Upgrading and uninstalling
 
@@ -203,9 +201,12 @@ through the same `| iex` path; the fetch from raw.githubusercontent.com and the
 job asserts is the launcher, `aelix --version` and the interpreter, and it
 says so in its own header (`.github/scripts/assert-install-ps1.ps1`); a third
 pass pins `v0.1.0-beta.2` with Python 3.14 on the runner and checks it still
-lands below 3.14 (#278). No release is gated on a Windows runtime check.
+lands below 3.14 (#278). For beta.3, the `candidate-smoke` jobs in
+[`release.yml`](https://github.com/handochan/aelix-ai/blob/main/.github/workflows/release.yml)
+install the candidate wheels on Windows, macOS and Linux and require an installed
+one-shot print turn against a local stub before publication.
 
-On a real Windows host the maintainer checked this release by hand on
+On a real Windows host the maintainer checked the beta.2 candidate by hand on
 2026-09-09: a `bash` tool call that prints Korean renders as Korean rather than
 mojibake, the model correctly reports it is on PowerShell and writes PowerShell
 syntax instead of `&&`, and the TUI paints (footer, `/thinking` picker, tool
@@ -214,7 +215,7 @@ which is what "beta" means here, not a claim of broad coverage. The README's
 *Platform support* section is the canonical statement; `SLICE-STATUS.md` at the
 repository root tracks the remaining Windows gaps.
 
-Three of this release's Windows fixes have no human witness at all — CI and
+Three of beta.2's Windows fixes have no human witness at all — CI and
 source only. Nobody has watched a `pwsh.exe` planted in the working directory
 lose to `PATH` ([#241](https://github.com/handochan/aelix-ai/issues/241)), the
 `!command` credential cache do its caching
@@ -262,7 +263,7 @@ decides that — it only authenticates the route. Use `openrouter/<id>` or
 has the whole rule. List what is available with:
 
 ```bash
-aelix --list-models            # all models
+aelix --list-models            # catalog rows available with your credentials and settings
 aelix --list-models gpt        # fuzzy-filter by pattern
 ```
 
@@ -286,11 +287,16 @@ equivalent.
 
 ### Exit codes
 
-`-p` and `--mode json` exit `0` when the run ends on the model's answer and `1`
-when the answer this run produced failed: a provider error that outlasted the
+`-p` and `--mode json` take the exit code from the run's last user prompt and
+the background notice turns after it, also when the run has only one prompt.
+They exit `0` when each of those turns ends on the model's answer, and `1` when
+any of them failed: a provider error that outlasted the
 [automatic retries](providers-and-models.md#automatic-retry), a `/login` token
-refresh that kept failing until the retries ran out, an aborted request. With
-several prompts the last one decides. An answer cut off at the model's output
+refresh that kept failing until the retries ran out, an aborted request. So a
+single prompt that answered, followed by a notice turn that failed, exits `1`,
+and so does a failed notice turn followed by one that answered. A failed earlier
+user prompt does not count once a later one answers
+(`test_print_verdict_611.py`). An answer cut off at the model's output
 token limit exits `0`, and `-p` prints it. A failed answer left by an earlier run
 does not count: `--continue` with no prompt, or with a prompt an extension
 handles, exits `0`. `-p` writes the error to stderr. `--mode json` writes
@@ -327,13 +333,13 @@ aelix --no-context-files         # skip auto-discovered AGENTS.md context (-nc)
 aelix -xt bash                   # run without the bash tool (--exclude-tools;
                                  #  names or quoted '*' patterns, see tools.md)
 aelix --export session.jsonl out.html   # render a saved session file to HTML
-aelix --offline                  # skip the rg/fd download + catalog fetch (= PI_OFFLINE=1 / AELIX_OFFLINE=1)
+aelix --offline                  # skip rg/fd downloads and HTTP(S) catalog fetches (= PI_OFFLINE=1 / AELIX_OFFLINE=1)
 aelix @path/to/file.py "explain this"   # inline a file into the first message
 ```
 
 Run `aelix --help` for the complete, authoritative list.
 
-Root commands use `aelix [--offline ...] <extension|docs|status> [arguments]`.
+Root commands use `aelix [--offline ...] <extension|docs|status|update> [arguments]`.
 Only `--offline` may go before the command; other launch options cause exit 2
 instead of starting an agent session. For example:
 
@@ -346,7 +352,9 @@ aelix -p -- status               # -- ends options; status is a message
 ```
 
 `status` and `docs` accept the offline flag before the command, and reject it
-afterward. Command help goes after the command (`aelix status --help`).
+afterward. `aelix update --models` refreshes model catalogs. With a leading
+`--offline`, it reaches the update command and exits `1` with
+`model catalogs not refreshed: offline`. Command help goes after the command (`aelix status --help`).
 Option values and an already started prompt keep their existing meaning;
 an unknown long option immediately followed by a command word is a usage error.
 Use an explicit extension value (`--custom=status`) when that word is a value.

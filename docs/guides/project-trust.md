@@ -25,7 +25,7 @@ The complete list comes from
 
 | Resource | Why it is gated |
 | --- | --- |
-| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore` and `checkModelCatalog`. Its `agents` list can turn on an agent profile your global file turned off ([agent-profiles](agent-profiles.md#turning-profiles-on-and-off)). Read only when the project is trusted (#369). |
+| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore`, `checkModelCatalog` and `backgroundJobs` (#778). Its `agents` list can turn on an agent profile your global file turned off ([agent-profiles](agent-profiles.md#turning-profiles-on-and-off)). Read only when the project is trusted (#369). |
 | `<cwd>/.aelix/extensions/` | `importlib` `exec_module`s arbitrary Python with your privileges. |
 | `<cwd>/.aelix/mcp.json` | Declares MCP servers. A `stdio` server spawns a subprocess on connect. Startup and `aelix status` report the selected project file as skipped without opening it when the project is untrusted (#835, ADR-0282). |
 | `<cwd>/.aelix/SYSTEM.md` | Replaces the generated system prompt, including the agent identity and tool guidance (#287, ADR-0257). |
@@ -103,7 +103,7 @@ out of the fence and speak as the host. The whole block is capped at 32768 bytes
 `--no-approve`. The `--help` line used to read "Ignore project-local files for
 this run", which a user wanting *"do not let this cloned repo influence the
 agent"* would reasonably read as covering `AGENTS.md`. It does not, and the help
-text now says so (`cli/args.py:1037-1038`).
+text now says so (`cli/args.py:1043-1044`).
 
 **Trust is not a sandbox.** Answering "Trust" runs that repository's Python in
 your process, with your files and your credentials. It is a decision about
@@ -462,10 +462,11 @@ What still holds in a **trusted** directory:
   settings, so a repository's pair can no longer be laundered into the
   default every other directory uses.
 - **Some settings are global-only whatever the trust:** `defaultProjectTrust`,
-  `features.agents`, `respectGitignore`, `checkModelCatalog`, and the extension
+  `features.agents`, `respectGitignore`, `checkModelCatalog`, `backgroundJobs`, and the extension
   install sources (`extensionSources`, `suppressedDefaultCatalogs`, which
   `aelix extension source …` reads and writes). A repository cannot choose them
-  by shipping its own file.
+  by shipping its own file. Use your global `settings.json` to enable or
+  disable jobs or change their limits (`SettingsManager`, #778).
 
 ## One sharp edge, on the record
 

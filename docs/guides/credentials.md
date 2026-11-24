@@ -37,9 +37,13 @@ A credential can come from four places. Pick whichever fits your setup:
    at an environment variable or a `!command` (see
    [models-json.md](models-json.md)).
 4. **`/login` inside the interactive TUI** — the OAuth path (GitHub Copilot and
-   other subscription logins). It stores the result in `auth.json`, so it
-   persists across runs and is the one option a delegated child process can
-   also pick up.
+   other subscription logins). It stores the result in `auth.json` for reuse
+   across runs.
+
+A delegated child resolves credentials in its own process from inherited provider
+environment variables and its configured agent directory, including `auth.json`
+and `models.json` where applicable (`test_print_channel_spawn.py`,
+`test_child_route_344.py`).
 
 > There is no `aelix auth login` **command-line** subcommand — the shipped
 > `aelix` console script has no `auth` verb, so OAuth login goes through `/login`

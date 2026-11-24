@@ -39,8 +39,10 @@ unwritten. Add them with the next release.
   and is ended by `commands/cancel` (`tests/agents_ext/test_host_resume_836.py`,
   `tests/rpc/test_children_resume_836.py`). Run live on macOS with `openai/gpt-4.1-mini`: a real
   `--mode rpc` parent whose turn was aborted mid-delegation resumed the agent on the same session,
-  and so did aelix-acp's `_aelix/manage children/resume` (aelix-acp branch
-  `feat/836-children-resume`, not merged). A second `--mode rpc` process that reopened that
+  and so did aelix-acp's `_aelix/manage children/resume` (probe on branch
+  `feat/836-children-resume`). ACP PR #55 subsequently merged at `5268d8f`.
+  Its adapter checks the native's advertised methods, and its native pin
+  `83714045` predates #836. A second `--mode rpc` process that reopened that
   parent's session asked the consent dialog before the agent ran, and so did a native aelix-acp
   reopened with `session/load`. A control-v1 addition (`children.resume.json`).
 
@@ -210,8 +212,9 @@ unwritten. Add them with the next release.
   bytes with the same effects, to the global file or this project's, also when another writer
   changed the file meanwhile (`tests/rpc/test_selections_same_bytes_624.py`: 40 cases, 5 kinds
   × 4 scenarios × the two files, the panel's target moved with ←/→ where the kind allows it, in
-  process). It needs an idle session, as every control-v1 mutation but the turn-safe `ui/enable`
-  does. A save that would create
+  process). `selections/set` needs an idle session. For turn-safe exceptions
+  such as #853 permission tightening and #612 child interventions, see the
+  [control-v1 contract](docs/contracts/control-v1.md). A save that would create
   `.aelix/settings.json` asks through a `confirm` dialog (`ui/enable`; at most 45 s;
   `commands/cancel` ends it) and never takes a parameter as consent
   (`tests/rpc/test_selections_rpc_624.py`). In an untrusted folder no answer carries the TUI's
@@ -240,8 +243,9 @@ unwritten. Add them with the next release.
   the row says `off · restart` until then (`tests/tui/test_mcp_panel_624.py`).
 - **A running delegated agent can be steered, asked to wrap up, tightened and noticed stuck
   (#123, ADR-0306).** Every delegated child keeps a command inbox on its stdin while it runs —
-  it is still the `--mode json -p` process it was, launched with the hidden `--command-inbox=1`
-  flag, and nothing about its result changes. The model sends a running agent a note with
+  it is still a `--mode json -p` process. The inbox uses the hidden
+  `--command-inbox=1` flag for steering, or version 2 for parent-mediated approvals
+  (`print_channel.py`, #612). The model sends a running agent a note with
   `agent(action="send", id=…, task=…)` (`mode="follow_up"` lands it after the agent's current
   answer) and asks it to finish with `agent(action="wrap_up", id=…)`; you type `/jobs steer <id>
   <text>`, `/jobs steer --after <id> <text>` and `/jobs wrap <id>`, or press `m` (the steer line
@@ -251,12 +255,16 @@ unwritten. Add them with the next release.
   the state — never "not delivered". A wrapped-up agent's next model call has no tools (nor has an automatic retry of that call)
   and its run ends `aborted` after it with the reason "wrapped up at the user's request" (`/jobs wrap`, `w` `w`) or "… the model's request" (`agent(action="wrap_up")`), `ok=False` and its own
   text as the summary; it prompts nothing after that call and background jobs of its own are stopped, not waited for. A shift+tab in the parent now reaches every running child above the new
-  rank (an RPC `permissions/set` does not: it is refused during a turn and answered only after
-  an `agents/run` returns); a child that does not apply it within 30 s
+  rank. Since #853, RPC `permissions/set` with `tighten: true` accepts the
+  tightening transitions listed in the #853 entry during a turn or a held
+  `agents/run`, `children/notices` or `children/resume` run. A child that does not apply it within 30 s
   is stopped with "permission floor could not be applied", and a tightened agent's result names the mode it ended at. Four identical calls with identical
   results, or three identical errors, mark the agent `stuck: repeat` / `stuck: error loop` on
-  the panel and send it one note; it is never stopped for that. `stop` is unchanged. Over RPC
-  and ACP no method and no event shape is added (#612 is that work); what a host can see is text: `get_commands` lists `steer <id> <text>, wrap <id>` in `/jobs`'s description, and `/jobs steer` or `/jobs wrap` run through `commands/run` answers "no job <id> in this session" — an RPC session held no agent job in the three states measured (ADR-0306, Consequences); sent as a `prompt` the text goes to the model, as before.
+  the panel and send it one note; it is never stopped for that. `stop` is unchanged.
+  The text-only RPC observations in ADR-0306 preceded #612. With the relevant CLI-RPC
+  services enabled, #612 adds typed child controls and events, and ACP reaches them
+  through an adapter with a capable native. The WebSocket host lacks those services
+  (see the #612 entry above).
 - **A background agent marked stuck tells the model once, while it still runs (#123, ADR-0306
   D9).** A spawned agent marked `stuck: repeat` or `stuck: error loop` while it runs, or one moved with Ctrl+B whose panel row shows the mark at the move or that is marked after it,
   leaves the parent model one notice: its latest calls (up to four, oldest first, each with its status) and last text inside the data fence, then what
@@ -268,9 +276,11 @@ unwritten. Add them with the next release.
   gets none. For hosts and extensions: `aelix.job_notice` entries may now carry
   `details.status == "running"` (id `<job>:attention`); a job kind's runner has
   `JobContext.attention(body, *, brief="")`, once per job (ADR-0293's note of 2026-11-18), and
-  `JobSnapshot` gains `attention_waiting`. Over RPC no event announces it: the host's next
-  `prompt` places it first, as a `user` message (`tests/jobs/test_attention_123.py`,
-  `tests/agents_ext/test_stuck_notice_123.py`).
+  `JobSnapshot` gains `attention_waiting` (`tests/jobs/test_attention_123.py`,
+  `tests/agents_ext/test_stuck_notice_123.py`). Before #612 the next RPC prompt
+  placed queued notices without a wire event. A capable CLI-RPC host now receives
+  `aelix_notice` when a notice waits and can place it in a turn with
+  `children/notices` (see the #612 entry).
 
 - **Agent profiles can be turned off, and the model is then neither offered nor allowed them
   (#795, ADR-0304).** A bare `/agents` in the TUI opens a panel like `/skill`'s (Space toggles,
@@ -341,10 +351,11 @@ unwritten. Add them with the next release.
   built-in tools (R9, the lead's call): `--no-builtin-tools` and a profile's `builtin_tools:
   false` turn them off, `--tools` keeps them only when it names them, `--no-tools` turns them
   off, a reload keeps that; `defaultTools` treats them as extension tools, as it treats `agent`
-  and `aelix_status`. Only the TUI, `-p` and json register them: RPC and ACP register neither
-  until #612, while the job service and `/jobs` are still built there
-  (`tests/cli/test_job_tools_builtin_779.py`). Over RPC and ACP a delegated agent's bound stays
-  `MAX_LIVE_CHILDREN = 4`, not a setting. An extension's own `ctrl+b` shortcut is skipped while
+  and `aelix_status`. At #779, the tool registration covered the TUI, `-p` and
+  JSON. Since #612, it also covers CLI-RPC and ACP backed by a capable native
+  (`tests/cli/test_job_tools_builtin_779.py`). With jobs enabled, delegation uses
+  the global `backgroundJobs.limits.agents` and any `backgroundJobs.maxTotal`
+  limit. With jobs off, it uses `MAX_LIVE_CHILDREN = 4` (ADR-0307 D7). An extension's own `ctrl+b` shortcut is skipped while
   Ctrl+B is bound (`tests/tui/test_detach_key_611.py::test_an_extensions_ctrl_b_is_skipped_while_the_key_is_bound`),
   and `ExtensionAPI.jobs` and `ExtensionAPI.post_notice` are there. To turn it all off for a
   launch, set `"backgroundJobs": {"enabled": false}` in the global settings (the #778 entry
@@ -551,8 +562,9 @@ unwritten. Add them with the next release.
   - Themes gain two roles: `shell` (default `magenta`, `dark` `bright_magenta`,
     `light` `medium_violet_red`) and `statusline` (`grey70`; `light` `grey30`).
     A theme file without them gets magenta for shell mode and an undimmed footer.
-  - The input and its lines stop at the render width (`render_max_width`, 120 by
-    default), as the transcript does. The input area is two rows taller.
+  - The input and its lines stop at the render width, as the transcript does.
+    Set `"renderMaxWidth": 88` in `settings.json` to change its default of 120
+    (public key in `settings/types.py`, ADR-0219). The input area is two rows taller.
   - The completion menu no longer covers the status line and footer. Once the
     screen is full it opens upward, above the input, at its full height (on a
     24-row terminal it used to show three or four entries over the footer);
@@ -836,8 +848,10 @@ unwritten. Add them with the next release.
     filled in — when it has a session. After Esc, the report the model gets
     with your next prompt says the stop was intended, and tells it to resume or
     repeat that work only if you ask.
-  - Only the model's `agent` tool resumes, and only agents the model
-    delegated: `/agents run`, RPC `agents/run` and ACP do not (#612).
+  - #610 added resume through the model's `agent` tool. Since #836, an idle
+    host can also use `children/resume` when the native advertises it. Both paths
+    require an agent originally delegated by the model. Agents started with
+    `/agents run` or `agents/run` are ineligible (`test_children_resume_836.py`).
     `SubagentResult` and the `SubagentRuntime` Protocol are unchanged; the RPC
     delegation channel, which no product path uses yet (#123), cannot resume,
     and a resume on it is refused before anything is spent.
@@ -931,16 +945,20 @@ unwritten. Add them with the next release.
   servers, provider auth, extension inventory, agent profiles and delegation, and
   branching. The 29 pi commands are unchanged. `capabilities` lists only what the
   host's services can serve, so the WebSocket server advertises fewer methods
-  than the CLI. Mutations serialize and need an idle runtime. A classic prompt
-  or session replacement waits out a running mutation, and the reverse.
+  than the CLI. Ordinary mutations serialize and need an idle runtime. A
+  classic prompt or session replacement waits out those mutations, and the
+  reverse. `ui/enable`, #612 child interventions and #853 permission tightening
+  have turn-safe paths under the conditions in the control-v1 contract.
   `commands/cancel` targets one operation and never cuts a harness replacement
   half-way. That covers a reload, a branch, and an extension command's own
   `ctx.new_session` / `fork` / `switch_session` / `reload`. A cancelled command
   stops once its replacement has finished. A mutation queued when stdin closes
-  does not run. Dialogs (after
-  `ui/enable`) exist only around `commands/run`, `agents/run` and `auth/login`,
-  end on a reply, timeout, signal or shutdown, and do not approve tool calls. A
-  project agent profile needs `--approve` or the RPC confirmation. A setting is
+  does not run. After `ui/enable`, command dialogs can appear during
+  `commands/run`, `agents/run` and `auth/login`. `selections/set` can ask to
+  create a project settings file (#624), and `children/resume` can ask for
+  consent (#836). After `ui/enable {"enabled": true, "childApprovals": true}`, even a
+  classic prompt can produce a delegated child's tool approval (#612). The
+  parent's default tool gate is unchanged. A project agent profile needs `--approve` or the RPC confirmation. A setting is
   reported saved only after it is written. Client MCP servers never widen an
   explicit tool selection. Verified with synthetic tests and a real-provider
   native RPC run. Aelix Studio, real-provider OAuth and Windows packaged installs
@@ -1234,11 +1252,12 @@ unwritten. Add them with the next release.
   terminal` are version 1 from this change. An addition (a method, an optional param, a field,
   an event type) stays version 1; a removal, a rename, a new meaning or a newly refused input
   needs `version: 2`, agreed with aelix-acp first. `docs/contracts/control-v1.md` lists what
-  aelix-acp reads (derived from its source, confirmation pending). `tests/rpc/control_v1/` holds
-  a fixture for every method and both event families, run in process, and its 27 replay cases
-  also run on a real `--mode rpc` child (`agents/run`, `auth/login`, `mcp/configure`,
-  `sessions/branch` and the `aelix_subagent` event have none there); 428 passed on macOS, Python
-  3.12. A floor that CI keeps from shrinking against the merge base holds them: a `since: "v1"`
+  aelix-acp reads (derived from its source, confirmation pending). The original
+  #623 run covered two event families and 27 real-child replay cases. It recorded
+  428 passes on macOS with Python 3.12. The beta.3 fixtures at `9227275b` have
+  four event families (`aelix_subagent`, `extension_ui`, `aelix_child`,
+  `aelix_notice`) and 34 cases marked `replay: true`. The executable replay
+  roster is derived in `tests/rpc/control_v1/test_real_child.py`. A floor that CI keeps from shrinking against the merge base holds them: a `since: "v1"`
   case is frozen as written (any edit fails R1 to R3 unless withdrawn), and a later method or
   open-enum value leaves the v1 digest alone (`tests/rpc/control_v1/test_ratchet_rules.py`).
   aelix-acp's native suite passes against the change (134 tests, 1 Windows-only skip).
@@ -1388,8 +1407,9 @@ unwritten. Add them with the next release.
     command — now receives `setWidget` requests with the panel's rows (ANSI
     colour codes included, at most four a second and about one a second
     while an agent is quiet, then a clearing `null`) instead of one
-    `setStatus` row per agent. An ordinary RPC `prompt` sends no UI requests, as before, and
-    `/agents run` keeps its `setStatus` rows.
+    `setStatus` row per agent. Those panel-widget updates are for the command
+    path. Since #612, an ordinary RPC `prompt` can emit `childApproval` requests
+    when the host opts in. `/agents run` keeps its `setStatus` rows.
 
 - **A delegated agent is no longer cut off by a time limit (#604, ADR-0276).**
   A child that was still working used to be killed at its deadline: the
@@ -1487,13 +1507,14 @@ unwritten. Add them with the next release.
   Release, so its approval comes with a window in which RELEASING.md has the
   maintainer run the installers with `AELIX_VERSION=<tag>` first. If the smoke
   fails, nothing was published and the version is still free.
-- **`--mode json` exits 1 when the run's last answer failed, as `-p` does
+- **`--mode json` and `-p` report failures from the last prompt and its notice turns
   (#410, ADR-0268).** A JSON run whose provider kept answering `502` until the
   retries ran out, whose `/login` token refresh kept failing until the retries
   ran out, or whose last answer otherwise ended in an error or an abort exited
   0, so a script could not see the failure in `$?`; `-p` already exited 1.
-  Both now use the same rule: the last message decides when this run wrote
-  it, so with several prompts it is the last one's answer. The event stream
+  Both now judge the last user prompt and its background notice turns. A failure
+  in that group yields exit 1 even if a later notice succeeds
+  (`tests/cli/test_print_verdict_611.py`). The event stream
   on stdout is unchanged (measured equal, line for line, apart from ids and
   timestamps) and JSON mode still writes nothing to stderr for it: the failed
   answer's `turn_end` carries its `stop_reason` and `error_message`. Signal
@@ -1701,23 +1722,25 @@ unwritten. Add them with the next release.
 - **A `models.json` `apiKey` now comes before the provider's environment
   variable, and a model chosen at launch gets the same `compat` and
   `modelOverrides` as in `/model` (#363, ADR-0251).** The key a request carries
-  is now Pi's order: `--api-key`, then a `/login` credential, then the
-  provider's `apiKey` in `models.json`, then its environment variable. Until now
+  follows `ModelRegistry._request_api_key`: runtime override, stored credential,
+  the composed provider key (extension-supplied or from `models.json`), then the
+  provider's environment variable. Before #363
   the environment variable came first, so a gateway you re-pointed a built-in
   at (`providers.openai = {baseUrl: <gateway>, apiKey: …}`) received your
   exported `OPENAI_API_KEY` — or one a cloned repo's `.env` supplied — instead
   of the key you wrote for it. **This switches credentials silently:** if you
   have both an `apiKey` for a provider in `models.json` and its vendor key in
-  your shell, requests now carry the `models.json` key, for every provider, not
-  only a re-pointed one. An `apiKey` that names an environment variable
-  (`"apiKey": "OPENAI_API_KEY"`) still reads that variable, a project `.env`
+  your shell, and there is no runtime override, no stored `auth.json` entry for
+  that provider (one that yields no key fails the request, as below) and no key
+  an extension registers for it, requests
+  now carry the `models.json` key, for every provider, not only a re-pointed one
+  (`tests/model_registry/test_key_order_363.py`). An `apiKey` that names an
+  environment variable (`"apiKey": "OPENAI_API_KEY"`) still reads that variable, a project `.env`
   value included; use a literal, a `!command` or a variable of your own to keep
   a `.env` key away from a gateway. A stored `/login` credential owns its
-  provider, whatever it yields: an OAuth login whose refresh fails now fails the
-  request, saying `OAuth refresh failed for <provider>: … Run /login to sign in
-  to <provider> again.`, and sends nothing (it is not retried) — before, the
-  request went out on the `models.json` `apiKey` or on the provider's
-  environment variable. An `auth.json` entry that gives no key — an empty
+  provider, whatever it yields. Transient OAuth refresh failures can be retried
+  without falling through to another source (#379, `test_refresh_retry_379.py`).
+  A permanent refusal fails the request and directs the user to `/login`. An `auth.json` entry that gives no key — an empty
   `api_key`, a `!command` key that prints nothing, an OAuth login whose OAuth
   provider is not available, an entry of an unknown type — fails the same way,
   naming the entry, `/login` and the `auth.json` path; before, the request went
@@ -1725,10 +1748,9 @@ unwritten. Add them with the next release.
   the provider). A `!command` key that fails now names them too (it already
   sent nothing, but said only that the command failed). For
   extensions, `ModelRegistry.get_provider_auth_status` reports `--api-key` ahead
-  of a stored credential, as the request uses it. A key an extension registers for a provider stays after the
-  environment variable for now (#365); an extension that registers the
-  provider without a key (only models, `headers` or `authHeader`) no longer drops
-  your `models.json` `apiKey`. A `models.json` provider entry
+  of a stored credential, as the request uses it. The provider key in the
+  ordering above includes a key registered by an extension (#365). A registration
+  with only models, `headers` or `authHeader` preserves the `models.json` `apiKey`. A `models.json` provider entry
   may now carry only an `apiKey` (or only `authHeader`) — before, aelix refused
   the whole file (`must specify "baseUrl", "headers", "compat",
   "modelOverrides", or "models"`). **At launch**, `--model`, `--provider`, an
@@ -1938,6 +1960,13 @@ unwritten. Add them with the next release.
   draft.
 
 ### Fixed
+
+- **The reviewer profile example starts, the RPC command discovery example uses
+  `get_commands`, and the published primitive schema validates nonempty forms, grids
+  and tables (#910).** The reviewer profile lists the shipped tools (`read`, `grep`,
+  `find`, `ls`). The guides' sections on installation, session ownership, headless
+  permissions, delegated-agent approvals and offline catalog behavior were corrected
+  against the code.
 
 - **Startup and status skip auto-discovered MCP files in untrusted projects (#835, ADR-0282).**
   When Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, startup prints a
@@ -2438,11 +2467,13 @@ unwritten. Add them with the next release.
   running in the agent. Linux kept only the `(cmd &)` one alive, and Windows is unchanged.
   - A delegated agent that closed its output but had not exited 30 s later gets a SIGTERM and 5 s
     to end. A stop within those 5 s now ends it at once, instead of after the rest of them.
-  - What a `bash` command that had already finished left in the background, with `cmd &`,
-    `(cmd &)` or `nohup cmd &`, is still not reached, on Linux either: the `bash` tool leaves it
-    running when the command returns, and once that command's shell has exited nothing ties it
-    to the agent. Nor is a process that started a session of its own, such as a daemon's.
-  - If aelix itself is killed with SIGKILL on macOS, the agent and its commands still run on.
+  - #719 subsequently added cleanup for delegated `bash` helpers left after the
+    original command finished. See the [agent guide](docs/guides/agent-profiles.md#resuming-an-agent)
+    for the measured cases and the macOS escaped-helper limits.
+  - Since #123, a parent's SIGKILL on macOS closes the delegated child's command inbox.
+    In the [parent-death probe](docs/guides/background-jobs.md#if-aelix-itself-dies),
+    the delegated child, shell and sleeper ended within 0.4 s in 10 of 10 runs in each
+    of three delegation cases. The separate top-level background shell and sleeper survived.
 - **A tool or hook that catches a failed `TaskGroup` no longer ends the turn with a traceback
   (#698, ADR-0290).** On Python 3.11 and 3.12 a sequential tool, a `tool_call` hook or a listener
   that used `asyncio.TaskGroup`, and caught a child's failure, ended the turn with nobody having
@@ -2940,13 +2971,10 @@ unwritten. Add them with the next release.
   `scripts/refresh_catalog.py` derives these from OpenRouter's
   `reasoning.mandatory` and models.dev's effort lists, as it already did for
   new rows, so the next fold-back keeps them; `--apply --off-only` writes only
-  them, and the publish job reports one `main` has not committed. Not fixed
-  here (#397): where off is fitted to the model - a launch with no level, a
-  resumed or carried off session - it now moves to `minimal`, which OpenAI's
-  o-series refuses too: `openai/o3` on OpenRouter with no `--thinking`
-  answered 400 "Unsupported value: 'minimal'" (it answered "Reasoning is
-  mandatory" before). Not measured: OpenAI's own API (the test key has no
-  credits) and Cloudflare.
+  them, and the publish job reports one `main` has not committed. In the #507
+  probe, OpenRouter's `openai/o3` returned 400 for the fitted `minimal` level.
+  #397 subsequently fixed this case: a fresh or resumed `off` session on that
+  row fits to `low` (`tests/test_off_floor_397.py`). The #507 probe covered OpenRouter.
 
 - **Automatic compaction keeps working after a session's first compaction
   (#565, ADR-0176 amendment 2026-10-22).** The guards that keep an answer from
@@ -4095,16 +4123,10 @@ unwritten. Add them with the next release.
   trigger_turn=True)` is refused the same way (while the extensions'
   `session_start` handlers are still running after a launch that resolved no
   model, the late-provider hold answers such a turn first, as before: its
-  message is written with the hold's error). No key, auth header, token or
-  Google Cloud setting is asked: a prompt whose provider has no key is handled
-  exactly as before — in the TUI and RPC it is sent and fails with `No API key
-  for provider: <provider>`, and `-p` / `--mode json` refuse it at startup as
-  they already did — so an auth header in `models.json`,
-  `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_AUTH_TOKEN`, Vertex Application
-  Default Credentials, or a Vertex key from `--api-key`, `auth.json` or
-  `models.json` keep working, and an RPC prompt on Vertex with no Google Cloud
-  setup is written and fails with the adapter's own error, as before. Known limit: a session whose only auth is
-  one of those is not restored to its model — it falls back and says so. A mid-turn
+  message is written with the hold's error). Since #416, after input hooks run,
+  a new model prompt without a configured authentication source is refused before
+  the message is recorded or a request is sent (`test_configured_auth_416.py`).
+  Restoring a session's saved model is a separate startup operation. A mid-turn
   model change was recorded with the model's protocol (`anthropic-messages`)
   where its provider belongs, and now records the provider.
 
@@ -4317,9 +4339,9 @@ unwritten. Add them with the next release.
   with `providers.openai.baseUrl` set to a gateway went to `api.openai.com` with
   the gateway's key; only the `/model` picker used the gateway. The catalog
   model now keeps its protocol and metadata and takes your host (#344). The key
-  it sends is chosen as for any provider: an
-  `--api-key`, a `/login` credential or `OPENAI_API_KEY` comes before the
-  `apiKey` in `models.json`.
+  it sends follows the same precedence as other providers. See the #363 entry
+  above for the current order, including the composed provider key ahead of
+  the environment.
 - **A provider an extension registers in `session_start` is no longer sent to
   OpenRouter.** It arrives after the launch model is chosen, so with
   `OPENROUTER_API_KEY` set `--model <name>/<id>` had already become an
@@ -5523,7 +5545,10 @@ unwritten. Add them with the next release.
   `PI_OFFLINE=enabled` now skips network catalogs and refuses an index-less
   install the way `aelix` itself already did. Unchanged, and now stated in the
   offline guide: MCP servers you configured, remote `http`/`sse` ones included,
-  still connect under `--offline`, and a project `.env` cannot set either name
+  still connect under `--offline`. The catalog transport check that #76 added
+  (`_is_offline_fetchable`, ADR-0192) skips HTTP(S) refreshes and permits
+  registered Git-over-SSH catalogs (`tests/cli/test_extension_discover.py`). A
+  project `.env` cannot set either name
   unless you list it in `AELIX_DOTENV_ALLOW`.
 - **MCP, extension and pack tools now ask before they run, and plan mode blocks
   them (#188, ADR-0253).** The permission gate used to recognise a mutating tool

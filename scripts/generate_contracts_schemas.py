@@ -37,30 +37,29 @@ from aelix_agent_core.contracts import (
     TablePrimitive,
     TextPrimitive,
 )
+from pydantic.json_schema import models_json_schema
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "docs" / "contracts"
 
 
 def build_primitives_schema() -> dict[str, Any]:
-    """Compose all 8 primitives into a single $defs schema."""
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "Aelix UI Primitives",
-        "description": (
-            "ADR-0095 §UI primitives — schema for the 8 UI primitives that "
-            "descriptor payloads compose."
-        ),
-        "$defs": {
-            "TextPrimitive": TextPrimitive.model_json_schema(),
-            "BadgePrimitive": BadgePrimitive.model_json_schema(),
-            "MetricPrimitive": MetricPrimitive.model_json_schema(),
-            "TablePrimitive": TablePrimitive.model_json_schema(),
-            "GridPrimitive": GridPrimitive.model_json_schema(),
-            "FormPrimitive": FormPrimitive.model_json_schema(),
-            "GatePrimitive": GatePrimitive.model_json_schema(),
-            "ActionDescriptor": ActionDescriptor.model_json_schema(),
-        },
-    }
+    """Generate one shared definition table for the primitive models."""
+    models = (
+        TextPrimitive,
+        BadgePrimitive,
+        MetricPrimitive,
+        TablePrimitive,
+        GridPrimitive,
+        FormPrimitive,
+        GatePrimitive,
+        ActionDescriptor,
+    )
+    _, schema = models_json_schema(
+        [(model, "validation") for model in models],
+        title="Aelix UI Primitives",
+        description="ADR-0095 §UI primitives — seven UI primitives and ActionDescriptor.",
+    )
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 
 def build_slot_taxonomy_schema() -> dict[str, Any]:

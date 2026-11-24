@@ -473,3 +473,34 @@ def test_generated_schemas_match_models_no_drift() -> None:
         "`python scripts/generate_contracts_schemas.py` and commit the result:\n"
         + result.stderr
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        (
+            "FormPrimitive",
+            {
+                "fields": [{"id": "title", "label": "Title"}],
+                "submit_action": {"plugin_id": "sample", "action": "submit"},
+            },
+        ),
+        (
+            "GridPrimitive",
+            {"items": [{"id": "card", "title": "Card", "badge": {"label": "State", "value": "OK"}}]},
+        ),
+        (
+            "TablePrimitive",
+            {"columns": [{"id": "name", "label": "Name"}], "rows": [{"name": "A"}]},
+        ),
+    ],
+)
+def test_published_primitives_validate_nonempty_collections(name: str, value: dict) -> None:
+    import json
+
+    from jsonschema import Draft202012Validator
+
+    repo_root = pathlib.Path(__file__).parent.parent.parent
+    artifact = repo_root / "docs" / "contracts" / "primitives.schema.json"
+    schema = json.loads(artifact.read_text(encoding="utf-8"))
+    Draft202012Validator({**schema, "$ref": f"#/$defs/{name}"}).validate(value)

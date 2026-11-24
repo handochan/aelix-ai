@@ -1822,7 +1822,7 @@
    "_FENCE_OPEN = \"<project_context>\\n\\nProject-specific instructions and guidelines:\\n\\n\"",
    "_FENCE_CLOSE = \"</project_context>\\n\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:1037-1038": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:1043-1044": [
    "--no-approve, -na Do not trust them for this run. Note AGENTS.md",
    "is NOT covered — use --no-context-files"
   ],

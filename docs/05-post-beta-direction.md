@@ -827,6 +827,22 @@ pi 방향 배치(#362 #350 #367 #370 #369 #363 #368, main `986f5916`)를 마친 
 
 **남은 일.** 실행 배치(Project `Batch`)는 오너 확인을 받은 뒤 함께 맞춘다. 맞출 곳은 정본(`.omc/specs/beta3-batch-plan-2026-10-14.md`), Project README, 마일스톤 설명이다.
 
+### 구현 현황 (2026-11-24, main `9227275b`)
+
+- #611의 백그라운드 작업은 #779에서 기본 활성화됐다(`jobs/activation.py`의 `ACTIVE`).
+  전역 `backgroundJobs.enabled`로 끌 수 있다. #123의 실행 중 조정은 위임 자식의 명령
+  inbox를 사용한다. [백그라운드 작업 가이드](guides/background-jobs.md)를 참고한다.
+- #612의 CLI-RPC는 해당 서비스가 있을 때 자식 제어와 통지 관련 메서드를 광고한다.
+  자식의 변경 승인 요청은 호스트가 `ui/enable {"enabled": true, "childApprovals": true}`를
+  보낼 때 전달된다. `enabled: true` 없이 `childApprovals: true`만 보내면
+  `{"enabled": false, "childApprovals": false}`로 답한다
+  (`tests/rpc/test_child_approvals_rpc_612.py`). #836의 `children/resume`은
+  `HostResume`을 제공하는 런타임에서 모델이 위임한 에이전트를 유휴 상태의 호스트가
+  재개한다 (`rpc/control.py`, [control-v1 계약](contracts/control-v1.md)).
+- ACP `5268d8f`는 네이티브가 광고할 때 `children/resume`을 전달한다. 그 리비전이
+  기록한 네이티브 핀은 #836 이전의 `83714045`다
+  ([ACP 소비 경로](contracts/control-v1.md#31-what-each-consumer-sends-and-reads)). RC 검증은 #383·#384에서 다룬다.
+
 ## 부록 A. 리팩토링 분리 후보 — 읽기 전용 감사 실측 (main `026bd15` 기준)
 
 #284의 조사 입력이다. 줄 번호는 `026bd15` 시점의 스냅샷이며 이 문서는 citation gate 밖이므로 코드가 움직이면

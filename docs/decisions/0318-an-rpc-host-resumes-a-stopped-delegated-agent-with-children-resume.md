@@ -205,3 +205,11 @@ lane's own tree, with the lane's drivers:
   `yolo`: under `yolo` nobody is asked (ADR-0197, #196), and under `default` an `inherit` agent
   holds no write authority, so only a profile that declares it and a first grant above `default`
   give the dialog something to ask.
+
+## Note (2026-11-24, #910)
+
+ACP PR #55 merged at `5268d8f`, after the branch probe described in D8.
+The merged adapter forwards `children/resume` when `capabilities.methods`
+advertises it (`src/aelix_acp/server.py` at that revision). Its
+`runtime-reference.json` still pins native `83714045`, which predates #836.
+See the [control-v1 consumer register](../contracts/control-v1.md).

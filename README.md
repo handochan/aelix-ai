@@ -40,8 +40,10 @@ next launch), the model catalog check (models published between releases: at lau
 a model picker opens, on a `/model` that matched nothing and after `/login`, at most every
 4 hours, and whenever you run `aelix update --models`; it sends the aelix version;
 `/settings` → **Check model catalogs** leaves only the command), the
-first-use `ripgrep`/`fd` download, and the extension-catalog fetch. `--offline` turns those
-off.
+first-use `ripgrep`/`fd` download, and the extension-catalog fetch. `--offline` skips
+the checks, downloads and HTTP(S) catalog refreshes. Registered Git-over-SSH catalogs
+can still refresh, explicit Git sources can contact their remotes, and model requests
+use the configured endpoint. See [Trust and self-hosting](#trust-and-self-hosting).
 
 ## Install
 
@@ -87,17 +89,12 @@ install line stays the recommended path, since it is the one that checks
 `SHA256SUMS`.
 `uv tool uninstall aelix` removes it.
 
-> **PyPI carries a placeholder until `0.1.0b2`.** Today all four names hold a
-> metadata-only `0.0.0a0` reservation, so `pip install aelix` **exits 0 and
-> installs nothing runnable** — no `aelix` command, and `import aelix` raises
-> `ModuleNotFoundError` — while `uv tool install aelix@latest` **deletes an
-> existing install**. From `0.1.0b2` on that trap is closed: every candidate on
-> the index is a pre-release, and pip and uv both take the newest one in that
-> case, so `uv tool install 'aelix[tui]'` and `pipx install aelix` resolve the
-> real thing ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
-> The installer above stays the recommended path — it is the only one that checks
-> the release's `SHA256SUMS` — and an install it made upgrades by re-running it,
-> not by `uv tool upgrade`.
+> [PyPI publishes the runnable beta.2 package (`0.1.0b2`)](https://pypi.org/project/aelix/0.1.0b2/#files).
+> `uv tool install 'aelix[tui]'` and `pipx install aelix` can resolve the published package
+> ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
+> Before `0.1.0b2`, the four PyPI names carried metadata-only `0.0.0a0` reservations.
+> The recommended installer above verifies the release's `SHA256SUMS`. Re-run it
+> to upgrade an installation it created.
 
 ## Platform support
 
@@ -107,12 +104,16 @@ itself runs on Ubuntu and Windows. Windows became usable in `v0.1.0-beta.2` and 
 thinnest evidence of the three: CI runs the full suite on `ubuntu-latest` and
 `windows-latest` under Python 3.11, 3.12, 3.13 and 3.14 and runs `install.ps1` end to end
 under both pwsh and Windows PowerShell 5.1, and on 2026-09-09 one person drove
-this candidate on one Windows machine — a `bash` call's Korean output came back
+the beta.2 candidate on one Windows machine — a `bash` call's Korean output came back
 as Korean, the model reported it was on PowerShell and used PowerShell syntax
 instead of `&&`, and the TUI drew correctly on a Windows console. That is the
-whole of it: one person, one machine, one locale, plus a green leg. No
-long-running use, no second machine, no third locale, and three of this release's
-Windows fixes are argued from source and CI alone.
+whole of beta.2's Windows evidence: one person, one machine, one locale, plus a green leg. No
+long-running use, no second machine, no third locale, and three of beta.2's
+Windows fixes are argued from source and CI alone. For beta.3, the `candidate-smoke`
+jobs in [`release.yml`](.github/workflows/release.yml) install the candidate wheels on
+Windows, macOS and Linux and require an installed one-shot print turn against a local
+stub before publication. The workflow defines that gate; it is not by itself a record
+of a passing beta.3 candidate.
 
 A program that opens the Windows console directly — a git credential prompt,
 `Read-Host -AsSecureString`, `Get-Credential` — can still prompt there and burn a
@@ -159,7 +160,7 @@ directories are reached.
   Cloudflare and the GitHub Copilot seat you already sign in with. Route cheap work and hard
   reasoning to different models in one session. No metered credits, no new vendor.
 - 🔍 **Auditable and self-hosted.** Fully open source, no telemetry, built for closed
-  networks. `--offline` turns off the requests Aelix makes for itself. Trust lives in code you
+  networks. `--offline` skips automatic downloads and HTTP(S) catalog refreshes. Trust lives in code you
   can read — the answer to *"why run an agent I didn't write?"*
 - ⚙️ **Scriptable and headless.** `--print`, line-delimited `--mode json`, and a `--mode rpc`
   JSONL protocol make Aelix embeddable in pipelines, CI and evaluation loops.
@@ -212,7 +213,7 @@ aelix --mode json "run the eval suite and summarise failures"   # line-delimited
 
 See [writing an extension](docs/guides/extension-authoring.md) for the full surface, and the
 [Aelix Marketplace](https://handochan.github.io/aelix-marketplace/) — the catalog Aelix reads
-by default. It ships empty for the beta and is open for submissions.
+by default. Run `aelix extension discover` to see the cached official catalog. Use `aelix extension discover --refresh` to update it.
 
 ## Providers
 
@@ -253,6 +254,7 @@ still be refreshed. Extension installs and updates disable
 package-index lookups when no explicit or registered index is selected (#806). The configured
 model provider still needs a reachable endpoint. `aelix --offline status`,
 `aelix --offline docs`, and `aelix --offline extension …` run their commands.
+`aelix --offline update --models` reaches the update command and skips the refresh.
 Only `--offline` may precede these root commands; other launch options cause a usage error
 (exit 2). For an intentional agent prompt, use `aelix -p status` or `aelix -- status`.
 `status` and `docs` require the offline flag before the command; their own parsers reject it
@@ -297,7 +299,7 @@ time limit either: it runs until it finishes or you stop it — `Esc` or `Ctrl+C
 during a turn and during `/agents run`
 ([#604](https://github.com/handochan/aelix-ai/issues/604)).
 
-**Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
+**A headless parent's default gate auto-approves mutating tools.** `--print`, `--mode json` and
 `--mode rpc` have no terminal for an approval dialog, so `write`, `edit`, `bash` and
 every tool from an MCP server or an extension run without asking. `--permission-mode
 plan` does hold there: since [#188](https://github.com/handochan/aelix-ai/issues/188)
@@ -307,11 +309,15 @@ one ([ADR-0253](docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-
 `GuardrailExtension`'s hard-deny patterns still go by bare tool name, whatever
 registered the tool: an extension tool named `shell` or `write_file` is checked, and
 an MCP tool, which is always named `<server>__<tool>`, is not. Give a headless run a
-container or a checkout you can throw away.
+container or a checkout you can throw away. A child delegated under `default`
+falls back to `plan` without an approver. An RPC host that opts in can answer
+its approval requests ([child approvals](docs/guides/agent-approvals.md)).
 
-**One session, one terminal.** Session JSONL is append-only and nothing locks it,
-so opening the same session twice makes one terminal's work a branch that no
-`--resume` walks — valid on disk, gone from the transcript
+**One writer per persistent session.** On filesystems that support locking,
+opening a session owned by another terminal offers **Fork**, **Open read-only**
+or **Cancel** at interactive startup. Headless startup refuses the contested
+session and suggests opening another session or using `--fork`. See the
+[two-terminal guide](docs/guides/getting-started.md#two-terminals-on-one-session)
 ([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
 **Transcripts keep everything, forever, unredacted.** Every prompt, tool argument
@@ -322,17 +328,19 @@ equivalent for Aelix to set — either way the exposure is to whatever copies yo
 home directory: backups, sync clients, support bundles
 ([#138](https://github.com/handochan/aelix-ai/issues/138)).
 
-**A successful `bash` call can silently lose the tail of its output.** With the
-reader thread starved across the command's exit, up to ~64 KiB can be dropped from
-the end — `exit_code` is 0, nothing says anything went missing, and the tail is the
-part the model is shown. It did not reproduce in ~3,300 ordinary rounds
+**Check the `bash` output when the drain reaches its limit.** The tool reports
+`Output may be incomplete` when it cannot confirm the final output. On Windows,
+a reader delayed across the last pipe check can still miss trailing bytes.
+Redirect output to a file when the tail matters
 ([#260](https://github.com/handochan/aelix-ai/issues/260)).
 
-**Delegation's cleanup is not equal on every OS.** A headless parent consents to
-spawns on its own. If Aelix itself dies, Linux's `PR_SET_PDEATHSIG` and a Windows
-job object's `kill_on_close` end the child; macOS has neither, and a grandchild
-that made its own session escapes the process group that is all the containment
-there is ([#110](https://github.com/handochan/aelix-ai/issues/110)).
+**Delegation cleanup varies by platform.** On macOS, the child exits after its
+command inbox closes when the parent dies (#123). The
+[cleanup measurements](docs/guides/background-jobs.md#if-aelix-itself-dies)
+cover the tested delegation cases and the separate top-level background
+`bash` case. See the [escaped-helper limits](docs/guides/agent-profiles.md#resuming-an-agent)
+for processes outside the cleanup mechanism
+([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## Architecture
 

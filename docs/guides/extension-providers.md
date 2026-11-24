@@ -95,7 +95,7 @@ Notes and limits:
   `anthropic-messages`, `google-generative-ai`, …). For an endpoint those can't
   express, register your own with `register_api_adapter` (below). A model on an
   unregistered `api` is hidden from `/model`.
-- The `/login` picker is interactive-only (a TTY). In `--print` / `--json` /
+- The `/login` picker is interactive-only (a TTY). In `--print` / `--mode json` /
   `--mode rpc` there is no wizard, so a custom login flow does not run there.
 - The login registry is process-global: an extension removed on `/reload` should
   call `unregister_login_provider(id)` in its teardown.

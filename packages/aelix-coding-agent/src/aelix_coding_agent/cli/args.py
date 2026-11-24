@@ -971,18 +971,19 @@ def print_help(out: TextIO | None = None) -> None:
     stream: TextIO = out if out is not None else sys.stdout
 
     text = f"""Usage: {APP_NAME} [options] [@file ...] [message ...]
-       {APP_NAME} [--offline ...] <extension|docs|status> [command arguments]
+       {APP_NAME} [--offline ...] <extension|docs|status|update> [command arguments]
 
 Root commands:
   Only --offline may precede a command; other launch options are usage errors.
   status/docs accept --offline before the command, not after it.
+  A leading --offline lets update --models run and skip the refresh.
   Use -p status or -- status for an intentional agent prompt.
   -- ends agent options; following tokens are messages or @files.
 
 Modes:
   (default)             Interactive mode (Phase 5b — TUI carry-forward)
   --print, -p [msg]     One-shot print mode (stdout response)
-  --mode text           Same as --print
+  --mode text           Text output (default). On a TTY use --print for one-shot execution.
   --mode json           Line-delimited JSON event stream
   --mode rpc            Headless JSONL command/response protocol
 
@@ -990,8 +991,8 @@ Session:
   --continue, -c        Continue the most recent session that has a conversation
   --resume, -r [<id>]   Resume a session by id/prefix, or pick interactively
   --no-session          Run with an in-memory session (not persisted)
-  --session <path>      Open a specific session file
-  --fork <entry_id>     Fork a session at the given entry
+  --session <path|session-id-prefix>  Open a specific session
+  --fork <path|session-id-prefix>     Fork an existing session
   --session-dir <path>  Override the sessions root directory
 
 Model:
@@ -1017,8 +1018,10 @@ Tools / Extensions:
   --no-builtin-tools, -nbt        Disable built-in tools only
   --tools, -t <csv>               Restrict tools to this comma-separated list.
                                   Built-ins (lowercase, case-sensitive): bash,
-                                  edit, find, grep, ls, read, write. Extension
-                                  and MCP tool names are valid here too.
+                                  edit, find, grep, ls, read, write, plus job
+                                  and job_stop when background jobs are available.
+                                  --no-builtin-tools covers that same set.
+                                  Extension and MCP tool names are valid here too.
   --exclude-tools, -xt <csv>      Remove these tools for this run: names or
                                   patterns with * (quote them: -xt 'github__*').
                                   Applies to all tools, MCP tools included, and
@@ -1027,7 +1030,10 @@ Tools / Extensions:
                                   them back on; settings "defaultTools" sets
                                   what is on by default.
   --extension, -e <path>          Load extension (repeatable)
-  --no-extensions, -ne            Disable all extensions
+  --no-extensions, -ne            Skip project, global and installed extension
+                                  discovery. Explicit -e paths still load.
+                                  Guardrail, Permission and Status stay active.
+                                  Agent delegation has its own switch.
   --trust-extension-path <dist>   Allow an entry-point pack installed outside
                                   site-packages (e.g. 'pip install -e .');
                                   names one distribution (repeatable)
@@ -1045,11 +1051,14 @@ Tools / Extensions:
   --no-context-files, -nc         Skip auto-discovered AGENTS.md context
 
 Misc:
-  --export <path>                 Export the current session to HTML
-  --list-models [pattern]         List available models (optional filter)
-  --offline                       Skip the rg/fd binary download, the extension
+  --export <session.jsonl> [out.html]  Export the named session file to HTML
+  --list-models [pattern]         List available catalog rows (optional fuzzy filter)
+  --offline                       Skip the rg/fd binary download, the HTTP(S)
                                   catalog fetch, index-less pypi installs, and
-                                  the update check (same as PI_OFFLINE=1).
+                                  update checks (same as PI_OFFLINE=1).
+                                  Registered Git-over-SSH catalogs can still
+                                  refresh. Explicit Git sources can contact
+                                  their remotes.
                                   Path and Git installs without an explicit or
                                   registered index resolve dependencies without
                                   package indexes.
