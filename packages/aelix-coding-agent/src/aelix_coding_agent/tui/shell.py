@@ -880,6 +880,11 @@ def _compose_thinking_level(harness: Any) -> str | None:
     return _thinking_display(harness, level)
 
 
+def _active_agent_profile_name(service: AgentProfileService | None) -> str | None:
+    profile = service.active if service is not None else None
+    return profile.name if profile is not None else None
+
+
 def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
     """Whether the session this terminal is on **right now** refuses writes.
 
@@ -1091,6 +1096,8 @@ async def run_tui(
         model = getattr(runtime_host.harness, "current_model", None)
         return getattr(model, "id", None) if model is not None else None
 
+    active_agent_profile = functools.partial(_active_agent_profile_name, agent_service)
+
     def _thinking_level() -> str | None:
         # Live reasoning effort for the 🧠 thinking-level footer segment. Reads
         # ``harness.state.thinking_level`` (the SAME field the /thinking picker,
@@ -1138,6 +1145,7 @@ async def run_tui(
         out_chrome,
         footer,
         model_provider=_model_id,
+        agent_profile_provider=active_agent_profile,
         thinking_provider=_thinking_level,
         mode_provider=_steering_mode,
         pending_provider=lambda: getattr(runtime_host.harness, "pending_message_count", 0),
@@ -2851,6 +2859,7 @@ async def run_tui(
         # ADR-0196 — both stay ``None`` when entry.py built no service, and
         # ``/agents`` degrades to a committed message rather than raising.
         agent_profiles=agent_service.list if agent_service is not None else None,
+        active_agent_profile=active_agent_profile,
         # #795, #796 (ADR-0304 D10, D11) — the applied delegation view the
         # /agents subcommands read, and the bare command's on/off panel.
         agent_delegation=agent_service.delegation if agent_service is not None else None,

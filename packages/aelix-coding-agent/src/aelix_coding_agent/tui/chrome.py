@@ -46,7 +46,7 @@ from prompt_toolkit.application.run_in_terminal import in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition, has_completions, is_done, renderer_height_is_known
-from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.named_commands import get_by_name
@@ -81,6 +81,7 @@ from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console, RenderableType
 
+from aelix_coding_agent.cli.session_labels import truncate_cells
 from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.input_marks import (
     InputLexer,
@@ -859,6 +860,7 @@ class AelixChrome:
         # Ctrl+C within ``_CTRL_C_EXIT_WINDOW`` of it does not clear what just came back.
         self._gave_back_at: float | None = None
         self._footer_line: str = ""
+        self._footer_agent_profile: str | None = None
         self._header_line: str = ""
         self._breadcrumb_line: str = ""
         self._working_message: str | None = None
@@ -1048,7 +1050,7 @@ class AelixChrome:
         def _footer_row() -> ConditionalContainer:
             return ConditionalContainer(
                 Window(
-                    FormattedTextControl(lambda: ANSI(self._footer_with_jobs())),
+                    FormattedTextControl(lambda: ANSI(self._render_footer())),
                     height=Dimension(min=1),
                     dont_extend_height=True,
                     style=self._footer_style,
@@ -2336,6 +2338,20 @@ class AelixChrome:
         first, sep, rest = self._footer_line.partition("\n")
         return f"{segment}  ·  {first}{sep}{rest}"
 
+    def _render_footer(self) -> str:
+        footer = self._footer_with_jobs()
+        profile = self._footer_agent_profile
+        if not profile:
+            return footer
+        # Budget at paint time so terminal resizes need no footer recomposition.
+        first, newline, rest = footer.partition("\n")
+        prefix = "  ·  agent: " if first else "agent: "
+        used = fragment_list_width(to_formatted_text(ANSI(first))) + len(prefix)
+        available = self._terminal_width() - used
+        if available < 2:
+            return footer
+        return f"{first}{prefix}{truncate_cells(profile, available)}{newline}{rest}"
+
     def drop_queued_input(self) -> None:
         """Forget lines waiting for the input loop: a signal ends the session ahead of them."""
 
@@ -2439,24 +2455,24 @@ class AelixChrome:
 
         return self._last_run_seconds
 
-    def set_footer_line(self, text: str) -> None:
+    def set_footer_line(self, text: str, *, agent_profile: str | None = None) -> None:
         # WP-8 (Feature 5) — the footer row is multi-line-capable, so it KEEPS
         # ``\n`` (the footer Window's Dimension is min=1 with no fixed max). The
         # caller (``_refresh_footer``) decides single- vs multi-line; in
         # single-line mode it passes a ``\n``-free string, so this is a no-op
         # change there. Header / breadcrumb / status still strip ``\n`` (below).
         self._footer_line = text
+        self._footer_agent_profile = agent_profile
         self.invalidate()
 
-    def set_footer_block(self, lines: list[str]) -> None:
+    def set_footer_block(self, lines: list[str], *, agent_profile: str | None = None) -> None:
         """Set the footer to a list of rows (joined by ``\\n``); multi-line-capable.
 
         WP-8 (Feature 5). A convenience over :meth:`set_footer_line` for the
         grouped multi-line statusline composer. Empty list clears the footer.
         """
 
-        self._footer_line = "\n".join(lines)
-        self.invalidate()
+        self.set_footer_line("\n".join(lines), agent_profile=agent_profile)
 
     def footer_line_count(self) -> int:
         """The number of rows the footer currently occupies (≥1).

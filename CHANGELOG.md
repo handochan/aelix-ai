@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Show the active main-session agent profile in the TUI (#912, ADR-0160).**
+  `/session` shows the profile in force after `--agent` or `/agents use <name>`.
+  The built-in footer uses spare columns for the profile, shortening it with
+  an ellipsis when needed. The footer regressions cover 40, 60, 80 and 120
+  columns in both layouts.
+
 - **An RPC host can resume a stopped delegated agent itself: `children/resume` (#836, ADR-0318).**
   `aelix_control` `children/resume {id, task}` resumes an agent the model delegated, on its own
   session file with `task` as its next instruction, and answers `{result}` as `agents/run` does.
@@ -1967,6 +1973,11 @@ unwritten. Add them with the next release.
   `find`, `ls`). The guides' sections on installation, session ownership, headless
   permissions, delegated-agent approvals and offline catalog behavior were corrected
   against the code.
+- **Show an active-branch prompt preview or the name lookup error (#911, ADR-0124).**
+  For an unnamed session, `/name` and `/session` preview the first displayable
+  user text on the active branch. The resumed-branch regression covers a
+  sibling prompt, control-only text and a large extension entry. Both
+  commands show the reason if session name lookup fails.
 
 - **Startup and status skip auto-discovered MCP files in untrusted projects (#835, ADR-0282).**
   When Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, startup prints a

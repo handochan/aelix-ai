@@ -1,6 +1,6 @@
 # 0124. Sprint 6h₁₆ — TUI /copy + /session + /name
 
-Status: Accepted (6h₁₆ shipped)
+Status: Accepted (6h₁₆ shipped). Amended 2026-11-24 (#911) for unnamed sessions and lookup errors.
 Date: 2026-05-27
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -57,3 +57,23 @@ MEDIUM: #4 image-paste (Ctrl+V), #6 model-picker UI (Ctrl+L), #7 /settings menu,
 #8 auto-retry+countdown. LOW applicable: /tree, /fork, /clone, /import, Ctrl+G
 external editor, double-escape, /skill:<name>. N/A for Aelix's model (not
 cloned): /changelog, /scoped-models, /login·/logout, /share.
+
+## Note (2026-11-24, #911)
+
+On base `9227275b`, the 120×40 TUI showed `foo` in both commands after a
+rename and reopen. Both resume pickers showed `unnamed first prompt` for the
+unnamed conversation, while `/name` printed `(unset)` and `/session` omitted
+its name row. When the probe made the name getter raise, `/session` dropped
+the row and `/name` printed the exception.
+
+For an unnamed session, both commands label the first displayable user text
+on the active branch as a first prompt preview. They show `(unset)` when
+that branch has no displayable user text. The JSONL reopen tests in
+`tests/tui/test_commands.py` cover a sibling branch, a BEL-only message and
+a 70,000-character extension entry. The lookup-error tests and the 120×40
+error probe cover a failing name getter.
+
+Pi at `d4760131efe0740b9b7f7ad1f126734b96a011c0` reads the latest saved name
+in both commands and uses the first user message as the picker fallback.
+Aelix's two lookup commands read the active branch of the open session.
+The resume pickers derive their labels from session-file metadata. [Pi commands](https://github.com/earendil-works/pi/blob/d4760131efe0740b9b7f7ad1f126734b96a011c0/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L6919) · [Pi picker](https://github.com/earendil-works/pi/blob/d4760131efe0740b9b7f7ad1f126734b96a011c0/packages/coding-agent/src/modes/interactive/components/session-selector.ts#L474)

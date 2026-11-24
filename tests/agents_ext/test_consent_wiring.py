@@ -207,7 +207,7 @@ async def test_a_declined_dialog_blocks_and_starts_nothing(
 ) -> None:
     """Esc, Cancel and a nonsense answer are all the same decision: no.
 
-    A ``None`` answer is Esc (``tui/context.py:1159-1161``). Anything that is not
+    A ``None`` answer is Esc (``tui/context.py:1161-1163``). Anything that is not
     a rendered option is treated identically, because the alternative is
     inferring consent from a string nobody was shown.
 
@@ -494,7 +494,7 @@ async def test_a_mismatched_grant_is_refused(tmp_path: Path) -> None:
 async def test_two_concurrent_hook_invocations_serialize(tmp_path: Path) -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:978``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:980``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn hangs
     until Ctrl+C (until #701, which stacks it; two dialogs at once stay wrong). Three independent defences cover it — the kernel's own
     sequential prep phase, the tool's ``execution_mode="sequential"``, and

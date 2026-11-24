@@ -25,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from aelix_coding_agent.cli.session_labels import first_prompt_label
 from aelix_coding_agent.extensions.ext_ui import select_declared
 from aelix_coding_agent.tui.mid_turn import setter_line
 from aelix_coding_agent.tui.stats_dashboard import format_session_cost, format_tool_usage
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from aelix_agent_core.harness.core import AgentHarness
+    from aelix_agent_core.session import Session
     from aelix_ai.settings import SettingsManager
     from rich.console import RenderableType
 
@@ -266,6 +268,8 @@ class CommandContext:
     profile the user can SEE listed must always be inspectable, including the
     broken one they are trying to debug — which the fatal
     ``AgentProfileService.show`` resolve would refuse."""
+    active_agent_profile: Callable[[], str | None] | None = None
+    """The live main-session identity shared with the footer."""
     agent_delegation: Callable[[], DelegationView] | None = None
     """``run_tui`` wires this to ``AgentProfileService.delegation`` (#795, #796,
     ADR-0304 D11): the APPLIED view — the ``agents`` lists in force and the
@@ -999,7 +1003,7 @@ def _delegates_to_cell(profile: AgentProfile) -> Text:
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5403-5417`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5412-5426`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1130,7 +1134,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:4150`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4159`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -2497,8 +2501,16 @@ async def _copy_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(Text(f"Copied last message ({len(text)} chars) to clipboard.", style="green"))
 
 
+async def _session_name_field(session: Session) -> tuple[str, str]:
+    name = await session.get_session_name()
+    if name:
+        return "name", name
+    preview = first_prompt_label(await session.get_branch())
+    return ("first prompt preview", preview) if preview else ("name", "(unset)")
+
+
 async def _session_handler(ctx: CommandContext, args: str) -> None:
-    """``/session`` — show session id / cwd / name / file + usage (ignores args)."""
+    """``/session`` — show session identity, file and usage (ignores args)."""
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
@@ -2510,12 +2522,17 @@ async def _session_handler(ctx: CommandContext, args: str) -> None:
             table.add_row("id", str(getattr(meta, "id", "—")))
             if getattr(meta, "cwd", None):
                 table.add_row("cwd", str(meta.cwd))
-        with contextlib.suppress(Exception):
-            name = await session.get_session_name()
-            if name:
-                table.add_row("name", name)
+        try:
+            label, value = await _session_name_field(session)
+        except Exception as exc:  # noqa: BLE001 — show the reason alongside the other rows
+            table.add_row("name lookup failed", Text(str(exc), style="bold red"))
+        else:
+            table.add_row(label, Text(value))
         if getattr(session, "session_file", None):
             table.add_row("file", str(session.session_file))
+    profile = ctx.active_agent_profile() if ctx.active_agent_profile is not None else None
+    if profile:
+        table.add_row("agent profile", Text(profile))
     if hasattr(ctx.harness, "get_session_stats"):
         with contextlib.suppress(Exception):
             stats = await ctx.harness.get_session_stats()
@@ -2535,11 +2552,11 @@ async def _name_handler(ctx: CommandContext, args: str) -> None:
         return
     if not args:
         try:
-            name = await session.get_session_name()
+            label, value = await _session_name_field(session)
         except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            ctx.commit(Text(f"✖ {exc}", style="bold red"))
+            ctx.commit(Text(f"✖ name lookup failed: {exc}", style="bold red"))
             return
-        ctx.commit(Text(f"session name: {name}" if name else "session name: (unset)"))
+        ctx.commit(Text(f"session {label}: {value}"))
         return
     try:
         # ``append_session_name`` is a core Session method (every backend has it).
@@ -2561,7 +2578,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
     BuiltinCommand("stats", "Session usage statistics (tools, tokens, models)", _stats_handler),
-    BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
+    BuiltinCommand("session", "Show session info (id, cwd, name, profile, usage)", _session_handler),
     BuiltinCommand("name", "Show or set the session name", _name_handler, aliases=("rename",)),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand(

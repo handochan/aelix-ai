@@ -4713,3 +4713,54 @@ async def test_run_tui_a_failed_sequence_closes_the_countdown_at_once() -> None:
         subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="CancelledError"))
         pipe.send_text("/quit\n")
         await _quit_within(task)
+
+
+async def test_run_tui_shares_the_live_agent_profile_with_session_and_footer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_coding_agent.tui.commands import match_command
+    from prompt_toolkit.data_structures import Size
+    from rich.console import Console
+
+    service = SimpleNamespace(active=SimpleNamespace(name="reviewer"), list=list, delegation=dict)
+
+    async def use(name: str | None, *, harness: object) -> str:
+        service.active = SimpleNamespace(name=name) if name else None
+        return "Profile switched"
+
+    service.use = use
+
+    async def exercise(runtime, chrome, _queue, _renderer, _descriptors, ctx, **_kwargs):
+        console = Console(width=100)
+        session = match_command("/session", ctx.commands)
+        agents = match_command("/agents", ctx.commands)
+        assert session is not None and session.handler is not None
+        assert agents is not None and agents.handler is not None
+        ctx.commit = console.print
+
+        for profile in ("reviewer", "planner"):
+            with console.capture() as capture:
+                await session.handler(ctx, "")
+            assert "agent profile" in capture.get() and profile in capture.get()
+            assert f"agent: {profile}" in chrome._render_footer()
+            if profile == "reviewer":
+                await agents.handler(ctx, "use planner")
+                runtime._harness = FakeHarness()
+                await runtime.rebind_cb(runtime.harness)
+
+        await agents.handler(ctx, "use --none")
+        with console.capture() as capture:
+            await session.handler(ctx, "")
+        assert "agent profile" not in capture.get()
+        assert "agent:" not in chrome._render_footer()
+
+    monkeypatch.setattr(tui_shell, "_input_loop", exercise)
+    async with _harness_chrome() as (runtime, chrome, _pipe):
+        monkeypatch.setattr(chrome.app.output, "get_size", lambda: Size(rows=40, columns=120))
+        assert await run_tui(
+            runtime,  # type: ignore[arg-type]
+            cwd=".",
+            chrome=chrome,
+            install_signal_handlers=False,
+            agent_service=service,  # type: ignore[arg-type]
+        ) == 0
