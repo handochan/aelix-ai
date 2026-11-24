@@ -4764,6 +4764,22 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **Seven locked dependencies move to releases that fix open advisories, and cryptography stays
+  below 49 so Intel Macs and 32-bit Windows keep a wheel (Refs #900, #901, #902, #903, #904,
+  #905, #906).** `uv.lock` now pins pyjwt 2.15.0, urllib3 2.8.0, python-multipart 0.0.31,
+  pydantic-settings 2.14.2, starlette 1.3.1 and anyio 4.14.2. For each of these six, the lock
+  block equals the one in its Dependabot pull request. It also pins cryptography 48.0.1, which
+  ships an OpenSSL fixed for the bundled-OpenSSL advisory. Dependabot's #902 proposed
+  cryptography 50.0.0 and a `<51` range. 48.0.1 publishes macOS universal2 wheels, which
+  cover Intel and Apple Silicon, and win32 wheels. PyPI lists neither for 50.0.0.
+  `aelix-coding-agent` therefore keeps `cryptography>=42,<49`. Three advisories stay open
+  against 48.0.1. One is in PKCS#7 EnvelopedData decryption. Two are in the X.509
+  path-validation API (`cryptography.x509.verification`). The package's only direct import
+  in Aelix's production sources (`packages/`) is Ed25519 signing and verification of extensions
+  (`cli/extension_signing.py`). The Vertex AI client reaches it indirectly, through
+  google-auth's RSA signing. A grep of the locked environment's site-packages outside
+  cryptography itself finds no reference to either affected API.
+
 - **MCP launch warnings identify connection and tool discovery failures (#834,
   ADR-0101).** The loopback launch tests show HTTP and SSE 401, Streamable HTTP
   499, connection refusal and invalid endpoints without echoing the endpoint.
