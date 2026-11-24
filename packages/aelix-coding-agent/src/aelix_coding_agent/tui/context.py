@@ -744,6 +744,7 @@ class AelixTUIContext:
         footer: AelixFooterData,
         *,
         model_provider: Callable[[], str | None] | None = None,
+        agent_profile_provider: Callable[[], str | None] | None = None,
         thinking_provider: Callable[[], str | None] | None = None,
         mode_provider: Callable[[], str | None] | None = None,
         pending_provider: Callable[[], int] | None = None,
@@ -755,6 +756,7 @@ class AelixTUIContext:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
+        self._agent_profile_provider = agent_profile_provider
         # Live reasoning-effort provider for the 🧠 thinking-level footer segment
         # (default-ON since #248; /statusline can still uncheck it). Yields the
         # level as the shell composed it — plus the tier the model receives when
@@ -2324,6 +2326,9 @@ class AelixTUIContext:
         # segment the user explicitly unchecked — it can never surface a stray
         # badge or vanish the leading position of the security-visible one.
         values = self._enabled_segment_values()
+        # The identity belongs to the built-in footer even for existing
+        # statusline selections, whose enabled ids predate this field.
+        profile = self._agent_profile_provider() if self._agent_profile_provider else None
         # Extension statuses are NOT registry segments (an extension owns its own
         # slot, never user-toggleable) — gathered once for both layouts.
         ext_statuses = [v for v in self._footer.get_extension_statuses().values() if v]
@@ -2362,13 +2367,15 @@ class AelixTUIContext:
                     cells[at:at] = ext_statuses
                 else:
                     composed.append(list(ext_statuses))
-            self.chrome.set_footer_block(["  ·  ".join(cells) for cells in composed])
+            self.chrome.set_footer_block(
+                ["  ·  ".join(cells) for cells in composed], agent_profile=profile
+            )
             return
 
         # Single-line (default): the canonical registry order joined by ``  ·  ``.
         parts = [values[segment.id] for segment in self._segments if segment.id in values]
         parts.extend(ext_statuses)
-        self.chrome.set_footer_line("  ·  ".join(parts))
+        self.chrome.set_footer_line("  ·  ".join(parts), agent_profile=profile)
 
     def set_context_label(self, label: str | None) -> None:
         """Update the live context-window usage segment + repaint the footer.

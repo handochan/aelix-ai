@@ -15,6 +15,8 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import pytest
+from _pyte import render_chrome_to_screen
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.footer_data import AelixFooterData
@@ -28,6 +30,7 @@ from aelix_coding_agent.tui.footer_segments import (
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
 
@@ -45,12 +48,14 @@ class _FakeStore:
 
     def __init__(self, enabled: list[str]) -> None:
         self._enabled = enabled
+        self.multiline = False
 
     def load(self) -> object:
         store = self
 
         class _Cfg:
             enabled = store._enabled
+            multiline = store.multiline
             use_theme_colors = True
 
         return _Cfg()
@@ -102,7 +107,7 @@ async def test_thinking_level_description_names_the_tier_suffix() -> None:
     # This states the sentence itself. Be honest about what that is: a
     # literal-vs-literal pin, NOT a behavioural test, because nothing renders a
     # segment description today — ``statusline_picker.py:96`` is the field's only
-    # reader and the multiselect body (``context.py:1759``) drops it (#257). Reverting
+    # reader and the multiselect body (``context.py:1761``) drops it (#257). Reverting
     # both copies to the pre-#251 sentence fails exactly this test and nothing
     # else (measured: 1 failed, 1589 passed on tests/tui). It earns its place by
     # keeping the two copies from drifting back to a claim the tier suffix
@@ -177,6 +182,81 @@ async def test_default_footer_with_a_thinking_provider_puts_the_brain_after_the_
 
 
 # === enabled-set gating ================================================
+
+
+async def test_main_agent_profile_appears_and_clears_in_both_footer_layouts() -> None:
+    footer = _FixedBranchFooter("main")
+    store = _FakeStore(["permission-mode", "current-dir", "model"])
+    active = None
+    async with _ctx(
+        footer,
+        model_provider=lambda: "gpt-4o",
+        cwd="/tmp/proj",
+        permission_badge_provider=lambda: None,
+        statusline_store=store,
+    ) as (ctx, chrome):
+        ctx._agent_profile_provider = lambda: active
+        single = "● default  ·  📂 /tmp/proj  ·  ✱ gpt-4o"
+        assert chrome._footer_line == single
+
+        active = "reviewer"
+        ctx._refresh_footer()
+        assert chrome._render_footer() == f"{single}  ·  agent: reviewer"
+
+        store.multiline = True
+        active = "planner"
+        ctx._refresh_footer()
+        assert chrome._render_footer() == "✱ gpt-4o  ·  agent: planner\n● default  ·  📂 /tmp/proj"
+
+        active = None
+        ctx._refresh_footer()
+        assert chrome._render_footer() == "✱ gpt-4o\n● default  ·  📂 /tmp/proj"
+        store.multiline = False
+        ctx._refresh_footer()
+        assert chrome._render_footer() == single
+
+
+@pytest.mark.parametrize("width", [40, 60, 80, 120])
+@pytest.mark.parametrize("multiline", [False, True])
+async def test_long_agent_profile_preserves_priority_footer_segments(
+    width: int, multiline: bool
+) -> None:
+    store = _FakeStore(["permission-mode", "steering", "pending-queued", "model"])
+    store.multiline = multiline
+    profile = "probe-" + "long-" * 10 + "profile"
+    # The unprofiled single row needs 46 columns with steering enabled.
+    steering = multiline or width > 40
+
+    def build_state(chrome: AelixChrome) -> None:
+        ctx = AelixTUIContext(
+            chrome,
+            _FixedBranchFooter("main"),
+            model_provider=lambda: "fake",
+            mode_provider=lambda: "all" if steering else "one-at-a-time",
+            pending_provider=lambda: 3,
+            permission_badge_provider=lambda: None,
+            statusline_store=store,
+        )
+        ctx._agent_profile_provider = lambda: profile
+        ctx._refresh_footer()
+
+    rows = [
+        row.rstrip() for row in await render_chrome_to_screen(cols=width, build_state=build_state)
+    ]
+    statuses = "● default  ·  ⏵⏵ all  ·  ⋯ 3 queued" if steering else "● default  ·  ⋯ 3 queued"
+    if multiline:
+        assert statuses in rows
+        first = "✱ fake"
+    else:
+        first = f"{statuses}  ·  ✱ fake"
+    if width == 40 and not multiline:
+        assert first in rows
+    elif width == 120 and multiline:
+        assert f"{first}  ·  agent: {profile}" in rows
+    else:
+        row = next(row for row in rows if "agent:" in row)
+        assert row.startswith(f"{first}  ·  agent: p")
+        assert row.endswith("…") and get_cwidth(row) == width
 
 
 async def test_disabling_a_segment_removes_exactly_that_segment() -> None:

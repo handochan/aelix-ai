@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
+import pytest
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
@@ -1065,6 +1066,122 @@ def test_name_sets_via_append() -> None:
     _run("name", _ctx(harness, committed), "new title")
     assert harness.session.set_name == "new title"
     assert any("session name → new title" in _render(c) for c in committed)
+
+
+async def test_unnamed_session_exposes_first_prompt_as_a_preview() -> None:
+    from aelix_agent_core.session import MemorySessionStorage, Session
+    from aelix_ai.messages import TextContent, UserMessage
+
+    session = Session(MemorySessionStorage())
+    await session.append_message(UserMessage(content=[TextContent(text="First\nquestion")]))
+    await session.append_message(UserMessage(content=[TextContent(text="Later question")]))
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.harness.session = session
+
+    for word in ("name", "session"):
+        command = match_command(f"/{word}", BUILTIN_COMMANDS)
+        assert command is not None and command.handler is not None
+        await command.handler(ctx, "")
+        rendered = _render(committed.pop())
+        assert "First question" in rendered and "first prompt preview" in rendered
+        assert "Later question" not in rendered
+
+    assert await session.get_session_name() is None
+
+
+@pytest.mark.parametrize("word", ["name", "session"])
+@pytest.mark.parametrize(
+    "invisible",
+    [("\u200b",), ("\u200d",), ("\u0301\u0327",), ("\u200b \u200b",), ("\u200b", "\u200b")],
+    ids=["zwsp", "zwj", "marks", "zwsp-space-zwsp", "two-zwsp-blocks"],
+)
+@pytest.mark.parametrize("next_prompt", [None, "x"], ids=["unset", "visible"])
+async def test_unnamed_session_preview_skips_zero_width_messages(
+    word: str, invisible: tuple[str, ...], next_prompt: str | None
+) -> None:
+    from aelix_agent_core.session import MemorySessionStorage, Session
+    from aelix_ai.messages import TextContent, UserMessage
+
+    session = Session(MemorySessionStorage())
+    await session.append_message(
+        UserMessage(content=[TextContent(text=part) for part in invisible])
+    )
+    if next_prompt is not None:
+        await session.append_message(UserMessage(content=[TextContent(text=next_prompt)]))
+
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.harness.session = session
+    command = match_command(f"/{word}", BUILTIN_COMMANDS)
+    assert command is not None and command.handler is not None
+    await command.handler(ctx, "")
+
+    rendered = _render(committed[0])
+    expected = next_prompt if next_prompt is not None else "(unset)"
+    rows = [line.rstrip(" │") for line in rendered.splitlines()]
+    assert any(row.endswith(f" {expected}") for row in rows), rendered
+    assert ("first prompt preview" in rendered) == (next_prompt is not None)
+
+
+@pytest.mark.parametrize("leading_entry", ["none", "control", "large-extension"])
+async def test_unnamed_session_preview_follows_the_resumed_branch(
+    tmp_path, leading_entry: str
+) -> None:
+    from aelix_agent_core.session import JsonlSessionCreateOptions, JsonlSessionRepo
+    from aelix_ai.messages import TextContent, UserMessage
+
+    repo = JsonlSessionRepo(sessions_root=str(tmp_path / "sessions"))
+    session = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    branch_point = await session.append_model_change("local", "test")
+    await session.append_message(UserMessage(content=[TextContent(text="Sibling question")]))
+    await session.move_to(branch_point)
+    if leading_entry == "control":
+        await session.append_message(UserMessage(content=[TextContent(text="\x07")]))
+    if leading_entry == "large-extension":
+        await session.append_custom_entry("notes", "x" * 70_000)
+    await session.append_message(UserMessage(content=[TextContent(text="Active question")]))
+    resumed = await repo.open(await session.get_metadata())
+
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.harness.session = resumed
+    for word in ("name", "session"):
+        command = match_command(f"/{word}", BUILTIN_COMMANDS)
+        assert command is not None and command.handler is not None
+        await command.handler(ctx, "")
+        rendered = _render(committed.pop())
+        assert "Sibling question" not in rendered
+        assert "first prompt preview" in rendered and "Active question" in rendered
+        assert "\x07" not in rendered
+
+
+def test_session_exposes_name_lookup_error_alongside_stats() -> None:
+    class BrokenNameSession(_FakeSession2):
+        async def get_session_name(self) -> str | None:
+            raise RuntimeError("name store unavailable")
+
+    harness = _SessionHarness()
+    harness.session = BrokenNameSession()
+    committed: list[object] = []
+    _run("session", _ctx(harness, committed), "")
+    out = _render(committed[0])
+    assert "name lookup failed" in out and "name store unavailable" in out
+    assert "sess123" in out and "messages" in out
+
+
+def test_session_shows_the_live_main_agent_profile() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_SessionHarness(name="my session"), committed)
+    active = "reviewer"
+    ctx.active_agent_profile = lambda: active
+    _run("session", ctx, "")
+    assert "agent profile" in _render(committed[-1])
+    assert "reviewer" in _render(committed[-1])
+
+    active = ""
+    _run("session", ctx, "")
+    assert "agent profile" not in _render(committed[-1])
 
 
 # === Sprint 6h₁₇ (ADR-0125) — /settings handler ===========================

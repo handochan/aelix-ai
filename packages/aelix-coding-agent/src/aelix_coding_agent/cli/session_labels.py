@@ -58,6 +58,7 @@ from aelix_agent_core.session.jsonl_repo import JsonlSessionRepo
 from aelix_agent_core.session.jsonl_storage import _parse_jsonl_content
 from aelix_agent_core.session.session_lock import WriterKind
 from aelix_agent_core.session.storage import SessionError
+from aelix_ai.messages import TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -557,6 +558,25 @@ def truncate_cells(text: str, cells: int, *, marker: str = "…") -> str:
         out.append(ch)
         used += width
     return "".join(out) + marker
+
+
+def first_prompt_label(branch: Sequence[SessionTreeEntry]) -> str | None:
+    """Preview the first nonempty displayable user text on the active branch."""
+
+    from rich.cells import cell_len
+
+    for entry in branch:
+        if entry.type == "message" and isinstance(entry.message, UserMessage):
+            text = " ".join(
+                block.text for block in entry.message.content if isinstance(block, TextContent)
+            )
+            label = _clean(text)
+            # Displayable means at least one non-space character that takes a
+            # cell: a join of zero-width blocks, or zero-width characters around
+            # a space, measures one cell yet shows nothing (#911 verify r3).
+            if any(not ch.isspace() and cell_len(ch) > 0 for ch in label):
+                return truncate_cells(label.strip(), 72)
+    return None
 
 
 def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:

@@ -141,7 +141,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:1159-1161``).
+    (``tui/context.py:1161-1163``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -394,7 +394,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:1159-1161``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:1161-1163``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -1072,7 +1072,7 @@ async def test_a_decline_does_not_poison_the_next_spawn() -> None:
 async def test_concurrent_requests_are_serialized() -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:978``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:980``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn
     hangs until Ctrl+C (until #701, which stacks it; two dialogs at once stay
     wrong). The kernel already serialises the ``tool_call`` hook

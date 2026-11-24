@@ -2,7 +2,7 @@
 
 Status: Accepted (shipped) — **AMENDED 2026-09-08 by #248** (`## Amendment
 (2026-09-08, #248)` below): the default-enabled set is no longer byte-identical
-to the pre-ADR-0160 footer. Everything else in this ADR stands.
+to the pre-ADR-0160 footer. Amended 2026-11-24 (#912) for the main-session profile.
 Date: 2026-06-21
 Supersedes: none (extends ADR-0159 footer rules)
 Related: ADR-0157 (permission posture footer badge), ADR-0159 (in-flow modal slot + permission-first/steering-hidden footer), ADR-0161 (the /settings + /scoped-models consumers built on this foundation)
@@ -127,3 +127,18 @@ persisted list order. So a saved file that **already** enables `thinking-level`
 does see the segment move out of the row's tail to after the model — the one
 behaviour change #248 reaches existing users with, pinned by
 `tests/tui/test_footer_segments.py::test_a_saved_store_that_already_enables_it_gets_the_new_position`.
+
+## Note (2026-11-24, #912)
+
+`/session` and the built-in footer read the main session's live profile
+from `AgentProfileService.active`. The 120×40 TUI probe exercises launch with
+`--agent`, `/agents use`, clearing the profile, in-process resume and a new
+`--continue` launch. The continued session reports the current invocation's
+identity.
+
+The built-in footer appends the profile to its first row when space allows.
+It shortens the name with an ellipsis or omits the profile to preserve the
+existing segments. The footer regressions in `tests/tui/test_footer_segments.py`
+cover a 63-character name at 40, 60, 80 and 120 columns in both layouts.
+The no-profile checks compare the exact output strings in both layouts.
+An extension that supplies a footer factory owns that footer.

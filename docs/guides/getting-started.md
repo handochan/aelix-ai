@@ -453,10 +453,18 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
   [skills-and-prompts](skills-and-prompts.md).
 - `/resume` — switch to another session.
 - `/name <text>` (or `/rename <text>`) — set the current session name. Both
-  `/resume` and `aelix --resume` show the latest saved name, falling back to the
-  first user message for unnamed sessions. Damaged records are skipped with the
+  `/resume` and `aelix --resume` show the latest saved name and can fall back to
+  a prompt from the session file. Damaged records are skipped with the
   same recovery rules used when reopening the session. `/name` without arguments
-  shows the current name.
+  and `/session` show the saved name or a first prompt preview from the active
+  branch. An unnamed branch with no displayable user text shows `(unset)`.
+  Both commands show the reason if the name lookup fails (#911).
+- `/session` — show session information and usage. When the main session runs
+  under an [agent profile](agent-profiles.md), `/session` shows its full name
+  when it fits and shortens it with an ellipsis otherwise.
+  The built-in footer can shorten or omit the name as space runs out, as tested
+  at 40, 60, 80 and 120 columns in both layouts. Use `/agents use <name>`
+  to switch profiles and `/agents use --none` to clear the active profile (#912).
 
 To start a new line in the input, type `\` and press Enter. It works wherever the
 cursor is, also in the middle of a line or of a draft that already has lines: the `\`

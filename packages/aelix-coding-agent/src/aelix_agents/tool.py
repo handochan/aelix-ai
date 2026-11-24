@@ -12,7 +12,7 @@ measured reasons, all of which make the hook the only correct location:
    the SEQUENTIAL prep phase (``loop.py:626-647``, driven from ``:1043-1077``) but
    ``execute`` in a task per call (``loop.py:1083-1086``), with
    ``tool_execution = "parallel"`` by default (``harness/core.py:326``). Two
-   modals from one batch collide on ``tui/chrome.py:978``'s single ``_modal``
+   modals from one batch collide on ``tui/chrome.py:980``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C. (Since #701 the slot
    stacks — the first dialog comes back when the second closes — but two
