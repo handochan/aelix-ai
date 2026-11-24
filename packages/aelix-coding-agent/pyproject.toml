@@ -42,7 +42,7 @@ dependencies = [
   # pytest requires it, so an `install.sh` user would not have had it.
   "packaging>=23",
   "mcp>=1.27,<2",
-  "Pillow>=11.0,<12.0",
+  "Pillow>=13.0.0,<14.0",
   # WP-0 (ADR-0158) — tree-sitter-bash AUTO-mode safety classifier. Prebuilt
   # cross-platform wheels (linux/macos/windows), no compiler, ~3.4 MiB. Pinned
   # to one grammar-ABI line so node-type names don't silently drift. The

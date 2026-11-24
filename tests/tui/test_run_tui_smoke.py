@@ -1763,12 +1763,46 @@ async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(
         assert text.endswith(".png")
         assert "aelix-clipboard-" in text
         assert os.path.exists(text)  # real PNG written to disk by PIL.save
-        assert os.path.getsize(text) > 0
+        with Image.open(text) as pasted:
+            assert pasted.mode == "RGB"
+            assert pasted.getpixel((0, 0)) == (255, 0, 0)
         os.unlink(text)
         pipe.send_text("\x03")  # Ctrl+C clears the editor
         await _wait(lambda: chrome.get_editor_text() == "")
         pipe.send_text("/quit\n")
         await _quit_within(task)
+
+
+async def test_run_tui_ctrl_v_pastes_signed_grayscale_as_16_bit_png(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tempfile
+
+    from PIL import Image, ImageGrab
+
+    image = Image.new("I", (5, 1))
+    image.putdata([-1, 0, 4097, 65535, 65536])
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: image)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("\x16!")  # Wait for the following character even if Ctrl+V drops the image.
+        await _wait(lambda: chrome.get_editor_text().endswith("!"))
+        pasted = chrome.get_editor_text().removesuffix("!")
+        pipe.send_text("\x03")
+        await _wait(lambda: chrome.get_editor_text() == "")
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+    assert pasted, "Ctrl+V dropped the signed grayscale image"
+    path = Path(pasted)
+    assert path.parent == tmp_path
+    assert path.name.startswith("aelix-clipboard-")
+    with Image.open(path) as result:
+        assert result.format == "PNG"
+        assert result.mode == "I;16"
+        assert [result.getpixel((x, 0)) for x in range(5)] == [0, 0, 4097, 65535, 65535]
 
 
 async def test_run_tui_ctrl_v_silent_noop_when_clipboard_has_no_image(
