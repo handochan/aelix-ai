@@ -915,8 +915,8 @@ class AgentHarness:
         self._wired_hook_handlers: set[tuple[str, int]] = set()
         self._wired_hook_cleanups: set[int] = set()
         self._wire_extension_hooks()
-
         self._steering_queue = _MessageQueue(options.steering_mode)
+        self._steering_waiters: set[asyncio.Future[None]] = set()
         self._follow_up_queue = _MessageQueue(options.follow_up_mode)
         # ADR-0306 — the final-steer latch. ``steer(final=True)`` remembers its
         # message; the drain that returns it marks it consumed, and the next
@@ -1276,16 +1276,16 @@ class AgentHarness:
         waiting forever. The message is that turn's prompt, recorded with it
         like any failed turn's (not queued again); the ``next_turn`` queue is
         left for the next real prompt. Asked while another turn runs, it is
-        queued as before. The CLI holds
-        the turns of a harness whose ``session_start`` runs while the route is
-        undecided (a pending launch, or a rebuild under the late-provider
-        hold, ADR-0250 §2.11) and lifts the gate after its decision, so a
-        handler's ``set_model`` there cannot run a turn on the model it set; likewise
-        while it applies a late-provider hold (#367 verify round 6). pi has no such
-        gate: its launch model is resolved before any ``session_start``.
+        queued as before. During a pending launch or a late-provider hold
+        (ADR-0250 §2.11), the CLI holds turns until it decides the route, so
+        a ``session_start`` handler's ``set_model`` cannot start a turn on that
+        model (#367 verify round 6). Pi resolves the model before ``session_start``.
         """
 
+        was_sealed = isinstance(self._turn_gate, TurnSeal)
         self._turn_gate = reason = self._unretired(reason)  # #849: an ended gate's own
+        if was_sealed and self.has_pending_steering():
+            self._wake_steering_waiters()
         if reason is None and self._notices_enabled:
             # #722 — a notice that waited for the gate can be taken now.
             self._inbox.notify("released")
@@ -2082,7 +2082,7 @@ class AgentHarness:
         message = UserMessage(content=content)
         if final:
             self._final_message = message
-        self._steering_queue.enqueue(message)
+        self._enqueue_steer(message)
         # Sprint 3b — enqueue paths emit ``queue_update`` (P-4: setters do
         # NOT, only enqueue paths do). Pi: ``agent-harness.ts`` steer path.
         await self._emit_queue_update()
@@ -6855,6 +6855,8 @@ class AgentHarness:
         """Aelix-additive (#681): queue what :meth:`take_queued_messages` took, ahead of anything here."""
 
         self._steering_queue._messages = [*steer, *self._steering_queue._messages]
+        if steer:
+            self._wake_steering_waiters()
         self._follow_up_queue._messages = [*follow_up, *self._follow_up_queue._messages]
         self._next_turn_queue = [*next_turn, *self._next_turn_queue]
 
@@ -6961,6 +6963,38 @@ class AgentHarness:
         if gate is None:
             self._retired_gates = None
         return gate
+
+    @contextlib.contextmanager
+    def watch_steering(self) -> Iterator[asyncio.Future[None]]:
+        """Subscribe to the next steer on this harness before checking its queue."""
+
+        wake = asyncio.get_running_loop().create_future()
+        self._steering_waiters.add(wake)
+        try:
+            yield wake
+        finally:
+            self._steering_waiters.discard(wake)
+            wake.cancel()
+
+    def has_pending_steering(self) -> bool:
+        """Whether this harness can deliver a queued steer to the active turn."""
+
+        return (
+            bool(self._steering_queue._messages)
+            and not self.abort_pending
+            and not self._disposed
+            and not isinstance(self._turn_gate, TurnSeal)
+        )
+
+    def _wake_steering_waiters(self) -> None:
+        for wake in self._steering_waiters:
+            if not wake.done():
+                wake.set_result(None)
+
+    def _enqueue_steer(self, message: AgentMessage) -> None:
+        self._steering_queue.enqueue(message)
+        self._wake_steering_waiters()
+
 
 
 # === AgentEvent → HookEvent mapping ===

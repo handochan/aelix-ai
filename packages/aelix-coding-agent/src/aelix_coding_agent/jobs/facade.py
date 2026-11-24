@@ -15,7 +15,7 @@ stops only jobs of the kinds its extension registered, of the current session.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.jobs.activation import require_active
@@ -186,11 +186,11 @@ class JobsFacade:
     snapshot = status
     snapshots = list
 
-    async def changed(self) -> None:
+    def changed(self) -> Coroutine[Any, Any, None]:
         """Wait for the next change to any job (``JobService.changed``)."""
 
         self._check()
-        await self._service.changed()
+        return self._service.changed(check=self._check)
 
     async def stop(
         self, job_id: str, *, reason: StopReason = "user", wait: float | None = None

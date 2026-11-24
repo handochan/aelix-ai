@@ -138,7 +138,7 @@ if TYPE_CHECKING:
 
     from aelix_agents.child_session import ResumeTarget
     from aelix_agents.detach import CallDetach, Detached
-    from aelix_agents.jobs_client import DelegationJobs
+    from aelix_agents.jobs_client import DelegationJobs, SteeringSource
     from aelix_agents.tool import AgentCall
 
 logger = logging.getLogger(__name__)
@@ -384,11 +384,8 @@ class AgentsExtension:
     session: Callable[[], Any | None] | None = None
     """The parent's CURRENT harness session, where delegations record (#199).
 
-    Wired in ``cli/entry.py`` to the runtime host's live session — the same
-    late-bound shape as :attr:`no_context_files` — and read by ``runtime._run``
-    exactly ONCE per spawn (:attr:`~aelix_agents.runtime.SubagentHost.session`
-    explains why once). It is the PRIMARY source, and ``self._ctx`` is only the
-    fallback, because a hook's context is the wrong thing to ask on the two
+    Wired to the runtime host and read once per spawn.
+    The hook context is a fallback that can be stale or absent on the two
     paths #199 cares most about: ``/agents run`` typed before any hook fired
     (``_ctx`` is ``None``, or the previous session's after ``/new``), and a
     settle arriving after teardown invalidated it (every read raises
@@ -396,6 +393,9 @@ class AgentsExtension:
 
     ``None`` is the unwired default: records then go wherever the most recent
     hook's context points, if anywhere."""
+
+    wait_steering: Callable[[], SteeringSource | None] | None = field(default=None, kw_only=True)
+    """The active parent harness's steering source, captured once per wait."""
 
     model: Callable[[], Any | None] | None = None
     """The parent's EFFECTIVE model, for a child whose profile names none (#304).
@@ -2734,8 +2734,12 @@ class AgentsExtension:
                     return ToolResult(
                         content=[TextContent(text="No background agent is running.")]
                     )
-            text, empty = await wait_for_agents(facade, jobs, ids, requested=call.timeout)
-            jobs.empty_waits = jobs.empty_waits + 1 if empty else 0
+            steering = self.wait_steering() if self.wait_steering is not None else None
+            text, outcome = await wait_for_agents(
+                facade, jobs, ids, requested=call.timeout, steering=steering
+            )
+            if outcome != "steer":
+                jobs.empty_waits = jobs.empty_waits + 1 if outcome else 0
             return ToolResult(content=[TextContent(text=text)])
         assert job_id is not None  # the parser requires one for stop and result
         if call.action == "stop":
