@@ -480,6 +480,17 @@ message (or a retry of this one), and a dim line says so. `/quit` stops the answ
 quits. An extension's command runs at once, an extension's panel opens, and a prompt
 template or `/skill:<name>` is expanded and its text steered into the answer (with
 `Alt+Enter`, queued as a follow-up).
+
+In the TUI, `/settings` → **Completed thinking** saves the display preference
+as `completedThinkingDisplay`. Choose **full** (the default) to keep the
+reasoning text, or **collapsed** to show a `💭 Thinking… (/expand N)` line for
+each part committed to scrollback. Reasoning that resumes while the answer owns
+the live window appears when that part completes. A thought that resumes this
+way can show two collapsed lines around the live answer and one for the saved
+block on replay. With **Thinking blocks** visible, the ordinary reasoning tail
+appears as it streams before the answer. Ctrl+T toggles **Thinking blocks** for
+the session. [ADR-0319](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0319-tui-completed-thinking-display.md)
+
 Commands that would change the session under the answer — `/new`, `/resume`, `/fork`,
 `/clone`, `/import`, `/reload`, `/compact`, `/clear`, `/login`, `/extension`,
 `/name <text>`, `/agents use` or `run` — do not run then: the line stays in the input and

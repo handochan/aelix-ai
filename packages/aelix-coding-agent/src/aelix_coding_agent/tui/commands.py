@@ -999,7 +999,7 @@ def _delegates_to_cell(profile: AgentProfile) -> Text:
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:5403-5417`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:5395-5409`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1130,7 +1130,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:4150`` binds the real TUI context onto
+    UI seam instead — ``shell.py:4142`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3191``), so the
     modal here is the same surface the permission dialog uses.
 

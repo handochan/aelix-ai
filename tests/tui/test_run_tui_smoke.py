@@ -1666,6 +1666,31 @@ async def test_run_tui_seeds_hidden_thinking_from_persisted_setting(
     assert captured[0].hide_thinking is True  # type: ignore[attr-defined]
 
 
+async def test_run_tui_seeds_and_applies_completed_thinking_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_ai.settings import SettingsManager
+
+    captured = _capture_renderer(monkeypatch)
+    sm = SettingsManager.in_memory({"completedThinkingDisplay": "collapsed"})
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running and bool(captured))
+        renderer = captured[0]
+        try:
+            assert getattr(renderer, "collapse_completed_thinking", None) is True
+            pipe.send_text("/settings\n")
+            await _wait(chrome.is_modal_open)
+            pipe.send_text("Completed thinking\n")
+            await _wait(lambda: getattr(renderer, "collapse_completed_thinking", None) is False)
+            assert sm.get_completed_thinking_display() == "full"
+            await _esc_until_settings_closed(chrome, pipe)
+        finally:
+            chrome.request_eof()
+            chrome.exit()
+            await _quit_within(task)
+
+
 class _ThinkingSeedHarness(FakeHarness):
     """FakeHarness exposing a fixed ``current_model`` + recording
     ``set_thinking_level`` so any thinking-level write ``run_tui`` makes at

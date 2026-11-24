@@ -23,6 +23,14 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **The TUI can collapse completed thinking blocks (#909, ADR-0319).** The
+  `menu` and `menu-full` 120×40 PTYs show both choices through `/settings` →
+  **Completed thinking**, with the ordinary reasoning tail visible before the
+  answer. The `held-late` PTY shows reasoning resuming while the answer owns the
+  live window and appearing at completion. The `view-collapsed-late` and
+  `replay-collapsed-late` PTYs show two `/expand N` lines around the live
+  answer and one for the saved block on replay.
+
 - **An RPC host can resume a stopped delegated agent itself: `children/resume` (#836, ADR-0318).**
   `aelix_control` `children/resume {id, task}` resumes an agent the model delegated, on its own
   session file with `task` as its next instruction, and answers `{result}` as `agents/run` does.
@@ -1967,6 +1975,16 @@ unwritten. Add them with the next release.
   `find`, `ls`). The guides' sections on installation, session ownership, headless
   permissions, delegated-agent approvals and offline catalog behavior were corrected
   against the code.
+- **The TUI preserves only the new part when custom Chat Completions reasoning resumes (#908).**
+  The `late-space` and `resume` 120×40 PTY captures show that a whitespace-only
+  continuation adds no row and a distinct continuation appears once after the answer.
+  An OpenAI Responses reasoning summary that closes after the answer and extends what
+  streamed adds its new text once: in the `whitespace-summary` PTY its final word
+  follows the answer alone instead of after the earlier reasoning printed again, and
+  in the `closed-summary` PTY it appears where it was dropped. A summary that neither
+  extends what streamed nor starts with the text streamed after the answer adds only
+  that text, so nothing shown prints twice, and the saved summary appears after
+  `/resume` (the `shrunk-gapped` and `mixed-old-new` PTYs, ADR-0221).
 
 - **Startup and status skip auto-discovered MCP files in untrusted projects (#835, ADR-0282).**
   When Aelix auto-discovers `.aelix/mcp.json` in an untrusted project, startup prints a

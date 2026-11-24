@@ -925,6 +925,31 @@ def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
 _READ_ONLY_REFUSAL = "This session is read-only. Use /fork to make a writable copy."
 
 
+def _seed_renderer_settings(
+    renderer: EventRenderer,
+    settings_manager: SettingsManager | None,
+    render_width_cap: dict[str, int | None],
+) -> None:
+    """Load persisted display preferences before the initial transcript replay."""
+
+    if settings_manager is None:
+        return
+    # Keep the renderer defaults for any unavailable value without losing the
+    # other preferences. Model reasoning effort is seeded by cli/entry.py (#286).
+    with contextlib.suppress(Exception):
+        renderer.hide_thinking = settings_manager.get_hide_thinking_block()
+    with contextlib.suppress(Exception):
+        renderer.collapse_completed_thinking = (
+            settings_manager.get_completed_thinking_display() == "collapsed"
+        )
+    with contextlib.suppress(Exception):
+        renderer.hide_compaction_summary = settings_manager.get_hide_compaction_summary()
+    with contextlib.suppress(Exception):
+        renderer.tool_card_max_lines = settings_manager.get_tool_card_max_lines()
+    with contextlib.suppress(Exception):
+        render_width_cap["value"] = settings_manager.get_render_max_width()
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -1350,42 +1375,7 @@ async def run_tui(
             return list(build_display_messages(await branch))
         return list((await session.build_context()).messages)
 
-    # Issue #50 — seed the live thinking settings from the persisted store at
-    # startup (mirror of the WP-2/ADR-0160 theme + default-model seeds above).
-    # Without this the /settings → "Show thinking" choice was write-only across
-    # launches: the renderer started on its hardcoded default, so the user had
-    # to re-toggle it every session. Each seed is guarded so a malformed
-    # settings file never blocks launch. ("Default thinking level" is seeded by
-    # ``cli/entry.py`` for every mode since #286: see (b).)
-    if settings_manager is not None:
-        # (a) thinking-block VISIBILITY → the renderer flag. ``get_hide_thinking_
-        # block`` defaults to False (visible, pi parity) which now also matches
-        # render.py's hardcoded default, so headless / no-settings stays sane.
-        with contextlib.suppress(Exception):
-            renderer.hide_thinking = settings_manager.get_hide_thinking_block()
-        # (a1) compaction-summary DISPLAY gate → the renderer flag (aelix-original,
-        # mirrors hide_thinking). Gates the /compact summary panel + the replayed
-        # compaction-summary message; the summary stays in the LLM context.
-        with contextlib.suppress(Exception):
-            renderer.hide_compaction_summary = settings_manager.get_hide_compaction_summary()
-        # (a2) tool-card NORMAL-output line cap → the renderer (Issue #66). Without
-        # this seed the persisted ``tool_card_max_lines`` never reaches the
-        # renderer, leaving the setting inert. Guarded like the sibling above.
-        with contextlib.suppress(Exception):
-            renderer.tool_card_max_lines = settings_manager.get_tool_card_max_lines()
-        # (a3) render-width CEILING → the shared cell (issue #166). Same failure
-        # mode as (a2) if omitted: the setting persists and does nothing.
-        with contextlib.suppress(Exception):
-            render_width_cap["value"] = settings_manager.get_render_max_width()
-        # (b) The default THINKING LEVEL is no longer seeded here (#286). This
-        # seed ran in the TUI only, so ``-p``, ``--mode json``, ``--mode rpc``
-        # and every delegated child ignored ``defaultThinkingLevel`` and asked
-        # for ``off``; and it SKIPPED a level the model did not list, leaving a
-        # default above the model's top level at ``off``. ``cli/entry.py``'s
-        # launch ladder (``_seed_default_thinking_level``) now applies it for
-        # every mode before ``session_start``, clamped to the model, after
-        # ``--thinking`` and the resumed session's level (#198) — which also
-        # retires the ``thinking_level_restored`` signal this seed needed.
+    _seed_renderer_settings(renderer, settings_manager, render_width_cap)
 
     # WP-8 (Feature 2) — the TUI-side session activity tracker. The harness
     # SessionStats carries no per-tool success/failure split, no per-model
@@ -1908,6 +1898,8 @@ async def run_tui(
                 harness.set_follow_up_mode(str(value))
             elif key == "hide_thinking_block":
                 renderer.hide_thinking = bool(value)
+            elif key == "completed_thinking_display":
+                renderer.collapse_completed_thinking = value == "collapsed"
             elif key == "hide_compaction_summary":
                 renderer.hide_compaction_summary = bool(value)
             elif key == "tool_card_max_lines":
@@ -3467,7 +3459,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:1038``), so anything reaching this line already has it.
+            # (``render.py:1025``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
