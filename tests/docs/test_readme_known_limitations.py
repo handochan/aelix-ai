@@ -32,6 +32,7 @@ looked "only at the built-in" tools, and an extension's ``shell`` is checked).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -187,12 +188,107 @@ def test_the_limitation_count_matches_the_bullets(name: str) -> None:
 
     text = _read(name)
     if name == "README.md":
-        section = text.split("## Known limitations (beta)", 1)[1]
+        section = text.split("## Known limitations\n", 1)[1]
         assert "Six things worth knowing" in section
     else:
-        section = text.split("## 알려진 한계 (베타)", 1)[1]
+        section = text.split("## 알려진 한계\n", 1)[1]
         assert "여섯 가지입니다" in section
     section = section.split("\n## ", 1)[0]
     # Bullets are `**Bold lead-in.**` at the start of a line.
     bullets = [line for line in section.splitlines() if line.startswith("**")]
     assert len(bullets) == 6, [b[:40] for b in bullets]
+
+
+# === the issues still open in 0.1.0 (#385) ==================================
+
+#: The open issues the READMEs list under their "Also open in 0.1.0" subsection:
+#: 26 from the 0.1.0 blocker check of 2026-11-25, and the 9 open issues that #385
+#: itself names and deferred to this list (#157, #168, #259, #265, #267, #372,
+#: #373, #377, #378; #265 and #267 each carry a 2026-10-06 comment that says to
+#: list them instead of fixing them). #138, also from the blocker check, is one of
+#: the six standing limits above them.
+_OPEN_IN_0_1_0 = frozenset(
+    {569, 481, 499, 582, 739, 557, 560, 793, 157, 377, 378, 168, 265, 267}  # everyday use
+    | {543, 875, 855, 876, 865}  # scripts and RPC hosts
+    | {545, 674, 692, 713, 714, 715, 851, 839, 878, 373, 372, 259}  # extension authors
+    | {46, 584, 881, 107}  # Windows
+)
+_ALSO_OPEN = {
+    "README.md": ("## Known limitations\n", "### Also open in 0.1.0\n", "#### Windows (experimental)"),
+    "README.ko.md": ("## 알려진 한계\n", "### 0.1.0에서 열려 있는 것들\n", "#### Windows (실험적)"),
+}
+
+
+def _issue_links(text: str) -> set[int]:
+    return {int(n) for n in re.findall(r"/aelix-ai/issues/(\d+)\)", text)}
+
+
+@pytest.mark.parametrize("name", READMES)
+def test_the_readme_lists_every_issue_still_open_in_0_1_0(name: str) -> None:
+    """#385: a known limit a reader cannot see is one they meet unwarned. Each
+    line names its issue; the Windows lines sit under a heading that says
+    Windows is experimental."""
+
+    heading, subsection, windows = _ALSO_OPEN[name]
+    section = _read(name).split(heading, 1)[1].split("\n## ", 1)[0]
+    also = section.split(subsection, 1)[1]
+    assert _issue_links(also) == _OPEN_IN_0_1_0
+    assert windows in also
+    assert 138 in _issue_links(section.split(subsection, 1)[0])
+
+
+def test_the_changelog_section_opens_with_the_same_issues() -> None:
+    """The Release page carries the section's head only (scripts/release_notes.py
+    cuts it under GitHub's limit), so the block is the section's first heading
+    and lists the README's issues, #138 included."""
+
+    text = _read("CHANGELOG.md")
+    section = text.split("\n## [0.1.0] - ", 1)[1].split("\n## [", 1)[0]
+    headings = re.findall(r"^### .*$", section, re.MULTILINE)
+    assert headings[0] == "### Known limitations", headings[:3]
+    block = section.split("### Known limitations\n", 1)[1].split("\n### ", 1)[0]
+    listed = [int(n) for n in re.findall(r"^- #(\d+):", block, re.MULTILINE)]
+    assert len(listed) == len(set(listed))
+    assert set(listed) == _OPEN_IN_0_1_0 | {138}
+    assert "**Windows (experimental)**" in block
+    # The #385 entry counts what the READMEs add.
+    added = re.search(r"Both READMEs add (\d+) open issues", " ".join(section.split()))
+    assert added is not None and int(added.group(1)) == len(_OPEN_IN_0_1_0)
+
+
+#: Sentences the 0.1.0 lists carried before its verify, each wider than its issue's
+#: measurement: #481 stops at the token's expiry, not at exit; #793 measured
+#: ``(( … ))`` on dash only; #14 closed on a decision, not on a finding; #569 did
+#: not measure a cut argument passing validation; #714 ran only the shortcut and a
+#: descriptor; #739's ``/cost`` shows ``≥`` after a delegation; #557 measured only
+#: the OpenAI SDK client. And after the second verify: #793's ``1>FILE`` is a
+#: redirection and ``(( crontab -r ))`` was classified only, not run; #714's 36
+#: warnings are not only themes, widgets and descriptors; #265 and #267 are not
+#: left out as "documentation tooling", since each issue's 2026-10-06 comment says
+#: to list it. Whitespace is folded, so a rewrap does not hide one.
+_WIDER_THAN_MEASURED = (
+    "keeps sending its cached login until it exits",
+    "종료될 때까지 캐시된 로그인을 계속 보내고",
+    "with dash, ksh or mksh as",
+    "셸이 dash·ksh·mksh이면",
+    "closed: an extension can add one",
+    "closed for an extension to add",
+    "run with whatever arguments arrived complete",
+    "with the arguments that arrived complete",
+    "온전히 도착한 인자만으로",
+    "shortcut, theme, widget or descriptor fails",
+    "failing extension shortcut, theme, widget or descriptor",
+    "단축키·테마·widget·descriptor가 실패하면",
+    "`models.json` shows `n/a` (RPC",
+    "show `n/a` for a `models.json` model even with",
+    "a few forms that dash runs as commands",
+    "36 such warnings (themes, widgets, descriptors)",
+    "which are documentation tooling",
+)
+
+
+@pytest.mark.parametrize("name", (*READMES, "CHANGELOG.md"))
+def test_no_known_limitation_claims_more_than_its_issue_measured(name: str) -> None:
+    text = " ".join(_read(name).split())
+    for wider in _WIDER_THAN_MEASURED:
+        assert wider not in text, f"{name} still says: {wider}"

@@ -10,9 +10,8 @@ This guide gets you from zero to a running `aelix` agent. For provider keys see
 
 ## Install
 
-Aelix installs as a single global `aelix` command. The recommended path during
-the beta is the checksum-verified installer, which takes it from GitHub
-Releases:
+Aelix installs as a single global `aelix` command. The recommended path is the
+checksum-verified installer, which takes it from GitHub Releases:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -32,13 +31,13 @@ terminal.
 Three environment variables configure it:
 
 - `AELIX_VERSION` — pin an exact release tag, copied from the
-  [Releases page](https://github.com/handochan/aelix-ai/releases). Recommended
-  during the beta. Without it the installer resolves the newest release from the
-  GitHub API.
+  [Releases page](https://github.com/handochan/aelix-ai/releases). Without it
+  the installer resolves the newest release from the GitHub API, a pre-release
+  included.
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
 - `AELIX_PYTHON` — the interpreter uv builds the tool environment on, as a uv
   Python request. By default it is the range the release being installed runs
-  on (#278): `>=3.11,<3.15` for `v0.1.0-beta.3` and later, `>=3.11,<3.14` for
+  on (#278): `>=3.11,<3.15` for `v0.1.0` and later, `>=3.11,<3.14` for
   `v0.1.0-beta.2` and earlier. Those older releases pin `openai<2.0`, which on
   Python 3.14 raises `'typing.Union' object has no attribute
   '__discriminator__'` in the middle of a turn (#262, #263), and `AELIX_VERSION`
@@ -63,7 +62,7 @@ Three environment variables configure it:
   `uv tool upgrade aelix` suggests by itself — rebuilds the environment on the
   newest Python on the machine. With `v0.1.0-beta.2` that lands on 3.14 and the
   crash above; measured, it overwrites an environment this installer had
-  correctly built on 3.13. From `v0.1.0-beta.3`, 3.14 is supported and that
+  correctly built on 3.13. From `v0.1.0`, 3.14 is supported and that
   command no longer breaks aelix, but re-running the install line is still the
   way to upgrade: it is the one that checks the wheels.
 
@@ -72,7 +71,7 @@ prefix sets the variable for `curl` only; the `sh` on the other side of the pipe
 never sees it and the installer silently falls back to its default:
 
 ```bash
-AELIX_VERSION=vX.Y.Z-beta.N AELIX_EXTRAS=tui \
+AELIX_VERSION=vX.Y.Z AELIX_EXTRAS=tui \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
 ```
 
@@ -104,18 +103,18 @@ Extras:
 
 `tui` is the only extra.
 
-> **[PyPI publishes the runnable beta.2 package (`0.1.0b2`)](https://pypi.org/project/aelix/0.1.0b2/#files).**
-> ADR-0240 removed the workflow gate that kept pre-release tags off PyPI, so
-> `v0.1.0-beta.2` publishes `0.1.0b2` to all four names. pip and uv both take the
-> newest candidate when *every* candidate is a pre-release, so `pip install aelix`,
-> `pipx install aelix` and `uv tool install aelix` resolve `0.1.0b2` or a newer
-> pre-release rather than the placeholder below. The
-> installer above stays the recommended path: it is the only one that checks the
-> wheels against the release's `SHA256SUMS`.
+> **[PyPI publishes `0.1.0`](https://pypi.org/project/aelix/0.1.0/#files), a final release.**
+> Every release tag publishes its version to all four names (ADR-0240 removed the
+> gate that kept pre-release tags off PyPI, from `v0.1.0-beta.2` on), and pip and
+> uv prefer a final release to a pre-release, so `pip install aelix`,
+> `pipx install aelix` and `uv tool install aelix` resolve `0.1.0` with no
+> pre-release flag. The installer above stays the recommended path: it is the only
+> one that checks the wheels against the release's `SHA256SUMS`.
 >
 > **Before `0.1.0b2` those commands were a trap.** Each of the four PyPI names
 > carried one reservation release, a metadata-only `0.0.0a0` (pypi.org on
-> 2026-09-09 listed nothing else for `aelix`), and the same rule resolved it.
+> 2026-09-09 listed nothing else for `aelix`), and pip and uv, which take the
+> newest candidate when *every* candidate is a pre-release, resolved it.
 > uv's own suggested upgrade, `uv tool install aelix@latest`, then found no entry
 > points and removed the working `aelix` you were trying to upgrade
 > (`update_check.py`).
@@ -131,7 +130,7 @@ release it named pinned on the `sh` side of the pipe, so what installs is what
 it told you about:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | env AELIX_VERSION=vX.Y.Z-beta.N sh
+curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | env AELIX_VERSION=vX.Y.Z sh
 ```
 
 `env` rather than a bare `AELIX_VERSION=… sh` prefix, so the line also works
@@ -157,8 +156,9 @@ install ([#106](https://github.com/handochan/aelix-ai/issues/106)):
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 ```
 
-That line takes the newest release, and every Windows fix on this page landed in
-`v0.1.0-beta.2` — on anything older it installs a build without them.
+That line takes the newest release. Windows became usable in `v0.1.0-beta.2`;
+pinned to anything older, it installs a build without the Windows fixes on this
+page.
 
 It takes the same knobs as `install.sh`, read from the environment:
 `AELIX_VERSION`, `AELIX_EXTRAS`, `AELIX_REPO`, `AELIX_PYTHON`, `UV_VERSION`,
@@ -167,7 +167,7 @@ Set them with `$env:` **before** the pipe — `iex` runs the script in the curre
 session, so it sees them (measured on PowerShell 7.6.5):
 
 ```powershell
-$env:AELIX_VERSION = 'vX.Y.Z-beta.N'
+$env:AELIX_VERSION = 'vX.Y.Z'
 irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex
 ```
 
@@ -176,7 +176,7 @@ form of the same thing. Like the install line above, it runs from `cmd.exe` and
 from PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "Set-Item env:AELIX_VERSION 'vX.Y.Z-beta.N'; irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "Set-Item env:AELIX_VERSION 'vX.Y.Z'; irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 ```
 
 It has no `$` on purpose. Typed into PowerShell, a `$env:AELIX_VERSION='…'`
@@ -201,7 +201,7 @@ through the same `| iex` path; the fetch from raw.githubusercontent.com and the
 job asserts is the launcher, `aelix --version` and the interpreter, and it
 says so in its own header (`.github/scripts/assert-install-ps1.ps1`); a third
 pass pins `v0.1.0-beta.2` with Python 3.14 on the runner and checks it still
-lands below 3.14 (#278). For beta.3, the `candidate-smoke` jobs in
+lands below 3.14 (#278). For 0.1.0, the `candidate-smoke` jobs in
 [`release.yml`](https://github.com/handochan/aelix-ai/blob/main/.github/workflows/release.yml)
 install the candidate wheels on Windows, macOS and Linux and require an installed
 one-shot print turn against a local stub before publication.
@@ -211,7 +211,7 @@ On a real Windows host the maintainer checked the beta.2 candidate by hand on
 mojibake, the model correctly reports it is on PowerShell and writes PowerShell
 syntax instead of `&&`, and the TUI paints (footer, `/thinking` picker, tool
 cards). That is **one person, one machine, one locale**, on top of the CI leg —
-which is what "beta" means here, not a claim of broad coverage. The README's
+which is why Windows is labelled experimental, not a claim of broad coverage. The README's
 *Platform support* section is the canonical statement; `SLICE-STATUS.md` at the
 repository root tracks the remaining Windows gaps.
 
@@ -402,7 +402,7 @@ one is already using. Only one of them can write to it: a session records where
 each turn attaches, and two terminals writing at once used to leave one
 terminal's turns on a branch nothing ever replayed again.
 
-On POSIX in beta.3, the second terminal shows **This session is open in Aelix Studio.** or
+On POSIX in 0.1.0, the second terminal shows **This session is open in Aelix Studio.** or
 **This session is open in the Aelix CLI.** when it can verify a cooperating
 local writer. Windows uses the generic prompt under ADR-0316. The generic
 prompt presents the same choices when attribution is unavailable.

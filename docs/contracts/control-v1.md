@@ -417,7 +417,7 @@ the detail. The error still identifies the created branch and current binding.
 ```
 
 The producer omits `holderKind` when it cannot verify a known holder. On
-Windows in beta.3 all holders are unknown under ADR-0316. The startup frame
+Windows in 0.1.0 all holders are unknown under ADR-0316. The startup frame
 keeps the nonce and contention kind, and switch or branch-return errors carry
 `"errorDetails":{"kind":"session_locked"}`. The Windows real-child test
 `test_windows_marked_writer_keeps_generic_contention` covers startup and switch.

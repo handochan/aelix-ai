@@ -66,7 +66,7 @@ jobs:
     # GetTickCount64's ~15.6 ms, so the ordering tests must hold on both clocks.
     #
     # #278: 3.14 since 2026-10-14, on BOTH runners (ADR-0265). Releases from
-    # 0.1.0b3 pin openai>=2.7.2 - the first openai that does not assign
+    # 0.1.0 pin openai>=2.7.2 - the first openai that does not assign
     # `__discriminator__` onto a typing.Union, which 3.14 made slotted (#262) -
     # and the installers hand those releases '>=3.11,<3.15'. The matrix test
     # reads that range (`py_supported` in install.sh), so the two still move
@@ -319,11 +319,11 @@ jobs:
         run: '& ./.github/scripts/assert-install-ps1.ps1'
 
       # #278: the installer's default interpreter range comes from the release
-      # it installs - '>=3.11,<3.15' from 0.1.0b3, '>=3.11,<3.14' before, because
+      # it installs - '>=3.11,<3.15' from 0.1.0, '>=3.11,<3.14' before, because
       # 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262). This pass
       # pins that old release with 3.14 on the box, which uv would otherwise
       # take: the environment must still land below 3.14. Today v0.1.0-beta.2 is
-      # also the newest release; once b3 is published the passes above take the
+      # also the newest release; once 0.1.0 is published the passes above take the
       # wide range and this one keeps the narrow one honest. uv is on PATH here
       # (pass 1's bootstrap appended it to GITHUB_PATH).
       - name: "Put Python 3.14 on the box (the #262 trap the pinned pass needs)"
@@ -535,12 +535,12 @@ jobs:
         run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
 
       # #278: the default interpreter range comes from the release being
-      # installed - '>=3.11,<3.15' from 0.1.0b3, '>=3.11,<3.14' before, because
+      # installed - '>=3.11,<3.15' from 0.1.0, '>=3.11,<3.14' before, because
       # 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262). 3.14 is on
       # the box (the trap step above), so a default that widened for every
       # release would land this pinned old one on it. Today v0.1.0-beta.2 is
       # also the newest release, so this pass adds the AELIX_VERSION arm (Step
-      # 3 skips the API); once b3 is published, passes 1-5 take the wide range
+      # 3 skips the API); once 0.1.0 is published, passes 1-5 take the wide range
       # and this one keeps the narrow one honest.
       - name: Install (pass 6 - AELIX_VERSION=v0.1.0-beta.2 pinned)
         working-directory: ${{ runner.temp }}

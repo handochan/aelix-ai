@@ -1,6 +1,7 @@
 # 0316. Report a cooperating session writer at the point of contention
 
-Status: Accepted. Amended 2026-11-21 (#868) to limit beta.3 attribution to POSIX.
+Status: Accepted. Amended 2026-11-21 (#868) to limit beta.3 attribution to POSIX. Noted
+2026-11-25: beta.3 is released as 0.1.0, so that limit is 0.1.0's.
 
 Date: 2026-11-21
 
@@ -124,3 +125,10 @@ enforce writer exclusion. The existing writer-lock tests passed in that run.
 `test_windows_marked_writer_keeps_generic_contention` covers the generic
 startup and switch text and the unknown-holder wire shape for a Studio-marked
 writer. [PR #880 CI run 44861771991](https://github.com/handochan/aelix-ai/actions/runs/44861771991)
+
+## Note (2026-11-25) — beta.3 is released as 0.1.0
+
+The owner chose on 2026-11-25 to release the build planned as `v0.1.0-beta.3`
+as `v0.1.0` (`0.1.0`); no `0.1.0b3` was published. Every "beta.3" above names
+that release, so the POSIX-only attribution, the unknown Windows holder and the
+scope limits above describe 0.1.0. Nothing in the decision changed.

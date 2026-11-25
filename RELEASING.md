@@ -17,9 +17,9 @@ version, in dependency order:
 deferred to a later release. The release workflow builds it as part of
 `uv build --all-packages` and then drops its artifacts before upload.
 
-All four published packages share the same version (currently `0.1.0b1`). The
+All four published packages share the same version (currently `0.1.0`). The
 inter-package dependencies are pinned to that exact version (e.g. the meta
-depends on `aelix-ai==0.1.0b1`), so installing `aelix` from PyPI always pulls a
+depends on `aelix-ai==0.1.0`), so installing `aelix` from PyPI always pulls a
 matching, lock-step set.
 
 The `aelix` console script is declared **twice**, by both `aelix-coding-agent`
@@ -190,6 +190,15 @@ lineage's last entry.
    `## [X.Y.Z] - YYYY-MM-DD` section, and refresh the compare/links at the
    bottom.
 
+   Open the section with its `### Known limitations` block, the first `###`
+   heading in it (#385). The Release body is this section, then GitHub's
+   generated notes, and `scripts/release_notes.py` cuts a body over 120,000
+   bytes at an entry boundary, because GitHub refuses one over 125,000
+   characters (`## [0.1.0]` was over 460,000). The block survives any cut
+   that leaves room for it, and a cut that would drop it fails `github-release`
+   before anything is published. `tests/test_release_notes.py` runs the cut on
+   the committed CHANGELOG.
+
    Write the complexity trend value into that section too (#293, ADR-0300 §9).
    It is not a gate, only the number each release is compared by:
 
@@ -280,11 +289,13 @@ lineage's last entry.
       version, then runs it: `aelix --version` must print the tag's version
       and an `aelix -p` turn against a local stub must succeed (a fake key;
       the turn reaches no network). Each leg runs on the CPython uv downloads for a user with no
-      Python in that range — the newest inside it (3.14.x for 0.1.0b3 and
+      Python in that range — the newest inside it (3.14.x for 0.1.0 and
       later); ci.yml's legs cover 3.11–3.14 from source. What a red leg shows
       is under step 7 of **Cutting a beta**;
    3. `github-release` (needs `build` + `candidate-smoke`) creates the Release
-      and attaches the wheels, the sdists, `SHA256SUMS` and the SBOM;
+      and attaches the wheels, the sdists, `SHA256SUMS` and the SBOM. Its body
+      is composed by `scripts/release_notes.py` (step 2): a cut body ends on a
+      link to `CHANGELOG.md` at the tag and the compare view;
    4. `publish` (needs all three) waits for the `pypi` environment approval,
       then uploads the four-package set to PyPI via Trusted Publishing.
 
@@ -490,7 +501,7 @@ updates an existing release in place rather than failing on the taken name.
    uv, or a third-party dependency released in between.
 
    Each leg installs on the CPython uv downloads for a user with no Python in
-   the installers' range — the newest inside it (3.14.x for 0.1.0b3 and later,
+   the installers' range — the newest inside it (3.14.x for 0.1.0 and later,
    3.13.x for older versions); the step log prints the version and where uv put
    it. The runner's own Python is not used, and other interpreters are not
    tried here: ci.yml's legs run 3.11–3.14 from source on Ubuntu and Windows.
@@ -566,6 +577,8 @@ updates an existing release in place rather than failing on the taken name.
 9. **Approve `publish`**, then confirm the four names on pypi.org show the new
    pre-version.
 
-Subsequent betas bump the suffix (`0.1.0b3` / `v0.1.0-beta.3`, etc.). The GA cut
-uses the un-hyphenated tag (`v0.1.0`) and follows the **Cutting a release** flow
-above.
+A later pre-release takes its own version's suffix (`0.2.0b1` /
+`v0.2.0-beta.1`, etc.). A final release uses the un-hyphenated tag (`v0.1.0`,
+`v0.2.0`) and follows the **Cutting a release** flow above. `0.1.0` was planned
+as `0.1.0b3` and cut as a final release instead (2026-11-25); no `0.1.0b3`
+exists.

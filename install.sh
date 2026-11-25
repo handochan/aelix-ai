@@ -14,16 +14,16 @@
 # (uv --find-links, never --no-index).
 #
 # Configuration (all optional, via environment):
-#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.1). Default:
-#                  resolve the newest release from the GitHub API. Pinning is
-#                  the recommended path during the beta.
+#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0). Default: resolve
+#                  the newest release from the GitHub API, a pre-release
+#                  included.
 #   AELIX_EXTRAS   Extras to install, consumed as aelix[$AELIX_EXTRAS].
 #                  Default `tui` (interactive terminal UI), or empty for the
 #                  bare CLI.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
 #   AELIX_PYTHON   uv interpreter request for the tool environment. Default:
 #                  chosen from the release being installed (Step 5, #278) —
-#                  `>=3.11,<3.15` for 0.1.0b3 and later, which pin
+#                  `>=3.11,<3.15` for 0.1.0 and later, which pin
 #                  openai>=2.7.2 and run on 3.14; `>=3.11,<3.14` for 0.1.0b2
 #                  and earlier, whose pinned openai<2.0 dies mid-turn on 3.14
 #                  (#262). CI runs 3.11 through 3.14, each a test leg on ubuntu
@@ -46,7 +46,7 @@ AELIX_REPO="${AELIX_REPO-handochan/aelix-ai}"
 # file where that matters. `uv tool install --python ""` does not fail — uv
 # IGNORES an empty request and goes back to picking the newest interpreter
 # (measured: exit 0, and the environment lands on 3.14.5, which for a release
-# before 0.1.0b3 is the exact state Step 5 exists to prevent). The sibling knobs
+# up to 0.1.0b2 is the exact state Step 5 exists to prevent). The sibling knobs
 # keep a set-but-empty value because it is MEANINGFUL for them (`AELIX_EXTRAS=`
 # installs the bare CLI, and the README teaches that spelling), so anyone
 # copying that habit onto this variable would silently disarm the gate. Until
@@ -57,7 +57,7 @@ AELIX_REPO="${AELIX_REPO-handochan/aelix-ai}"
 # empty string. To genuinely widen the range, say so: AELIX_PYTHON='>=3.11'.
 AELIX_PYTHON="${AELIX_PYTHON-}"
 # The two default requests Step 5 chooses between (#278, ADR-0265). Releases
-# from 0.1.0b3 on pin openai>=2.7.2,<3 and run on 3.11 through 3.14, each a CI
+# from 0.1.0 on pin openai>=2.7.2,<3 and run on 3.11 through 3.14, each a CI
 # leg. 0.1.0b2 and earlier pin openai<2.0, which dies mid-turn on 3.14 (#262),
 # and AELIX_VERSION can still install them.
 py_supported='>=3.11,<3.15'
@@ -118,8 +118,9 @@ sha_check_stdin() {
 
 # python_request_for <version>: the default interpreter request for the aelix
 # release <version> (the PEP 440 string Step 5 reads from the verified
-# SHA256SUMS, e.g. 0.1.0b3). The wider range only for a version this can PROVE
-# is 0.1.0b3 or later — N.N.N with an optional aN / bN / rcN, compared as
+# SHA256SUMS, e.g. 0.1.0). The wider range only for a version this can PROVE
+# is 0.1.0b3 or later (no 0.1.0b3 was published: 0.1.0 is the first release
+# past 0.1.0b2) — N.N.N with an optional aN / bN / rcN, compared as
 # numbers, so 0.1.0b10 is after 0.1.0b3. Anything else (a dev or post release,
 # a local version, a typo) keeps the older range, which every release ever
 # published runs on: failing closed costs 3.14, failing open costs #262.
@@ -215,7 +216,8 @@ else
     - set AELIX_VERSION=vX.Y.Z to pin the tag and skip this API call entirely
       (the download + checksum steps below use no API at all)."
   # The list endpoint is newest-first and INCLUDES pre-releases (unlike
-  # /releases/latest), so the first tag_name is the newest beta during beta.
+  # /releases/latest), so the first tag_name is the newest release, a
+  # pre-release included.
   tag="$(grep -m1 '"tag_name"' "$tmp/releases.json" | sed 's/.*: *"\(.*\)".*/\1/')"
   [ -n "$tag" ] || die "could not resolve a release tag; pin one with AELIX_VERSION=vX.Y.Z."
   log "newest release tag: $tag"
@@ -326,7 +328,7 @@ log "interpreter request: $AELIX_PYTHON"
 # instead of breaking later; #192 left it to #278 — but it does not retire
 # this flag.
 #
-# WHICH RANGE (#278, ADR-0265). 3.14 is supported from 0.1.0b3 on: that release
+# WHICH RANGE (#278, ADR-0265). 3.14 is supported from 0.1.0 on: that release
 # pins openai>=2.7.2, the first openai that does not write onto typing.Union, and
 # CI runs 3.14 on ubuntu and windows. But this script installs whatever
 # AELIX_VERSION names, and 0.1.0b2 carries openai<2.0 forever — a default that
@@ -336,7 +338,7 @@ log "interpreter request: $AELIX_PYTHON"
 # and later and keeps `>=3.11,<3.14` for anything older or unparseable. The
 # version is the one parsed above from the VERIFIED manifest, never the tag.
 uv tool install --force --find-links "$tmp" --python "$AELIX_PYTHON" "$target" \
-  || die "uv tool install failed for '$target' (interpreter request: '$AELIX_PYTHON'). If uv reported no interpreter for that range, this machine has none inside it and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON — but read Step 5 first: a release before 0.1.0b3 pins openai<2.0, which dies mid-turn on 3.14 (#262)."
+  || die "uv tool install failed for '$target' (interpreter request: '$AELIX_PYTHON'). If uv reported no interpreter for that range, this machine has none inside it and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON — but read Step 5 first: a release up to 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262)."
 
 # ── Step 6: post-install smoke + PATH hint ──────────────────────────────────
 if have aelix; then

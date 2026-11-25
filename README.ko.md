@@ -61,14 +61,14 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 ```
 
-Windows 수정이 전부 들어간 릴리즈가 `v0.1.0-beta.2`이고, 설치 스크립트는 가장 새
-릴리즈를 가져옵니다 — 그보다 오래된 릴리즈에서는 위 줄이 이 문서의 내용이 하나도
-통하지 않는 빌드를 설치합니다. 범위와 근거는 [플랫폼 지원](#플랫폼-지원)에 있습니다.
+Windows는 `v0.1.0-beta.2`부터 쓸 수 있게 됐고, 설치 스크립트는 가장 새 릴리즈를
+가져옵니다 — 그보다 오래된 릴리즈로 고정하면 위 줄이 이 문서의 내용이 하나도 통하지
+않는 빌드를 설치합니다. 범위와 근거는 [플랫폼 지원](#플랫폼-지원)에 있습니다.
 
 둘 다 같은 환경 변수를 읽습니다. `AELIX_VERSION`은 릴리즈 태그를 고정하고
-(`vX.Y.Z-beta.N`), `AELIX_EXTRAS`는 extras를 고르며(기본값 `tui`, 빈 값이면 헤드리스
+(`vX.Y.Z`, 예: `v0.1.0`), `AELIX_EXTRAS`는 extras를 고르며(기본값 `tui`, 빈 값이면 헤드리스
 CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요청하고(기본값은
-설치하는 릴리즈가 도는 범위입니다. `v0.1.0-beta.3`부터는 `>=3.11,<3.15`, 그 전
+설치하는 릴리즈가 도는 범위입니다. `v0.1.0`부터는 `>=3.11,<3.15`, 그 전
 릴리즈는 `>=3.11,<3.14` — 그 릴리즈들이 고정한 OpenAI SDK는 3.14에서 턴 도중에
 죽습니다. 두면 `uv tool install`이 그 머신에서 가장 새 인터프리터를 집습니다),
 `GITHUB_TOKEN`은 익명 GitHub API 요청 한도를 올립니다.
@@ -82,13 +82,13 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 **`v0.1.0-beta.2`까지는 업그레이드를 그 줄로 하세요. `uv tool install aelix@latest`로
 하지 마세요** — uv가 직접 그 명령을 안내하지만, 그건 그 머신에서 가장 새 Python으로
 환경을 다시 만들고 beta.2에서 그건 3.14, 즉 턴 도중 크래시입니다(#262). 실측: 올바르게
-깔린 3.13 설치를 덮어씁니다. `v0.1.0-beta.3`부터 aelix는 Python 3.14를 지원합니다
+깔린 3.13 설치를 덮어씁니다. `v0.1.0`부터 aelix는 Python 3.14를 지원합니다
 (#278): OpenAI SDK 하한이 3.14에서 도는 첫 릴리즈이고, CI가 Ubuntu와 Windows에서
 3.14를 테스트합니다. 그래도 권장 경로는 설치 스크립트입니다 — `SHA256SUMS`를 검사하는
 것은 그것뿐입니다.
 
-> [PyPI에 실행 가능한 beta.2 패키지(`0.1.0b2`)](https://pypi.org/project/aelix/0.1.0b2/#files)가
-> 게시되어 있습니다. `uv tool install 'aelix[tui]'`와 `pipx install aelix`로 설치할 수 있습니다
+> [PyPI에 정식 릴리즈 `0.1.0`](https://pypi.org/project/aelix/0.1.0/#files)이 게시되므로
+> `uv tool install 'aelix[tui]'`와 `pipx install aelix`가 pre-release 플래그 없이 그것을 설치합니다
 > ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
 > `0.1.0b2` 전에는 네 PyPI 이름에 메타데이터만 담은 `0.0.0a0` 선점본이 올라가 있었습니다.
 > 위 권장 설치 스크립트는 릴리즈의 `SHA256SUMS`를 확인합니다. 이 스크립트로 설치했다면
@@ -106,10 +106,10 @@ Ubuntu와 Windows에서 돕니다. Windows는 `v0.1.0-beta.2`에서 쓸 수 있�
 바르게 보고하며 `&&` 대신 PowerShell 문법을 썼고, TUI는 Windows 콘솔에서 제대로
 그려졌습니다. beta.2의 Windows 근거는 그게 전부입니다 — 사람 하나, 머신 하나, 로케일 하나, 그리고 초록 레그
 하나. 오래 돌려 본 적도, 두 번째 머신도, 세 번째 로케일도 없고, beta.2의 Windows
-수정 중 셋은 소스와 CI만으로 논증한 것입니다. beta.3에서는
+수정 중 셋은 소스와 CI만으로 논증한 것입니다. 0.1.0에서는
 [`release.yml`](.github/workflows/release.yml)의 `candidate-smoke` 잡이 후보 wheel을
 Windows·macOS·Linux에 설치하고, 게시 전에 설치된 명령으로 로컬 stub을 상대로 한 one-shot
-print 턴을 요구합니다. 이 게이트는 워크플로가 정의할 뿐이고, 그 자체가 beta.3 후보가
+print 턴을 요구합니다. 이 게이트는 워크플로가 정의할 뿐이고, 그 자체가 0.1.0 후보가
 통과했다는 기록은 아닙니다.
 
 Windows 콘솔을 직접 여는 프로그램 — git 자격 증명 프롬프트,
@@ -278,7 +278,7 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 파일을 다시 읽습니다. 우선순위·에이전트 프로필·프로젝트 신뢰는
 [시스템 프롬프트 가이드](docs/guides/getting-started.md#system-prompt-files)를 참고하세요.
 
-## 알려진 한계 (베타)
+## 알려진 한계
 
 중요한 일에 Aelix를 붙이기 전에 알아둘 것이 여섯 가지입니다.
 
@@ -286,8 +286,8 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 토큰·비용 예산도 없습니다 — 툴을 계속 부르는 모델은 끝나거나 멈출 때까지 계속 돈을
 씁니다. `Esc`, `bash`의 600초 *기본* 타임아웃(호출이 값을 명시하면 최대 1시간까지
 허용됩니다), 자동 컴팩션은 실재하는 안전장치지만 그중 어느 것도 비용을 묶지 않습니다
-([#14](https://github.com/handochan/aelix-ai/issues/14),
-[#6](https://github.com/handochan/aelix-ai/issues/6),
+([#14](https://github.com/handochan/aelix-ai/issues/14), 반복 횟수 상한과 중복 호출 감지를
+필요하면 확장으로 만들기로 하고 닫힘; [#6](https://github.com/handochan/aelix-ai/issues/6),
 [#52](https://github.com/handochan/aelix-ai/issues/52)). 위임된 에이전트에도 시간
 제한이 없습니다. 끝나거나 멈출 때까지 돌며, 턴 중에도 `/agents run` 중에도 `Esc`나
 `Ctrl+C`로 멈춥니다 ([#604](https://github.com/handochan/aelix-ai/issues/604)).
@@ -331,6 +331,155 @@ MCP·확장 툴도 차단하고 대화형 실행은 그런 툴마다 먼저 묻�
 사례와 최상위 백그라운드 `bash` 사례가 나와 있습니다.
 [정리 대상에서 벗어나는 프로세스](docs/guides/agent-profiles.md#resuming-an-agent)도 참고하세요
 ([#110](https://github.com/handochan/aelix-ai/issues/110)).
+
+### 0.1.0에서 열려 있는 것들
+
+아래 이슈들도 0.1.0에서 열려 있습니다. 각 줄은 언제 해당하는지 적고 이슈를 링크합니다.
+[CHANGELOG](CHANGELOG.md)의 `[0.1.0]` 절도 같은 이슈들로 시작합니다. Windows는
+실험적입니다([플랫폼 지원](#플랫폼-지원)).
+
+#### 평소 사용에서
+
+- 컨텍스트 창이 거의 차면 출력 상한이 남은 공간만큼 줄어듭니다. 그 상한에서 잘린 답은
+  그 턴의 답으로 남고, 그 답의 툴 호출은 어댑터가 살린 인자로 그대로 실행 단계에
+  넘어갑니다. OpenAI 호환·Responses 어댑터는 잘리기 전에 파싱된 부분을 살리고 문자열
+  중간에서 잘린 값은 버리며, Anthropic 어댑터는 인자를 파싱하지 못하면 `{}`로 둡니다.
+  코드를 읽고 찾은 것이고, 잘린 인자가 검증을 통과해 실행되는지는 재지 않았습니다
+  ([#569](https://github.com/handochan/aelix-ai/issues/569)).
+- 한 aelix에서 OAuth 로그인을 로그아웃해도 이미 실행 중인 다른 aelix에는 닿지 않습니다.
+  그쪽은 토큰이 만료될 때까지 캐시된 토큰을 계속 보냅니다. 만료되면 요청이 실패하고,
+  오류는 이미 없는 `auth.json` 항목을 지우라고 안내합니다. `/logout` 뒤에는 다른 세션을
+  다시 시작하세요 ([#481](https://github.com/handochan/aelix-ai/issues/481)).
+- `defaultThinkingLevel`은 시작할 때만 적용됩니다. 추론하지 못하는 모델로 시작한 세션에서
+  `/model`로 추론 모델로 바꾸면, `/thinking`으로 단계를 고를 때까지 thinking은 꺼진
+  채입니다 ([#499](https://github.com/handochan/aelix-ai/issues/499)).
+- `/thinking <level>`은 단계를 검사하지 않습니다. 오타나 `HIGH`도 받아들인 것으로
+  표시되고 세션에 기록되며, 요청은 모델의 첫 단계(대개 `off`)로 갑니다. `/thinking`
+  선택기에 나오는 소문자 이름을 쓰세요
+  ([#582](https://github.com/handochan/aelix-ai/issues/582)).
+- `/cost`와 `/stats`는 내장 카탈로그 모델에만 값을 매깁니다. `models.json`에 정의한
+  모델은 `cost`를 적어도 RPC `get_session_stats`가 `0.0`을, `/cost`가 `n/a`를 냅니다
+  (`/cost`는 커스텀 프로바이더의 모델로 쟀습니다). 위임이 있었으면 둘 다 위임된 에이전트
+  몫만 보여 주고, `/cost`는 `≥`로 표시합니다. 내장 모델에 `modelOverrides`로 준 cost는
+  무시되어 RPC가 카탈로그 가격을 냅니다. TUI는 재지 않았습니다
+  ([#739](https://github.com/handochan/aelix-ai/issues/739)).
+- `SSL_CERT_FILE`이 없는 파일을 가리키면, OpenAI SDK 클라이언트를 쓰는 프로바이더에서
+  `aelix -p`는 상관없는 traceback을 찍은 뒤 파일 이름 없는
+  `[Errno 2] No such file or directory`를 냅니다. `aelix status`에 나오는 경로를
+  확인하세요. Anthropic·Google 어댑터는 재지 않았습니다
+  ([#557](https://github.com/handochan/aelix-ai/issues/557)).
+- `/model` 선택기에는 Claude와 파트너 모델(Llama, gpt-oss, DeepSeek, Qwen, GLM,
+  Kimi)의 google-vertex 행이 나옵니다. aelix는 이 행들에 Gemini의 요청 형식을 보내므로
+  동작할 수 없습니다. 이 모델들은 Anthropic이나 OpenRouter로 쓰세요. 코드를 읽고 찾은
+  것이고 Vertex에 실행해 보지는 않았습니다
+  ([#560](https://github.com/handochan/aelix-ai/issues/560)).
+- `--permission-mode auto`(명시적으로 켜는 모드, 기본 posture는 `default`)에서 셸이
+  dash이면, dash가 일부를 명령으로 실행하는 몇몇 형태가 대화상자 없이 실행됩니다.
+  `(( 1>FILE ))`는 `FILE`을 만들고, `(( crontab -r ))`는 dash라면 `crontab -r`를
+  실행할 텐데도 허용됩니다(분류만 했고, dash의 해석은 명령 자리에 `echo`를 넣어
+  확인했습니다). dash·ksh93·mksh에서는 `echo $[2>FILE]`이 `FILE]`을 만듭니다. 분류기는
+  모든 셸을 하나의 POSIX 방언으로 읽고, `~/.bashrc` 같은 보호 경로에 쓰는 것은 여전히
+  거부합니다 ([#793](https://github.com/handochan/aelix-ai/issues/793)).
+- `aelix --agent <profile> --model <id>`는 의도대로 `<id>`로 돌고, 알림은
+  `CLI flags override model`이라고만 할 뿐 프로필이 원한 모델 이름은 말하지 않습니다.
+  `--model`로 시작한 세션의 `/agents use`도 같습니다
+  ([#157](https://github.com/handochan/aelix-ai/issues/157)).
+- `/model` 선택기의 상세 줄은 요청 키가 실제로 어디서 오든(`--api-key`, `auth.json`,
+  `models.json` 등) 프로바이더의 환경 변수 이름(`API Key: OPENAI_API_KEY`)을 보여 줍니다
+  ([#377](https://github.com/handochan/aelix-ai/issues/377)).
+- TUI에서 시작할 때 찾지 못한 모델로 프롬프트를 보내면, 시작 경고가 말한 not-found
+  이유 대신 일반 문구(`could not be resolved to a known API protocol`)로 거부합니다
+  ([#378](https://github.com/handochan/aelix-ai/issues/378)).
+- 저장된 세션을 다시 그리면(`/resume`, `--continue`, `--resume`) `edit` 결과는 diff 없이,
+  `bash` 결과는 `exit N` 줄 없이 그려집니다. 저장된 툴 결과에는 `details`가 남지 않기
+  때문입니다. 코드를 읽고 찾은 것입니다
+  ([#168](https://github.com/handochan/aelix-ai/issues/168)).
+- 가이드 목록은 가이드 파일에서 생성되지 않고 손으로 관리됩니다. 이 README의
+  [문서](#문서) 줄은 가이드 16개 중 10개만 링크하고, `aelix docs`와
+  [가이드 목록](docs/guides/README.md)은 16개를 모두 보여 줍니다
+  ([#265](https://github.com/handochan/aelix-ai/issues/265)).
+- 슬래시 명령·RPC 명령·환경 변수에 문서 항목이 없어도 실패하는 CI 게이트가 없습니다.
+  2026-09-12에 이 이슈가 센 바로는 다른 표면들과 함께 슬래시 명령 36개 중 20개, RPC
+  명령 29개 중 29개, 환경 변수 65개 중 34개에 문서 항목이 없었습니다. 0.1.0을 위해 다시
+  세지는 않았습니다 ([#267](https://github.com/handochan/aelix-ai/issues/267)).
+
+#### 스크립트와 RPC 호스트
+
+- 답이 모델의 출력 토큰 한도에서 잘려도 `aelix -p`는 exit 0으로 끝나고 stderr에도
+  아무것도 알리지 않습니다
+  ([#543](https://github.com/handochan/aelix-ai/issues/543)).
+- `message_update`, `get_session_stats`, `agents/run`에 `NaN`이나 `Infinity` 비용이
+  실릴 수 있고, 엄격한 JSON 리더는 이를 거부합니다
+  ([#875](https://github.com/handochan/aelix-ai/issues/875)).
+- RPC 호스트가 `children/stop`으로 백그라운드 에이전트를 멈추면 두 보고가 서로 다르고
+  어느 쪽도 호스트를 말하지 않습니다. `aelix_child` 끝 프레임은 세션이 멈췄다고 하고,
+  모델이 받는 작업 결과는 사용자가 `/jobs`로 멈췄다고 합니다
+  ([#855](https://github.com/handochan/aelix-ai/issues/855)).
+- 로드에 실패한 확장의 파일 이름에 짝 없는 서로게이트가 있으면, 그 읽기 전용 툴 행의
+  키를 `selections/set`에 보낼 때 그 행의 거부 대신 알 수 없는 행 오류가 오고, 그 행은
+  같은 이름의 U+FFFD 표기와 `group`을 공유합니다
+  ([#876](https://github.com/handochan/aelix-ai/issues/876)).
+- RPC 호스트는 아직 실행 중 입력이 어디서 왔는지, 언제 소비되거나 철회됐는지 볼 수
+  없습니다 ([#865](https://github.com/handochan/aelix-ai/issues/865)).
+
+#### 확장 작성자
+
+- `ctx.abort()`는 재시도는 멈추지만 아직 스트리밍 중인 모델 요청은 멈추지 않습니다
+  ([#545](https://github.com/handochan/aelix-ai/issues/545)).
+- TUI가 쉬는 동안 확장이 `send_message(…, trigger_turn=True)`로 시작한 턴은 Esc나
+  Ctrl+C로 멈출 수 없습니다. aelix를 끝내는 Ctrl+C 두 번만 그 턴을 끝냅니다
+  ([#674](https://github.com/handochan/aelix-ai/issues/674)).
+- 취소를 잡고 계속 도는 툴은 턴을 붙잡습니다. 순차 배치에서는 Esc가 듣지 않고, 병렬
+  배치 뒤에는 `/exit`를 붙잡고 첫 SIGTERM에도 살아남습니다. 내장 툴은 해당하지 않습니다
+  ([#692](https://github.com/handochan/aelix-ai/issues/692)).
+- 다른 대화상자가 열린 동안 확장이 대화상자를 띄우면 앞의 것을 대신하고, 앞의 것은
+  돌아오지 않습니다. 앞의 것이 툴 승인이었다면 턴은 Esc까지 기다립니다
+  ([#713](https://github.com/handochan/aelix-ai/issues/713)).
+- 확장의 단축키 handler가 예외를 내면 그 경고와 traceback이 TUI의 입력줄과 footer 위에
+  찍힙니다. 잘못된 descriptor 모듈의 경고도 첫 화면을 그리기 전에 그대로 찍힙니다.
+  테마·widget·descriptor 등 나머지 36곳의 경고도 코드상 같은 경로지만, 하나씩 띄워
+  보지는 않았습니다 ([#714](https://github.com/handochan/aelix-ai/issues/714)).
+- `ctx.ui.custom()` 컴포넌트는 키를 받지 못합니다. `handle_input`이 불리지 않고 Esc로도
+  닫히지 않아, 확장이 `done()`을 부를 때까지 입력이 막힙니다
+  ([#715](https://github.com/handochan/aelix-ai/issues/715)).
+- 돌아오지 않는 `input`·`before_agent_start` 핸들러(아무도 답하지 않는 대화상자 등)는
+  돌아올 때까지 `/new`, `/resume`, 종료를 붙잡습니다. RPC에서는 그런 대화상자가 300초 뒤
+  끝납니다 ([#851](https://github.com/handochan/aelix-ai/issues/851)).
+- 두 종류의 `tool_result` 훅이 취소된 위임의 보고를 마스킹 없이 되살립니다. 예외를 던지는
+  훅과, 결과를 잘림 표시와 똑같은 글로 바꾸는 훅입니다. 그러면 다음 프롬프트와 함께 가는
+  보고 복사본이 마스킹되지 않은 글을 모델과 세션 파일로 보냅니다. `[redacted]`처럼 다른
+  글로 바꾸는 훅은 지켜집니다
+  ([#839](https://github.com/handochan/aelix-ai/issues/839)).
+- 확장의 새 wheel이 `aelix.extensions` 진입점을 빼면, `aelix extension update <name>`이
+  번들이 고정한 예전 버전을 다시 설치하고도 exit 0으로 끝날 수 있습니다
+  ([#878](https://github.com/handochan/aelix-ai/issues/878)).
+- `session_start` 핸들러가 턴을 거는(`send_message(…, trigger_turn=True)`) 새 세션은
+  이어 연 적이 없는데도 TUI에서 `↻ Resumed session (N messages)`로 시작합니다
+  ([#373](https://github.com/handochan/aelix-ai/issues/373)).
+- 모델 경로가 아직 정해지지 않은 시작에서 `session_start` 핸들러가 `trigger_turn=True`로
+  걸고 기다리지 않은 턴은 핸들러가 끝난 뒤에 거부되는데, 거부 사유는 여전히
+  `No turn runs while this session's session_start handlers run`입니다
+  ([#372](https://github.com/handochan/aelix-ai/issues/372)).
+- Google·Vertex 어댑터를 직접 부르는 코드가 `reasoning="off"`를 문자열로 주면 thinking이
+  꺼지지 않습니다. 프로브에서 `gemini-2.5-pro`에 `thinkingBudget: 32768`이 갔습니다.
+  `--thinking off`와 `/thinking off`는 해당하지 않습니다
+  ([#259](https://github.com/handochan/aelix-ai/issues/259)).
+
+#### Windows (실험적)
+
+- Windows에서는 `auth.json`에 프로세스 간 잠금이 없습니다. 두 aelix 프로세스가 같은
+  순간에 로그인을 저장하거나 갱신하면 한쪽 갱신이 사라지거나, aelix가 빈 파일로 되돌리는
+  파일이 남아 저장된 로그인이 모두 지워질 수 있습니다. 그러면 `/login`을 다시 하세요
+  ([#46](https://github.com/handochan/aelix-ai/issues/46)).
+- junction이나 symlink 안에서 "Trust parent folder"를 고르면 실제 프로젝트의 부모가 아니라
+  링크의 부모가 저장됩니다. 다음 실행에서 그 신뢰는 적용되지 않고, 링크를 담은 폴더가
+  대신 신뢰됩니다 ([#584](https://github.com/handochan/aelix-ai/issues/584)).
+- 세션이 다른 창에 열려 있을 때 aelix는 Aelix Studio와 CLI 중 누가 그 세션을 쥐고 있는지
+  말하지 못하고, 보유자를 알 수 없음으로 보고합니다
+  ([#881](https://github.com/handochan/aelix-ai/issues/881)).
+- 아무것도 쓰지 않는 원천에서 `aelix`로 파이프하면 메시지 없이 멈춥니다.
+  `AELIX_STDIN_TIMEOUT`은 macOS와 Linux에서만 적용됩니다
+  ([#107](https://github.com/handochan/aelix-ai/issues/107)).
 
 ## 아키텍처
 

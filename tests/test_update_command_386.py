@@ -115,7 +115,7 @@ def test_the_install_ps1_command_mirrors_the_documented_line_and_has_no_dollar()
 def test_the_guide_shows_the_line_the_notice_prints(guide: Path, method: InstallMethod) -> None:
     """The guide spells both lines out by hand; this keeps them the notice's."""
 
-    command = upgrade_command(method, "vX.Y.Z-beta.N")
+    command = upgrade_command(method, "vX.Y.Z")
     assert command is not None
     assert command in guide.read_text(encoding="utf-8").splitlines()
 

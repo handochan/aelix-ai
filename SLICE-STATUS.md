@@ -71,7 +71,7 @@ runner's real user profile.
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows); since #123 (ADR-0306 D2) it also carries every delegated child's command inbox — see *W4 since #123* below | `rpc/rpc_mode.py`, `cli/entry.py`, `modes/print_inbox.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
-**Session writer records (#868, ADR-0316).** In beta.3, Windows reports the
+**Session writer records (#868, ADR-0316).** In 0.1.0, Windows reports the
 generic contention text and an unknown holder. The ancestor-directory ACL
 check rejected the runner profile in PR #880's Windows CI run `44861771991`.
 Attribution proof is disabled pending #881. Windows still uses filelock's
@@ -288,12 +288,12 @@ fixed in `install.sh` in the same change. `install.ps1` has the same hard-coded
 without a custom-directory pass, and nothing here measured it.
 
 **Python 3.14 (2026-10-14, #278).** Both installers now choose the default
-interpreter range from the release they install (`>=3.11,<3.15` for 0.1.0b3
+interpreter range from the release they install (`>=3.11,<3.15` for 0.1.0
 and later, `>=3.11,<3.14` before; ADR-0265), and both e2e jobs gained a pass
 that pins `AELIX_VERSION=v0.1.0-beta.2` with Python 3.14 on the runner: a sixth
 on ubuntu and macOS, a third on each Windows host. The post-condition scripts
 derive the range they expect from the version they resolved, by naming the two
-releases published before #278. Until b3 is published those passes install the
+releases published before #278. Until 0.1.0 is published those passes install the
 same release as the others; after that they are the only ones on the old range.
 
 **CLOSED — the unpinned-version hole.** This slice originally shipped
@@ -377,6 +377,6 @@ starved across the process's exit, the success path could drop up to ~64 KiB fro
 the **tail** of output the command really produced, with `exit_code` 0 and
 nothing saying anything was lost — and the tail is the part the tool shows the
 model. It did not reproduce in ordinary conditions (~3,300 rounds, 0 failures).
-For the current behavior, see the README's *Known limitations (beta)*. Since
+For the current behavior, see the README's *Known limitations*. Since
 #260, `tools/bash.py` reports `Output may be incomplete` when the drain cannot
 confirm all output. Windows retains a narrow race at the last pipe check.
