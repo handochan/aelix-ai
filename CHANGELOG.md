@@ -20,6 +20,16 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
 
 ## [Unreleased]
 
+### Changed
+
+- **The agent-profiles guide's "Older aelix" says what an installed 0.1.0b2
+  does with the `agents` keys (#383, ADR-0304).** It said that check was still
+  owed. #383 ran it on 0.1.0b2 in macOS and Linux docker with a stub model: a
+  profile's `agents:` frontmatter is ignored with no warning on `-p` stderr and
+  the session delegates to `general-purpose`; an `agents` list in settings
+  turns nothing off, and 0.1.0b2's own settings writer keeps it. The
+  `/agents list` diagnostic is still read from the code, not measured.
+
 ## [0.1.0] - 2026-11-25
 
 Cut as the tag `v0.1.0` (distribution version `0.1.0`). It was planned as

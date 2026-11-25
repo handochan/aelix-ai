@@ -857,6 +857,13 @@ pi 방향 배치(#362 #350 #367 #370 #369 #363 #368, main `986f5916`)를 마친 
   93건)은 `v0.2.0`으로, `v0.1.0-beta.3`은 `v0.1.0`으로 이름을 바꾸고, beta.2 뒤에 닫힌 이슈 8건을 `v0.1.0`에 넣었다.
   `gh api 'repos/handochan/aelix-ai/milestones?state=all'`(2026-11-25): `v0.2.0` 열림 93·닫힘 1, `v0.1.0` 열림 3
   (#383·#384·#385)·닫힘 207.
+- #383(2026-11-25): 트리가 `v0.1.0`(`aceeb29c`)과 같은 후보 `d9aa80f3`에서 태그 전에 beta.2(`0.1.0b2`) → 0.1.0 →
+  beta.2 → 0.1.0을 macOS와 Linux docker에서 두 번씩(run 3·4) 돌렸다. 스텁 모델로 236개 검사가 네 번 모두 통과했고,
+  데이터 손실과 크래시는 없었다. install.sh로 설치한 것에 `uv tool upgrade aelix`를 하면 exit 1이고 설치는 그대로다
+  (#464 2항). beta.2로 내리면 `agents` 설정·`agents:` frontmatter·mcp.json `"enabled": false`를 따르지 않는 등 차이가
+  있다. Windows, 실제 모델, 게시된 Release·PyPI의 0.1.0은 측정하지 않았다. 기록은 오너 결정(2026-11-25, "태그 후
+  문서 PR (권장)")대로 태그 뒤에 남겼고, 경로별 결과와 되돌리기 범위는
+  [RELEASING.md](../RELEASING.md#upgrading-and-downgrading-between-releases)에 있다.
 
 ## 부록 A. 리팩토링 분리 후보 — 읽기 전용 감사 실측 (main `026bd15` 기준)
 

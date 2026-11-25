@@ -270,9 +270,9 @@ profile's `agents:` as a diagnostic, `unknown frontmatter key 'agents'
 and then lets that profile's session delegate to every profile. It drops a
 top-level `agents` settings key without a word, so nothing is turned off, and a
 later write of another setting by that aelix keeps the `agents` value in the
-file. That launch was run on the commit this change starts from; the
-rest is read from that code. Neither is measured on an installed 0.1.0b2: #383
-owns that check.
+file. #383 measured the launch, the delegation, the key turning nothing off
+and the kept value on an installed 0.1.0b2 (macOS and Linux, a stub model);
+the diagnostic and the silence are read from its code.
 
 ## The frontmatter keys
 

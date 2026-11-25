@@ -6,6 +6,7 @@ tests, the mutants and the live runs, each with the condition it was measured un
 implementation differs from the design draft (`.omc/specs/795-796-adr-0304-draft.md`, revision
 1), the decision below says what was built and "Where the build differs" lists each change with
 its reason. Amended 2026-11-18 by ADR-0305 (#624): D14 is done (note at the end).
+Amended 2026-11-25 (#383): D15 is measured on an installed 0.1.0b2 (note at the end).
 Date: 2026-11-16 (design revision 1: 2026-11-17; implemented 2026-11-17)
 Issue: #795 (the agents panel), #796 (the `agents:` frontmatter key). One lane, one PR, one
 commit (the contract's §7 says why).
@@ -1151,3 +1152,28 @@ ADR-0305's fix round 1 by `test_a_started_server_that_is_not_connected_carries_i
 holds that the panel and `selections/set` kind `agent` write the same bytes with the same
 effects, and `test_capabilities_lists_no_agent_kind_without_an_agent_service` that a host with
 no agent profile service lists no `agent` kind.
+
+## Note (2026-11-25, #383)
+
+D15 is measured. #383's official run installed 0.1.0b2, the Release's wheels, with the 0.1.0
+install line and `AELIX_VERSION=v0.1.0-beta.2`. It ran after the 0.1.0 tree (`d9aa80f3`, the tree
+of `v0.1.0`) had written the files, on macOS and in Linux docker, twice each (runs 3 and 4),
+against a local stub model. The step names are the run's
+([RELEASING.md](../../RELEASING.md#upgrading-and-downgrading-between-releases)).
+
+- **The `agents:` frontmatter (D6).** It was tested with two profiles, `agents: [helper383]` and
+  `agents: []`.
+  - `-p --agent lead-some` and `-p --agent lead-none` exit 0.
+  - The `agent` tool offers the full roster, and the `general-purpose` child runs.
+  - stderr holds only `Agent profile: lead-some (user: …)`. As D15 says of a launch, no
+    `unknown frontmatter key` line is printed on `-p`.
+  - The profile files are byte-identical after the runs.
+  - The `/agents list` diagnostic was not run; it stays a code reading.
+- **A global `agents: ["-explorer"]` (D4).** 0.1.0b2 runs a turn, still offers `explorer`, and
+  leaves `settings.json` as written.
+- **0.1.0b2's own settings writer (D5).** When it writes another key, it keeps `agents` and
+  `completedThinkingDisplay` with their values, and `features.agents` stays its own key. The check
+  compares values, not bytes, as D15 says.
+
+What D15 read from `2f3cdf28`'s code holds on the installed wheel. No mitigation in the old
+versions is offered, as before.
