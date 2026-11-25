@@ -2,6 +2,7 @@
 
 Status: Accepted (2026-08-15). Amended 2026-10-14 (#285): a block that arrives whole commits when
 it closes, and one mark keeps a block a reasoning flush already committed from printing twice.
+Amended 2026-11-24 (#908): a reopened thinking index commits only the new part.
 Date: 2026-08-15
 Relates: ADR-0104 / ADR-0105 (Sprint 6h₁₀a/b, where `StreamRenderer` and the sink-based live
 region were built — this reuses that window for a second producer), ADR-0115 (why a thinking
@@ -450,3 +451,71 @@ before a streamed one, a lead text before a tool card, the completions order, an
 rebuilt-delta extension: one `WRAPPED-ANSWER` row where round 2's cut drew two) in
 `.omc/probes/285-live/r3/`; for round 4 (E1, E2 and E3 against round 3's cut, with the round-3
 shapes and the completions order again) in `.omc/probes/285-live/r4/tui/`.
+
+## Note (2026-11-24, #908) — a reopened index commits only its new part
+
+The owner said on 2026-11-24, “꼭 해결해야할 버그는 custom provider chat completion 쪽에서 thinking -> 메시지 -> 중복 thinking으로 출력되는 문제가있습니다. 필히 해결해야합니다”.
+
+The lead's call in #908 is to track the untrimmed, terminal-safe prefix already
+handled per content index and clear it at the next message or session swap. At a
+delayed end, a snapshot that extends the observed prefix can supply an unseen
+suffix. The renderer checks the exact cumulative prefix first. Otherwise, also
+by the lead's call, it compares the snapshot with the text already shown or
+pending for the index, ignoring whitespace, because the Responses adapter streams
+a `\n\n` delta per summary part that the item's final summary does not keep.
+A snapshot whose text starts with all of it adds the pending part and the
+snapshot's rest. When the pending part has text, a snapshot that starts with
+that text adds the pending part and what follows it in the snapshot.
+Whitespace counts toward the prefix without producing a new row or expand ID.
+When the pending part is only whitespace, the snapshot's rest starts its own row,
+indented only if the snapshot puts it on a new line.
+
+Any other snapshot has an unknown shape. The lead's call, after two fix rounds,
+is that it adds the pending part alone and nothing of the snapshot, so no text
+already shown prints again. A word or token test was tried and rejected: deltas
+join without boundaries, so a snapshot word such as `prefixALPHAsuffix` or
+`DONE[PLAN-ALPHA/TRACE-BETA]` can carry shown text past any such test (independent
+verify, round 4). This is a known limit, and it holds only under that
+condition: the live screen shows what streamed, and text that only the snapshot
+carries appears after `/resume`, which shows the saved block. The provider's
+snapshot is that block, and this rule does not change it. In `shrunk-gapped`,
+`FIRST-ALPHA MIDDLE-BRAVO THIRD-DELTA` is committed before the answer,
+`LATER-CHARLIE` streams after it, and the summary closes as
+`FIRST-ALPHA THIRD-DELTA`. In `mixed-old-new`, `FIRST-ALPHA` is committed,
+`LATER-CHARLIE` streams, and the summary closes as `FIRST-ALPHA END-EXTRA`. In
+both 120×40 PTYs the only row after the answer is `LATER-CHARLIE`, and after
+`/new` and `/resume` the saved summary shows once above the answer. On
+`9227275b` the adapter probe of the same two streams commits the summary in
+place of `LATER-CHARLIE`, so `FIRST-ALPHA` prints twice. A pending part that is
+empty or only whitespace has no text for the second test, so a snapshot of
+wholly new text after it also adds nothing live: the `segment-only` adapter case
+shows `END-EXTRA` only on replay, and the `blank-disjoint` probe only after
+`/resume`.
+`test_an_unknown_responses_summary_prints_only_what_streamed` and
+`test_an_unknown_responses_summary_expands_to_what_streamed` drive
+`shrunk-gapped`, `mixed-old-new`, `reordered` and `twice-unknown` through
+`process_responses_stream` in full, hidden and collapsed mode and on replay.
+These shapes are synthetic fixtures; none was captured from a provider.
+
+The `test_reopened_responses_reasoning_keeps_the_terminal_suffix` adapter cases
+drive the other shapes through `process_responses_stream`: a summary that matches
+the stream, the summary-part separator alone or after a resumed part, a part
+closed before the answer, a trimmed cumulative end and a
+conflicting end. `test_reopened_responses_reasoning_collapses_to_one_more_part`
+runs two of them hidden and collapsed, and
+`test_reopened_thinking_keeps_suffix_content_and_layout` covers the layout. In
+the `whitespace-summary` 120×40 PTY the summary's final word `END-EXTRA` follows
+the answer alone, where `9227275b` printed the earlier reasoning again with it.
+The `segment-summary` PTY shows the resumed part with `END-EXTRA` once, as
+`9227275b` does, and the `closed-summary` PTY shows `END-EXTRA` once where
+`9227275b` dropped it.
+The `test_a_reopened_thinking_index_still_commits`,
+`test_repeated_reopenings_track_untrimmed_prefix_per_index_and_message` and
+`test_reopened_hidden_thinking_expands_only_the_new_part` traces cover these cases.
+
+The `late-space` and `resume` 120×40 PTYs measured the original duplicate and
+prefix-plus-suffix replay on `9227275b`. With #908, the late space adds no row
+and the distinct continuation prints only its new text after the answer. The
+`repeat-reason` PTY preserves both genuinely emitted copies. The renderer's
+`test_a_delayed_thinking_end_does_not_consume_another_index_on_abort` covers a
+delayed end while a different index is active, including the abort flush.

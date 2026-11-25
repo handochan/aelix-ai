@@ -32,17 +32,17 @@ async def test_build_rows_count_and_keys() -> None:
     # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
     # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row
     # + the ADR-0197 (P2) ``features_agents`` delegation row + the issue #166
-    # ``render_max_width`` ceiling + the ``check_for_updates`` switch.
+    # ``render_max_width`` ceiling + the ``check_for_updates`` switch + the
+    # completed-thinking display row (#909).
     assert "code_block_indent" not in keys
     assert "tool_card_max_lines" in keys
     assert "features_agents" in keys
     assert "render_max_width" in keys
     assert "check_for_updates" in keys
-    # #238 — the ``@``-menu gitignore toggle, appended at the END of the LIVE
-    # block (index 7), so ``keys[:7]`` below is unchanged by it.
+    # #238 — the ``@``-menu gitignore toggle follows the thinking controls.
     assert "respect_gitignore" in keys
     assert "check_model_catalog" in keys  # #609
-    assert len(rows) == 24
+    assert len(rows) == 25
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",
@@ -56,14 +56,14 @@ async def test_build_rows_count_and_keys() -> None:
 
 
 async def test_with_the_shipped_jobs_gate_the_background_jobs_row_is_one_more() -> None:
-    """#779: the shipped jobs gate is on, so ``/settings`` has the "Background jobs" row (#778): 25.
+    """#779: the shipped jobs gate adds the "Background jobs" row (#778).
 
-    Fails on ``bf507d59``: ``ACTIVE`` shipped ``False``, and there were 24 rows.
+    On ``bf507d59``, ``ACTIVE`` shipped ``False`` and the row was absent.
     """
 
     keys = [r.key for r in build_settings_rows(SettingsManager.in_memory({}))]
     assert "background_jobs" in keys
-    assert len(keys) == 25
+    assert len(keys) == 26
 
 
 async def test_rows_read_current_values_for_seeded_manager() -> None:
@@ -103,6 +103,18 @@ async def test_bool_hide_thinking_is_live() -> None:
     res = apply_setting(rows["hide_thinking_block"], sm)
     assert sm.get_hide_thinking_block() == (not before)
     assert res.live == ("hide_thinking_block", not before)
+
+
+async def test_completed_thinking_display_cycles_and_is_live() -> None:
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["completed_thinking_display"]
+    assert row.read(sm) == "full"
+    assert row.choices == ("full", "collapsed")
+    for value in ("collapsed", "full"):
+        result = apply_setting(row, sm)
+        assert result.kind == "ok"
+        assert result.live == (row.key, value)
+        assert row.read(sm) == value
 
 
 async def test_bool_hide_compaction_summary_is_live() -> None:

@@ -36,7 +36,8 @@ back ``ApplyResult.live``; the shell writes the second copy onto the live sessio
 the ``action`` rows). The shell owns that half because it holds the
 harness/renderer/context.
   PUSH keys: theme, default_model, steering_mode, follow_up_mode, thinking_level,
-  hide_thinking_block, hide_compaction_summary, tool_card_max_lines, render_max_width
+  hide_thinking_block, hide_compaction_summary, tool_card_max_lines, render_max_width,
+  completed_thinking_display
 
 PULL — nothing is mirrored: the consumer holds a callable onto the getter and
 re-reads it on every use, so the persist half IS the live half.
@@ -216,6 +217,15 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             read=lambda s: "hidden" if s.get_hide_compaction_summary() else "visible",
             help="Hide or show the /compact summary in the transcript (applies live).",
             live=True,
+        ),
+        SettingsRow(
+            key="completed_thinking_display",
+            label="Completed thinking",
+            kind="enum",
+            read=lambda s: s.get_completed_thinking_display(),
+            help="Keep completed thinking in full or fold it into an /expand line.",
+            live=True,
+            choices=("full", "collapsed"),
         ),
         SettingsRow(
             key="respect_gitignore",
@@ -705,6 +715,7 @@ _BOOL_SETTERS: dict[str, str] = {
 # rebuilds it from ``_apply_live_setting``'s branches and requires equality.
 _PUSH_BOOL_KEYS: frozenset[str] = frozenset({"hide_thinking_block", "hide_compaction_summary"})
 _ENUM_SETTERS: dict[str, str] = {
+    "completed_thinking_display": "set_completed_thinking_display",
     "steering_mode": "set_steering_mode",
     "follow_up_mode": "set_follow_up_mode",
     "double_escape_action": "set_double_escape_action",

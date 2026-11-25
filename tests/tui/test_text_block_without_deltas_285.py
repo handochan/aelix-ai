@@ -164,6 +164,214 @@ def _replayed(*finals: AssistantMessage) -> list[str]:
     return [c.plain.rstrip() for c in _replayed_renderables(*finals)]
 
 
+def _summary_part_done(text: str) -> list[dict[str, Any]]:
+    """How a Responses server closes a summary part. The adapter turns the
+    second event into a ``\\n\\n`` thinking delta that the item's final summary
+    does not carry."""
+    where = {"output_index": 0, "item_id": "rs_1", "summary_index": 0}
+    part = {"type": "summary_text", "text": text}
+    return [
+        {**where, "type": "response.reasoning_summary_text.done", "text": text},
+        {**where, "type": "response.reasoning_summary_part.done", "part": part},
+    ]
+
+
+def _reopened_reasoning_wire(
+    first: str, late: str, final_thinking: str, part_done: str
+) -> list[dict[str, Any]]:
+    """Reasoning ``first``, the answer, then ``late`` on the same item. Its
+    summary part closes ``"before"`` the answer, at the ``"end"``, or never
+    (``""``), and the item ends with ``final_thinking``."""
+    reasoning_delta = {"type": "response.reasoning_summary_text.delta", "output_index": 0}
+    wire = [_CREATED, _added(0, {**_reasoning(""), "summary": []})]
+    if first:
+        wire.append({**reasoning_delta, "delta": first})
+    if part_done == "before":
+        wire.extend(_summary_part_done(first))
+    wire.extend([_added(1, _message("m_1", None)), _delta(1, _ANSWER)])
+    if late:
+        wire.append({**reasoning_delta, "delta": late})
+    if part_done == "end":
+        wire.extend(_summary_part_done(final_thinking))
+    wire.extend(
+        [_done(0, _reasoning(final_thinking)), _done(1, _message("m_1", _ANSWER)), _COMPLETED]
+    )
+    return wire
+
+
+@pytest.mark.parametrize(
+    ("first", "late", "final_thinking", "part_done", "commits"),
+    [
+        pytest.param(
+            "FIRST",
+            "LATER",
+            "FIRSTLATER END-EXTRA",
+            "end",
+            ["FIRST", _ANSWER, "LATER END-EXTRA"],
+            id="summary-part",
+        ),
+        pytest.param(
+            "FIRST",
+            "LATER",
+            "LATER END-EXTRA",
+            "",
+            ["FIRST", _ANSWER, "LATER END-EXTRA"],
+            id="part-end",
+        ),
+        pytest.param(
+            "FIRST",
+            "LATER",
+            "FIRST LATER END-EXTRA",
+            "",
+            ["FIRST", _ANSWER, "LATER END-EXTRA"],
+            id="conflict",
+        ),
+        # The usual Responses close: the summary is what streamed, without the
+        # part's separator. Before #908 the renderer printed FIRST again.
+        pytest.param(
+            "FIRST",
+            "LATER",
+            "FIRSTLATER",
+            "end",
+            ["FIRST", _ANSWER, "LATER"],
+            id="summary-matches-stream",
+        ),
+        # The summary part's separator is all, or the end, of what streamed
+        # since the commit.
+        pytest.param(
+            "FIRST",
+            "",
+            "FIRST END-EXTRA",
+            "end",
+            ["FIRST", _ANSWER, "END-EXTRA"],
+            id="whitespace-summary",
+        ),
+        pytest.param(
+            "FIRST",
+            "LATER",
+            "LATER END-EXTRA",
+            "end",
+            ["FIRST", _ANSWER, "LATER END-EXTRA"],
+            id="segment-summary",
+        ),
+        pytest.param(
+            "FIRST",
+            "",
+            "FIRST END-EXTRA",
+            "before",
+            ["FIRST", _ANSWER, "END-EXTRA"],
+            id="closed-summary",
+        ),
+        pytest.param("", "", "END-EXTRA", "before", [_ANSWER, "END-EXTRA"], id="empty-closed-part"),
+        # Only the part's separator streamed after the answer, so the end is
+        # an unknown shape: nothing of it prints live, and replay shows it.
+        pytest.param("FIRST", "", "END-EXTRA", "end", ["FIRST", _ANSWER], id="segment-only"),
+        pytest.param(
+            "\nFIRST",
+            "",
+            "FIRST END-EXTRA",
+            "end",
+            ["FIRST", _ANSWER, "END-EXTRA"],
+            id="trimmed-cumulative",
+        ),
+    ],
+)
+async def test_reopened_responses_reasoning_keeps_the_terminal_suffix(
+    first: str, late: str, final_thinking: str, part_done: str, commits: list[str]
+) -> None:
+    events, final = await _responses(
+        _reopened_reasoning_wire(first, late, final_thinking, part_done)
+    )
+    screen = _Screen()
+    screen.message(events, final)
+
+    assert screen.commits == commits
+    assert _replayed(final) == [final_thinking, _ANSWER]
+
+
+@pytest.mark.parametrize("mode", ["hidden", "collapsed"])
+@pytest.mark.parametrize(
+    ("late", "final_thinking", "suffix"),
+    [
+        pytest.param("", "FIRST END-EXTRA", "END-EXTRA", id="whitespace-summary"),
+        pytest.param("LATER", "LATER END-EXTRA", "LATER END-EXTRA", id="segment-summary"),
+    ],
+)
+async def test_reopened_responses_reasoning_collapses_to_one_more_part(
+    mode: str, late: str, final_thinking: str, suffix: str
+) -> None:
+    events, final = await _responses(_reopened_reasoning_wire("FIRST", late, final_thinking, "end"))
+    screen = _Screen()
+    if mode == "hidden":
+        screen.renderer.hide_thinking = True
+    else:
+        screen.renderer.collapse_completed_thinking = True
+    screen.message(events, final)
+
+    r = screen.renderer
+    assert screen.commits == ["💭 Thinking… (/expand 1)", _ANSWER, "💭 Thinking… (/expand 2)"]
+    assert [r.get_expanded(i) for i in (1, 2, 3)] == ["FIRST", suffix, None]
+
+
+# A final summary that neither extends what streamed (the reasoning before the
+# answer, then ``LATER-CHARLIE`` after it) nor starts with the part after the
+# answer. The renderer cannot place it against what is shown, so it commits
+# only what streamed since the commit; the saved block is the summary (#908).
+_A, _B, _C = "FIRST-ALPHA", "MIDDLE-BRAVO", "THIRD-DELTA"
+_LATE, _EXTRA = "LATER-CHARLIE", "END-EXTRA"
+_UNKNOWN_SUMMARIES = [
+    pytest.param(f"{_A} {_B} {_C}", f"{_B} {_A} {_C} {_LATE} {_EXTRA}", id="reordered"),
+    pytest.param(f"{_A} {_B} {_C}", f"{_A} {_C}", id="shrunk-gapped"),
+    pytest.param(_A, f"{_A} {_EXTRA}", id="mixed-old-new"),
+    pytest.param(
+        f"{_A} {_B} {_C} ",
+        f"{_EXTRA} {_A} {_B} {_C} {_LATE} {_A} {_B} {_C} {_LATE}",
+        id="twice-unknown",
+    ),
+]
+
+
+@pytest.mark.parametrize("part_done", ["", "end"])
+@pytest.mark.parametrize(("first", "final_thinking"), _UNKNOWN_SUMMARIES)
+async def test_an_unknown_responses_summary_prints_only_what_streamed(
+    first: str, final_thinking: str, part_done: str
+) -> None:
+    events, final = await _responses(
+        _reopened_reasoning_wire(first, _LATE, final_thinking, part_done)
+    )
+    screen = _Screen()
+    screen.message(events, final)
+
+    # Each streamed word once and in order; nothing of the summary again.
+    assert screen.commits == [first.strip(), _ANSWER, _LATE]
+    assert _replayed(final) == [final_thinking, _ANSWER]
+
+
+@pytest.mark.parametrize("mode", ["hidden", "collapsed"])
+@pytest.mark.parametrize(("first", "final_thinking"), _UNKNOWN_SUMMARIES)
+async def test_an_unknown_responses_summary_expands_to_what_streamed(
+    mode: str, first: str, final_thinking: str
+) -> None:
+    events, final = await _responses(_reopened_reasoning_wire(first, _LATE, final_thinking, ""))
+    screen = _Screen()
+    r = screen.renderer
+    if mode == "hidden":
+        r.hide_thinking = True
+    else:
+        r.collapse_completed_thinking = True
+    screen.message(events, final)
+
+    placeholders = [f"💭 Thinking… (/expand {i})" for i in (1, 2)]
+    assert screen.commits == [placeholders[0], _ANSWER, placeholders[1]]
+    assert [r.get_expanded(i) for i in (1, 2, 3)] == [first.strip(), _LATE, None]
+
+    r.reset_expand_store()
+    screen.commits.clear()
+    r.replay([final])
+    assert screen.commits == [placeholders[0], _ANSWER]
+    assert [r.get_expanded(i) for i in (1, 2)] == [final_thinking, None]
+
+
 def _styled(renderables: list[Any]) -> list[tuple[str, list[tuple[int, int, str]]]]:
     """Each committed ``Text`` as its characters AND its style spans: two commits
     with the same ``.plain`` can still differ in what the terminal shows."""

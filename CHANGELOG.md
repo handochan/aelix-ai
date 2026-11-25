@@ -28,6 +28,13 @@ unwritten. Add them with the next release.
   The built-in footer uses spare columns for the profile, shortening it with
   an ellipsis when needed. The footer regressions cover 40, 60, 80 and 120
   columns in both layouts.
+- **The TUI can collapse completed thinking blocks (#909, ADR-0319).** The
+  `menu` and `menu-full` 120×40 PTYs show both choices through `/settings` →
+  **Completed thinking**, with the ordinary reasoning tail visible before the
+  answer. The `held-late` PTY shows reasoning resuming while the answer owns the
+  live window and appearing at completion. The `view-collapsed-late` and
+  `replay-collapsed-late` PTYs show two `/expand N` lines around the live
+  answer and one for the saved block on replay.
 
 - **An RPC host can resume a stopped delegated agent itself: `children/resume` (#836, ADR-0318).**
   `aelix_control` `children/resume {id, task}` resumes an agent the model delegated, on its own
@@ -1986,6 +1993,16 @@ unwritten. Add them with the next release.
   user text on the active branch. The resumed-branch regression covers a
   sibling prompt, control-only text and a large extension entry. Both
   commands show the reason if session name lookup fails.
+- **The TUI preserves only the new part when custom Chat Completions reasoning resumes (#908).**
+  The `late-space` and `resume` 120×40 PTY captures show that a whitespace-only
+  continuation adds no row and a distinct continuation appears once after the answer.
+  An OpenAI Responses reasoning summary that closes after the answer and extends what
+  streamed adds its new text once: in the `whitespace-summary` PTY its final word
+  follows the answer alone instead of after the earlier reasoning printed again, and
+  in the `closed-summary` PTY it appears where it was dropped. A summary that neither
+  extends what streamed nor starts with the text streamed after the answer adds only
+  that text, so nothing shown prints twice, and the saved summary appears after
+  `/resume` (the `shrunk-gapped` and `mixed-old-new` PTYs, ADR-0221).
 
 - **Job waits observe changes that arrive before the waiter starts (#913, ADR-0320).**
   In the job notification regression, one transition to unresolved wakes the
