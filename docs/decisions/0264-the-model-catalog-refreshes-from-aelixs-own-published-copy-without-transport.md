@@ -12,7 +12,8 @@ triggers, and what its live checks changed; #609's opt-in manual mode) and 2026-
 (§10: #617, the owner's floor policy: a thinking level an older client lacks raises no floor;
 #616, the publishing pipeline's gaps: a run queued behind a rollback stops on its hold, a failed
 fetch says why, the release check lists the fields it keeps, and the publish job has tests) and
-2026-11-04 (§4.4: #679, `/reload` keeps the session's model on any id, not only a removed one).
+2026-11-04 (§4.4: #679, `/reload` keeps the session's model on any id, not only a removed one)
+and 2026-11-25 (§10: #383, what the 0.1.0b2 ↔ 0.1.0 check measured for the store).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -2289,3 +2290,18 @@ Claude (`codex/`, `claude-r1/`); their findings are fixed or recorded below.
   and 8 minutes after its `:17`. Five of them published.
 - **Not changed.** `queue: max` stays. Node 20's deprecation notices on the pinned Pages and
   artifact actions are notices only.
+
+### 2026-11-25: #383 - what the 0.1.0b2 ↔ 0.1.0 check measured for the store
+
+#383 took 0.1.0b2 up to 0.1.0, down and up again on macOS and in Linux docker
+([RELEASING.md](../../RELEASING.md#upgrading-and-downgrading-between-releases)). For this ADR's
+store, against the two cases §4 handed it (the line that begins "In R, #383 covers"):
+
+- **A downgrade facing an unknown store `version`.** It does not arise against 0.1.0b2, which has
+  no store reader: `git ls-tree -r v0.1.0-beta.2` lists no `models_store` (code reading). After
+  beta.2's runs `models-store.json` was byte-identical (step D's state check), and 0.1.0's reader
+  gave the same document after the round trip as before it (E9). The rule "a `version` this build
+  does not know is neither read nor rewritten" was not exercised.
+- **An upgrade whose shipped digest is in no stored revision's lineage.** It was not set up as its
+  own case: C3 wrote the store with 0.1.0's `aelix update --models`, after the upgrade.
+

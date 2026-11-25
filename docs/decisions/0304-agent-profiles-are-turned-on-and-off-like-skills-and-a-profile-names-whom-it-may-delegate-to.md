@@ -6,7 +6,8 @@ tests, the mutants and the live runs, each with the condition it was measured un
 implementation differs from the design draft (`.omc/specs/795-796-adr-0304-draft.md`, revision
 1), the decision below says what was built and "Where the build differs" lists each change with
 its reason. Amended 2026-11-18 by ADR-0305 (#624): D14 is done (note at the end).
-Amended 2026-11-25 (#383): D15 is measured on an installed 0.1.0b2 (note at the end).
+Amended 2026-11-25 (#383): D15 is measured on an installed 0.1.0b2, except the `/agents list`
+diagnostic (note at the end).
 Date: 2026-11-16 (design revision 1: 2026-11-17; implemented 2026-11-17)
 Issue: #795 (the agents panel), #796 (the `agents:` frontmatter key). One lane, one PR, one
 commit (the contract's §7 says why).
@@ -898,7 +899,8 @@ an optional member rather than changing `SubagentRuntime`:
   candidate.
 - D16 is written, not implemented.
 - The guide's "older aelix" paragraph (D15) is a code reading of `2f3cdf28`, not measured on a
-  0.1.0b2 wheel; #383 owns that measurement.
+  0.1.0b2 wheel; #383 owns that measurement. (Measured since, except the `/agents list`
+  diagnostic: Note (2026-11-25, #383).)
 
 ## How it is held
 
@@ -1155,7 +1157,7 @@ no agent profile service lists no `agent` kind.
 
 ## Note (2026-11-25, #383)
 
-D15 is measured. #383's official run installed 0.1.0b2, the Release's wheels, with the 0.1.0
+D15 is measured on an installed 0.1.0b2, except the `/agents list` diagnostic. #383's official run installed 0.1.0b2, the Release's wheels, with the 0.1.0
 install line and `AELIX_VERSION=v0.1.0-beta.2`. It ran after the 0.1.0 tree (`d9aa80f3`, the tree
 of `v0.1.0`) had written the files, on macOS and in Linux docker, twice each (runs 3 and 4),
 against a local stub model. The step names are the run's
@@ -1175,5 +1177,6 @@ against a local stub model. The step names are the run's
   `completedThinkingDisplay` with their values, and `features.agents` stays its own key. The check
   compares values, not bytes, as D15 says.
 
-What D15 read from `2f3cdf28`'s code holds on the installed wheel. No mitigation in the old
+Apart from the `/agents list` diagnostic, what D15 read from `2f3cdf28`'s code holds on the
+installed wheel. No mitigation in the old
 versions is offered, as before.

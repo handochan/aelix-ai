@@ -507,7 +507,8 @@ PR 검토 순서는 제품 목표 적합성 → 패키지/확장 경계 → 안�
   `AELIX_VERSION=v0.1.0-beta.2`를 3.14가 있는 머신에서)는 가이드의
   `VAR=… sh -c "$(curl …)"` 형태이고, 매번 별도 스텝이 사후 조건을 확인한다.
 - 릴리스에는 candidate artifact 자체의 설치/업그레이드 검증, 알려진 문제,
-  이전 버전으로 돌아갈 수 있는 범위와 세션 마이그레이션 방침을 포함한다.
+  이전 버전으로 돌아갈 수 있는 범위와 세션 마이그레이션 방침을 포함한다. 0.1.0에서 잰 범위는
+  [RELEASING.md](../RELEASING.md#upgrading-and-downgrading-between-releases)에 있다(#383).
 
 AGENTS.md는 불변식과 문서 진입점으로 짧게 유지한다. 빠르게 변하는 규칙·체크리스트·현황은
 committed docs/이슈/Project가 소유하고 개발 도구별 어댑터는 그 규칙을 참조한다.

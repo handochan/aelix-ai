@@ -272,7 +272,7 @@ top-level `agents` settings key without a word, so nothing is turned off, and a
 later write of another setting by that aelix keeps the `agents` value in the
 file. #383 measured the launch, the delegation, the key turning nothing off
 and the kept value on an installed 0.1.0b2 (macOS and Linux, a stub model);
-the diagnostic and the silence are read from its code.
+only the `/agents list` diagnostic is read from its code.
 
 ## The frontmatter keys
 
