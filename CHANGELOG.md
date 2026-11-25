@@ -23,6 +23,27 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **168 models the catalog was missing**, folded back from models.dev and
+  OpenRouter with `scripts/refresh_catalog.py --apply` (#172, RELEASING.md
+  "Before every release"). Both lists were fetched once, on 2026-11-25 at
+  05:34Z. The catalog goes from 1877 to 2045 rows across the same 35
+  providers. No shipped row was removed, moved or changed, and a second dry
+  run on the same lists proposes nothing and no `off` or floor fill. Among the
+  new rows: Claude Fable 5.2, GPT-6.2 Sol and Astra, Gemini 4 Carbon, Hydrogen
+  and Neon, and GLM 5.4. The generator skipped 399 others by its own rules (no
+  tool calls, a wire it cannot inherit, or no context limit). The review
+  corrected 18 added rows by hand. None of them was measured against a provider:
+  - Claude Fable 5.2 arrived with no thinking levels on eight rows (`anthropic`,
+    three Bedrock rows, `github-copilot`, `opencode`, two on Vercel). Each now
+    takes its Fable 5.1 twin's levels (ADR-0266's `fable-5` rule; pi.dev's rows
+    agree): no `off`, and `xhigh` and `max` offered.
+  - Gemini 4 Carbon, Hydrogen and Neon on `google`, `google-vertex` and
+    `opencode` do not offer `off` or `minimal`, as Gemini 4 Argon there does
+    not. OpenRouter marks their reasoning mandatory, and pi.dev hides both
+    levels.
+  - opencode's `crouton-alpha-free` uses the Responses API, as models.dev's
+    per-model package (`@ai-sdk/openai`) and opencode's other OpenAI-package
+    rows say.
 - **Show the active main-session agent profile in the TUI (#912, ADR-0160).**
   `/session` shows the profile in force after `--agent` or `/agents use <name>`.
   The built-in footer uses spare columns for the profile, shortening it with
