@@ -67,6 +67,7 @@ from aelix_ai.settings.types import (
     SETTINGS_NESTED_CLASSES,
     SETTINGS_PY_TO_JSON,
     CompactionSettings,
+    CompletedThinkingDisplay,
     DefaultProjectTrust,
     DoubleEscapeAction,
     ExtensionSourceObject,
@@ -1840,6 +1841,18 @@ class SettingsManager:
 
         self._global_settings.hide_thinking_block = hide
         self._mark_modified("hide_thinking_block")
+        self._save()
+
+    def get_completed_thinking_display(self) -> CompletedThinkingDisplay:
+        """Return the TUI display preference for completed thinking blocks."""
+        if self._settings.completed_thinking_display == "collapsed":
+            return "collapsed"
+        return "full"
+
+    def set_completed_thinking_display(self, display: CompletedThinkingDisplay) -> None:
+        """Save the TUI display preference in global settings."""
+        self._global_settings.completed_thinking_display = display
+        self._mark_modified("completed_thinking_display")
         self._save()
 
     # --- hideCompactionSummary (Aelix-original, TUI display gate) ---

@@ -11,6 +11,7 @@ Each top-level / nested field is verified with:
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -142,6 +143,23 @@ def test_get_provider_retry_settings_default(
 
 def test_get_hide_thinking_block_default(manager: SettingsManager) -> None:
     assert manager.get_hide_thinking_block() is False
+
+
+async def test_completed_thinking_display_round_trips(settings_dirs: dict[str, Path]) -> None:
+    sm = _make_manager(settings_dirs)
+    assert sm.get_completed_thinking_display() == "full"
+    settings_file = settings_dirs["agent_dir"] / "settings.json"
+
+    for value in ("collapsed", "full"):
+        sm.set_completed_thinking_display(value)
+        await sm.flush()
+        assert json.loads(settings_file.read_text(encoding="utf-8")) == {
+            "completedThinkingDisplay": value
+        }
+        assert _make_manager(settings_dirs).get_completed_thinking_display() == value
+
+    settings_file.write_text('{"completedThinkingDisplay":"invalid"}', encoding="utf-8")
+    assert _make_manager(settings_dirs).get_completed_thinking_display() == "full"
 
 
 def test_get_hide_compaction_summary_default(manager: SettingsManager) -> None:

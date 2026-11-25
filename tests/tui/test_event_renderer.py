@@ -21,7 +21,7 @@ from aelix_agent_core.types import (
     TurnEndEvent,
     TurnStartEvent,
 )
-from aelix_ai.messages import AssistantMessage, TextContent
+from aelix_ai.messages import AssistantMessage, TextContent, ThinkingContent
 from aelix_ai.streaming import (
     AssistantDoneEvent,
     AssistantEndEvent,
@@ -233,9 +233,7 @@ def test_tool_end_edit_diff_from_details_is_colorized() -> None:
         ToolExecutionEndEvent(
             tool_call_id="t1",
             result=ToolResult(
-                content=[
-                    TextContent(text="Successfully replaced 1 block(s) in f.txt.")
-                ],
+                content=[TextContent(text="Successfully replaced 1 block(s) in f.txt.")],
                 details=SimpleNamespace(diff=diff, first_changed_line=2),  # type: ignore[arg-type]
             ),
             tool_name="edit",
@@ -299,9 +297,7 @@ def test_streaming_error_event_renders() -> None:
 def test_message_end_error_renders() -> None:
     r, commits, _t = _renderer()
     r.on_agent_event(
-        MessageEndEvent(
-            message=AssistantMessage(stop_reason="error", error_message="rate limit")
-        )
+        MessageEndEvent(message=AssistantMessage(stop_reason="error", error_message="rate limit"))
     )
     assert "rate limit" in _committed_text(commits)
 
@@ -369,7 +365,10 @@ def _env(tool_name: str, view: str = "table", **payload: Any) -> Any:
 
     body = {"kind": "tool-renderer-desc", "tool_name": tool_name, "view": view, **payload}
     return DescriptorEnvelope(
-        kind="tool-renderer-desc", namespace="ext", id="t", payload=body  # type: ignore[arg-type]
+        kind="tool-renderer-desc",
+        namespace="ext",
+        id="t",
+        payload=body,  # type: ignore[arg-type]
     )
 
 
@@ -636,7 +635,7 @@ def test_tool_end_normal_cap_honours_configured_value() -> None:
 def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
     # Issue #66 owner decision — the separate 40-line error/diff cap stays 40
     # regardless of the configured NORMAL cap. What this case catches is
-    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1685)
+    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1707)
     # collapsing to the normal cap. The assignment below is deliberately INERT
     # for the delete-the-line mutation — measured: deleting it leaves this test
     # green, because no normal-cap value truncates a 30-line error card under
@@ -694,9 +693,7 @@ def test_tool_end_bash_nonzero_exit_surfaced() -> None:
     r.on_agent_event(
         ToolExecutionEndEvent(
             tool_call_id="t1",
-            result=ToolResult(
-                content=[TextContent(text="boom")], details=details, is_error=True
-            ),
+            result=ToolResult(content=[TextContent(text="boom")], details=details, is_error=True),
             tool_name="bash",
             is_error=True,
         )
@@ -912,11 +909,7 @@ def test_replay_hides_compaction_summary_when_gated() -> None:
     r, commits, _t = _renderer()
     r.hide_compaction_summary = True
     r.replay(
-        [
-            UserMessage(
-                content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")]
-            )
-        ]
+        [UserMessage(content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")])]
     )
     out = _committed_text(commits)
     assert "summary hidden" in out  # collapsed marker
@@ -931,11 +924,7 @@ def test_replay_shows_compaction_summary_by_default() -> None:
     r, commits, _t = _renderer()
     assert r.hide_compaction_summary is False  # default visible
     r.replay(
-        [
-            UserMessage(
-                content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")]
-            )
-        ]
+        [UserMessage(content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")])]
     )
     out = _committed_text(commits)
     assert "SECRET_SUMMARY_BODY" in out  # body rendered
@@ -1081,8 +1070,7 @@ def test_render_user_message_is_a_bar_that_spans_the_width() -> None:
         assert cells == 40, f"row {text!r} painted {cells}/40 cells — not a bar"
 
 
-def test_the_echo_band_is_three_painted_rows_and_the_fences_are_not(
-) -> None:
+def test_the_echo_band_is_three_painted_rows_and_the_fences_are_not() -> None:
     """The BAND'S HEIGHT, which nothing measured until it changed.
 
     MEASURED, and the reason this test exists rather than a comment: with the
@@ -1105,9 +1093,7 @@ def test_the_echo_band_is_three_painted_rows_and_the_fences_are_not(
     rows = _painted_rows(render_user_message("hello there"), 40)
     painted = [(text, cells) for text, cells in rows if cells]
 
-    assert len(painted) == 3, (
-        f"the echo band is {len(painted)} painted rows, not 3: {painted}"
-    )
+    assert len(painted) == 3, f"the echo band is {len(painted)} painted rows, not 3: {painted}"
     top, middle, bottom = painted
     assert top[0].strip() == "", f"the top edge row carries text: {top[0]!r}"
     assert bottom[0].strip() == "", f"the bottom edge row carries text: {bottom[0]!r}"
@@ -1125,8 +1111,7 @@ def test_the_echo_band_is_three_painted_rows_and_the_fences_are_not(
     )
 
 
-def test_the_echo_band_edge_rows_survive_wrapping(
-) -> None:
+def test_the_echo_band_edge_rows_survive_wrapping() -> None:
     """A wrapped turn is still ONE band with exactly one edge row each side.
 
     The failure this guards against is a padding applied per WRAPPED LINE rather
@@ -1399,9 +1384,7 @@ def test_render_tool_call_line_no_summary_omits_parens() -> None:
 def _display_custom(*, display: bool = True, content: object = "deploy green") -> Any:
     from aelix_agent_core.session.context import create_display_custom_message
 
-    return create_display_custom_message(
-        "status", content, display, None, "2026-07-04T00:00:00Z"
-    )
+    return create_display_custom_message("status", content, display, None, "2026-07-04T00:00:00Z")
 
 
 def test_replay_custom_default_renders_label_and_content() -> None:
@@ -1501,7 +1484,10 @@ def test_replay_custom_wire_dict_content_renders() -> None:
     from aelix_agent_core.session.context import create_display_custom_message
 
     msg = create_display_custom_message(
-        "status", [{"type": "text", "text": "wire-dict-line"}], True, None,
+        "status",
+        [{"type": "text", "text": "wire-dict-line"}],
+        True,
+        None,
         "2026-07-04T00:00:00Z",
     )
     r, commits, _t = _renderer()
@@ -1558,9 +1544,7 @@ def test_turn_end_aborted_during_tool_execution_still_notifies() -> None:
     # the notice is the LAST commit and appears exactly once.
     r, commits, _tails = _renderer()
     r.on_agent_event(
-        ToolExecutionStartEvent(
-            tool_call_id="t1", tool_name="bash", args={"command": "sleep 100"}
-        )
+        ToolExecutionStartEvent(tool_call_id="t1", tool_name="bash", args={"command": "sleep 100"})
     )
     r.on_agent_event(_abort_turn_end())
 
@@ -1597,9 +1581,7 @@ def test_provider_error_commits_one_line_and_no_abort_notice() -> None:
     # arrives carrying the SAME message with stop_reason "error" — which must not
     # add a second line, and must never say "aborted".
     r, commits, _tails = _renderer()
-    failed = AssistantMessage(
-        content=[], stop_reason="error", error_message="rate limit"
-    )
+    failed = AssistantMessage(content=[], stop_reason="error", error_message="rate limit")
     r.on_agent_event(MessageEndEvent(message=failed))
     r.on_agent_event(TurnEndEvent(message=failed, tool_results=[]))
 
@@ -1803,9 +1785,7 @@ def test_card_cap_follows_a_callable_width() -> None:
     from aelix_coding_agent.tui.render import EventRenderer
 
     live = {"cols": 200}
-    r = EventRenderer(
-        commit=lambda _c: None, set_tail=lambda _t: None, width=lambda: live["cols"]
-    )
+    r = EventRenderer(commit=lambda _c: None, set_tail=lambda _t: None, width=lambda: live["cols"])
     assert r._card_line_width() == 196  # noqa: SLF001
     live["cols"] = 60
     assert r._card_line_width() == 76  # noqa: SLF001
@@ -1960,11 +1940,7 @@ def test_replay_keeps_every_thinking_block() -> None:
     commits: list[Any] = []
     r = EventRenderer(commit=commits.append, set_tail=lambda _t: None, width=80)
     r.replay(
-        [
-            AssistantMessage(
-                content=[ThinkingContent(thinking="A"), ThinkingContent(thinking="B")]
-            )
-        ]
+        [AssistantMessage(content=[ThinkingContent(thinking="A"), ThinkingContent(thinking="B")])]
     )
     assert [c.plain for c in commits] == ["A", "B"]
 
@@ -2114,7 +2090,7 @@ def test_a_new_block_without_an_end_closes_the_previous_one() -> None:
 
 
 def test_hidden_reasoning_does_not_stream() -> None:
-    """"Show thinking" OFF must not stream it and then collapse it.
+    """ "Show thinking" OFF must not stream it and then collapse it.
 
     That would be the loudest possible way to honour the setting.
     """
@@ -2161,9 +2137,7 @@ def test_an_aborted_turn_takes_the_reasoning_window_down() -> None:
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="HALF A THOUGHT", content_index=0)))
     assert tails[-1] != "", "precondition: reasoning is on screen"
 
-    r.on_agent_event(
-        TurnEndEvent(message=AssistantMessage(stop_reason="aborted"), tool_results=[])
-    )
+    r.on_agent_event(TurnEndEvent(message=AssistantMessage(stop_reason="aborted"), tool_results=[]))
 
     assert tails[-1] == ""
     plains = [c.plain for c in commits]
@@ -2275,26 +2249,247 @@ def test_the_answer_window_is_not_clobbered_by_late_reasoning() -> None:
     assert tails[-1] == answer_window, "reasoning overwrote the answer's live window"
 
 
-def test_a_reopened_thinking_index_still_commits() -> None:
-    """The per-block latch must not permanently retire an index the wire reuses.
+@pytest.mark.parametrize(
+    ("delta", "snapshot", "continuation"),
+    [
+        pytest.param(" ", "FIRST ", [], id="late-space"),
+        pytest.param("LATER", "FIRSTLATER", ["LATER"], id="late-distinct"),
+        pytest.param("FIRST", "FIRSTFIRST", ["FIRST"], id="genuine-repeat"),
+        pytest.param("LATER", "FIRSTLATER and more", ["LATER and more"], id="longer-end"),
+        # Neither cumulative nor the segment: the delta alone, none of the snapshot.
+        pytest.param("LATER", "FIRST altered", ["LATER"], id="non-prefix-end"),
+        pytest.param("LATER", "", ["LATER"], id="end-without-content"),
+    ],
+)
+def test_a_reopened_thinking_index_still_commits(
+    delta: str, snapshot: str, continuation: list[str]
+) -> None:
+    r, commits, _tails, _clock = _thinking_renderer()
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST")))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=delta)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=snapshot)))
+    r.on_agent_event(_msg_update(TextEndEvent(content="ANSWER")))
 
-    Continuation of the case above: the block was flushed when the answer
-    started, so its index was already marked done. Reasoning that then resumes
-    on that same index was dropped on the floor.
-    """
+    assert [_plain(c).strip() for c in commits] == ["FIRST", "ANSWER", *continuation]
 
-    r, commits, tails, clock = _thinking_renderer()
-    clock["t"] += 0.2
-    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="A-first-reasoning", content_index=0)))
-    clock["t"] += 0.2
-    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer so far ...")))
-    clock["t"] += 0.2
-    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="B-second-reasoning", content_index=0)))
-    r.on_agent_event(_msg_update(ThinkingEndEvent(content="B-second-reasoning", content_index=0)))
 
-    plains = [c.plain for c in commits]
-    assert "B-second-reasoning" in plains, "the reopened block never reached scrollback"
-    assert plains.count("A-first-reasoning") == 1, "the first block printed twice"
+def test_repeated_reopenings_track_untrimmed_prefix_per_index_and_message() -> None:
+    r, commits, _tails, _clock = _thinking_renderer()
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=" FIRST ")))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="ANSWER")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="\t")))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="SECOND ANSWER")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="SECOND ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND ")))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="THIRD ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="THIRD")))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=" FIRST \tSECOND THIRD and more")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="THIRD ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="END ONLY", content_index=2)))
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=" FIRST \tSECOND THIRD and more")))
+
+    assert [_plain(c).strip() for c in commits] == [
+        "FIRST",
+        "ANSWER",
+        "SECOND ANSWER",
+        "SECOND",
+        "THIRD ANSWER",
+        "THIRD and more",
+        "END ONLY",
+        "FIRST \tSECOND THIRD and more",
+    ]
+
+
+def test_an_unknown_end_records_the_pending_part_untrimmed() -> None:
+    """A later continuation of the index keeps its indent (#908)."""
+    r, commits, _tails, _clock = _thinking_renderer()
+    for event in [
+        ThinkingDeltaEvent(delta="FIRST"),
+        TextDeltaEvent(delta="ANSWER"),
+        ThinkingDeltaEvent(delta="LATER\n"),
+        # Unplaceable, and it repeats a shown word, so only the pending part commits.
+        ThinkingEndEvent(content="FIRST unknown"),
+        ThinkingDeltaEvent(delta="  - item"),
+        ThinkingEndEvent(content="FIRST unknown"),
+    ]:
+        r.on_agent_event(_msg_update(event))
+
+    assert [_plain(c).rstrip() for c in commits] == ["FIRST", "ANSWER", "LATER", "  - item"]
+
+
+@pytest.mark.parametrize(
+    ("first", "late", "snapshot", "continuation"),
+    [
+        # A blank pending part leaves rule 2 nothing to match, so an end that
+        # does not extend what is shown is an unknown shape: none of it prints
+        # live, and replay shows the saved block.
+        pytest.param("A", " ", " more", [], id="segment-only-suffix"),
+        pytest.param("A", "A", "A and more", ["A and more"], id="segment-with-genuine-repeat"),
+        pytest.param(" A", " ", " A", [], id="end-omits-late-space"),
+        pytest.param("\nA", "B", "AB and more", ["B and more"], id="trimmed-cumulative-suffix"),
+        pytest.param(
+            "Plan:",
+            "\n    one\n    two",
+            "Plan:\n    one\n    two",
+            ["    one\n    two"],
+            id="indented-continuation",
+        ),
+        pytest.param(
+            "Plan:\n",
+            "  - one\n  - two",
+            "Plan:\n  - one\n  - two",
+            ["  - one\n  - two"],
+            id="indent-after-committed-newline",
+        ),
+        pytest.param("A", "\u200d", "A\u200d", [], id="joiner-only"),
+        # What streamed since the commit is a separator at most (#908).
+        pytest.param("XAB", " ", " A", [], id="snapshot-already-shown"),
+        pytest.param("A", "\n\n", "more", [], id="separator-then-segment-only"),
+        pytest.param(
+            "Plan:", "\n\n", "Plan:\n    one", ["    one"], id="separator-then-indented-line"
+        ),
+        pytest.param("FIRST\n\n", "", "FIRST more", ["more"], id="closed-part-then-inline-suffix"),
+        pytest.param(
+            "FIRST",
+            "LATER\n\n",
+            "FIRST altered",
+            ["LATER"],
+            id="separator-then-unknown-snapshot",
+        ),
+        # The snapshot spans the commit and the pending part without starting
+        # either: the pending part prints, and nothing prints again.
+        pytest.param("XA", "BY", "AB", ["BY"], id="snapshot-inside-shown-and-pending"),
+        # Unknown shapes that embed seen text commit only the pending part (#908 verify r4).
+        pytest.param("ALPHA", "", "prefixALPHAsuffix", [], id="snapshot-word-contains-shown"),
+        pytest.param(
+            "PLAN-ALPHA",
+            "TRACE-BETA",
+            "DONE[PLAN-ALPHA/TRACE-BETA]",
+            ["TRACE-BETA"],
+            id="snapshot-word-contains-shown-and-pending",
+        ),
+        pytest.param("!!!", "...", "[!!!/...]", ["..."], id="punctuation-contains-seen"),
+        pytest.param("ALPHA", "", "?!", [], id="punctuation-wholly-new"),
+        # The pending part keeps its layout when the snapshot is not used.
+        pytest.param(
+            "Plan:", "\n    one", "Other Plan:", ["    one"], id="unknown-snapshot-keeps-indent"
+        ),
+    ],
+)
+def test_reopened_thinking_keeps_suffix_content_and_layout(
+    first: str, late: str, snapshot: str, continuation: list[str]
+) -> None:
+    r, commits, _tails, _clock = _thinking_renderer()
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=first)))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=late)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=snapshot)))
+    r.on_agent_event(_msg_update(TextEndEvent(content="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=snapshot)))
+
+    assert [_plain(c).rstrip() for c in commits] == [first.strip(), "ANSWER", *continuation]
+
+
+def test_thinking_end_without_content_flushes_the_delta() -> None:
+    from types import SimpleNamespace
+
+    r, commits, tails, _clock = _thinking_renderer()
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="THINKING")))
+    missing_content = SimpleNamespace(type="thinking_end", content=None, content_index=0)
+    r.on_agent_event(_msg_update(missing_content))
+
+    assert [_plain(c) for c in commits] == ["THINKING"]
+    assert tails[-1] == ""
+
+
+def test_a_delayed_thinking_end_does_not_consume_another_index_on_abort() -> None:
+    r, commits, tails, _clock = _thinking_renderer()
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND", content_index=1)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="FIRST and more")))
+    assert "SECOND" in tails[-1]
+    r.on_agent_event(TurnEndEvent(message=AssistantMessage(stop_reason="aborted"), tool_results=[]))
+
+    assert tails[-1] == ""
+    assert [_plain(c).strip() for c in commits] == [
+        "FIRST",
+        "and more",
+        "SECOND",
+        "✖ Operation aborted",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("delta", "continuation"),
+    [pytest.param(" ", [], id="late-space"), pytest.param("LATER", ["LATER"], id="late-distinct")],
+)
+def test_reopened_hidden_thinking_expands_only_the_new_part(
+    delta: str, continuation: list[str]
+) -> None:
+    r, commits, tails, _clock = _thinking_renderer(hide=True)
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST")))
+    assert tails == []
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=delta)))
+    snapshot = "FIRST" + delta
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=snapshot)))
+    r.on_agent_event(_msg_update(TextEndEvent(content="ANSWER")))
+
+    placeholders = [f"💭 Thinking… (/expand {i})" for i in range(1, 2 + len(continuation))]
+    assert [_plain(c).strip() for c in commits] == [placeholders[0], "ANSWER", *placeholders[1:]]
+    assert [r.get_expanded(i) for i in range(1, 3 + len(continuation))] == [
+        "FIRST",
+        *continuation,
+        None,
+    ]
+
+    r.reset_expand_store()
+    commits.clear()
+    r.replay(
+        [AssistantMessage(content=[ThinkingContent(thinking=snapshot), TextContent(text="ANSWER")])]
+    )
+    assert [_plain(c).strip() for c in commits] == [placeholders[0], "ANSWER"]
+    assert r.get_expanded(1) == snapshot.strip()
+    assert r.get_expanded(2) is None
+    # An end-only block after the swap starts fresh even without a message_start.
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content=snapshot)))
+    assert [_plain(c).strip() for c in commits] == [
+        placeholders[0],
+        "ANSWER",
+        "💭 Thinking… (/expand 2)",
+    ]
+    assert r.get_expanded(2) == snapshot.strip()
+
+
+@pytest.mark.parametrize("hide", [False, True], ids=["live", "hidden-override"])
+def test_collapsed_completed_thinking_keeps_the_right_live_tail_and_replays(hide: bool) -> None:
+    r, commits, tails, _clock = _thinking_renderer(hide=hide)
+    r.collapse_completed_thinking = True
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST")))
+    assert commits == []
+    if hide:
+        assert tails == []
+    else:
+        assert "FIRST" in tails[-1]
+
+    # Toggling hide off leaves the separate completed preference in force.
+    r.hide_thinking = False
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="ANSWER")))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="FIRST")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="ANSWER")))
+    assert [_plain(c).strip() for c in commits] == ["💭 Thinking… (/expand 1)", "ANSWER"]
+    assert r.get_expanded(1) == "FIRST"
+
+    r.reset_expand_store()
+    commits.clear()
+    r.replay(
+        [AssistantMessage(content=[ThinkingContent(thinking="FIRST"), TextContent(text="ANSWER")])]
+    )
+    assert [_plain(c).strip() for c in commits] == ["💭 Thinking… (/expand 1)", "ANSWER"]
+    assert r.get_expanded(1) == "FIRST"
 
 
 def test_a_second_message_renders_its_own_thinking() -> None:
@@ -2410,7 +2605,9 @@ def _echo_sgr(color_system: str) -> list[str]:
 
     out = subprocess.run(
         [sys.executable, "-c", _ECHO_PROBE, color_system],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     codes = re.findall(r"\x1b\[([0-9;]*)m", out)
     assert codes, f"the echo style emitted no SGR at {color_system}: {out!r}"
@@ -2468,11 +2665,13 @@ def test_the_echo_bar_names_a_colour_and_not_a_palette_slot() -> None:
 
     params = _echo_sgr("truecolor")
     assert "38" in params and "48" in params, params
-    basic = {*map(str, range(30, 38)), *map(str, range(40, 48)),
-             *map(str, range(90, 98)), *map(str, range(100, 108))}
-    assert not (set(params) & basic), (
-        f"the echo style still names a palette slot: {params}"
-    )
+    basic = {
+        *map(str, range(30, 38)),
+        *map(str, range(40, 48)),
+        *map(str, range(90, 98)),
+        *map(str, range(100, 108)),
+    }
+    assert not (set(params) & basic), f"the echo style still names a palette slot: {params}"
 
     eight = _echo_sgr("256")
     for lead in ("38", "48"):
@@ -2504,9 +2703,7 @@ def test_the_echo_bar_clears_AAA_wherever_it_owns_both_ends() -> None:
     eight = _echo_sgr("256")
     f8 = _cube_hex(int(eight[eight.index("38") + 2]))
     b8 = _cube_hex(int(eight[eight.index("48") + 2]))
-    assert _contrast(f8, b8) >= 4.5, (
-        f"the 256 reduction is {f8} on {b8}, {_contrast(f8, b8):.2f}:1"
-    )
+    assert _contrast(f8, b8) >= 4.5, f"the 256 reduction is {f8} on {b8}, {_contrast(f8, b8):.2f}:1"
 
 
 def test_the_256_foreground_is_neutral_so_a_reducer_cannot_fold_it_onto_the_ground() -> None:
@@ -2560,8 +2757,7 @@ def test_no_depth_pairs_SGR_1_with_a_foreground_a_terminal_can_brighten() -> Non
             continue
         basic_fg = {str(n) for n in range(30, 38)}
         assert not (set(params) & basic_fg), (
-            f"at {depth} the echo bar emits SGR 1 beside a brightenable "
-            f"foreground: {params}"
+            f"at {depth} the echo bar emits SGR 1 beside a brightenable foreground: {params}"
         )
 
 

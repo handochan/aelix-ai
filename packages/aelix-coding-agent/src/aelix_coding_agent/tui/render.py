@@ -371,9 +371,7 @@ def _cap_cells_keep_end(text: str, limit: int) -> str:
     return "…" + "".join(reversed(kept))
 
 
-def _truncate_lines(
-    text: str, max_lines: int, max_line_width: int = 76
-) -> tuple[list[str], int]:
+def _truncate_lines(text: str, max_lines: int, max_line_width: int = 76) -> tuple[list[str], int]:
     """Keep the first ``max_lines`` lines, each hard-capped at ``max_line_width``.
 
     PURE. Returns ``(kept_lines, hidden_count)`` where ``hidden_count`` is the
@@ -867,19 +865,12 @@ class EventRenderer:
         # holding them, so on a slow reasoning model the user watched a spinner
         # with nothing behind it.
         #
-        # Tail ONLY: the block is still committed to scrollback exactly once,
-        # when it closes. Reasoning is ephemeral scaffolding — you want to watch
-        # it happen and then have one tidy block in history, not a progressive
-        # dribble of committed lines (which would also make every existing
-        # commit assertion in the suite a lie).
-        #
-        # Keyed on ``content_index``, which is what distinguishes one thinking
-        # block from the next on the wire and which this renderer previously
-        # never read. The old ``_thinking_flushed`` boolean conflated "already
-        # printed THIS block" with "already printed ANY block", so a second
-        # block in the same message was silently dropped (#169).
+        # Only the live tail repaints while a part streams. Scrollback commits
+        # at the boundary before text/tool output or when the block ends.
         self._thinking_index: int | None = None
-        self._thinking_done: set[int] = set()
+        # Untrimmed, terminal-safe prefixes per content index (#169, #908).
+        # The end snapshot includes earlier parts of a reopened index.
+        self._thinking_committed: dict[int, str] = {}
         self._thinking_tail_when: float | None = None
         # "A live window is currently painted for this block." The RELEASE half
         # of the tail. Derived state is not good enough here: the obvious
@@ -956,12 +947,7 @@ class EventRenderer:
         self.tool_card_max_lines: int = DEFAULT_TOOL_CARD_MAX_LINES
         # ADR-0115 still holds and is why the COMMIT happens where it does:
         # ``thinking_end`` arrives at end-of-stream, after the answer already
-        # streamed, so a block is committed BEFORE the text/tool that follows it
-        # rather than when its end event lands — otherwise reasoning prints
-        # after the answer it preceded. What changed for #170 is only that the
-        # block is also shown live while it accumulates; the idempotency the old
-        # ``_thinking_flushed`` flag provided now lives in ``_thinking_done``,
-        # keyed per block.
+        # streamed, so a part is committed BEFORE the text/tool that follows it.
         # Thinking-block visibility (Sprint 6h₁₅, ADR-0123). Default VISIBLE to
         # match pi's ``hideThinkingBlock`` default (False) — issue #50 reconcile:
         # the run_tui startup seed overwrites this from the persisted setting, so
@@ -980,6 +966,7 @@ class EventRenderer:
         # writers in shell.py named run_tui (startup seed), _apply_live_setting
         # (/settings live-apply), and _toggle_thinking (Ctrl+T).
         self._hide_thinking: bool = False
+        self.collapse_completed_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
         # message (a ``UserMessage`` carrying ``COMPACTION_SUMMARY_PREFIX``) is
@@ -1003,7 +990,7 @@ class EventRenderer:
 
     @property
     def hide_thinking(self) -> bool:
-        """Whether reasoning is collapsed to a ``💭 Thinking…`` placeholder."""
+        """Whether to hide the live tail and collapse completed reasoning."""
 
         return self._hide_thinking
 
@@ -1136,25 +1123,14 @@ class EventRenderer:
             if self._thinking_index is not None and index != self._thinking_index:
                 # A new block started without an explicit end for the previous
                 # one — close that one out before opening this.
-                self._flush_thinking(self._thinking_accum, index=self._thinking_index)
-            if index in self._thinking_done:
-                # The wire can REOPEN an index this renderer already committed:
-                # ``openai_completions`` allocates one thinking index per message
-                # (openai_completions.py:1255-1256) and reasoning that resumes after
-                # answer text replays on it, so the block was flushed by the
-                # text_delta arm above and then continued. Retiring the index
-                # permanently dropped that continuation on the floor.
-                self._thinking_done.discard(index)
+                self._flush_thinking(self._thinking_accum)
             self._thinking_index = index
             # #177 — stripped on the way IN, so the live tail (which renders a
             # slice of this accumulator) never sees a raw escape.
             self._thinking_accum += _safe_prose(sev.delta)
             self._push_thinking_tail()
         elif sev.type == "thinking_end":
-            self._flush_thinking(
-                sev.content or self._thinking_accum,
-                index=getattr(sev, "content_index", self._thinking_index),
-            )
+            self._end_thinking(sev.content, getattr(sev, "content_index", self._thinking_index))
         elif sev.type in ("done", "end"):
             self._finalize_text()
         elif sev.type == "error":
@@ -1245,15 +1221,8 @@ class EventRenderer:
         self._text_closed_early = False
         self._thinking_accum = ""
         self._thinking_index = None
-        # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
-        # message (anthropic.py:1029, _google_shared.py:1029,
-        # _openai_responses_shared.py:725, openai_completions.py:1281), so
-        # keeping the set would retire index 0 for the whole session. The delta
-        # arm un-retires a reused index on its own, so what this line actually
-        # covers is the block that arrives as ``thinking_end`` ALONE, with no
-        # deltas to trigger that: without it the first turn shows its reasoning
-        # and every turn after it shows none.
-        self._thinking_done = set()
+        # A new message can start again at index 0, even with an end-only block.
+        self._thinking_committed.clear()
         self._thinking_tail_when = None
         self._thinking_min_delay = _THINKING_TAIL_MIN_DELAY
         # A new message has not been reported on yet. This is the ONLY caller of
@@ -1443,7 +1412,9 @@ class EventRenderer:
             return
         if returned:
             self._input_return_said = True
-        notice = f"✖ Operation aborted. {INPUT_RETURNED_NOTICE}" if returned else "✖ Operation aborted"
+        notice = (
+            f"✖ Operation aborted. {INPUT_RETURNED_NOTICE}" if returned else "✖ Operation aborted"
+        )
         self._commit(Text(notice, style="yellow"))
 
     def note_input_returned(self) -> None:
@@ -1506,7 +1477,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:4991). A provider
+            # write the same last-writer-wins sink (shell.py:4983). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.
@@ -1526,9 +1497,7 @@ class EventRenderer:
         self._thinking_tail_when = now
         width = self._width_of()
         started = self._time()
-        lines = plain_lines(
-            self._thinking_tail_source(width), width, style="dim italic"
-        )
+        lines = plain_lines(self._thinking_tail_source(width), width, style="dim italic")
         render_time = self._time() - started
         # The governor ``StreamRenderer`` has had since 6h₂₄ (tui/stream.py:214-217):
         # hold the gap at ten times the render it just paid for. With the slice
@@ -1569,40 +1538,93 @@ class EventRenderer:
             return
         self._flush_thinking(self._thinking_accum)
 
-    def _flush_thinking(self, content: str, *, index: int | None = None) -> None:
-        """Close out a thinking block: clear its tail, commit it once.
+    def _end_thinking(self, content: str | None, index: int | None) -> None:
+        pending = self._thinking_accum if index == self._thinking_index else ""
+        committed = self._thinking_committed.get(index, "") if index is not None else ""
+        snapshot = _safe_prose(content or "")
+        pending = self._thinking_continuation(committed, pending, snapshot)
+        self._flush_thinking(pending, index=index)
 
-        ``index`` is the block's ``content_index``. Committing is idempotent PER
-        BLOCK rather than per message: the adapter emits ``thinking_end`` at
-        end-of-stream, after the answer has already streamed, so the same block
-        arrives twice and must not print twice — but a genuinely different block
-        (think → tool → think) must still print. The previous boolean latch
-        could not tell those apart and dropped the second one (#169).
+    @staticmethod
+    def _thinking_continuation(committed: str, pending: str, snapshot: str) -> str:
+        """What an index's end adds after part of it is in scrollback (#908).
+
+        ``committed`` is in scrollback, ``pending`` streamed since, ``snapshot``
+        is the end event's copy. Responses streams a ``\\n\\n`` delta per summary
+        part that its final summary does not keep, so a snapshot that is not an
+        exact extension is aligned with what was shown ignoring whitespace.
         """
+        if not committed:
+            return snapshot or pending
+        if snapshot.startswith(committed + pending):
+            return snapshot[len(committed) :]
+        end, at = EventRenderer._visible(snapshot)
+        shown = EventRenderer._visible(committed + pending)[0]
+        streamed = EventRenderer._visible(pending)[0]
+        if end.startswith(shown):
+            # A cumulative snapshot: the pending part, then what follows it.
+            return EventRenderer._pending_then_tail(pending, snapshot, at, len(shown))
+        if streamed and end.startswith(streamed):
+            # A snapshot of the reopened segment alone.
+            return EventRenderer._pending_then_tail(pending, snapshot, at, len(streamed))
+        # An unknown shape: only what streamed since the commit. The snapshot
+        # cannot be placed against what is shown, so none of it is committed:
+        # any part of it could print shown text again (a word or token test
+        # cannot tell, because deltas join without boundaries). The saved
+        # block is the snapshot, and a replay shows it.
+        return pending
 
+    @staticmethod
+    def _visible(text: str) -> tuple[str, list[int]]:
+        """``text`` without whitespace, and where each kept character is in it."""
+        at = [i for i, char in enumerate(text) if not char.isspace()]
+        return "".join(text[i] for i in at), at
+
+    @staticmethod
+    def _pending_then_tail(pending: str, snapshot: str, at: list[int], matched: int) -> str:
+        """``pending``, then ``snapshot`` after its first ``matched`` visible characters."""
+        tail = snapshot[at[matched - 1] + 1 :] if matched else snapshot
+        if pending.strip():
+            # The snapshot's own separator joins the two.
+            return pending.rstrip() + tail
+        # The tail opens a row: a separator within one line is not indentation.
+        gap = tail[: len(tail) - len(tail.lstrip())]
+        return tail if "\n" in gap else tail.lstrip()
+
+    def _flush_thinking(self, content: str, *, index: int | None = None) -> None:
+        """Commit a terminal-safe part and release its own live tail."""
         # #285 — an answer still open is closed EARLY: its own ``text_end`` is
         # yet to come (``_text_closed_early``).
         self._finalize_text(by_flush=True)
-        # #177 — ``content`` is either the accumulator (already stripped) or the
-        # ``thinking_end`` event's own copy of the block, which is not.
-        text = _safe_prose(content).strip()
-        self._thinking_accum = ""
         if index is None:
             index = self._thinking_index
-        self._thinking_index = None
-        self._thinking_tail_when = None  # the next block starts unthrottled
-        self._thinking_min_delay = _THINKING_TAIL_MIN_DELAY
-        self._clear_thinking_tail()  # the committed block replaces the live window
-        if index is not None and index in self._thinking_done:
-            # The late ``thinking_end`` for a block already printed.
-            return
-        if index is not None:
-            self._thinking_done.add(index)
+        if index == self._thinking_index:
+            self._thinking_accum = ""
+            self._thinking_index = None
+            self._thinking_tail_when = None  # the next block starts unthrottled
+            self._thinking_min_delay = _THINKING_TAIL_MIN_DELAY
+            self._clear_thinking_tail()
+        committed = self._thinking_committed.get(index, "") if index is not None else ""
+        if index is not None and content:
+            self._thinking_committed[index] = committed + content
+        if committed:
+            # Keep joiners inside real text (for example emoji sequences).
+            if not content.replace("\u200d", "").strip():
+                return
+            if committed.endswith("\n") or content.lstrip(" \t").startswith("\n"):
+                content = re.sub(r"^(?:[ \t]*\n)+", "", content)
+                self._commit_thinking(content, preserve_indent=True)
+                return
+        self._commit_thinking(content)
+
+    def _commit_thinking(self, content: str, *, preserve_indent: bool = False) -> None:
+        # Replay shares presentation (#164) without reading or updating live state.
+        text = content.rstrip() if preserve_indent else content.strip()
         if not text:
             return
-        if self.hide_thinking:
-            # Collapsed: a one-line placeholder; stash the full reasoning in the
-            # /expand store so it stays recoverable (``/expand N``).
+        if self.hide_thinking or self.collapse_completed_thinking:
+            # Keep the completed body in the /expand store and commit a
+            # one-line placeholder for it.
             n = self._store_expandable(text)
             self._commit(
                 Text(f"💭 {self._hidden_thinking_label} (/expand {n})", style="dim italic")
@@ -1731,7 +1753,7 @@ class EventRenderer:
 
         self._expand_store.clear()
         self._expand_seq = 0
-        self._thinking_done = set()
+        self._thinking_committed.clear()
 
     def replay(self, messages: list[Any]) -> None:
         """Re-render a loaded session's static messages into scrollback.
@@ -1865,30 +1887,7 @@ class EventRenderer:
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)
                     if btype == "thinking":
-                        thinking = _safe_prose(getattr(block, "thinking", "") or "").strip()
-                        if thinking:
-                            # Issue #164 — the live path gates reasoning on
-                            # ``hide_thinking`` (``_flush_thinking``); replay
-                            # dumped it unconditionally, so a user with "Show
-                            # thinking" OFF got every past turn's reasoning back
-                            # on every resume. The two arms are inlined rather
-                            # than delegated: ``_flush_thinking`` also drives the
-                            # LIVE tail and its per-block idempotency set, and a
-                            # persisted block carries no ``content_index`` to key
-                            # that on — so replay renders the block directly
-                            # instead of borrowing streaming machinery it has no
-                            # inputs for.
-                            if self.hide_thinking:
-                                hidden_id = self._store_expandable(thinking)
-                                self._commit(
-                                    Text(
-                                        f"💭 {self._hidden_thinking_label} "
-                                        f"(/expand {hidden_id})",
-                                        style="dim italic",
-                                    )
-                                )
-                            else:
-                                self._commit(Text(thinking, style="dim italic"))
+                        self._commit_thinking(_safe_prose(getattr(block, "thinking", "") or ""))
                     elif btype == "text":
                         body = getattr(block, "text", "") or ""
                         if echoed_failure is not None and body.strip() == echoed_failure:

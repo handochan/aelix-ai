@@ -295,11 +295,11 @@ def test_settings_lists_names_a_malformed_entry() -> None:
 def test_the_settings_key_is_mapped_and_counted() -> None:
     assert SETTINGS_PY_TO_JSON["agents"] == "agents"
     fields = dataclasses.fields(Settings)
-    assert len(fields) == len(SETTINGS_PY_TO_JSON) == 48
+    assert len(fields) == len(SETTINGS_PY_TO_JSON) == 49
     import aelix_ai.settings.types as types_module
 
     source = Path(types_module.__file__).read_text(encoding="utf-8")
-    assert "# 48 optional fields" in source and "# all 48 are covered" in source
+    assert "# 49 optional fields" in source and "# all 49 are covered" in source
 
 
 def _manager(

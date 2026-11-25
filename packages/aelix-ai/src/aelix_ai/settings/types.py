@@ -12,8 +12,7 @@ Conventions (Sprint 6h₇b §B):
   plain TypeScript object literals which are mutable).
 - Every field defaults to ``None`` (the Pi ``?:`` optional marker maps
   to ``Optional[T] = None``).
-- 5 union string-literal types use :data:`typing.Literal` per Pi
-  enumerated unions.
+- Enumerated strings use :data:`typing.Literal`.
 - :data:`PackageSource` is :data:`typing.Union` of :class:`str` and
   :class:`PackageSourceObject` (Pi line 66-74).
 - ``DEFAULT_THINKING_LEVEL`` is ``"medium"`` (Pi ``defaults.ts``).
@@ -53,7 +52,7 @@ DEFAULT_THINKING_LEVEL: Final[str] = "medium"
 #: unrelated and stays 40 (ADR-0112).
 DEFAULT_TOOL_CARD_MAX_LINES: Final[int] = 5
 
-# === 5 union string-literal types (Pi `settings-manager.ts:80-105`) ===
+# === String-literal types (Pi `settings-manager.ts:80-105` and Aelix additions) ===
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 DefaultProjectTrust = Literal["ask", "always", "never"]
@@ -68,6 +67,7 @@ TreeFilterMode = Literal[
     "default", "no-tools", "user-only", "labeled-only", "all"
 ]
 TransportSetting = Literal["auto", "sse", "websocket"]
+CompletedThinkingDisplay = Literal["full", "collapsed"]
 
 
 # === 11 nested types (Pi `settings-manager.ts:8-74`) ===
@@ -237,17 +237,18 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 48 optional fields — every field defaults to ``None`` so unset →
+# 49 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, render_max_width, session_dir, default_project_trust,
 # hide_compaction_summary, features, respect_gitignore, check_model_catalog) —
-# all 48 are covered by SETTINGS_PY_TO_JSON.
+# all 49 are covered by SETTINGS_PY_TO_JSON.
 # (This count has been wrong before — it read 42 while the dataclass held 41,
 # then 42 while it held 43. Re-measured 2026-09-07 under #238: 43 before this
 # field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same; 45 after #609's
 # ``check_model_catalog``; 46 after #722's ``background_jobs`` — but 47 were
-# there at 69e43857 when #795 recounted, and 48 after its ``agents``;
+# there at 69e43857 when #795 recounted, 48 after its ``agents``, and 49
+# after #909 added ``completedThinkingDisplay``;
 # ``tests/core/test_agent_selection_795.py`` now recounts it.)
 
 
@@ -255,7 +256,7 @@ PackageSource = str | PackageSourceObject
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    48 optional top-level fields (Pi's original 33 + aelix-original
+    49 optional top-level fields (Pi's original 33 + aelix-original
     additions). Defaults are applied in the per-getter methods on
     :class:`SettingsManager` (NOT here) — this dataclass is the
     structural shape only.
@@ -273,6 +274,7 @@ class Settings:
     branch_summary: BranchSummarySettings | None = None
     retry: RetrySettings | None = None
     hide_thinking_block: bool | None = None
+    completed_thinking_display: CompletedThinkingDisplay | None = None
     shell_path: str | None = None
     quiet_startup: bool | None = None
     shell_command_prefix: str | None = None
@@ -307,7 +309,7 @@ class Settings:
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
     # containing ``enableInstallTelemetry`` still loads unchanged: unknown JSON
-    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:110)
+    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:111)
     # and left untouched on disk by the merge-based persist path
     # (``_persist_scoped_settings``).
     packages: list[PackageSource] | None = None
@@ -427,6 +429,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "branch_summary": "branchSummary",
     "retry": "retry",
     "hide_thinking_block": "hideThinkingBlock",
+    "completed_thinking_display": "completedThinkingDisplay",
     "shell_path": "shellPath",
     "quiet_startup": "quietStartup",
     "shell_command_prefix": "shellCommandPrefix",
@@ -465,7 +468,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "suppressed_default_catalogs": "suppressedDefaultCatalogs",
     # Aelix-original (ADR-0197): already a single lowercase word, so the
     # camelCase boundary is an identity mapping — it still MUST be listed here,
-    # because ``_json_dict_to_settings`` (settings_manager.py:110) drops any JSON
+    # because ``_json_dict_to_settings`` (settings_manager.py:111) drops any JSON
     # key absent from this table SILENTLY.
     "features": "features",
     # Aelix-original (#722, ADR-0293): a plain dict, see the field.
@@ -580,6 +583,7 @@ __all__ = [
     "SETTINGS_PY_TO_JSON",
     "BranchSummarySettings",
     "CompactionSettings",
+    "CompletedThinkingDisplay",
     "DefaultProjectTrust",
     "DoubleEscapeAction",
     "ExtensionSourceObject",
