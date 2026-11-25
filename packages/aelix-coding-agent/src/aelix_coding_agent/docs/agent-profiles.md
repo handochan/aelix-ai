@@ -687,7 +687,7 @@ The agent is a background job of your session; what all jobs share — the foote
 | Action | What it does |
 | --- | --- |
 | `spawn` | Starts one task in the background, with the same approval a single run has, and returns once the child has started, with its agent id and job id. |
-| `wait` | Waits up to `timeout` seconds (30 to 1800, default 120). It never stops an agent and never returns a result: the notice brings it. A third wait in a row that sees nothing end, in one prompt, is refused. |
+| `wait` | Up to `timeout` seconds (30–1800, default 120). See [steering during a wait](background-jobs.md#how-a-result-comes-back). |
 | `status` | One agent, by `id`, or every agent of this session. |
 | `stop` | Stops one agent, by `id`; it ends `stopped` once its process is confirmed gone, and its notice carries what it had said. |
 | `result` | Reads a finished agent's whole result again, 16 KiB a page, from `offset`. |
