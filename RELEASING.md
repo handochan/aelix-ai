@@ -319,19 +319,21 @@ lineage's last entry.
 This section records what moving between two releases keeps, as measured. For
 0.1.0, #383 took beta.2 (`0.1.0b2`) up to 0.1.0, down to beta.2 and up again, on
 the candidate `d9aa80f3`, whose tree is the `v0.1.0` tag's (`aceeb29c`), before
-the tag. It ran on macOS (uv-managed CPython 3.13.13; the fresh-install steps F
-on 3.14.5) and in Linux docker (CPython 3.12.3), twice each (runs 3 and 4),
+the tag. It ran on macOS (uv-managed CPython 3.13.13; 0.1.0's fresh installs in
+F on 3.14.5) and in Linux docker (CPython 3.12.3), twice each (runs 3 and 4),
 against a stub model on 127.0.0.1, with a scratch `HOME`, `UV_TOOL_DIR`,
-`UV_TOOL_BIN_DIR` and `TMPDIR`. Every aelix run was `--offline` except C3's
-`aelix update --models`, which fetched the hosted catalog. All 236 checks passed on both legs in both runs: no step lost data and
-none crashed. The letters and numbers below are its step ids.
+`UV_TOOL_BIN_DIR` and `TMPDIR`. Every aelix run was `--offline` except
+`aelix --version` (B0, U4), which returns before any fetch (code reading), and
+C3's `aelix update --models`, which fetched the hosted catalog. All 236 checks
+passed on both legs in both runs: no step lost data and none crashed. The
+letters and numbers below are its step ids.
 
 **Upgrade, 0.1.0b2 → 0.1.0.**
 
 | Route | Result |
 | --- | --- |
 | Re-run the install line | Works (B, E). beta.2's sessions continue with every message on the chain (B1, B2); its `auth.json` gives the key and its `trust.json` still applies the project settings (B1); `/resume`, `/stats` and `/cost` open on its sessions (B3). |
-| `uv tool upgrade aelix` over a PyPI install made with the old installer's interpreter range (`uv tool install --python '>=3.11,<3.14' 'aelix[tui]'`, U3) | Works (U4): every distribution reports 0.1.0, the tool environment keeps its interpreter (3.13.13 on macOS, 3.12.3 on Linux), the sessions continue. 0.1.0 was offered through `UV_FIND_LINKS` beside PyPI, not from PyPI. |
+| `uv tool upgrade aelix` over a PyPI install made with the old installer's interpreter range (`uv tool install --force --python '>=3.11,<3.14' 'aelix[tui]'`, U3) | Works (U4): every distribution reports 0.1.0, the tool environment keeps its interpreter (3.13.13 on macOS, 3.12.3 on Linux), the sessions continue. 0.1.0 was offered through `UV_FIND_LINKS` beside PyPI, not from PyPI. |
 | `uv tool upgrade aelix` over an install-line install | Exits 1 on both legs in runs 3 and 4 (U2): the receipt names install.sh's `--find-links` temporary directory, which install.sh deleted, and pins `==0.1.0b2` (U1). Nothing changes: the tool stays on 0.1.0b2 and `aelix -c` still works. Re-run the line instead (#464 item 2). |
 
 After the upgrade, background jobs are on: beta.2's `settings.json` has no
@@ -345,8 +347,9 @@ empty-key probe in A and B).
 guide's *Upgrading and uninstalling* has the form). Nothing was lost:
 
 - the sessions beta.2 was given continue with no message off the chain: C1's
-  delegated session (D1), the job session (D2b), J1 and J2 (D9) and F1's session
-  (F2); C1's child file opens on beta.2 (D2). Before beta.2's own turn, each line
+  delegated session (D1), the job session (D2b), J1 and J2 (D9), F1's session
+  (F2) and the U box's session (U5); C1's child file opens on beta.2 (D2).
+  Before beta.2's own turn, each line
   0.1.0 wrote is unchanged: as parsed values in the run's checks (D2b, D9, F2),
   and byte for byte for the sessions in D when the run's C and D snapshots were
   compared afterwards (F2 has no earlier snapshot). The background-spawned child

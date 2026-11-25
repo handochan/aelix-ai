@@ -889,7 +889,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   offered, unlike pi's, never with a key only a project `.env` supplies. pi's triggers (start-up,
   the `/model` and `/scoped-models` pickers, a `/model` miss, `/login`, `aelix update --models`);
   `--list-models` reads the cache.
-  Noted 2026-11-25 (#383): 0.1.0b2 has no store reader, so a downgrade leaves `models-store.json` untouched; measured byte-identical.
+  Amended 2026-11-25 (#383): 0.1.0b2 has no store reader, so a downgrade to it leaves `models-store.json` untouched; measured byte-identical.
 
 - [0116 — TUI P0 consumer batch: footer meter, real mode, diffs, /export, /thinking, usage capture](0116-tui-p0-consumer-batch.md)
   (amended 2026-10-22; #534, #559). Every model or thinking-level change repaints the footer when it

@@ -1157,8 +1157,9 @@ no agent profile service lists no `agent` kind.
 
 ## Note (2026-11-25, #383)
 
-D15 is measured on an installed 0.1.0b2, except the `/agents list` diagnostic. #383's official run installed 0.1.0b2, the Release's wheels, with the 0.1.0
-install line and `AELIX_VERSION=v0.1.0-beta.2`. It ran after the 0.1.0 tree (`d9aa80f3`, the tree
+D15 is measured on an installed 0.1.0b2, except the `/agents list` diagnostic. #383's official run
+installed 0.1.0b2, the Release's wheels, with the 0.1.0 install line and
+`AELIX_VERSION=v0.1.0-beta.2`. It ran after the 0.1.0 tree (`d9aa80f3`, the tree
 of `v0.1.0`) had written the files, on macOS and in Linux docker, twice each (runs 3 and 4),
 against a local stub model. The step names are the run's
 ([RELEASING.md](../../RELEASING.md#upgrading-and-downgrading-between-releases)).
@@ -1178,5 +1179,4 @@ against a local stub model. The step names are the run's
   compares values, not bytes, as D15 says.
 
 Apart from the `/agents list` diagnostic, what D15 read from `2f3cdf28`'s code holds on the
-installed wheel. No mitigation in the old
-versions is offered, as before.
+installed wheel. No mitigation in the old versions is offered, as before.

@@ -2300,8 +2300,12 @@ store, against the two cases §4 handed it (the line that begins "In R, #383 cov
 - **A downgrade facing an unknown store `version`.** It does not arise against 0.1.0b2, which has
   no store reader: `git ls-tree -r v0.1.0-beta.2` lists no `models_store` (code reading). After
   beta.2's runs `models-store.json` was byte-identical (step D's state check), and 0.1.0's reader
-  gave the same document after the round trip as before it (E9). The rule "a `version` this build
-  does not know is neither read nor rewritten" was not exercised.
+  read it after the round trip as it did before (E9: readable, `version` 1, the same top-level keys
+  and size); the file in the run's E snapshot is byte-identical to C's. The rule "a `version` this
+  build does not know is neither read nor rewritten" was not exercised.
 - **An upgrade whose shipped digest is in no stored revision's lineage.** It was not set up as its
-  own case: C3 wrote the store with 0.1.0's `aelix update --models`, after the upgrade.
-
+  own case: C3 wrote the store with 0.1.0's `aelix update --models`, after the upgrade. That
+  refresh reported `not-applicable` on all four legs, which v0.1.0's `hosted_catalog_source.py`
+  returns only when the publication's lineage does not admit the shipped digest (code reading). So
+  the no-overlay outcome was seen, but on a store written after the upgrade, not one carried across
+  it.
