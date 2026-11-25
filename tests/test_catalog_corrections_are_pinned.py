@@ -213,6 +213,17 @@ _FLOOR_397: dict[tuple[str, str], tuple[str, ...]] = {("openai", "gpt-6-astra"):
         ("openrouter", "openai/gpt-6-astra", "openai/gpt-5.5"),
         ("openrouter", "openai/gpt-6-astra-pro", "openai/gpt-5.5-pro"),
         ("vercel-ai-gateway", "openai/gpt-6-astra", "openai/gpt-5.5"),
+        # The 2026-11-25 fold-back: Claude Fable 5.2 arrived with no map on
+        # every wire but OpenRouter's; it takes its Fable 5.1 twin's, as
+        # pi.dev's anthropic and github-copilot rows do.
+        ("amazon-bedrock", "anthropic.claude-fable-5-2", "anthropic.claude-fable-5-1"),
+        ("amazon-bedrock", "us.anthropic.claude-fable-5-2", "us.anthropic.claude-fable-5-1"),
+        ("amazon-bedrock", "global.anthropic.claude-fable-5-2", "global.anthropic.claude-fable-5-1"),
+        ("anthropic", "claude-fable-5-2", "claude-fable-5-1"),
+        ("github-copilot", "claude-fable-5.2", "claude-fable-5.1"),
+        ("opencode", "claude-fable-5-2", "claude-fable-5-1"),
+        ("vercel-ai-gateway", "anthropic/claude-fable-5.2", "anthropic/claude-fable-5.1"),
+        ("vercel-ai-gateway", "anthropic/claude-fable-5.2-fast", "anthropic/claude-fable-5.1"),
     ],
 )
 def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
@@ -454,6 +465,10 @@ _OPENCODE_RESPONSES = (
     "muse-wonder-1.0",
     "muse-spark-1.2-contributor-free",
     "muse-spark-1.3-contributor-free",
+    # The 2026-11-25 fold-back: npm ``@ai-sdk/openai``, inherited
+    # ``openai-completions`` from ``ll-alpha-free``; the only added opencode
+    # row whose wire disagreed with its npm.
+    "crouton-alpha-free",
 )
 
 
@@ -477,6 +492,14 @@ def test_opencode_rows_on_openais_package_ride_the_responses_api(model_id: str) 
         ("google", "gemini-4-argon"),
         ("google-vertex", "gemini-4-argon"),
         ("opencode", "gemini-4-argon"),
+        # The 2026-11-25 fold-back: OpenRouter marks all three reasoning
+        # mandatory and pi.dev hides off and minimal on each; they take
+        # gemini-4-argon's hand map.
+        *(
+            (provider, model_id)
+            for provider in ("google", "google-vertex", "opencode")
+            for model_id in ("gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon")
+        ),
     ],
 )
 def test_gemini_rows_that_cannot_switch_thinking_off_do_not_offer_it(provider: str, model_id: str) -> None:

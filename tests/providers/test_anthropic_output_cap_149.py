@@ -240,11 +240,11 @@ def test_an_unsat_row_never_exceeds_the_absolute_ceiling_at_any_window() -> None
 
 
 def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
-    """All 86 UNSAT anthropic-messages rows, not just the blocker.
+    """All 88 UNSAT anthropic-messages rows, not just the blocker.
 
     Was 36 before #172, 55 after it, 72 after the 2026-09-08 refresh, 86 after
-    the fold-back of 2026-10-27. Every row added at those steps is
-    ``vercel-ai-gateway`` (74 of the 86 now; the other 12 are fireworks),
+    the fold-back of 2026-10-27, 88 after the one of 2026-11-25. Every row added
+    at those steps is ``vercel-ai-gateway`` (76 of the 88 now; the other 12 are fireworks),
     whose every row speaks ``anthropic-messages``, and
     each arrived with upstream's own ``output == context`` — the shape
     ``xai/grok-4.5`` already shipped. The count assertion sits BEFORE the
@@ -262,7 +262,7 @@ def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
         and row.get("contextWindow")
         and row["maxTokens"] >= row["contextWindow"]
     ]
-    assert len(unsat) == 86, "the UNSAT population moved; re-read the evidence"
+    assert len(unsat) == 88, "the UNSAT population moved; re-read the evidence"
     for provider, model_id, row in unsat:
         model = _model(
             id=model_id, provider=provider, base_url="https://h",
@@ -316,9 +316,12 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
     # largest REAL first-party Anthropic ceiling at or under the trustworthy
     # rows' p25. At 327 rows that was 32000, and it is still 32000. The two
     # positions are pinned too, so the next drift is seen, not absorbed.
-    assert len(sat) == 391
+    # 419 with the fold-back of 2026-11-25 (28 rows, one of them at 32000 and
+    # none under it): p25 is ``sat[104]`` = 32768 still, the last 32000 is ``sat[94]``,
+    # and the largest first-party ceiling under it is still 32000.
+    assert len(sat) == 419
     p25 = sat[len(sat) // 4]
-    assert p25 == 32768 and sat[93] == 32000 < sat[94]
+    assert p25 == 32768 and sat[94] == 32000 < sat[95]
     first_party_ceilings = {
         row["maxTokens"] for row in catalog["anthropic"].values() if row.get("maxTokens")
     }

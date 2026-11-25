@@ -737,6 +737,12 @@ def test_no_google_model_offers_a_level_without_a_budget_row() -> None:
     outside ``off/minimal/low/medium/high``. The crash the test above pins
     arrives through ``thinkingLevelMap``, which no catalog walk can see — so
     this only warns that a refresh started shipping such a level.
+
+    The walk covers the rows the Google adapters serve, the only ones that
+    reach a budget row. Since the fold-back of 2026-11-25 OpenRouter's
+    ``google/gemini-4-hydrogen`` and ``-neon`` offer ``xhigh``, as OpenRouter's
+    ``supported_efforts`` lists it; they ride ``openai-completions``, which sends
+    ``reasoning.effort`` and has no budget table.
     """
 
     known = {"off", "minimal", "low", "medium", "high"}
@@ -745,6 +751,8 @@ def test_no_google_model_offers_a_level_without_a_budget_row() -> None:
     for provider_models in MODELS.values():
         for model_id, model in provider_models.items():
             if "gemini" not in model_id and "gemma" not in model_id:
+                continue
+            if model.api not in ("google-generative-ai", "google-vertex"):
                 continue
             rows += 1
             offered |= set(get_supported_thinking_levels(model))
