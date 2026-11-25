@@ -238,11 +238,12 @@ untrusted content.
 
 ## Supported versions
 
-Aelix is pre-1.0 and still in beta. The only supported version is the newest
-release; there are no maintained release branches and no backports, so
-**security fixes land on `main`** and the fix is the upgrade path — re-run the
-installer. A supported-versions matrix will appear here once there is a stable
-line to support.
+Aelix is pre-1.0: under Semantic Versioning a 0.x release, 0.1.0 included,
+promises no stability. The only supported version is the newest release; there
+are no maintained release branches and no backports, so **security fixes land
+on `main`** and the fix is the upgrade path — re-run the installer. A
+supported-versions matrix will appear here once there is a stable line to
+support.
 
 This section previously read "with no tagged release yet". That was wrong:
 `v0.1.0-beta.1` was tagged and published as a GitHub pre-release on 2026-08-20,

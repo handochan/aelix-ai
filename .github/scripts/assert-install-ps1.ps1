@@ -76,7 +76,7 @@ $expected = $m.Groups[1].Value
 Write-Host "expected version (from $tag SHA256SUMS): $expected"
 
 # The default interpreter request install.ps1 owes THIS release (#278,
-# ADR-0265). 0.1.0b3 and later pin openai>=2.7.2 and run on 3.14; the two
+# ADR-0265). 0.1.0 and later pin openai>=2.7.2 and run on 3.14; the two
 # releases published before #278, v0.1.0-beta.1 and v0.1.0-beta.2, pin
 # openai<2.0, which dies mid-turn on 3.14 (#262), and keep the older range.
 # Named here rather than compared the way install.ps1 compares versions, so a
@@ -151,7 +151,7 @@ if ($tools -notmatch "(?m)^aelix v$([regex]::Escape($expected))\b") {
 # chosen from the release), because `uv tool install` otherwise resolves an
 # interpreter fresh and takes the NEWEST one on the box. Measured on a dev
 # machine carrying 3.11 through 3.14, the unflagged command built the
-# environment on 3.14.5, where a release before 0.1.0b3 - pinned to
+# environment on 3.14.5, where a release up to 0.1.0b2 - pinned to
 # `openai<2.0` - raises "'typing.Union' object has no attribute
 # '__discriminator__'" in the middle of a turn (#262, #263).
 #

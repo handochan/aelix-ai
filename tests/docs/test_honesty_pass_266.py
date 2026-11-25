@@ -231,8 +231,10 @@ def test_what_the_root_package_line_says_holds(readme: str) -> None:
     line = _bullet(readme, "aelix")
     # it points at the Install section rather than naming one command: that
     # section recommends the installer and warns against upgrading through
-    # ``uv tool install aelix@latest`` up to beta.2 (#262)
-    assert "](#install)" in line or "](#설치)" in line, line
+    # ``uv tool install aelix@latest`` up to beta.2 (#262). Each README links
+    # its own heading: ``README.ko.md`` has no ``#install`` (#587).
+    anchor = {"README.md": "](#install)", "README.ko.md": "](#설치)"}[readme]
+    assert anchor in line, line
     assert "aelix@latest" not in line, line
     project = _toml(REPO_ROOT / "pyproject.toml")["project"]
     assert "aelix" in project["scripts"], project
@@ -305,6 +307,34 @@ def test_the_vision_no_longer_sets_the_retired_parity_goal() -> None:
 
     assert "거의 완벽" not in _flat(_VISION)
     assert "ADR-0235" in _read(_VISION)
+
+
+def _published_metadata() -> list[tuple[str, str]]:
+    """Each workspace member's ``description`` and the README PyPI shows as its page."""
+
+    out: list[tuple[str, str]] = []
+    for manifest in [REPO_ROOT / "pyproject.toml", *sorted(REPO_ROOT.glob("packages/*/pyproject.toml"))]:
+        project = _toml(manifest)["project"]
+        out.append((f"{manifest.relative_to(REPO_ROOT).as_posix()} description", project["description"]))
+        readme = manifest.parent / project["readme"]
+        out.append((readme.relative_to(REPO_ROOT).as_posix(), readme.read_text(encoding="utf-8")))
+    return out
+
+
+_METADATA = _published_metadata()
+
+
+@pytest.mark.parametrize(("where", "text"), _METADATA, ids=[where for where, _ in _METADATA])
+def test_no_published_description_promises_pi_parity(where: str, text: str) -> None:
+    """#587. ADR-0235 made pi a reference, not a target, and #266 fixed the two
+    READMEs; the ``description`` fields and the package READMEs that PyPI shows
+    as each package's page (``readme = "README.md"``) still said "Pi-ai parity",
+    "pi-faithful" and the like on ``a177c929``. PyPI keeps an uploaded version's
+    metadata for good, so this holds before each release."""
+
+    flat = re.sub(r"\s+", " ", text).lower()
+    for claim in ("parity", "pi-faithful"):
+        assert claim not in flat, f"{where}: {claim!r}"
 
 
 def test_the_vision_names_each_of_the_four_promises() -> None:

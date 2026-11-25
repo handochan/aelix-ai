@@ -23,9 +23,9 @@
 # what makes the gate binding rather than advisory -- see Step 5.
 #
 # Configuration (all optional, via environment):
-#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.2, the release
-#                  Windows needs). Default: resolve the newest release from the
-#                  GitHub API. Pinning is the recommended path during the beta.
+#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0; Windows needs
+#                  v0.1.0-beta.2 or newer). Default: resolve the newest release
+#                  from the GitHub API, a pre-release included.
 #   AELIX_EXTRAS   Extras to install, consumed as aelix[$AELIX_EXTRAS].
 #                  Default `tui` (interactive terminal UI), which is the ONLY
 #                  extra. This line used to offer `tui,images` for inline image
@@ -44,7 +44,7 @@
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
 #   AELIX_PYTHON   uv interpreter request for the tool environment. Default:
 #                  chosen from the release being installed (Step 5, #278):
-#                  `>=3.11,<3.15` for 0.1.0b3 and later, which pin
+#                  `>=3.11,<3.15` for 0.1.0 and later, which pin
 #                  openai>=2.7.2 and run on 3.14; `>=3.11,<3.14` for 0.1.0b2
 #                  and earlier, whose pinned openai<2.0 dies mid-turn on 3.14
 #                  (#262). CI runs 3.11 through 3.14, each a test leg on ubuntu
@@ -87,17 +87,18 @@ $GithubToken  = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { '' }
 
 # The two default interpreter requests Step 5 chooses between (#278, ADR-0265),
 # the same two values as install.sh's py_supported / py_before_b3. Releases from
-# 0.1.0b3 on pin openai>=2.7.2,<3 and run on 3.11 through 3.14, each a CI leg.
+# 0.1.0 on pin openai>=2.7.2,<3 and run on 3.11 through 3.14, each a CI leg.
 # 0.1.0b2 and earlier pin openai<2.0, which dies mid-turn on 3.14 (#262), and
 # AELIX_VERSION can still install them.
 $PySupported = '>=3.11,<3.15'
 $PyBeforeB3  = '>=3.11,<3.14'
 
 # The default interpreter request for aelix release $Version (the PEP 440
-# string Step 5 reads from the verified SHA256SUMS, e.g. 0.1.0b3). Mirrors
+# string Step 5 reads from the verified SHA256SUMS, e.g. 0.1.0). Mirrors
 # install.sh's python_request_for: the wider range only for a version this can
-# PROVE is 0.1.0b3 or later (N.N.N with an optional aN / bN / rcN, compared as
-# numbers, so 0.1.0b10 is after 0.1.0b3); anything else keeps the older range,
+# PROVE is 0.1.0b3 or later (no 0.1.0b3 was published: 0.1.0 is the first
+# release past 0.1.0b2): N.N.N with an optional aN / bN / rcN, compared as
+# numbers, so 0.1.0b10 is after 0.1.0b3; anything else keeps the older range,
 # which every release ever published runs on.
 function Get-PythonRequest {
     param([string]$Version)
@@ -226,7 +227,8 @@ try {
             Stop-WithError "failed to query the GitHub releases API for '$AelixRepo': $($_.Exception.Message)"
         }
         # The list endpoint is newest-first and INCLUDES pre-releases (unlike
-        # /releases/latest), so the first tag_name is the newest beta during beta.
+        # /releases/latest), so the first tag_name is the newest release, a
+        # pre-release included.
         $tag = @($releases)[0].tag_name
         if (-not $tag) {
             Stop-WithError 'could not resolve a release tag; pin one with AELIX_VERSION=vX.Y.Z.'
@@ -367,7 +369,7 @@ try {
     # install aelix` refuse cleanly instead of breaking later (#192 left it to
     # #278), but it does not retire this flag.
     #
-    # WHICH RANGE (#278, ADR-0265). 3.14 is supported from 0.1.0b3 on: that
+    # WHICH RANGE (#278, ADR-0265). 3.14 is supported from 0.1.0 on: that
     # release pins openai>=2.7.2, the first openai that does not write onto
     # typing.Union, and CI runs 3.14 on ubuntu and windows. But this script
     # installs whatever AELIX_VERSION names, and 0.1.0b2 carries openai<2.0
@@ -379,7 +381,7 @@ try {
     # parsed above from the VERIFIED manifest, never the tag.
     & uv tool install --force --find-links $tmp --python $AelixPython $target
     if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "uv tool install failed for '$target' (interpreter request: '$AelixPython'). If uv reported no interpreter for that range, this machine has none inside it and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON -- but read Step 5 first: a release before 0.1.0b3 pins openai<2.0, which dies mid-turn on 3.14 (#262)."
+        Stop-WithError "uv tool install failed for '$target' (interpreter request: '$AelixPython'). If uv reported no interpreter for that range, this machine has none inside it and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON -- but read Step 5 first: a release up to 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262)."
     }
 
     # -- Step 6: post-install smoke + PATH hint ------------------------------

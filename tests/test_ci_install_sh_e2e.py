@@ -19,7 +19,7 @@ file holds the ``install-sh-e2e`` job to the docs and to the arms it claims:
   executed here against a stub tool environment, and each post-condition is
   shown to FIRE — a checker that cannot fail would make the job a green light;
 * since #278 the default interpreter range depends on the release installed
-  (``>=3.11,<3.15`` from 0.1.0b3, ``>=3.11,<3.14`` before), so a sixth pass pins
+  (``>=3.11,<3.15`` from 0.1.0, ``>=3.11,<3.14`` before), so a sixth pass pins
   ``AELIX_VERSION=v0.1.0-beta.2`` with 3.14 on the runner, and the post-condition
   derives the range it expects from the version it resolved itself.
 """
@@ -247,8 +247,9 @@ def test_no_setup_uv_and_every_action_pinned_by_sha() -> None:
 _SHELLS = [s for s in ("sh", "dash") if shutil.which(s)]
 
 _VERSION = "0.1.0b2"
-#: The first release whose default interpreter range includes 3.14 (#278).
-_NEW_VERSION = "0.1.0b3"
+#: The first release whose default interpreter range includes 3.14 (#278). It was planned as
+#: 0.1.0b3 and released as 0.1.0; no 0.1.0b3 was published.
+_NEW_VERSION = "0.1.0"
 _OLD_RANGE = '">=3.11, <3.14"'
 _NEW_RANGE = '">=3.11, <3.15"'
 
@@ -469,7 +470,7 @@ def test_every_minor_inside_the_default_range_passes(
     tmp_path: Path, shell: str, release: str, version_info: str, recorded: str
 ) -> None:
     """Both ends of each default range: ``>=3.11,<3.14`` for 0.1.0b2 and
-    ``>=3.11,<3.15`` for 0.1.0b3 (#278). The floor and the ceiling are each
+    ``>=3.11,<3.15`` for 0.1.0 (#278). The floor and the ceiling are each
     compared once; an off-by-one in the floor (``-le`` for ``-lt``) would reject
     3.11, the range's own first minor, and turn a good install red."""
 
@@ -484,14 +485,14 @@ def test_every_minor_inside_the_default_range_passes(
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_the_range_follows_the_release_installed(tmp_path: Path, shell: str) -> None:
     """#278: the post-condition expects the range the installer owes the
-    release it resolved, by naming the two releases before 0.1.0b3."""
+    release it resolved, by naming the two releases before 0.1.0."""
 
-    # 0.1.0b3 on 3.15: past the new range too.
+    # 0.1.0 on 3.15: past the new range too.
     box = _Box(tmp_path / "b3-315", release=_NEW_VERSION)
     box.set_python("3.15.0", _NEW_RANGE)
     assert _failed(box.run(shell), "3")
 
-    # 0.1.0b3 built with the OLD request: an installer that never widened.
+    # 0.1.0 built with the OLD request: an installer that never widened.
     box = _Box(tmp_path / "b3-old", release=_NEW_VERSION)
     box.set_python("3.13.13", _OLD_RANGE)
     assert _failed(box.run(shell), "3")

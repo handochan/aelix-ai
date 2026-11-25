@@ -11,7 +11,7 @@ name: Release
 # how candidate-smoke's macOS and Windows legs run before the tag that would
 # otherwise be their first run. RELEASING.md, "Cutting a beta", runs it before
 # tagging:
-#     gh workflow run release.yml --ref main -f tag=v0.1.0-beta.3
+#     gh workflow run release.yml --ref main -f tag=v0.1.0
 #
 # Pipeline (ADR-0269, #382) - nothing is published before the candidate ran:
 #   build           — `uv build --all-packages`, then DROP the aelix-server
@@ -71,7 +71,7 @@ on:
     inputs:
       tag:
         description: >-
-          The release tag you are about to push (e.g. v0.1.0-beta.3). The run
+          The release tag you are about to push (e.g. v0.1.0). The run
           builds and smoke-tests the commit it is started on, as that tag; it
           creates no Release and uploads nothing to PyPI.
         required: true
@@ -116,7 +116,7 @@ jobs:
       # anyone who may start a run chooses.
       TAG: ${{ inputs.tag || github.ref_name }}
     outputs:
-      # The tag's PEP 440 version (`v0.1.0-beta.3` -> `0.1.0b3`), written by the
+      # The tag's PEP 440 version (`v0.1.0` -> `0.1.0`, `v0.1.0-beta.2` -> `0.1.0b2`), written by the
       # assert step below only after every published version and pin matched it.
       # candidate-smoke installs `aelix[tui]==` exactly this.
       version: ${{ steps.pin.outputs.version }}
@@ -407,7 +407,7 @@ jobs:
         shell: bash
     env:
       # The version the build job proved equal to the tag and to every
-      # published pyproject (its `pin` step), PEP 440 spelled: 0.1.0b3.
+      # published pyproject (its `pin` step), PEP 440 spelled: 0.1.0.
       VERSION: ${{ needs.build.outputs.version }}
       # The interpreter request both installers make for VERSION (build's
       # `request` step): '>=3.11,<3.15' for 0.1.0b3 and later, '>=3.11,<3.14'
@@ -615,6 +615,13 @@ jobs:
       # `--generate-notes` is deliberately NOT used: composing the body here is
       # what lets part 2 be omitted on the first release and bounded on later
       # ones. The final `gh release create` always gets a `--notes-file`.
+      #
+      # The body is cut under GitHub's limit (125,000 characters; `## [0.1.0]`
+      # alone is over 460,000) at an entry boundary, ending on a link to the full
+      # CHANGELOG.md at the tag and the compare view; a body that fits passes
+      # through unchanged, and a cut that would drop the section's
+      # `### Known limitations` block fails the job instead. The rules live in
+      # scripts/release_notes.py and are tested in tests/test_release_notes.py.
       - name: Compose release notes (CHANGELOG section + scoped changelog)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -623,33 +630,11 @@ jobs:
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/release-notes.md"
-          : > "$notes"
+          generated="$RUNNER_TEMP/generated-notes.md"
+          : > "$generated"
 
-          # (1) The hand-written section. Tag `vX.Y.Z[-pre]` maps to the heading
-          # `## [X.Y.Z[-pre]]`. Matching includes the closing bracket, so the tag
-          # v0.1.0 can never absorb the section for 0.1.0-beta.1. Extraction
-          # stops at the next `## ` heading; `### ` subheadings are preserved.
-          version="${TAG#v}"
-          section="$RUNNER_TEMP/changelog-section.md"
-          if awk -v ver="$version" '
-                BEGIN { hdr = "## [" ver "]" }
-                substr($0, 1, 3) == "## " {
-                  if (found) { exit }
-                  if (substr($0, 1, length(hdr)) == hdr) { found = 1 }
-                  next
-                }
-                found { print }
-                END { if (!found) exit 3 }
-              ' CHANGELOG.md > "$section" && [ -s "$section" ]; then
-            # Drop leading blank lines so the release body starts on text.
-            sed '/./,$!d' "$section" >> "$notes"
-            echo "Using the CHANGELOG.md section for [$version]."
-          else
-            echo "::warning::CHANGELOG.md has no '## [$version]' section; the release notes will carry only the generated commit log. Add the section and edit the release."
-          fi
-
-          # (2) The previous release tag = the highest tag strictly BELOW this
-          # one, taken as the entry that follows $TAG in the descending list
+          # The previous release tag, which scopes part 2: the highest tag
+          # strictly BELOW this one, taken as the entry that follows $TAG in the descending list
           # (not merely "the newest other tag", which would make a back-port
           # like v0.1.1 diff against a newer v0.2.0 and emit a reversed
           # changelog). `versionsort.suffix` teaches git that a pre-release
@@ -663,17 +648,21 @@ jobs:
 
           if [ -n "$prev" ]; then
             echo "Previous release tag: $prev — appending the scoped changelog."
-            # Blank-line separator only when part 1 actually wrote something,
-            # so a missing CHANGELOG section does not open the body with one.
-            # Written as an `if` on purpose: `[ -s … ] && …` would make the step
-            # exit non-zero under `set -e` on the empty-section path.
-            if [ -s "$notes" ]; then printf '\n' >> "$notes"; fi
             gh api --method POST "repos/$REPO/releases/generate-notes" \
               -f tag_name="$TAG" -f previous_tag_name="$prev" \
-              --jq '.body' >> "$notes"
+              --jq '.body' > "$generated"
           else
             echo "No previous tag — this is the first release; skipping the generated changelog (it would list the entire repository history)."
           fi
+
+          # (1) The hand-written section for exactly this version, then a blank
+          # line and (2), cut to fit: tag `vX.Y.Z[-pre]` reads the heading
+          # `## [X.Y.Z[-pre]]`, matched with its closing bracket, so v0.1.0
+          # never absorbs 0.1.0-beta.1; the section stops at the next `## `
+          # heading and keeps its `### ` subheadings.
+          python3 -I scripts/release_notes.py --changelog CHANGELOG.md \
+            --tag "$TAG" --repo "$REPO" --previous-tag "$prev" \
+            --generated "$generated" --out "$notes"
 
           # Never publish an empty release body. If BOTH parts came up empty
           # (no CHANGELOG section on a first release), fall back to the

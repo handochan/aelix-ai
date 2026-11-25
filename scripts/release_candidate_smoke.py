@@ -137,7 +137,8 @@ PY_BEFORE_B3 = ">=3.11,<3.14"
 #: install.ps1's ``Get-PythonRequest`` pattern, verbatim; install.sh's awk reads the same shape.
 _RELEASE_VERSION = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)(?:(a|b|rc)([0-9]+))?$")
 _PRE_RELEASE_KIND = {"a": 0, "b": 1, "rc": 2}
-#: (major, minor, patch, kind, number) of 0.1.0b3, the first release the wider range is for.
+#: (major, minor, patch, kind, number) of 0.1.0b3, where the wider range starts. No 0.1.0b3 was
+#: published: 0.1.0 is the first release past 0.1.0b2.
 _FIRST_ON_PY_SUPPORTED = (0, 1, 0, 1, 3)
 
 

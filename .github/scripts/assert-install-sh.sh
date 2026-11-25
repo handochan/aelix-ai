@@ -33,7 +33,7 @@
 set -eu
 
 # The two ranges install.sh Step 5 chooses its default between, by the release
-# it installs (#278, ADR-0265). 0.1.0b3 and later pin openai>=2.7.2 and run on
+# it installs (#278, ADR-0265). 0.1.0 and later pin openai>=2.7.2 and run on
 # 3.14; the two releases published before #278, v0.1.0-beta.1 and
 # v0.1.0-beta.2, pin openai<2.0, which dies mid-turn on 3.14 (#262), and keep
 # the older range. This script NAMES those two releases below instead of
@@ -159,7 +159,7 @@ uv tool list 2>/dev/null | grep -q "^aelix v$expected\$" \
 # -- (3) The interpreter is the one the pass asked for ------------------------
 # install.sh Step 5 passes `--python "$AELIX_PYTHON"`, because `uv tool
 # install` otherwise takes the NEWEST interpreter on the box, and for a release
-# before 0.1.0b3 that is 3.14, where the pinned openai<2.0 dies mid-turn (#262,
+# up to 0.1.0b2 that is 3.14, where the pinned openai<2.0 dies mid-turn (#262,
 # #263). pyvenv.cfg rather than running the environment's python: the value uv
 # wrote IS the fact being asserted.
 cfg="$env_dir/pyvenv.cfg"

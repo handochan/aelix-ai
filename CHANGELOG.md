@@ -11,15 +11,156 @@ umbrella meta-package. (`aelix-server`, the Web-UI daemon, is deferred to a
 later release and is not part of this publish set.)
 
 <!--
-No comparison / tag links are defined at the bottom of this file. The reason
-recorded here used to be "the repository has no tags and no releases yet", and
-that expired on 2026-08-20 when `v0.1.0-beta.1` was tagged and published as a
-GitHub pre-release: `.../releases/tag/v0.1.0-beta.1` and
-`.../compare/v0.1.0-beta.1...HEAD` both resolve today. They are simply still
-unwritten. Add them with the next release.
+The comparison / tag links are defined at the bottom of this file, from the
+0.1.0 release on. Until then this comment said they were "still unwritten. Add
+them with the next release": the repository had no tags until `v0.1.0-beta.1`
+was tagged and published as a GitHub pre-release on 2026-08-20. The `[0.1.0]`
+and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
 -->
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-11-25
+
+Cut as the tag `v0.1.0` (distribution version `0.1.0`). It was planned as
+`v0.1.0-beta.3` (`0.1.0b3`); on 2026-11-25 the owner chose to release it as
+0.1.0 instead, and no `0.1.0b3` was published. Under Semantic Versioning a 0.x
+version is initial development: anything may change before 1.0.0, so this
+release makes no compatibility promise beyond what the entries below state.
+Windows stays experimental (the README's *Platform support*).
+
+Complexity trend (#293, ADR-0300 §9), from `scripts/check_complexity.py --trend`
+(radon 6.0.1 over `packages/` and `src/`) on the release tree:
+
+- the trend value, each function, method and closure counted once: 6975; CC > 20: 146;
+  CC > 50: 12.
+- the 2026-09-19 way, radon's recursive count, which counts each method twice (for
+  comparison, not the trend value): 10121; CC > 20: 184; CC > 50: 13.
+
+### Known limitations
+
+These issues are open in 0.1.0. Each line says when it applies. The README's
+*Known limitations* describes the same issues at more length, beside its standing
+limits (#6, #52, #110), and Windows stays experimental.
+
+**In everyday use**
+
+- #138: a session file keeps every prompt, tool argument and tool result
+  verbatim, with no redaction.
+- #569: near a full context window, an answer cut at the shrunken output limit
+  stays the turn's answer, and its tool calls still go to execution with what
+  the adapter recovered of their arguments (read from the code; whether a cut
+  argument passes validation was not measured).
+- #481: `/logout` of an OAuth login in one aelix does not reach another aelix
+  that is already running: that one sends its cached token until the token
+  expires, then fails. Restart other sessions after it.
+- #499: `defaultThinkingLevel` applies only at launch. After `/model` from a
+  model that cannot reason to one that can, thinking stays off until
+  `/thinking`.
+- #582: `/thinking <level>` accepts any string. A typo or `HIGH` sends the
+  model's first level, usually `off`.
+- #739: for a `models.json` model with `cost` set, RPC `get_session_stats`
+  reports `0.0` and `/cost` `n/a` (measured on a custom provider's model);
+  after a delegation both show only the delegated agent's share. A
+  `modelOverrides` cost is ignored over RPC (the TUI was not measured).
+- #557: an `SSL_CERT_FILE` that names a missing file makes `aelix -p` print an
+  unrelated traceback and an `[Errno 2]` that names no file, measured with the
+  OpenAI SDK client (the Anthropic and Google adapters were not).
+- #560: google-vertex rows for Claude and partner models are sent Gemini's
+  request format and cannot work (read from the code, not run).
+- #793: under the opt-in `--permission-mode auto`, with dash as the shell, a
+  few forms run without a dialog: `(( 1>FILE ))` creates `FILE` (a redirection,
+  not a command), and `(( crontab -r ))` is allowed although dash would run
+  `crontab -r` (classified only; dash's reading was checked with `echo` in the
+  command's place). With dash, ksh93 or mksh, `echo $[2>FILE]` creates `FILE]`.
+  A write to a protected path such as `~/.bashrc` is still refused.
+- #157: with `--agent <profile> --model <id>`, the notice says
+  `CLI flags override model` and does not name the model the profile asked for.
+- #377: the `/model` picker's detail line names the provider's environment
+  variable as the key's source, wherever the key comes from.
+- #378: in the TUI, a prompt on a model not found at startup is refused with the
+  general `could not be resolved to a known API protocol` text, not the
+  not-found reason.
+- #168: a saved session drawn again (`/resume`, `--continue`) shows an `edit`
+  result without its diff and a `bash` result without its `exit N` row; a saved
+  tool result keeps no `details` (read from the code).
+- #265: the guide lists are kept by hand, not generated from the guide files.
+  The README's *Docs* line links 10 of the 16 guides; `aelix docs` and
+  `docs/guides/README.md` list all 16.
+- #267: no CI gate fails when a slash command, an RPC command or an environment
+  variable has no doc entry. On 2026-09-12 the issue counted 20 of 36 slash
+  commands, 29 of 29 RPC commands and 34 of 65 environment variables, among
+  other surfaces, with no doc entry; these were not re-counted for 0.1.0.
+
+**Scripts and RPC hosts**
+
+- #543: `aelix -p` exits 0 on an answer cut at the output-token limit, with
+  nothing on stderr.
+- #875: `message_update`, `get_session_stats` and `agents/run` can carry a `NaN`
+  or `Infinity` cost, which a strict JSON reader rejects.
+- #855: after a host's `children/stop` on a background agent, the `aelix_child`
+  end frame says the session stopped it and the model's job result says the
+  user did with `/jobs`.
+- #876: for an extension that failed to load and whose file name holds a lone
+  surrogate, `selections/set` answers its read-only tool row's key as an unknown
+  row, and the row shares its `group` with the U+FFFD spelling.
+- #865: a host cannot yet observe where an in-flight input came from, or when it
+  was consumed or withdrawn.
+
+**Extension authors**
+
+- #545: `ctx.abort()` stops retries, not a model request that is still
+  streaming.
+- #674: a turn an extension starts with `trigger_turn=True` while the TUI is
+  idle ends only with the double Ctrl+C that quits aelix.
+- #692: a tool that catches cancellation and keeps running holds the turn, and
+  after a parallel batch it holds `/exit` and the first SIGTERM. Built-in tools
+  are not affected.
+- #713: an extension dialog opened while another dialog is open replaces it, and
+  the first never returns.
+- #714: an extension shortcut handler that raises writes its traceback over the
+  TUI's input line and footer. An invalid descriptor module's warning prints
+  before the first screen. The other 36 such warnings, for themes, widgets and
+  descriptors among them, take the same path in the code; they were not each
+  run.
+- #715: `ctx.ui.custom()` components receive no keys, and Esc does not close
+  them.
+- #851: an `input` or `before_agent_start` handler that never returns holds
+  `/new`, `/resume` and quit until it returns. Over RPC such a dialog ends after
+  300 s.
+- #839: a `tool_result` hook that raises, or that rewrites a cancelled
+  delegation's result to exactly the cut marker, lets the report copy sent with
+  the next prompt carry the unmasked text.
+- #878: `aelix extension update <name>` can reinstall the older version a bundle
+  pinned, and exit 0, when the newer wheel dropped its `aelix.extensions` entry
+  point.
+- #373: a new session whose `session_start` handler starts a turn opens in the
+  TUI with `↻ Resumed session (N messages)`.
+- #372: on a launch whose route is not decided yet, a turn a `session_start`
+  handler requests without waiting is refused after the handlers end, with a
+  reason that says they are still running.
+- #259: code that calls the Google or Vertex adapter itself with
+  `reasoning="off"` as a string does not turn thinking off; `--thinking off` and
+  `/thinking off` are not affected.
+
+**Windows (experimental)**
+
+- #46: `auth.json` has no cross-process lock. Two aelix processes saving or
+  refreshing a login at once can lose one update, or every saved login.
+- #584: "Trust parent folder" from inside a junction or symlink saves the link's
+  parent, not the real project's.
+- #881: the holder of a session open in another window is reported as unknown.
+- #107: piping into `aelix` from a source that never writes hangs with no
+  message; `AELIX_STDIN_TIMEOUT` applies only on macOS and Linux.
+
+**Dependencies**
+
+- cryptography stays at 48.0.1, the owner's call of 2026-11-24: 49 and later
+  publish no macOS universal2 or x86_64 wheels and no win32 wheels. Three
+  advisories stay open against 48.0.1; aelix imports cryptography only for
+  Ed25519 extension signing.
+- Pillow 13 resizes a big-endian 16-bit TIFF (`I;16B`) to different pixels than
+  11.3.0 did. `read` and `@file` treat a TIFF as text, so neither reaches it.
 
 ### Added
 
@@ -144,7 +285,7 @@ unwritten. Add them with the next release.
   verifies the current writer. The attribution tests passed on macOS locally
   and on the Linux CI matrix for PR #880. Opted-in stdio RPC keeps structured
   startup, switch and branch-return refusals. On Windows, the generic text and
-  unknown holder apply in beta.3, as specified in ADR-0316.
+  unknown holder apply in 0.1.0, as specified in ADR-0316.
 
 - **CLI-RPC can page stored messages and join live frames to their storage keys
   (#655, ADR-0309).** On a writer-owned CLI-RPC session whose binding
@@ -1000,12 +1141,12 @@ unwritten. Add them with the next release.
 
 - **Maintainers: the release can be dry-run before its tag (#535, ADR-0269).**
   `release.yml` now also runs by hand: `gh workflow run release.yml --ref main
-  -f tag=v0.1.0-beta.3` builds the commit and runs `candidate-smoke` on
+  -f tag=v0.1.0` builds the commit and runs `candidate-smoke` on
   Ubuntu, macOS and Windows, with the same tag gate and version/pin assert the
   tag push would run, and stops there. `github-release` and `publish` run for
   a tag push only (each says so in its own `if:`), so a manual run creates no
   Release and uploads nothing to PyPI. Until now the smoke's macOS and Windows
-  legs would first have run on the beta.3 tag itself. RELEASING.md's *Cutting
+  legs would first have run on the release tag itself. RELEASING.md's *Cutting
   a beta* runs the dry run as step 5, before the tag. The smoke script's
   failure line also reaches a Windows leg's log now: a message quoting a
   character outside cp1252 ended in a `UnicodeEncodeError` traceback instead
@@ -1217,6 +1358,18 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **The README's Known limitations lists the issues still open in 0.1.0
+  (#385).** Both READMEs add 35 open issues beside the six standing limits,
+  grouped by who meets them (everyday use, scripts and RPC hosts, extension
+  authors, Windows), and each line says when it applies. The `[0.1.0]` section
+  of this file opens with the same issues, so the Release page carries them
+  whatever the cut below (#385's "Known limitations" exit condition). The
+  README's spend-ceiling line now says that #14, an iteration cap and
+  duplicate-call detection, was closed with the decision to build them as an
+  extension if they are needed. #265 and #267 are listed, as their 2026-10-06
+  comments decided ("고치는 대신 CHANGELOG의 Known limitations(#385)에
+  적는다"). The divergences from pi that ADR-0250 §7, ADR-0251 §4 and ADR-0252
+  record, which #385 also names, are not listed; those ADRs state them.
 - **Parent steering can end a background-agent wait early (#913, ADR-0320).**
   When the user steers a parent that is waiting in `agent(action="wait")`, the
   wait can return successfully before the child finishes and the parent can
@@ -1296,7 +1449,7 @@ unwritten. Add them with the next release.
   needs `version: 2`, agreed with aelix-acp first. `docs/contracts/control-v1.md` lists what
   aelix-acp reads (derived from its source, confirmation pending). The original
   #623 run covered two event families and 27 real-child replay cases. It recorded
-  428 passes on macOS with Python 3.12. The beta.3 fixtures at `9227275b` have
+  428 passes on macOS with Python 3.12. The fixtures at `9227275b` have
   four event families (`aelix_subagent`, `extension_ui`, `aelix_child`,
   `aelix_notice`) and 34 cases marked `replay: true`. The executable replay
   roster is derived in `tests/rpc/control_v1/test_real_child.py`. A floor that CI keeps from shrinking against the merge base holds them: a `since: "v1"`
@@ -1539,7 +1692,7 @@ unwritten. Add them with the next release.
   installs the build's own wheels on all three OSes with the installers' own
   command (`uv tool install --find-links <wheels> --python <request>
   'aelix[tui]==<version>'`, where `<request>` is what the installers ask for
-  that version: `>=3.11,<3.15` from 0.1.0b3 on), on the CPython uv downloads
+  that version: `>=3.11,<3.15` from 0.1.0 on), on the CPython uv downloads
   for a user who has no Python in that range (the newest inside it), and runs
   them: the checksums in the form `install.sh` reads, the interpreter, every
   installed file against the wheel it came from, `.dist-info` included (so a
@@ -1616,14 +1769,14 @@ unwritten. Add them with the next release.
 
 - **The installers choose the interpreter range from the release they install
   (#278, ADR-0265).** `install.sh` and `install.ps1` now default
-  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0-beta.3` and later and keep
+  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0` and later and keep
   `>=3.11,<3.14` for `v0.1.0-beta.2` and earlier, which pin `openai<2.0`; a
   version they cannot parse gets the older range. A default that simply widened
   would have put an `AELIX_VERSION=v0.1.0-beta.2` install on 3.14 and the crash
   above. The log names the request it chose. Both e2e jobs gained a pass that
   pins `v0.1.0-beta.2` with 3.14 on the runner and requires the environment to
   land below 3.14, and their post-conditions derive the range they expect from
-  the release they resolved. Until `v0.1.0-beta.3` is published, keep
+  the release they resolved. Until `v0.1.0` is published, keep
   upgrading through the install line rather than `uv tool install aelix@latest`.
 
 - **rpc `set_auto_retry` now persists, and `settings.json` wins over the
@@ -2019,6 +2172,27 @@ unwritten. Add them with the next release.
   also call, now keeps a character whose two halves arrived as two code points, joined,
   where it dropped both: its output matches pi's regex on all 1,555 strings of
   `test_every_short_string_matches_pis_regex`.
+- **A release whose CHANGELOG section is over GitHub's limit for a Release body
+  can publish.** `release.yml`'s `github-release` job sends the CHANGELOG
+  section for the tag, then GitHub's generated notes, as the Release body.
+  GitHub refuses a body over 125,000 characters (public reports; not measured
+  against the API), and `## [0.1.0]` alone is over 460,000. So
+  `github-release` would fail, and `publish`, which needs it, would never start.
+  `scripts/release_notes.py` now composes the body as the step's shell did and
+  cuts one over 120,000 bytes at an entry boundary, ending on links to the full
+  `CHANGELOG.md` at the tag and to the compare view. A body that fits passes
+  through unchanged, as beta.2's section (101,166 characters as the job
+  extracts it) does. A cut that would drop the section's `### Known
+  limitations` block fails the job before anything is released.
+  `tests/test_release_notes.py` runs the script on this file's own sections.
+- **PyPI no longer describes the packages as pi parity (#587).** The four
+  published `description` fields and the three package READMEs that PyPI shows
+  as their pages no longer say "pi-faithful" or "… parity"; ADR-0235 made pi a
+  reference, not a target. `tests/docs/test_honesty_pass_266.py` now checks every
+  workspace member's description and README, and each README's install link
+  must point at its own heading. The two lines of
+  `docs/02-initial-requirements.md` that #587 also names are unchanged, and
+  #587 stays open for them.
 - **The reviewer profile example starts, the RPC command discovery example uses
   `get_commands`, and the published primitive schema validates nonempty forms, grids
   and tables (#910).** The reviewer profile lists the shipped tools (`read`, `grep`,
@@ -7717,3 +7891,8 @@ earlier published version.
   is a TUI command, so a headless reader had no prompt to type it at. It now
   leads with `--model <id>`, which works on the invocation that just failed, and
   offers `/model` only as the interactive alternative.
+
+[Unreleased]: https://github.com/handochan/aelix-ai/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/handochan/aelix-ai/compare/v0.1.0-beta.2...v0.1.0
+[0.1.0-beta.2]: https://github.com/handochan/aelix-ai/compare/v0.1.0-beta.1...v0.1.0-beta.2
+[0.1.0-beta.1]: https://github.com/handochan/aelix-ai/releases/tag/v0.1.0-beta.1
