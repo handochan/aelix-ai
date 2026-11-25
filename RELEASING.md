@@ -269,8 +269,10 @@ lineage's last entry.
 
 7. **Dry-run the release on that commit, then tag and push.** The dry run is
    step 5 of **Cutting a beta** below with `-f tag=vX.Y.Z`: `build` and
-   `candidate-smoke` on the commit, no Release, no upload. Tag that commit
-   once every leg is green:
+   `candidate-smoke` on the commit, no Release, no upload. Before the tag, run
+   the upgrade and downgrade check against the previous release on that run's
+   build (**Upgrading and downgrading between releases** below). Tag that
+   commit once every leg is green:
 
    ```bash
    git tag vX.Y.Z
@@ -309,6 +311,126 @@ lineage's last entry.
 > The tag is the single source of truth for triggering a publish. The version in
 > the tag (`vX.Y.Z`) should match the `version` in the published pyproject files.
 > The workflow does not auto-bump versions — step 1 is manual and deliberate.
+
+---
+
+## Upgrading and downgrading between releases
+
+This section records what moving between two releases keeps, as measured. For
+0.1.0, #383 took beta.2 (`0.1.0b2`) up to 0.1.0, down to beta.2 and up again, on
+the candidate `d9aa80f3`, whose tree is the `v0.1.0` tag's (`aceeb29c`), before
+the tag. It ran on macOS (uv-managed CPython 3.13.13; 0.1.0's fresh installs in
+F on 3.14.5) and in Linux docker (CPython 3.12.3), twice each (runs 3 and 4),
+against a stub model on 127.0.0.1, with a scratch `HOME`, `UV_TOOL_DIR`,
+`UV_TOOL_BIN_DIR` and `TMPDIR`. Every aelix run was `--offline` except
+`aelix --version` (B0, U4), which returns before any fetch (code reading), and
+C3's `aelix update --models`, which fetched the hosted catalog. All 236 checks
+passed on both legs in both runs: no step lost data and none crashed. The
+letters and numbers below are its step ids.
+
+**Upgrade, 0.1.0b2 → 0.1.0.**
+
+| Route | Result |
+| --- | --- |
+| Re-run the install line | Works (B, E). beta.2's sessions continue with every message on the chain (B1, B2); its `auth.json` gives the key and its `trust.json` still applies the project settings (B1); `/resume`, `/stats` and `/cost` open on its sessions (B3). |
+| `uv tool upgrade aelix` over a PyPI install made with the old installer's interpreter range (`uv tool install --force --python '>=3.11,<3.14' 'aelix[tui]'`, U3) | Works (U4): every distribution reports 0.1.0, the tool environment keeps its interpreter (3.13.13 on macOS, 3.12.3 on Linux), the sessions continue. 0.1.0 was offered through `UV_FIND_LINKS` beside PyPI, not from PyPI. |
+| `uv tool upgrade aelix` over an install-line install | Exits 1 on both legs in runs 3 and 4 (U2): the receipt names install.sh's `--find-links` temporary directory, which install.sh deleted, and pins `==0.1.0b2` (U1). Nothing changes: the tool stays on 0.1.0b2 and `aelix -c` still works. Re-run the line instead (#464 item 2). |
+
+After the upgrade, background jobs are on: beta.2's `settings.json` has no
+`backgroundJobs`, and 0.1.0 offers `job`, `job_stop` and `run_in_background`
+(C0a). An `auth.json` entry with an empty key makes 0.1.0 exit 1, naming
+`auth.json` and `/login`, where beta.2 used the environment variable (the
+empty-key probe in A and B).
+
+**Downgrade, 0.1.0 → 0.1.0b2.** The route measured is the install line with
+`AELIX_VERSION=v0.1.0-beta.2` reaching `sh` (D, F2, U5; the getting-started
+guide's *Upgrading and uninstalling* has the form). Nothing was lost:
+
+- the sessions beta.2 was given continue with no message off the chain: C1's
+  delegated session (D1), the job session (D2b), J1 and J2 (D9), F1's session
+  (F2) and the U box's session (U5); C1's child file opens on beta.2 (D2).
+  Before beta.2's own turn, each line
+  0.1.0 wrote is unchanged: as parsed values in the run's checks (D2b, D9, F2),
+  and byte for byte for the sessions in D when the run's C and D snapshots were
+  compared afterwards (F2 has no earlier snapshot). The background-spawned child
+  and its `.result` file stay byte-identical (D2b); beta.2 did not continue that
+  child;
+- beta.2's runs leave `settings.json` byte-identical (D3b, and D4's twelve
+  settings probes), and beta.2's own settings writer keeps `agents`,
+  `completedThinkingDisplay`, `backgroundJobs` and `retry.maxAgentDelayMs` with
+  their values (D5);
+- `auth.json`, `trust.json`, `models.json`, `models-store.json`, `mcp.json` and
+  the profile files are byte-identical (D's state check, D6, D7);
+- a fresh 0.1.0 install on CPython 3.14.5 went to 3.13.13 for beta.2, below the
+  3.14 on which beta.2's `openai<2.0` dies (#262), and back to 3.14.5 on the way
+  up (F1–F3, macOS);
+- back on 0.1.0, the sessions reopen (E1), the settings keys read back (E3), and
+  `/jobs` lists the jobs as done with no notice repeated (E4, E5j).
+
+What beta.2 does with what only 0.1.0 writes (measured unless a row says code
+reading; none loses data):
+
+| 0.1.0 wrote | beta.2 | Steps |
+| --- | --- | --- |
+| A profile turned off in the `agents` setting | Offers it again: with `agents: ["-explorer"]` it offers explorer | D4 (C5 on 0.1.0) |
+| `agents:` in a profile's frontmatter | Ignores it, with no warning on `-p` stderr: `agents: []` or `agents: [helper383]` still delegates to general-purpose, and the child runs | D6 (C6) |
+| `"enabled": false` in `mcp.json` | Launches the server | D7 (C7, E8) |
+| `completedThinkingDisplay` | Has no such setting (code reading of `v0.1.0-beta.2`); the file keeps the key | D4, D5 |
+| Job notices | Shows each as a raw `[aelix.job_notice]` block, and sends it to its model as a user message that points at `job(action="result")` and `agent(action="result"/"resume")`. beta.2 offers no `job` tool (D2b), and its `agent` tool has no `action` (code reading of `v0.1.0-beta.2`) | D3j, D2b |
+| A job stopped at `/quit` | Does not deliver its "was stopped" notice; 0.1.0 does, at the next turn on that session | D9, E7 |
+| A job left by a killed aelix | Says nothing; 0.1.0's next start reports it "was lost" | D9, E7 |
+| A default model from the 516 catalog rows beta.2 lacks (168 of them from the fold-back) | `get_model` returns None and `--list-models` does not show it. With no key, both releases exit 1 with `No API key found for OpenRouter.` and leave `settings.json` as written; with a key: not measured | C8, D8 (one row, `openrouter/cohere/command-a`) |
+| Delegated children's spend | `/stats` leaves it out. On C1's session after D1, beta.2 shows 3,000 tokens in (the parent's three requests, not the child's 1,000), cost `n/a` and no delegated line. 0.1.0 on that session two turns later shows 6,000 in, cost `≥ $0.0037`, and a `Tools & delegated agents: 1.0k in / 50 out · $0.0037 (1 run)` line for the child | D3, E2 |
+| Session-lock files: a `.jsonl.lock` beside each session and, on macOS, a 73-byte locator per session path in the account's `~/Library/Caches/aelix-session-locks-v2/` | Both stay; beta.2's code names neither (code reading of `v0.1.0-beta.2`) | Z: 12 locators per macOS run, none in docker |
+
+With each of 0.1.0's other new settings keys and values set, beta.2 runs a turn
+and leaves the file as written (D4); what it makes of them was not checked.
+
+**Not measured for 0.1.0:**
+
+- Windows: install.ps1 was not run on any platform.
+- An install from the published `v0.1.0` Release or from PyPI's `0.1.0`: the
+  run predates the tag. The install line took the candidate's wheels from a
+  local copy of the Release's download path, with install.sh's `SHA256SUMS`
+  check unchanged, and U4 took them through `UV_FIND_LINKS`. The bytes are the
+  same: after the publish, the Release's `SHA256SUMS` and PyPI's sha256 digests
+  for 0.1.0 equal the tested build's, all eight files.
+- A downgrade by any route other than the install line, such as
+  `uv tool install --force 'aelix[tui]==0.1.0b2'`. It does not apply the install
+  line's interpreter range, so on a machine with 3.14 it would put beta.2 on 3.14
+  (#262; not run). `uv tool install aelix@latest` now resolves to 0.1.0.
+- `uv tool upgrade` over a 0.1.0 install-line install: its receipt has the same
+  shape (code reading of install.sh).
+- A real model: the stub answered every turn.
+- mcp.json's locking writer, the `/mcp` and `/agents` panels' own keys, and a
+  delegation cancelled with Esc (ADR-0307) read by beta.2.
+
+**For the next release:** before the tag, repeat this from the previous release
+to the candidate on macOS and Linux, and on Windows through install.ps1, and
+replace this section's results with what that run measured. The harness #383
+used is not in this repository, so the procedure is:
+
+1. Keep every run inside a scratch `HOME`, `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` and
+   `TMPDIR`, with a stub model on 127.0.0.1 named in `models.json` and every
+   aelix run `--offline` except a catalog refresh you mean to test. On macOS
+   that does not cover the session-lock locators, which go to the account's real
+   `~/Library/Caches` whatever `HOME` says (Z above), nor install.sh's temporary
+   directory, which `mktemp -d` puts under `/var/folders/…/T` whatever `TMPDIR`
+   says.
+2. Install the previous release with the install line and write with it: its
+   settings, `auth.json` and `trust.json`, a plain session, a delegated session.
+3. Install the candidate (the dry run's build, served at the Release's download
+   path, or `uv tool install --find-links <dist>`), continue every old session,
+   and write what only the candidate writes: new settings keys, frontmatter,
+   `mcp.json` fields, background jobs, including one left by a quit and one by
+   a kill.
+4. Install the previous release again with `AELIX_VERSION=<previous tag>`,
+   continue the candidate's sessions, open them in the TUI, and compare each
+   file under the agent directory with step 3's copy, byte for byte: whole for
+   configuration, up to beta.2's own turn for a session.
+5. Install the candidate again and reopen everything. Separately, run
+   `uv tool upgrade` over a PyPI install and over an install-line install, and
+   take a fresh candidate install down and up.
 
 ---
 

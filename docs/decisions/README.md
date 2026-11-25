@@ -105,6 +105,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   checks the re-check's refusal by its shape, and door tests hold that it fires. Amends ADR-0279, ADR-0196, ADR-0197, ADR-0277,
   ADR-0199 (g); notes on ADR-0283 D10 and ADR-0298.
   Amended 2026-11-18 (ADR-0305, #624): D14 is done — the `agent_control` built for every mode is RPC's kind `agent`.
+  Amended 2026-11-25 (#383): D15 is measured on an installed 0.1.0b2, except the `/agents list` diagnostic — `agents:` and the `agents` setting are ignored, and its writer keeps the values.
 - [0303 — The way this repository is worked on is committed: agent skills, a verifier agent, a session hook and one gate runner](0303-the-way-this-repository-is-worked-on-is-committed-skills-a-verifier-and-a-session-hook.md)
   (Accepted 2026-11-09; #733). Seven Agent Skills (`aelix-preflight`, `aelix-live-check`,
   `aelix-tests-that-bite`, `aelix-close-out`, `aelix-issue-run`, `aelix-handoff`, `aelix-land`)
@@ -888,6 +889,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   offered, unlike pi's, never with a key only a project `.env` supplies. pi's triggers (start-up,
   the `/model` and `/scoped-models` pickers, a `/model` miss, `/login`, `aelix update --models`);
   `--list-models` reads the cache.
+  Amended 2026-11-25 (#383): 0.1.0b2 has no store reader, so a downgrade to it leaves `models-store.json` untouched; measured byte-identical.
 
 - [0116 — TUI P0 consumer batch: footer meter, real mode, diffs, /export, /thinking, usage capture](0116-tui-p0-consumer-batch.md)
   (amended 2026-10-22; #534, #559). Every model or thinking-level change repaints the footer when it
