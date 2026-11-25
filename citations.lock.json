@@ -712,7 +712,7 @@
   "packages/aelix-ai/src/aelix_ai/oauth/auth_storage.py:306-306": [
    "if _fcntl is None:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:521-544": [
+  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:536-559": [
    "def map_thinking_level_to_effort(model: Model, level: str | None) -> str:",
    "\"\"\"Pi parity ``mapThinkingLevelToEffort`` (anthropic.ts:708-726).",
    "",

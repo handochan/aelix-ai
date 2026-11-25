@@ -1,6 +1,6 @@
 # 0048. Pi Shared Utilities Ported (`_transform_messages.py`, `_sanitize_unicode.py`, `_streaming_json.py`, `_env_api_keys.py`)
 
-Status: Accepted (Sprint 6b / Phase 4.2 shipped)
+Status: Accepted (Sprint 6b / Phase 4.2 shipped). Amended 2026-11-25 (#791): the Anthropic adapter calls `sanitize_surrogates`, which now joins a split surrogate pair.
 
 ## Context
 
@@ -112,3 +112,47 @@ those adapters do (per the binding spec §B).
 
 Sprint 6b / Phase 4.2 (shipped — Anthropic retrofit deferred to Sprint
 6d per ADR-0050 §Carry-forward).
+
+## Note (2026-11-25, #791): the Anthropic adapter sanitizes, and a split pair is kept
+
+The `anthropic-messages` adapter called `sanitize_surrogates` nowhere. The SDK
+encodes the request body as UTF-8, so one lone surrogate in a tool result, a
+user or assistant text, the system prompt, a thinking block or a tool call's
+arguments ended the turn in `UnicodeEncodeError` before the request left
+(measured on `6ef1a4b6` by the seven cases of
+`test_a_lone_half_is_dropped_and_the_request_reaches_the_transport`, signed
+and unsigned thinking apart). The text stays in the history that every later
+request of the session replays.
+
+`_anthropic_transforms.py` now sanitizes the text of user, assistant and
+tool-result blocks, the system prompt, thinking text (signed, or sent as text
+when it has no signature) and a tool call's arguments, keys and nested strings
+included. Pi's `anthropic-messages.ts` (read at `c11a73bfb`) sanitizes all of
+these but the arguments, and sends a signed block's text sanitized with its
+signature unchanged; the adapter does the same. A signature and a redacted
+block's `data` are opaque and sent as they are, as in pi. The arguments are a
+divergence: pi sends them as they are, and in JavaScript `JSON.stringify` escapes a lone half, so pi's
+request is still built. Here the stream parser (`json.loads`) turns a lone
+escape in a model's arguments into a lone surrogate, and the SDK cannot encode
+the body. Tool names and tool definitions are sent as they are, as in pi: a
+name is an identifier, and removing a half could turn it into another tool's
+name. A definition is the tool author's text, and an MCP server's cannot carry
+a lone half at all: `mcp` 1.30.0 refuses to parse a `tools/list` reply that
+holds one (`JSONRPCMessage.model_validate_json`, which its stdio, SSE and
+Streamable HTTP clients use).
+`tests/providers/test_anthropic_lone_surrogates_791.py` sends each case through
+the adapter's own client to an `httpx.MockTransport` that records the body and
+refuses the connection.
+
+`sanitize_surrogates` used to drop every code point in U+D800..U+DFFF. A
+Python string can hold a high half followed by its low half as two code points,
+when the halves arrived as separate escapes. Pi's regex keeps such a pair,
+because in JavaScript the pair is the character. The helper now applies pi's
+regex and joins each pair that is left into the one code point it encodes. Its
+output matches pi's regex, run on UTF-16 code units, for all 1,555 strings of up
+to four pieces drawn from a letter, an emoji and four surrogate halves
+(`tests/providers/test_sanitize_unicode.py`; the test's reference was checked
+against node running pi's regex on the same 1,555). The OpenAI Completions,
+OpenAI Responses, Codex and Google adapters call the same helper, so they too
+now keep a split pair as the character where they dropped it. That is measured
+on the helper only; their own tests were not extended.

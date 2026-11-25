@@ -1982,6 +1982,22 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An Anthropic request whose text holds a lone surrogate is sent instead of ending the
+  turn in `UnicodeEncodeError` (#791, ADR-0048).** One unpaired UTF-16 half (a code point
+  in U+D800..U+DFFF without its partner) in a tool result, a user or assistant text, the
+  system prompt, a thinking block or a tool call's arguments made the `anthropic-messages`
+  adapter fail with "surrogates not allowed" before the request left, and the text stays
+  in the history later requests replay. The adapter now drops the lone half at each of
+  those places, as pi does for all but the arguments. In
+  `tests/providers/test_anthropic_lone_surrogates_791.py` each case's request reaches the
+  transport (an `httpx.MockTransport` that refuses the connection) with `before  after`
+  where `before <half> after` was, a signed thinking block keeps its signature field (whether
+  Anthropic accepts the changed text under it is not measured), and an emoji arrives as its own four UTF-8 bytes. A lone half in a tool name
+  or a tool definition is left as it is, as pi leaves it, so that request still fails
+  before it is sent. `sanitize_surrogates`, which the OpenAI, Codex and Google adapters
+  also call, now keeps a character whose two halves arrived as two code points, joined,
+  where it dropped both: its output matches pi's regex on all 1,555 strings of
+  `test_every_short_string_matches_pis_regex`.
 - **The reviewer profile example starts, the RPC command discovery example uses
   `get_commands`, and the published primitive schema validates nonempty forms, grids
   and tables (#910).** The reviewer profile lists the shipped tools (`read`, `grep`,

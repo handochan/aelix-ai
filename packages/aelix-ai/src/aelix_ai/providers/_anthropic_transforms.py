@@ -30,6 +30,7 @@ from aelix_ai.messages import (
     UserMessage,
 )
 from aelix_ai.models import get_supported_thinking_levels
+from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
 from aelix_ai.providers._transform_messages import (
     transform_messages as shared_transform_messages,
 )
@@ -115,12 +116,21 @@ def supports_temperature(model: Model) -> bool:
 def _content_blocks_to_anthropic(
     blocks: list[Any],
 ) -> list[dict[str, Any]]:
-    """Convert Aelix content blocks → Anthropic SDK content blocks."""
+    """Convert Aelix content blocks → Anthropic SDK content blocks.
+
+    #791: every text, thinking text and tool-call argument goes through
+    :func:`sanitize_surrogates`, as pi's ``convertMessages`` /
+    ``convertContentBlocks`` do for text and thinking
+    (``anthropic-messages.ts`` at ``c11a73bfb``). The SDK encodes the body as
+    UTF-8, so one lone surrogate anywhere ended the turn in
+    ``UnicodeEncodeError`` before the request left. A signature and a redacted
+    block's ``data`` are opaque and sent as they are, as pi sends them.
+    """
 
     out: list[dict[str, Any]] = []
     for block in blocks:
         if isinstance(block, TextContent):
-            out.append({"type": "text", "text": block.text})
+            out.append({"type": "text", "text": sanitize_surrogates(block.text)})
         elif isinstance(block, ThinkingContent):
             # ADR-0190: replay thinking blocks in pi's exact 4-way order
             # (anthropic.ts:1056-1080). Thinking blocks were captured first,
@@ -144,12 +154,16 @@ def _content_blocks_to_anthropic(
                 # anthropic.ts:1069) — NOT compat-gated. Still reachable after
                 # the shared transform, which KEEPS a same-model non-empty
                 # unsigned thinking block (_transform_messages.py:190-193).
-                out.append({"type": "text", "text": block.thinking})
+                out.append({"type": "text", "text": sanitize_surrogates(block.thinking)})
             else:
                 out.append(
                     {
                         "type": "thinking",
-                        "thinking": block.thinking,
+                        # Pi sanitizes a signed block's text too. A pair split
+                        # into two code points is joined back into the very
+                        # character the provider streamed; only a lone half
+                        # changes the text that was signed.
+                        "thinking": sanitize_surrogates(block.thinking),
                         "signature": block.thinking_signature,
                     }
                 )
@@ -177,7 +191,7 @@ def _content_blocks_to_anthropic(
                     "type": "tool_use",
                     "id": block.tool_call_id,
                     "name": block.tool_name,
-                    "input": block.input,
+                    "input": _sanitize_tool_input(block.input),
                 }
             )
     return out
@@ -293,7 +307,8 @@ def build_params(
         "messages": transform_messages(messages, model),
     }
     if system_prompt:
-        params["system"] = system_prompt
+        # #791, pi ``buildParams``: the system text is sanitized like any other.
+        params["system"] = sanitize_surrogates(system_prompt)
     if tools:
         sdk_tools: list[dict[str, Any]] = []
         for tool in tools:
@@ -835,6 +850,30 @@ def is_oauth_token(api_key: str | None) -> bool:
     """
 
     return bool(api_key and api_key.startswith("sk-ant-oat"))
+
+
+def _sanitize_tool_input(value: Any) -> Any:
+    """A tool call's arguments with every string in them sanitized, keys too (#791).
+
+    A divergence from pi, which sends ``block.arguments`` as they are. The
+    stream parser here is ``json.loads``, which turns a lone ``\\u`` escape in
+    a model's arguments into a lone surrogate, and the call is replayed with
+    every later request of the session. In JavaScript ``JSON.stringify``
+    escapes the half and the request is still built; here the SDK's UTF-8
+    encode refuses the whole body, so every later turn would fail. Values that
+    are not text (numbers, booleans, ``None``) pass through unchanged.
+    """
+
+    if isinstance(value, str):
+        return sanitize_surrogates(value)
+    if isinstance(value, dict):
+        return {
+            (sanitize_surrogates(k) if isinstance(k, str) else k): _sanitize_tool_input(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_tool_input(v) for v in value]
+    return value
 
 
 __all__ = [
