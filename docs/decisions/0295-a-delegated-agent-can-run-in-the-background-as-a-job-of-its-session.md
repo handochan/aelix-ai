@@ -710,3 +710,11 @@ preserves the current empty-wait count. The #913 clamped-wait test records an or
 empty timeout, an early successful steer return and another empty timeout, then checks
 that the next wait is refused. The 30–1800 s limits and 120 s default still apply.
 See [ADR-0320](0320-pending-parent-steering-can-end-a-background-agent-wait.md).
+
+## Note (2026-11-25, #791): the Anthropic surrogate defect is fixed
+
+The note above records that the Anthropic adapter ended a turn with `UnicodeEncodeError` on a
+lone surrogate in a tool result. #791 fixed that: `_anthropic_transforms.py` now drops the lone
+half in tool results, user and assistant text, the system prompt, thinking and tool-call
+arguments, and `tests/providers/test_anthropic_lone_surrogates_791.py` shows each request reach
+the transport. ADR-0048's 2026-11-25 note has the details.

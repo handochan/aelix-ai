@@ -219,7 +219,7 @@ def test_display_degrades_on_a_missing_or_partial_model() -> None:
 
 def test_display_ignores_a_non_string_catalog_value() -> None:
     # C6 — an int budget is not a tier NAME and the adapters disagree about it:
-    # _anthropic_transforms.py:521-544 guards on ``isinstance(mapped, str)`` and
+    # _anthropic_transforms.py:536-559 guards on ``isinstance(mapped, str)`` and
     # sends a coarse "high", while openai_completions._native_effort forwards the
     # number. The catalog carries zero int values today, so nothing is lost.
     # (The line range was 374-393 until #258; it had already stopped covering
