@@ -20,6 +20,24 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
 
 ## [Unreleased]
 
+### Added
+
+- **6 models the catalog was missing**, folded back from models.dev and
+  OpenRouter with `scripts/refresh_catalog.py --apply` (RELEASING.md "Before
+  every release"). Both lists were fetched on 2026-11-26 at 13:29Z. The catalog
+  goes from 2045 to 2051 rows across the same 35 providers. No shipped row was
+  removed, moved or changed, and a second dry run at 13:38Z proposes nothing and
+  no `off` or floor fill. The six are the rows the hosted catalog published that
+  day at 01:20Z from `d3c93437` (2051 rows, 6 new), equal to them in every field
+  both carry. The new rows: the Healthcare rows of GPT-6 Astra, GPT-6.1 Sol,
+  GPT-6.2 Sol and GPT-6.2 Astra on `openai`, on the Responses API with thinking
+  levels from models.dev, as pi.dev's rows have them; PhoneLLM Mini Alpha 2 on
+  `cloudflare-workers-ai` and GLM-4-32B-0414-128K on `zai`, on Chat Completions
+  and not reasoning, as models.dev's per-provider package
+  (`@ai-sdk/openai-compatible`) and those providers' shipped rows say. The
+  generator skipped 396 others by its own rules. No row was corrected by hand,
+  and none was measured against a provider.
+
 ### Fixed
 
 - **Re-running the install line keeps the extensions you installed (#926,
