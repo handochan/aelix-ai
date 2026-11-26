@@ -16,8 +16,8 @@ import re
 import tomllib
 from pathlib import Path
 
-# The shared release version (PEP 440 normalized form of tag v0.1.0).
-EXPECTED_VERSION = "0.1.0"
+# The shared release version (PEP 440 normalized form of tag v0.1.1).
+EXPECTED_VERSION = "0.1.1"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -71,7 +71,7 @@ runner's real user profile.
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows); since #123 (ADR-0306 D2) it also carries every delegated child's command inbox — see *W4 since #123* below | `rpc/rpc_mode.py`, `cli/entry.py`, `modes/print_inbox.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
-**Session writer records (#868, ADR-0316).** In 0.1.0, Windows reports the
+**Session writer records (#868, ADR-0316).** In 0.1.1, Windows reports the
 generic contention text and an unknown holder. The ancestor-directory ACL
 check rejected the runner profile in PR #880's Windows CI run `44861771991`.
 Attribution proof is disabled pending #881. Windows still uses filelock's

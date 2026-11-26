@@ -17,9 +17,9 @@ version, in dependency order:
 deferred to a later release. The release workflow builds it as part of
 `uv build --all-packages` and then drops its artifacts before upload.
 
-All four published packages share the same version (currently `0.1.0`). The
+All four published packages share the same version (currently `0.1.1`). The
 inter-package dependencies are pinned to that exact version (e.g. the meta
-depends on `aelix-ai==0.1.0`), so installing `aelix` from PyPI always pulls a
+depends on `aelix-ai==0.1.1`), so installing `aelix` from PyPI always pulls a
 matching, lock-step set.
 
 The `aelix` console script is declared **twice**, by both `aelix-coding-agent`

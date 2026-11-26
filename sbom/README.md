@@ -48,7 +48,7 @@ Schema validation:
 uvx --from cyclonedx-bom python -c "
 from cyclonedx.schema import SchemaVersion
 from cyclonedx.validation.json import JsonStrictValidator
-err = JsonStrictValidator(SchemaVersion.V1_6).validate_str(open('sbom/aelix-0.1.0.cdx.json').read())
+err = JsonStrictValidator(SchemaVersion.V1_6).validate_str(open('sbom/aelix-0.1.1.cdx.json').read())
 print('FAILED: %s' % err if err else 'PASSED')
 "
 ```

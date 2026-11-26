@@ -103,11 +103,11 @@ Extras:
 
 `tui` is the only extra.
 
-> **[PyPI publishes `0.1.0`](https://pypi.org/project/aelix/0.1.0/#files), a final release.**
+> **[PyPI publishes `0.1.1`](https://pypi.org/project/aelix/0.1.1/#files), a final release.**
 > Every release tag publishes its version to all four names (ADR-0240 removed the
 > gate that kept pre-release tags off PyPI, from `v0.1.0-beta.2` on), and pip and
 > uv prefer a final release to a pre-release, so `pip install aelix`,
-> `pipx install aelix` and `uv tool install aelix` resolve `0.1.0` with no
+> `pipx install aelix` and `uv tool install aelix` resolve `0.1.1` with no
 > pre-release flag. The installer above stays the recommended path: it is the only
 > one that checks the wheels against the release's `SHA256SUMS`.
 >
@@ -253,7 +253,7 @@ through the same `| iex` path; the fetch from raw.githubusercontent.com and the
 job asserts is the launcher, `aelix --version` and the interpreter, and it
 says so in its own header (`.github/scripts/assert-install-ps1.ps1`); a third
 pass pins `v0.1.0-beta.2` with Python 3.14 on the runner and checks it still
-lands below 3.14 (#278). For 0.1.0, the `candidate-smoke` jobs in
+lands below 3.14 (#278). For 0.1.1, the `candidate-smoke` jobs in
 [`release.yml`](https://github.com/handochan/aelix-ai/blob/main/.github/workflows/release.yml)
 install the candidate wheels on Windows, macOS and Linux and require an installed
 one-shot print turn against a local stub before publication.
@@ -454,7 +454,7 @@ one is already using. Only one of them can write to it: a session records where
 each turn attaches, and two terminals writing at once used to leave one
 terminal's turns on a branch nothing ever replayed again.
 
-On POSIX in 0.1.0, the second terminal shows **This session is open in Aelix Studio.** or
+On POSIX in 0.1.1, the second terminal shows **This session is open in Aelix Studio.** or
 **This session is open in the Aelix CLI.** when it can verify a cooperating
 local writer. Windows uses the generic prompt under ADR-0316. The generic
 prompt presents the same choices when attribution is unavailable.

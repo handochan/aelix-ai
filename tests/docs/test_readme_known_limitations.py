@@ -199,9 +199,9 @@ def test_the_limitation_count_matches_the_bullets(name: str) -> None:
     assert len(bullets) == 6, [b[:40] for b in bullets]
 
 
-# === the issues still open in 0.1.0 (#385) ==================================
+# === the issues still open in 0.1.0 (#385) and 0.1.1 ======================
 
-#: The open issues the READMEs list under their "Also open in 0.1.0" subsection:
+#: The open issues the READMEs listed under their "Also open in 0.1.0" subsection:
 #: 26 from the 0.1.0 blocker check of 2026-11-25, and the 9 open issues that #385
 #: itself names and deferred to this list (#157, #168, #259, #265, #267, #372,
 #: #373, #377, #378; #265 and #267 each carry a 2026-10-06 comment that says to
@@ -213,9 +213,13 @@ _OPEN_IN_0_1_0 = frozenset(
     | {545, 674, 692, 713, 714, 715, 851, 839, 878, 373, 372, 259}  # extension authors
     | {46, 584, 881, 107}  # Windows
 )
+#: 0.1.1 is a patch on 0.1.0 (#926). Every issue above was read open with ``gh issue
+#: view`` on 2026-11-26, so the READMEs' subsection, now "Also open in 0.1.1", lists the
+#: same set, and 0.1.1's CHANGELOG block carries 0.1.0's lines for them unchanged.
+_OPEN_IN_0_1_1 = _OPEN_IN_0_1_0
 _ALSO_OPEN = {
-    "README.md": ("## Known limitations\n", "### Also open in 0.1.0\n", "#### Windows (experimental)"),
-    "README.ko.md": ("## 알려진 한계\n", "### 0.1.0에서 열려 있는 것들\n", "#### Windows (실험적)"),
+    "README.md": ("## Known limitations\n", "### Also open in 0.1.1\n", "#### Windows (experimental)"),
+    "README.ko.md": ("## 알려진 한계\n", "### 0.1.1에서 열려 있는 것들\n", "#### Windows (실험적)"),
 }
 
 
@@ -224,7 +228,7 @@ def _issue_links(text: str) -> set[int]:
 
 
 @pytest.mark.parametrize("name", READMES)
-def test_the_readme_lists_every_issue_still_open_in_0_1_0(name: str) -> None:
+def test_the_readme_lists_every_issue_still_open_in_0_1_1(name: str) -> None:
     """#385: a known limit a reader cannot see is one they meet unwarned. Each
     line names its issue; the Windows lines sit under a heading that says
     Windows is experimental."""
@@ -232,7 +236,7 @@ def test_the_readme_lists_every_issue_still_open_in_0_1_0(name: str) -> None:
     heading, subsection, windows = _ALSO_OPEN[name]
     section = _read(name).split(heading, 1)[1].split("\n## ", 1)[0]
     also = section.split(subsection, 1)[1]
-    assert _issue_links(also) == _OPEN_IN_0_1_0
+    assert _issue_links(also) == _OPEN_IN_0_1_1
     assert windows in also
     assert 138 in _issue_links(section.split(subsection, 1)[0])
 
@@ -240,7 +244,8 @@ def test_the_readme_lists_every_issue_still_open_in_0_1_0(name: str) -> None:
 def test_the_changelog_section_opens_with_the_same_issues() -> None:
     """The Release page carries the section's head only (scripts/release_notes.py
     cuts it under GitHub's limit), so the block is the section's first heading
-    and lists the README's issues, #138 included."""
+    and lists the README's issues, #138 included. This is the released 0.1.0
+    section; the 0.1.1 one has its own row below."""
 
     text = _read("CHANGELOG.md")
     section = text.split("\n## [0.1.0] - ", 1)[1].split("\n## [", 1)[0]
@@ -254,6 +259,41 @@ def test_the_changelog_section_opens_with_the_same_issues() -> None:
     # The #385 entry counts what the READMEs add.
     added = re.search(r"Both READMEs add (\d+) open issues", " ".join(section.split()))
     assert added is not None and int(added.group(1)) == len(_OPEN_IN_0_1_0)
+
+
+def _known_limitations_block(changelog: str, version: str) -> str:
+    section = changelog.split(f"\n## [{version}] - ", 1)[1].split("\n## [", 1)[0]
+    headings = re.findall(r"^### .*$", section, re.MULTILINE)
+    assert headings[0] == "### Known limitations", (version, headings[:3])
+    return section.split("### Known limitations\n", 1)[1].split("\n### ", 1)[0]
+
+
+#: The group 0.1.1's block adds after 0.1.0's lines (ADR-0321's Known limits).
+_GROUP_926 = "**Updating with extensions installed (#926, ADR-0321)**\n"
+
+
+def test_the_0_1_1_section_carries_the_0_1_0_lines_and_adds_926_s_limits() -> None:
+    """0.1.1's block opens its section too, so the Release page shows it whole. It
+    lists the README's issues, #138 included, with 0.1.0's lines byte for byte (none
+    of those issues closed before 0.1.1), and then a group for what re-running the
+    install line and ``aelix extension restore`` still leave out."""
+
+    text = _read("CHANGELOG.md")
+    old = _known_limitations_block(text, "0.1.0")
+    new = _known_limitations_block(text, "0.1.1")
+    listed = [int(n) for n in re.findall(r"^- #(\d+):", new, re.MULTILINE)]
+    assert len(listed) == len(set(listed))
+    assert set(listed) == _OPEN_IN_0_1_1 | {138}
+    carried = old[old.index("**In everyday use**") :].rstrip("\n")
+    assert carried in new, "0.1.1 must carry 0.1.0's groups unchanged"
+    assert "**Windows (experimental)**" in new
+    assert new.count(_GROUP_926) == 1
+    assert new.index(carried) < new.index(_GROUP_926)
+    group = new.split(_GROUP_926, 1)[1]
+    assert "uv tool upgrade aelix" in group and "(#464)" in group
+    assert "Windows\n  PowerShell 5.1 was not run" in group
+    for name in READMES:
+        assert "`[0.1.1]`" in _read(name), f"{name} does not point at the 0.1.1 section"
 
 
 #: Sentences the 0.1.0 lists carried before its verify, each wider than its issue's

@@ -20,6 +20,196 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-26
+
+Cut as the tag `v0.1.1` (distribution version `0.1.1`), a patch on 0.1.0: on
+2026-11-26 the owner chose to ship #926 as 0.1.1 ("0.1.1 패치 릴리스 (권장)"). Its
+product changes since `v0.1.0` are #926's, the six catalog rows under *Added* and
+the agent-profiles guide sentence under *Changed*; the other product files that
+differ change only the line numbers they cite (`git diff v0.1.0` on the release
+tree). Under Semantic Versioning a 0.x version is initial development: anything
+may change before 1.0.0, so this release makes no compatibility promise beyond
+what the entries below state. Windows stays experimental (the README's *Platform
+support*).
+
+Complexity trend (#293, ADR-0300 §9), from `scripts/check_complexity.py --trend`
+(radon 6.0.1 over `packages/` and `src/`) on the release tree:
+
+- the trend value, each function, method and closure counted once: 7009; CC > 20: 150;
+  CC > 50: 12.
+- the 2026-09-19 way, radon's recursive count, which counts each method twice (for
+  comparison, not the trend value): 10160; CC > 20: 188; CC > 50: 13.
+
+### Known limitations
+
+Every issue that 0.1.0's Known limitations named is still open in 0.1.1 (each
+read open with `gh issue view` on 2026-11-26), so their lines below are 0.1.0's,
+unchanged. The README's *Known limitations* describes the same issues at more
+length, beside its standing limits (#6, #52, #110), and Windows stays
+experimental. The last group is new in 0.1.1: what re-running the install line
+and `aelix extension restore` still leave out, from ADR-0321's Known limits,
+which has the full list.
+
+**In everyday use**
+
+- #138: a session file keeps every prompt, tool argument and tool result
+  verbatim, with no redaction.
+- #569: near a full context window, an answer cut at the shrunken output limit
+  stays the turn's answer, and its tool calls still go to execution with what
+  the adapter recovered of their arguments (read from the code; whether a cut
+  argument passes validation was not measured).
+- #481: `/logout` of an OAuth login in one aelix does not reach another aelix
+  that is already running: that one sends its cached token until the token
+  expires, then fails. Restart other sessions after it.
+- #499: `defaultThinkingLevel` applies only at launch. After `/model` from a
+  model that cannot reason to one that can, thinking stays off until
+  `/thinking`.
+- #582: `/thinking <level>` accepts any string. A typo or `HIGH` sends the
+  model's first level, usually `off`.
+- #739: for a `models.json` model with `cost` set, RPC `get_session_stats`
+  reports `0.0` and `/cost` `n/a` (measured on a custom provider's model);
+  after a delegation both show only the delegated agent's share. A
+  `modelOverrides` cost is ignored over RPC (the TUI was not measured).
+- #557: an `SSL_CERT_FILE` that names a missing file makes `aelix -p` print an
+  unrelated traceback and an `[Errno 2]` that names no file, measured with the
+  OpenAI SDK client (the Anthropic and Google adapters were not).
+- #560: google-vertex rows for Claude and partner models are sent Gemini's
+  request format and cannot work (read from the code, not run).
+- #793: under the opt-in `--permission-mode auto`, with dash as the shell, a
+  few forms run without a dialog: `(( 1>FILE ))` creates `FILE` (a redirection,
+  not a command), and `(( crontab -r ))` is allowed although dash would run
+  `crontab -r` (classified only; dash's reading was checked with `echo` in the
+  command's place). With dash, ksh93 or mksh, `echo $[2>FILE]` creates `FILE]`.
+  A write to a protected path such as `~/.bashrc` is still refused.
+- #157: with `--agent <profile> --model <id>`, the notice says
+  `CLI flags override model` and does not name the model the profile asked for.
+- #377: the `/model` picker's detail line names the provider's environment
+  variable as the key's source, wherever the key comes from.
+- #378: in the TUI, a prompt on a model not found at startup is refused with the
+  general `could not be resolved to a known API protocol` text, not the
+  not-found reason.
+- #168: a saved session drawn again (`/resume`, `--continue`) shows an `edit`
+  result without its diff and a `bash` result without its `exit N` row; a saved
+  tool result keeps no `details` (read from the code).
+- #265: the guide lists are kept by hand, not generated from the guide files.
+  The README's *Docs* line links 10 of the 16 guides; `aelix docs` and
+  `docs/guides/README.md` list all 16.
+- #267: no CI gate fails when a slash command, an RPC command or an environment
+  variable has no doc entry. On 2026-09-12 the issue counted 20 of 36 slash
+  commands, 29 of 29 RPC commands and 34 of 65 environment variables, among
+  other surfaces, with no doc entry; these were not re-counted for 0.1.0.
+
+**Scripts and RPC hosts**
+
+- #543: `aelix -p` exits 0 on an answer cut at the output-token limit, with
+  nothing on stderr.
+- #875: `message_update`, `get_session_stats` and `agents/run` can carry a `NaN`
+  or `Infinity` cost, which a strict JSON reader rejects.
+- #855: after a host's `children/stop` on a background agent, the `aelix_child`
+  end frame says the session stopped it and the model's job result says the
+  user did with `/jobs`.
+- #876: for an extension that failed to load and whose file name holds a lone
+  surrogate, `selections/set` answers its read-only tool row's key as an unknown
+  row, and the row shares its `group` with the U+FFFD spelling.
+- #865: a host cannot yet observe where an in-flight input came from, or when it
+  was consumed or withdrawn.
+
+**Extension authors**
+
+- #545: `ctx.abort()` stops retries, not a model request that is still
+  streaming.
+- #674: a turn an extension starts with `trigger_turn=True` while the TUI is
+  idle ends only with the double Ctrl+C that quits aelix.
+- #692: a tool that catches cancellation and keeps running holds the turn, and
+  after a parallel batch it holds `/exit` and the first SIGTERM. Built-in tools
+  are not affected.
+- #713: an extension dialog opened while another dialog is open replaces it, and
+  the first never returns.
+- #714: an extension shortcut handler that raises writes its traceback over the
+  TUI's input line and footer. An invalid descriptor module's warning prints
+  before the first screen. The other 36 such warnings, for themes, widgets and
+  descriptors among them, take the same path in the code; they were not each
+  run.
+- #715: `ctx.ui.custom()` components receive no keys, and Esc does not close
+  them.
+- #851: an `input` or `before_agent_start` handler that never returns holds
+  `/new`, `/resume` and quit until it returns. Over RPC such a dialog ends after
+  300 s.
+- #839: a `tool_result` hook that raises, or that rewrites a cancelled
+  delegation's result to exactly the cut marker, lets the report copy sent with
+  the next prompt carry the unmasked text.
+- #878: `aelix extension update <name>` can reinstall the older version a bundle
+  pinned, and exit 0, when the newer wheel dropped its `aelix.extensions` entry
+  point.
+- #373: a new session whose `session_start` handler starts a turn opens in the
+  TUI with `↻ Resumed session (N messages)`.
+- #372: on a launch whose route is not decided yet, a turn a `session_start`
+  handler requests without waiting is refused after the handlers end, with a
+  reason that says they are still running.
+- #259: code that calls the Google or Vertex adapter itself with
+  `reasoning="off"` as a string does not turn thinking off; `--thinking off` and
+  `/thinking off` are not affected.
+
+**Windows (experimental)**
+
+- #46: `auth.json` has no cross-process lock. Two aelix processes saving or
+  refreshing a login at once can lose one update, or every saved login.
+- #584: "Trust parent folder" from inside a junction or symlink saves the link's
+  parent, not the real project's.
+- #881: the holder of a session open in another window is reported as unknown.
+- #107: piping into `aelix` from a source that never writes hangs with no
+  message; `AELIX_STDIN_TIMEOUT` applies only on macOS and Linux.
+
+**Dependencies**
+
+- cryptography stays at 48.0.1, the owner's call of 2026-11-24: 49 and later
+  publish no macOS universal2 or x86_64 wheels and no win32 wheels. Three
+  advisories stay open against 48.0.1; aelix imports cryptography only for
+  Ed25519 extension signing.
+- Pillow 13 resizes a big-endian 16-bit TIFF (`I;16B`) to different pixels than
+  11.3.0 did. `read` and `@file` treat a TIFF as text, so neither reaches it.
+
+**Updating with extensions installed (#926, ADR-0321)**
+
+- Re-running the install line carries an extension installed from a package
+  index as `name==version` from the installer's own index configuration (PyPI
+  unless uv is configured otherwise), not from an index registered with
+  `aelix extension source add`. When that index answers other bytes, or nothing,
+  the extension is not carried and is named with its command.
+- `uv tool upgrade aelix` over an install-line install still exits 1 and changes
+  nothing while uv's receipt names the installer's deleted `--find-links`
+  directory (#464); the extensions stay because nothing changes. Re-run the
+  install line instead.
+- An editable extension the receipt asked for with extras is carried without
+  them, and its line says so.
+- A distribution restored at start can be imported in that start, but a `.pth`
+  file it ships is read only at the next start.
+- `aelix extension restore` and an interactive start restore only the last
+  install record of an extension, when it is at its pin and no later record
+  could be a newer install of it. A record with no name is never restored:
+  `aelix extension source add` writes one, and so did 0.1.0 and earlier for an
+  install over an installed extension. Every named record before a record with
+  no name that is of no recorded extension is kept out of the start and of
+  `restore --all`, each listed with `aelix extension restore <name>`, which
+  restores it.
+- For a record that is not restored, aelix prints the command for the record it
+  reads as the latest. #926's verify round 4 ran three flows, each after a `uv
+  tool upgrade aelix` wipe, where that reading is wrong; in none was anything
+  installed by itself: `install A` then `install B --no-verify`; `install A`
+  then `source add` of commit B of the same repository; and 0.1.0's records of
+  `install A`, `install B --repin`, `install A --repin`. Reinstall the commit you
+  want with `aelix extension install git+URL@<commit> --repin` (not run from
+  these states).
+- Read from the code, not run: records 0.1.0 and earlier wrote for `install A`,
+  `install B` of another source of the same distribution (A removed by hand in
+  between) and `install A` again print B's command, though A is the latest; and
+  an install over an installed extension from a source archive (`.tar.gz`) or a
+  bundle still writes a record with no name.
+- install.ps1 was not run on Windows for #926 outside CI: its Step 5 ran under
+  pwsh 7 on macOS with stub programs, and once in full with real uv; Windows
+  PowerShell 5.1 was not run. CI's `install.ps1 e2e` jobs run the whole script
+  on Windows.
+
 ### Added
 
 - **6 models the catalog was missing**, folded back from models.dev and
@@ -37,6 +227,17 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
   (`@ai-sdk/openai-compatible`) and those providers' shipped rows say. The
   generator skipped 396 others by its own rules. No row was corrected by hand,
   and none was measured against a provider.
+
+### Changed
+
+- **The agent-profiles guide's "Older aelix" says what an installed 0.1.0b2
+  does with the `agents` keys (#383, ADR-0304).** It said that check was still
+  owed. #383 ran it on 0.1.0b2 in macOS and Linux docker with a stub model: a
+  profile's `agents:` frontmatter is ignored with no warning on `-p` stderr,
+  and a delegation to `general-purpose`, which neither tested profile lists,
+  runs; an `agents` list in settings
+  turns nothing off, and 0.1.0b2's own settings writer keeps it. The
+  `/agents list` diagnostic is still read from the code, not measured.
 
 ### Fixed
 
@@ -158,17 +359,6 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
   Windows. The job limit is 5 min more: the job limit is 55 min on Ubuntu and
   80 min on Windows. `tests/test_ci_hang_guard_429.py` pins the new measurement
   (ADR-0274's note of 2026-11-26). Making the suite faster is still #527.
-
-### Changed
-
-- **The agent-profiles guide's "Older aelix" says what an installed 0.1.0b2
-  does with the `agents` keys (#383, ADR-0304).** It said that check was still
-  owed. #383 ran it on 0.1.0b2 in macOS and Linux docker with a stub model: a
-  profile's `agents:` frontmatter is ignored with no warning on `-p` stderr,
-  and a delegation to `general-purpose`, which neither tested profile lists,
-  runs; an `agents` list in settings
-  turns nothing off, and 0.1.0b2's own settings writer keeps it. The
-  `/agents list` diagnostic is still read from the code, not measured.
 
 ## [0.1.0] - 2026-11-25
 
@@ -8042,7 +8232,8 @@ earlier published version.
   leads with `--model <id>`, which works on the invocation that just failed, and
   offers `/model` only as the interactive alternative.
 
-[Unreleased]: https://github.com/handochan/aelix-ai/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/handochan/aelix-ai/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/handochan/aelix-ai/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/handochan/aelix-ai/compare/v0.1.0-beta.2...v0.1.0
 [0.1.0-beta.2]: https://github.com/handochan/aelix-ai/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/handochan/aelix-ai/releases/tag/v0.1.0-beta.1

@@ -133,6 +133,23 @@ def test_a_section_that_fits_passes_through_unchanged() -> None:
     assert fitted.body == body
 
 
+
+def test_the_0_1_1_section_fits_and_opens_with_its_known_limitations() -> None:
+    """0.1.1, a patch on 0.1.0: its section is far under the limit, so the body is the
+    section and the generated part byte for byte, Known limitations first, as RELEASING.md
+    step 2 asks."""
+
+    section = notes.changelog_section(_changelog(), "0.1.1")
+    assert section is not None
+    assert section.startswith("Cut as the tag `v0.1.1`")
+    headings = re.findall(r"^### .*$", section, re.MULTILINE)
+    assert headings[0] == notes.KNOWN_LIMITATIONS, headings[:3]
+    body = notes.compose(section, _generated("v0.1.0", "v0.1.1", 60))
+    fitted = notes.fit(body, repo=REPO, tag="v0.1.1", previous_tag="v0.1.0")
+    assert not fitted.cut
+    assert fitted.body == body
+    assert _known_limitations(section) in fitted.body
+
 # === the extraction release.yml's awk did ===================================
 
 
