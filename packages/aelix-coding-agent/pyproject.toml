@@ -67,7 +67,7 @@ dependencies = [
   # Promoted from an incidental transitive dep (via google-auth) to a DIRECT dep:
   # the extension signing/verification path imports it, so a clean install must
   # carry it. In-env at 48.0.0; floor at 42 for the stable Ed25519 API surface.
-  "cryptography>=42,<49",
+  "cryptography>=42,<51",
   # #99 — verify TLS against the OS certificate store, not just certifi's
   # public-root bundle. A corporate root CA is installed system-wide, so certifi
   # never sees it and every provider request dies as an opaque "Connection
