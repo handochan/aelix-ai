@@ -129,6 +129,17 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
   notice, a printed command on a line of its own, and Ctrl+C stopping the restore
   while the start goes on; `-p` and `--mode json|rpc` print one stderr line naming
   the command instead.
+- **CI: the lint + test legs' time limits follow ADR-0274's rule again (#926).**
+  The suite had outgrown #482's limits on both runners. Over the last 150
+  completed `ci.yml` runs (2026-11-19 to 2026-11-26), the slowest green pytest
+  step took 34.1 min on Ubuntu and 54.0 min on Windows, against step limits of
+  35 and 55. Run 45803495364, #926's own, was killed on the 35-minute limit at
+  99% with no test failed or stuck; projected from its progress lines, it would
+  have taken about 35.6 min on Ubuntu. The rule is the slowest of these x 1.3,
+  rounded up to 5 min: the pytest step limit is 50 min on Ubuntu and 75 min on
+  Windows. The job limit is 5 min more: the job limit is 55 min on Ubuntu and
+  80 min on Windows. `tests/test_ci_hang_guard_429.py` pins the new measurement
+  (ADR-0274's note of 2026-11-26). Making the suite faster is still #527.
 
 ### Changed
 
