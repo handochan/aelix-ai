@@ -128,7 +128,7 @@ from . import extension_catalog, extension_pins, extension_signing
 from .config import get_agent_dir
 
 if TYPE_CHECKING:
-    from aelix_ai.settings import ExtensionSourceObject, SettingsManager
+    from aelix_ai.settings import ExtensionSourceObject, SettingsError, SettingsManager
 
 _USAGE = (
     "usage: aelix extension <command>\n"
@@ -141,6 +141,7 @@ _USAGE = (
     "  source list\n"
     "  source remove [--] <path | git-url | index-url>\n"
     "  list\n"
+    "  restore [--all | <name>]                       [--yes] [--offline] [--repin]\n"
     "  verify [<name>]                                [--trust-extension-path DIST]\n"
     "  index <dir>                                    [--out FILE] [--name NAME] "
     "[--relative]\n"
@@ -1570,7 +1571,10 @@ def _backend_missing_message(action: str, what: str) -> str:
         "venv that ships WITHOUT pip.\n"
         "  Fix — pick one:\n"
         "    • uv tool install --force --with pip aelix   "
-        "(re-installs aelix with pip inside; restores signature verification)\n"
+        "(re-installs aelix with pip inside; restores signature verification; it "
+        "rebuilds the environment from its uv receipt and removes every extension "
+        "not in it, and `aelix extension restore --all` then puts back the pinned "
+        "ones, #926)\n"
         "    • install uv (https://docs.astral.sh/uv/) — aelix then installs via "
         "`uv pip install`\n"
         "    • run aelix from a virtualenv that has pip "
@@ -1618,21 +1622,33 @@ def _uv_verify_refusal_message(target: str, backend: InstallBackend) -> str:
         "(`uv pip` has no `download` subcommand).\n"
         "  Installing anyway would silently drop a check you explicitly asked "
         "for, so this fails closed.\n"
-        "  Fix: give aelix a real pip — `uv tool install --force --with pip "
-        "aelix` — then retry.\n"
+        "  Fix: give aelix a real pip in place — `uv pip install --python "
+        f"{display_argv([sys.executable])} pip` — then retry. It keeps the installed "
+        "extensions, and an aelix update removes pip again; `uv tool install --force "
+        "--with pip aelix` keeps pip across updates, but it rebuilds the environment "
+        "from its uv receipt and removes every extension not in it (`aelix extension "
+        "restore --all` then puts back the pinned ones, #926).\n"
         "  (path and git targets verify fine on the uv backend; this limit is "
         "pypi-only. `--no-verify` also proceeds, unverified.)"
     )
 
 
 def _uv_volatility_notice() -> str:
-    """Warn that a ``uv tool`` re-install wipes extensions installed this way."""
+    """Say what a ``uv tool`` rebuild does to an extension installed this way.
+
+    #926 (ADR-0321): the install line carries it over since that fix, and a
+    recorded, pinned extension a rebuild removed comes back at the next
+    interactive start or with ``aelix extension restore``.
+    """
 
     return (
         "  note: uv backend — extensions install into this interpreter's "
-        "environment. If aelix lives in a `uv tool` venv, re-running "
-        "`uv tool install --force aelix` (or install.sh) RECREATES that venv "
-        "from its receipt and REMOVES every extension installed here."
+        "environment. If aelix lives in a `uv tool` venv, the install line "
+        "(install.sh / install.ps1) carries them over when it updates aelix; "
+        "`uv tool upgrade aelix` or a hand-typed `uv tool install --force aelix` "
+        "rebuilds the venv from its receipt and removes them, and "
+        "`aelix extension restore` (or the next interactive start) puts a pinned "
+        "one back."
     )
 
 
@@ -2218,6 +2234,7 @@ def install_extension(
     announce: bool = True,
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
+    child_runner: Callable[..., subprocess.CompletedProcess[bytes]] | None = None,
 ) -> int:
     """Install one extension via the resolved backend; return an exit code.
 
@@ -2238,6 +2255,11 @@ def install_extension(
     never load. It stays defaulted :data:`True` for the PUBLIC seam, whose callers
     have no verdict of their own to print; the CLI reaches it through
     :func:`_cmd_install` and :func:`_upgrade_and_report`, which do.
+
+    ``child_runner`` replaces :func:`_default_runner` (the runner used when ``runner``
+    is ``None``) WITHOUT the injected-runner meaning: the backend is still detected,
+    so a ``uv tool`` environment still installs with ``uv pip``. #926's start-up
+    restore passes one that captures the installer's output and bounds its time.
 
     Where the installer runs follows the TARGET'S ORIGIN, never a caller flag (#392,
     review round 4): a :class:`extension_catalog.ResolvedPath` or
@@ -2332,7 +2354,7 @@ def install_extension(
     # Every source reaching the installer is already absolute (#131); the one value
     # the user TYPED that may be relative, --index-url, is anchored at the cwd first.
     child_cwd: str | None = None
-    base_runner = runner if runner is not None else _default_runner
+    base_runner = runner if runner is not None else (child_runner or _default_runner)
     if _from_catalog(target):
         try:
             child_cwd = _prepare_installer_cwd(backend, base_runner, agent_dir, verb.lower(), shown)
@@ -4013,7 +4035,7 @@ def _report_install_binding(
     return _INSTALL_NOT_BOUND
 
 
-def _cmd_list() -> int:
+def _cmd_list(settings: SettingsManager | None = None) -> int:
     """``extension list`` — the installed inventory (entry-point ledger).
 
     Since issue #91 each row is annotated with its manifest-binding verdict, so
@@ -4021,11 +4043,30 @@ def _cmd_list() -> int:
     manifest, declarations inert* — is VISIBLE here instead of only discoverable
     by noticing a contribution never showed up. The classification is
     import-free (see :func:`classify_installed_endpoints`).
+
+    Since #926 it ends with the install records whose distribution is not
+    installed — what an aelix reinstall removed — and whether ``extension
+    restore`` can put each back at its pin (ADR-0321). Reading the records never
+    fails the listing.
     """
 
+    from .extension_restore import (
+        missing_recorded_extensions,
+        print_missing_section,
+        read_only_settings,
+    )
+
     statuses = classify_installed_endpoints()
+    try:
+        if settings is None:
+            settings = read_only_settings()
+        missing = missing_recorded_extensions(settings.get_extension_sources())
+    except Exception as exc:  # noqa: BLE001 — the installed rows still print
+        print(f"Warning: could not read the install records: {exc}", file=sys.stderr)
+        missing = []
     if not statuses:
         print("No extensions installed (via entry_points).")
+        print_missing_section(missing)
         return 0
     print("Installed extensions:")
     for s in statuses:
@@ -4043,6 +4084,7 @@ def _cmd_list() -> int:
                 f"(run 'extension verify')"
             )
         print(f"  {s.label()}{note}")
+    print_missing_section(missing)
     return 0
 
 
@@ -4242,6 +4284,7 @@ def _cmd_verify(args: list[str]) -> int:
 
     if not statuses:
         print("No extensions installed (via entry_points); nothing to verify.")
+        _print_missing_records(target)
         return 0
 
     failed = 0
@@ -4258,9 +4301,36 @@ def _cmd_verify(args: list[str]) -> int:
             f"\nverify: {failed} of {total} endpoint(s) NOT bound; their "
             f"declarative contributions are ignored until the manifest binds."
         )
+        _print_missing_records(target)
         return _VERIFY_NOT_BOUND
     print(f"\nverify: all {total} endpoint(s) BOUND.")
+    _print_missing_records(target)
     return 0
+
+
+def _print_missing_records(target: str | None) -> None:
+    """#926 (ADR-0321): one line when install records name extensions not installed.
+
+    What an aelix reinstall removed is invisible to the entry-point inventory above;
+    the exit code stays the inventory's. Reading the records never fails a verify.
+    Only for a verify of everything: ``verify <name>`` answers for that one.
+    """
+
+    if target is not None:
+        return
+    from .extension_restore import (
+        missing_recorded_extensions,
+        missing_summary,
+        read_only_settings,
+    )
+
+    try:
+        sources = read_only_settings().get_extension_sources()
+        line = missing_summary(missing_recorded_extensions(sources))
+    except Exception:  # noqa: BLE001 — the verdict above is the command's answer
+        return
+    if line:
+        print(line)
 
 
 async def _cmd_install(
@@ -4371,6 +4441,13 @@ async def _record_install(
     named sources. A bundle wheel can instead introduce a single extension
     distribution, which gets the bundle path as its source. Cache invalidation
     makes this process see the installer subprocess's changes.
+
+    #926 F1 (ADR-0321 D3): an install over an installed distribution adds none, and
+    its record had no name, so a restore after an aelix reinstall took the older
+    named record of that distribution instead. Such a record now names the
+    extension distribution a git or directory target is (:func:`_dist_the_target_is`;
+    a wheel's filename named it already), and a named record supersedes the other
+    records of its name, so the one left is the latest install.
     """
 
     try:
@@ -4396,9 +4473,9 @@ async def _record_install(
                 (dist for dist in installed if canonicalize_name(dist) == wheel_name), None
             )
             name = wheel_dist or (detected if len(new_names) == 1 else None)
-        else:
-            wheel_dist = None
-        candidates = _without_superseded_sources(sources, wheel_dist, spec) if wheel_dist else sources
+        elif name is None:
+            name = _dist_the_target_is(target, kind, installed)
+        candidates = _without_superseded_sources(sources, name) if name else sources
         new_sources, _ = _upsert_source(candidates, spec, record_kind, name=name)
         if new_sources != sources:
             await _persist(settings, new_sources)
@@ -4410,9 +4487,11 @@ async def _record_install(
 
 
 def _without_superseded_sources(
-    sources: list[ExtensionSourceObject], name: str, spec: str
+    sources: list[ExtensionSourceObject], name: str
 ) -> list[ExtensionSourceObject]:
-    """Keep the current wheel and unrelated sources when refreshing its record."""
+    """Drop the records of ``name`` before its new one is written, its own earlier copy
+    too, so the record of the latest install is the last of its name (#926 F1); keep
+    the unrelated ones and those with no name (a registered source gets the name)."""
 
     wanted = canonicalize_name(name)
     return [
@@ -4421,8 +4500,75 @@ def _without_superseded_sources(
         if source.kind in ("index", "catalog")
         or not source.name
         or canonicalize_name(source.name) != wanted
-        or (source.kind == "path" and source.spec == spec)
     ]
+
+
+def _dist_the_target_is(
+    target: InstallTarget, kind: TargetKind, installed: set[str]
+) -> str | None:
+    """The extension distribution a git or path target installed over itself (#926 F1).
+
+    The one of ``installed`` (distributions exposing an extension) whose PEP 610
+    ``direct_url.json`` records this source: its ``url``, the commit a git target
+    names, and the ``subdirectory`` (two extensions of one commit differ only there).
+    ``None`` unless exactly one matches. A wheel is named from its filename instead
+    (:func:`_record_install`): its record is the temporary copy the pin check made.
+    """
+
+    key = _target_source_key(target, kind)
+    if key is None:
+        return None
+    sha = _extract_git_sha(_git_url_part(str(target))) if kind == "git" else None
+    subdirectory = _git_subdirectory(str(target)) if kind == "git" else None
+    wanted = {canonicalize_name(name): name for name in installed}
+    try:
+        dists = list(importlib.metadata.distributions())
+    except Exception:  # noqa: BLE001 — a broken environment names nothing
+        return None
+    matches: set[str] = set()
+    for dist in dists:
+        try:
+            name = wanted.get(canonicalize_name(str(dist.name or "")))
+        except Exception:  # noqa: BLE001 — a dist-info whose METADATA cannot be read
+            continue
+        if name and _direct_url_is(dist, key, sha, subdirectory):
+            matches.add(name)
+    return matches.pop() if len(matches) == 1 else None
+
+
+def _git_subdirectory(spec: str) -> str | None:
+    """The ``subdirectory=`` a git spec's ``#`` fragment names, or ``None``."""
+
+    fragment = _git_url_part(spec).partition("#")[2]
+    for part in fragment.split("&"):
+        key, _, value = part.partition("=")
+        if key == "subdirectory" and value:
+            return value
+    return None
+
+
+def _direct_url_is(
+    dist: importlib.metadata.Distribution,
+    key: str,
+    sha: str | None,
+    subdirectory: str | None,
+) -> bool:
+    """``dist``'s PEP 610 record names this source: url, commit (when named), subdirectory."""
+
+    try:
+        data = json.loads(dist.read_text("direct_url.json") or "null")
+    except Exception:  # noqa: BLE001 — an unreadable record names nothing
+        return False
+    if not isinstance(data, dict) or data.get("subdirectory") != subdirectory:
+        return False
+    url = data.get("url")
+    if not isinstance(url, str) or _url_fs_key(url) != key:
+        return False
+    if sha is None:
+        return True
+    vcs = data.get("vcs_info")
+    commit = vcs.get("commit_id") if isinstance(vcs, dict) else None
+    return isinstance(commit, str) and commit.lower() == sha
 
 
 def _wheel_name_version(target: InstallTarget, kind: TargetKind) -> tuple[str, Version] | None:
@@ -6147,7 +6293,7 @@ async def run_extension_command_async(
     # before any settings construction (keygen/sign/trust use the trust-store sidecar
     # and the key dir under agent_dir, not the SettingsManager-backed source list).
     if sub == "list":
-        return _cmd_list()
+        return _cmd_list(settings)
     if sub == "verify":
         return _cmd_verify(rest)
     # #68 — reads a directory and writes a document; no source list involved.
@@ -6160,9 +6306,11 @@ async def run_extension_command_async(
     if sub == "trust":
         return _cmd_trust(rest, input_fn=input_fn)
 
+    load_errors: list[SettingsError] = []
     if settings is None:
         settings = _load_settings()
-        for err in settings.drain_errors():
+        load_errors = settings.drain_errors()
+        for err in load_errors:
             print(f"Warning: settings ({err.scope}): {err.error}", file=sys.stderr)
 
     if sub == "install":
@@ -6183,11 +6331,22 @@ async def run_extension_command_async(
         return await _cmd_remove(
             rest, settings=settings, input_fn=input_fn, runner=runner
         )
+    if sub == "restore":
+        from .extension_restore import run_restore_command
+
+        unreadable = [str(e.error) for e in load_errors if e.scope == "global"]
+        return await run_restore_command(
+            rest,
+            settings=settings,
+            input_fn=input_fn,
+            runner=runner,
+            settings_unreadable="; ".join(unreadable) if unreadable else None,
+        )
 
     print(
         f"Error: unknown extension subcommand {sub!r} "
-        "(install | source | list | verify | index | discover | update | remove | "
-        "keygen | sign | trust).\n"
+        "(install | source | list | restore | verify | index | discover | update | "
+        "remove | keygen | sign | trust).\n"
         f"{_USAGE}",
         file=sys.stderr,
     )

@@ -20,6 +20,127 @@ and `[Unreleased]` links resolve once the `v0.1.0` tag is pushed.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-running the install line keeps the extensions you installed (#926,
+  ADR-0321).** `uv tool install --force` rebuilds aelix's environment from uv's
+  receipt, which did not list them, so every update deleted every extension
+  `aelix extension install` had added, with no message (the issue's machine:
+  `extension list` said `No extensions installed` with two pins on disk).
+  install.sh and install.ps1 now read the current environment first, with its own
+  Python and no aelix command, so this holds when they install 0.1.0 too: a git
+  install is carried at its commit, a directory or file that still exists as
+  itself, a wheel `aelix extension install` staged from a file as that file when
+  its pin's sha256 still matches, an index install as `name==version`, and the
+  receipt's own other requirements as uv wrote them; an extension the receipt asked
+  for with extras or a marker keeps them (`keepext-926[feature]==0.1.0 ;
+  python_full_version >= '3.11'`, its extra's dependency installed). They go to the
+  reinstall as `--with-requirements`, so the new receipt names them. A plain `uv
+  tool upgrade aelix` over an install-line install still exits 1 and changes
+  nothing while that receipt names the installer's deleted `--find-links` directory
+  (#464); CI makes the directory again, empty, to see the upgrade keep them. One
+  whose files then hash differently (the bytes on disk: uv 0.11.19 and 0.13.10
+  install a wheel whose RECORD claims other bytes and keep that RECORD), or whose
+  entry points, `Requires-Dist` or `Provides-Extra` read differently, is taken out
+  again. When the reinstall fails with them, aelix is installed alone and they are
+  added back one at a time, so one that uv cannot install with the new release is
+  the only one left out. Each one left out is named: with the command that
+  reinstalls it, or with why there is none (a directory or file that is gone, a
+  checkout that is not git, a `METADATA` that cannot be read, which is named from
+  its dist-info directory and entry points); one uv could not install with the new
+  release, on a line of its own after uv's message, as `uv could not install it with
+  aelix <version> (its message is above)`, with a command only for an index install,
+  whose index may be one the installer does not use. A command keeps the extras the
+  receipt asked for (`aelix extension install 'keepext-926[feature]==0.1.0'`; it
+  gave `'keepext-926==0.1.0'`, which installed it without its extra's dependency,
+  verify round 3; `test_the_command_for_one_left_out_keeps_the_receipt_s_extras`). An environment whose Python
+  no longer runs, or that the installer cannot read, has its extensions named from
+  their files, by the project names their `METADATA` gives. The update goes ahead
+  either way, and the installer then prints the new aelix's `aelix extension
+  verify` verdict. install.ps1 probes the old Python with `-c pass`, since Windows
+  PowerShell 5.1 drops the empty argument of `-c ''`, and runs each native program
+  with `$PSNativeCommandUseErrorActionPreference` off, so pwsh 7.3+ with it on no
+  longer stops the update on uv's exit code. Measured live in Linux docker with
+  uv 0.13.10, 0.1.0 to 0.1.0: an index extension answered on an extra index by a
+  wheel whose RECORD copied the original's was taken out (the installer before
+  this check carried it in); a git and a wheel extension carried while an index
+  one the installer's uv could not resolve was named (its printed command, with
+  `--index-url`, then installed it); a malformed `extension_pins.json` carried
+  the same set; a Python that no longer ran named both. Again there under dash and
+  bash after review round 2: a same-version wheel with no `entry_points.txt`, and
+  one whose `METADATA` adds `Requires-Dist: evil-926`, were taken out (`evil-926`
+  was not left installed); an extension whose `METADATA` was deleted was named
+  once, from its directory; the receipt entry `keepext-926[feature]` with a marker
+  kept both; an index extension the installer could not resolve and a directory
+  whose build failed were each named after uv's message, and the index one's
+  command with `--index-url` installed it. On macOS, the installer as it was before
+  the one-at-a-time fallback carried a git and a wheel extension through 0.1.0 →
+  0.1.0, → 0.1.0b2 with uv 0.13.10, and → this build; after review round 2 the
+  whole install.sh under dash and bash and the whole install.ps1 under pwsh 7.6 (its
+  default mode, Legacy argument passing, and with
+  `$PSNativeCommandUseErrorActionPreference` on) ran with uv 0.11.19 and fixture
+  wheels, and each carried a healthy environment, kept the others when the last
+  extension did not resolve or failed to build, and installed 0.1.1. Windows
+  PowerShell 5.1 itself was not run.
+  install.ps1's Step 5 runs under pwsh in `tests/packaging_gate/test_install_carry.py`
+  with stub programs; the `install.sh e2e` and `install.ps1 e2e` jobs add an
+  extension before their re-run and assert it after it, and after `uv tool
+  upgrade aelix`.
+- **`aelix extension list` names a recorded extension that is not installed, and
+  `aelix extension restore [--all | <name>]` puts it back at its pin (#926,
+  ADR-0321).** The ledger is the install record (`extensionSources`) an install
+  wrote, the one that names the distribution it installed, so what `aelix extension
+  remove` removed does not come back, and a source `aelix extension source add`
+  only registered (a record with no name) stays uninstalled even with a pin
+  provisioned for it. In every flow verify round 4 ran, nothing older than the
+  latest install of an extension came back by itself (ADR-0321's list-order limit,
+  read from the code, is the exception). An install over an installed extension now names it (a git or
+  directory target by its PEP 610 `direct_url.json`) and replaces the other records
+  of that name; 0.1.0 and earlier wrote that record with no name, so a restore took
+  the older one (verify round 3: commit A offered with `--repin` after `install A`
+  then `install B --repin`, and an older wheel restored with no prompt). Of the
+  records 0.1.0 and earlier wrote, one that a later record of the same git
+  repository or a wheel of the same distribution replaced, or whose pin holds
+  another commit, is not restored and is named with the command for the record
+  aelix reads as the latest (wrong in three measured flows: `install B --no-verify`
+  on records this build writes, a `source add` of another commit of the same
+  repository, and 0.1.0's records after `install A`, `install B --repin`, `install A
+  --repin`; nothing is installed by itself, ADR-0321 Known limits);
+  and a later record with no name that matches no record keeps the start and
+  `restore --all` off every record before it, each named with `aelix extension
+  restore <name>`, which restores it (the tests in
+  `tests/cli/test_extension_restore_926.py`, and 0.1.0- and 0.1.0b2-written records
+  in a scratch tool environment). A record is
+  installed when a distribution of its name is, so two extensions of one git commit
+  at two `#subdirectory=` targets are two. A git record at its pinned commit, a file whose pin
+  holds its sha256 and, where pip can check it, a package whose pin holds a version
+  and its sha256 (`--verify-pypi`; the uv backend cannot, #113, so a `uv tool`
+  environment without pip names the `uv pip install … pip` step first) are
+  restorable, through the same install path and pin check as `install`: different
+  bytes are refused without `--repin`. A branch, a directory or an unpinned package
+  is named with its `aelix extension install` command. `restore --offline`
+  takes the registered indexes as `install --offline` does, and a settings file it
+  cannot read stops it with exit 2 and a line saying it cannot tell what to restore.
+  `aelix extension verify` and `aelix status` say in one line when recorded
+  extensions are not installed, and `aelix status --json` carries their names as
+  `recorded_not_installed` (`null` when the records cannot be read). An interactive start in a `uv tool` environment restores them before
+  extensions load, one line each, with no prompt, each installer child bounded at
+  120 s with its whole process tree ended at the bound, offline skipped with a
+  notice, a printed command on a line of its own, and Ctrl+C stopping the restore
+  while the start goes on; `-p` and `--mode json|rpc` print one stderr line naming
+  the command instead.
+- **CI: the lint + test legs' time limits follow ADR-0274's rule again (#926).**
+  The suite had outgrown #482's limits on both runners. Over the last 150
+  completed `ci.yml` runs (2026-11-19 to 2026-11-26), the slowest green pytest
+  step took 34.1 min on Ubuntu and 54.0 min on Windows, against step limits of
+  35 and 55. Run 45803495364, #926's own, was killed on the 35-minute limit at
+  99% with no test failed or stuck; projected from its progress lines, it would
+  have taken about 35.6 min on Ubuntu. The rule is the slowest of these x 1.3,
+  rounded up to 5 min: the pytest step limit is 50 min on Ubuntu and 75 min on
+  Windows. The job limit is 5 min more: the job limit is 55 min on Ubuntu and
+  80 min on Windows. `tests/test_ci_hang_guard_429.py` pins the new measurement
+  (ADR-0274's note of 2026-11-26). Making the suite faster is still #527.
+
 ### Changed
 
 - **The agent-profiles guide's "Older aelix" says what an installed 0.1.0b2

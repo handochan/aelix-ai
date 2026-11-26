@@ -77,8 +77,16 @@ makes the obvious spelling wrong on both platforms — `VAR=x curl … | sh` set
 for `curl` alone, and from a PowerShell prompt `powershell -c "$env:VAR=…"` is
 expanded by the outer shell before the child sees it (measured on pwsh 7.6). The
 [getting-started guide](docs/guides/getting-started.md#windows) gives the form
-that works on each. Re-run the same line to upgrade; on a `PATH` miss both
-installers now run `uv tool update-shell` for you instead of printing it.
+that works on each. Re-run the same line to upgrade; it carries over the
+extensions you installed with `aelix extension install`, and names each one it
+cannot carry: one whose files, entry points or dependencies come out different,
+with the command that reinstalls it; one whose source is gone, with why there is
+none; and one uv could not install with the new release, right after uv's own
+message, as `uv could not install it with aelix <version>`, with a command only
+for an index install, whose index may be one the installer does not use (#926,
+[ADR-0321](docs/decisions/0321-an-aelix-reinstall-keeps-the-installed-extensions.md)).
+On a `PATH` miss both installers now run `uv tool update-shell` for you instead
+of printing it.
 **Up to `v0.1.0-beta.2`, upgrade through that line, not through
 `uv tool install aelix@latest`** — uv suggests the latter itself, and it rebuilds
 the environment on the newest Python on the machine, which for beta.2 means 3.14

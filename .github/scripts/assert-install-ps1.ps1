@@ -181,6 +181,64 @@ if ($pyMajor -ne 3 -or $pyMinor -lt $pyFloor -or $pyMinor -gt $pyCeiling) {
 }
 Write-Host "tool interpreter: Python $pyMajor.$pyMinor (inside $pyRequest)"
 
+# -- (5) The extension installed before this pass was carried over (#926) ----
+# E2E_EXPECT_EXTENSION names a distribution the job installed with `aelix
+# extension install` before this pass. install.ps1 reads the old environment
+# before `uv tool install --force` and hands what it holds to the reinstall as
+# --with-requirements: the new aelix still discovers it, and the new receipt
+# names it, which is what lets every later `uv tool` operation keep it.
+$expectExt = $env:E2E_EXPECT_EXTENSION
+$receiptPath = Join-Path (Join-Path $toolDir 'aelix') 'uv-receipt.toml'
+# Continue, not Stop, around a native command whose stderr is merged: Windows
+# PowerShell 5.1 turns each stderr line into an error record, and under Stop the
+# first one (uv reports progress on stderr) ends the script.
+function Test-ExtensionListed {
+    $ErrorActionPreference = 'Continue'
+    $listed = (& aelix extension list 2>&1 | Out-String)
+    return ($listed -match ('\[' + [regex]::Escape($expectExt) + ' '))
+}
+if ($expectExt) {
+    if (-not (Test-ExtensionListed)) {
+        Assert-Fail "'aelix extension list' does not show $expectExt after the re-run; install.ps1 did not carry it: $(& aelix extension list | Out-String)"
+    }
+    $receiptText = Get-Content -Raw -LiteralPath $receiptPath
+    if ($receiptText -notmatch ('name = "' + [regex]::Escape($expectExt) + '"')) {
+        Assert-Fail "the new receipt does not name $expectExt, so a later uv tool operation would drop it:`n$receiptText"
+    }
+    Write-Host "extension carried over: $expectExt (discovered, and in the receipt)"
+}
+
+# -- (6) `uv tool upgrade aelix` keeps it (#926) ------------------------------
+# Every `uv tool` operation syncs the environment to the receipt, so this is the
+# receipt entry doing its job. The receipt also records install.ps1's
+# --find-links directory, which install.ps1 deleted; with it missing the upgrade
+# exits before it syncs anything (RELEASING.md, #383's U2), which would keep the
+# extension for the wrong reason. It is made again, empty, and removed after.
+if ($expectExt -and $env:E2E_EXPECT_UPGRADE_KEEPS) {
+    $receiptText = Get-Content -Raw -LiteralPath $receiptPath
+    $lm = [regex]::Match($receiptText, '(?m)^find-links\s*=\s*\["file:///([^"]*)"')
+    $made = $null
+    if ($lm.Success) {
+        $linksDir = [Uri]::UnescapeDataString($lm.Groups[1].Value)
+        if (-not (Test-Path -LiteralPath $linksDir)) {
+            New-Item -ItemType Directory -Path $linksDir -Force | Out-Null
+            $made = $linksDir
+        }
+    }
+    $ErrorActionPreference = 'Continue'
+    $upgradeOut = (& uv tool upgrade aelix 2>&1 | Out-String)
+    $upgradeCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($made) { Remove-Item -LiteralPath $made -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($upgradeCode -ne 0) {
+        Assert-Fail "'uv tool upgrade aelix' exited $upgradeCode`: $upgradeOut"
+    }
+    if (-not (Test-ExtensionListed)) {
+        Assert-Fail "'uv tool upgrade aelix' removed $expectExt`: $upgradeOut"
+    }
+    Write-Host "uv tool upgrade aelix kept $expectExt ($($upgradeOut.Trim()))"
+}
+
 # -- (4) The temp dir was cleaned ---------------------------------------------
 # install.ps1 creates `aelix-install-<guid>` under GetTempPath() before Step 1,
 # and the `finally { Remove-Item ... }` block removes it. This is the ONLY assertion that proves the

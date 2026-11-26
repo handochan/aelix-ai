@@ -25,6 +25,12 @@
 #                        below), and then the interpreter must be inside that
 #                        range. A bare minor such as `3.11` means exactly that
 #                        minor.
+#   E2E_EXPECT_EXTENSION a distribution with an `aelix.extensions` entry point the
+#                        job installed with `aelix extension install` BEFORE this
+#                        pass (#926, ADR-0321): this pass's install.sh must have
+#                        carried it over - still discovered, and in the receipt.
+#   E2E_EXPECT_UPGRADE_KEEPS  with E2E_EXPECT_EXTENSION, also run `uv tool upgrade
+#                        aelix` and assert the extension is still there after it.
 #   E2E_STATE_DIR        where the "an install ran since the last assert"
 #                        marker lives. Default $RUNNER_TEMP, else $TMPDIR, else /tmp.
 #   GH_TOKEN             for `gh api` (the expected version is resolved through
@@ -48,6 +54,8 @@ ARM="${E2E_ARM:-unnamed pass}"
 EXPECT_TAG="${E2E_EXPECT_TAG:-}"
 EXPECT_EXTRAS="${E2E_EXPECT_EXTRAS-tui}"
 EXPECT_PYTHON="${E2E_EXPECT_PYTHON:-}"
+EXPECT_EXTENSION="${E2E_EXPECT_EXTENSION:-}"
+EXPECT_UPGRADE_KEEPS="${E2E_EXPECT_UPGRADE_KEEPS:-}"
 STATE_DIR="${E2E_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
 
 # Every failure names the pass and the post-condition, so a red run says which
@@ -192,9 +200,11 @@ ok "tool interpreter: Python $py (request '$recorded')"
 
 # -- (3b) The extras are the ones the pass asked for --------------------------
 # `AELIX_EXTRAS=` installs the bare CLI: POSIX-only behaviour (an empty
-# variable does not exist on Windows) that nothing else executes.
-req_line="$(grep '^requirements[[:space:]]*=' "$receipt")" \
-  || fail 3 "no 'requirements' line in '$receipt'."
+# variable does not exist on Windows) that nothing else executes. The aelix
+# entry, not the `requirements` line: since #926 a receipt that carries an
+# extension is written one requirement per line.
+req_line="$(grep -o '{ name = "aelix",[^}]*}' "$receipt" | head -n 1)"
+[ -n "$req_line" ] || fail 3 "no aelix requirement in '$receipt': $(cat "$receipt")"
 if [ -n "$EXPECT_EXTRAS" ]; then
   printf '%s\n' "$req_line" | grep -q "extras = \[\"$EXPECT_EXTRAS\"\]" \
     || fail 3 "uv recorded '$req_line'; this pass asked for aelix[$EXPECT_EXTRAS]."
@@ -209,6 +219,43 @@ else
   fi
 fi
 ok "extras: '${EXPECT_EXTRAS}' (receipt: $req_line)"
+
+# -- (5) The extension installed before this pass was carried over (#926) ----
+# install.sh reads the old environment before `uv tool install --force` and
+# hands what it holds to the reinstall as --with-requirements: the extension is
+# still discovered by the new aelix, and the new receipt names it, which is
+# what lets every later `uv tool` operation keep it.
+has_extension() {
+  aelix extension list 2>&1 | grep -q "\[$EXPECT_EXTENSION "
+}
+if [ -n "$EXPECT_EXTENSION" ]; then
+  has_extension \
+    || fail 5 "'aelix extension list' does not show $EXPECT_EXTENSION after the re-run; install.sh did not carry it: $(aelix extension list 2>&1)"
+  grep -q "name = \"$EXPECT_EXTENSION\"" "$receipt" \
+    || fail 5 "the new receipt does not name $EXPECT_EXTENSION, so a later \`uv tool\` operation would drop it: $(cat "$receipt")"
+  ok "extension carried over: $EXPECT_EXTENSION (discovered, and in the receipt)"
+fi
+
+# -- (6) `uv tool upgrade aelix` keeps it (#926) ------------------------------
+# Every `uv tool` operation syncs the environment to the receipt, so this is
+# the receipt entry doing its job. The receipt also records install.sh's
+# --find-links directory, which install.sh deleted, and with it missing the
+# upgrade exits 1 before it syncs anything (RELEASING.md, #383's U2) - which
+# would keep the extension for the wrong reason. The directory is made again,
+# empty, for the upgrade, and removed after it.
+if [ -n "$EXPECT_EXTENSION" ] && [ -n "$EXPECT_UPGRADE_KEEPS" ]; then
+  links="$(sed -n 's|^find-links[[:space:]]*=[[:space:]]*\["file://\([^"]*\)".*|\1|p' "$receipt" | head -n 1)"
+  made=""
+  if [ -n "$links" ] && [ ! -e "$links" ]; then
+    mkdir -p "$links" && made="$links"
+  fi
+  upgrade_out="$(uv tool upgrade aelix 2>&1)" \
+    || fail 6 "'uv tool upgrade aelix' failed: $upgrade_out"
+  [ -z "$made" ] || rmdir "$made"
+  has_extension \
+    || fail 6 "'uv tool upgrade aelix' removed $EXPECT_EXTENSION: $upgrade_out"
+  ok "uv tool upgrade aelix kept $EXPECT_EXTENSION ($upgrade_out)"
+fi
 
 # -- (4) The temp dir was cleaned ---------------------------------------------
 # install.sh makes its download dir with a bare `mktemp -d` and removes it in

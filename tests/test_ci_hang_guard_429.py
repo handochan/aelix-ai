@@ -16,25 +16,27 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: #482 (ADR-0274): the slowest green ``Test gate (pytest)`` step per runner over
-#: 129 ci.yml runs from 2026-10-08 to 2026-10-19 (627 green steps; a job that a
+#: #926's re-measurement under ADR-0274's rule (#482 made the first): the slowest
+#: green ``Test gate (pytest)`` step per runner over the last 150 completed ci.yml
+#: runs, created from 2026-11-19 to 2026-11-26 (1044 green steps; a job that a
 #: re-run carried into a later attempt counted once), and the slowest rest of a
 #: green job (checkout, uv, sync, ruff, pyright and post steps). A re-measurement
 #: moves these, the limits, ci.yml's comment, docs/development/ci-hang-diagnostics.md
 #: and a CHANGELOG entry together.
-SLOWEST_GREEN_PYTEST_MIN = {"ubuntu-latest": 19.5, "windows-latest": 40.0}
+SLOWEST_GREEN_PYTEST_MIN = {"ubuntu-latest": 34.1, "windows-latest": 54.0}
 #: A green step can never show more than the limit it ran under, so a step that
 #: the old limit killed with no test failed or stuck counts at its projected full
-#: time. Run 38610624957 attempt 1 (Ubuntu, py3.12) was killed at #429's 20 min at
-#: 85%; aligned line by line with the same commit's two passes, its progress lines
-#: project 25.3 min (23.8 to 26.1 by the other projections). No Windows step ended
-#: on its limit.
-PROJECTED_KILLED_PYTEST_MIN = {"ubuntu-latest": 25.3}
-SLOWEST_GREEN_REST_OF_JOB_MIN = 3.2
+#: time. Run 45803495364 attempt 1 (Ubuntu, py3.12, #926's PR) was killed at
+#: #482's 35 min at 99%; aligned line by line with the same commit's pass on the
+#: same leg (run 45803505236, 33.2 min), its progress lines project 35.6 min (35.6
+#: to 36.2 by the other projections). No Windows step ended on its limit.
+PROJECTED_KILLED_PYTEST_MIN = {"ubuntu-latest": 35.6}
+SLOWEST_GREEN_REST_OF_JOB_MIN = 1.8
 MARGIN_FACTOR = 1.3
 #: The CHANGELOG entries that state the current limits. A re-measurement adds its
-#: own entry and names it here instead.
-LIMITS_CHANGELOG_ISSUES = (429, 482)
+#: own entry and names it here instead: #926's replaced #429's and #482's, which
+#: are released and keep the limits of their day.
+LIMITS_CHANGELOG_ISSUES = (926,)
 #: #429's limits before #482. Stated as current in ci.yml's comment, the
 #: diagnostics page or #429's CHANGELOG entry, they fail even beside the new ones.
 OLD_429_LIMITS = {
@@ -355,9 +357,9 @@ def test_ci_limits_cover_every_test_leg() -> None:
     """
     ci_text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     job = yaml.safe_load(ci_text)["jobs"]["test"]
-    assert job["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 60 || 40 }}"
+    assert job["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 80 || 55 }}"
     test_step = next(step for step in job["steps"] if step.get("name") == "Test gate (pytest)")
-    assert test_step["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 55 || 35 }}"
+    assert test_step["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 75 || 50 }}"
     assert "continue-on-error" not in job, "the lint + test job has continue-on-error"
     assert "continue-on-error" not in test_step, "the 'Test gate (pytest)' step has continue-on-error"
     matrix = job["strategy"]["matrix"]

@@ -2,27 +2,30 @@
 
 Status: Accepted
 
-The eight lint/test matrix jobs have two limits. The job limit is 40 min on
-Ubuntu and 60 min on Windows, and the pytest step limit is 35 min on Ubuntu and
-55 min on Windows. These limits bound failures outside an individual test,
+The eight lint/test matrix jobs have two limits. The job limit is 55 min on
+Ubuntu and 80 min on Windows, and the pytest step limit is 50 min on Ubuntu and
+75 min on Windows. These limits bound failures outside an individual test,
 including collection and interpreter exit (#429).
 
-The limits come from measured runs (#482, ADR-0274). Over 129 `ci.yml` runs
-from 2026-10-08 to 2026-10-19 (627 green pytest steps), the slowest green pytest
-step took 19.5 min on Ubuntu and 40.0 min on Windows. #429's first step limits,
-20 and 45 minutes, capped what a green Ubuntu step could show: run 38610624957
-was killed on the 20 minute limit at 85%, with no test failed or stuck, on a
-runner about 1.4 times slower than the same commit's two passes. Projected from
-its progress lines it would have taken about 25.3 min on Ubuntu (23.8 to 26.1 by
-other projections). No Windows step ended on its limit. The step limit is the
-slowest step, green or projected, x 1.3, rounded up to 5 min. The rest of a
-green job took at most 3.2 min, so the job limit is 5 minutes more and a hang
-inside pytest is reported by its step, not by the job. The Python versions
-differ by less than this margin, so each OS has one limit. When the slowest
-step, green or projected, comes within 15% of its limit (29.75 min on Ubuntu,
-46.75 min on Windows), or a step ends on its limit again, measure again and move
-the limits, `tests/test_ci_hang_guard_429.py`, the `ci.yml` comment and this
-page together.
+The limits come from measured runs (#482, ADR-0274), measured again for #926
+when the suite had outgrown #482's limits. Over the last 150 completed `ci.yml`
+runs, created from 2026-11-19 to 2026-11-26 (1044 green pytest steps), the
+slowest green pytest step took 34.1 min on Ubuntu and 54.0 min on Windows. The
+35 minute Ubuntu step limit then in force capped what a green Ubuntu step could
+show: run 45803495364 was killed on it at 99%, with no test failed or stuck, on
+a runner about 1.08 times as slow as the same commit's pass on the same leg.
+Projected from its progress lines it would have taken about 35.6 min on Ubuntu
+(35.6 to 36.2 by other projections). No Windows step ended on its limit. The
+step limit is the slowest step, green or projected, x 1.3, rounded up to 5 min.
+The rest of a green job took at most 1.8 min, so the job limit is 5 minutes
+more and a hang inside pytest is reported by its step, not by the job. The
+Python versions differ by less than this margin, so each OS has one limit. When
+the slowest step, green or projected, comes within 15% of its limit (42.5 min
+on Ubuntu, 63.75 min on Windows), or a step ends on its limit again, measure
+again and move the limits, `tests/test_ci_hang_guard_429.py`, the `ci.yml`
+comment and this page together. #482's first measurement (129 runs from
+2026-10-08 to 2026-10-19, which gave the 35 and 55 minute step limits) and
+#926's are in ADR-0274. Making the suite faster is #527.
 
 Pytest 9.0 or newer is required by the development dependency group. A test
 whose setup, call or teardown takes 240 seconds dumps every thread's stack and

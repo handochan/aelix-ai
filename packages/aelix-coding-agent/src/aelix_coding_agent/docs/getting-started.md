@@ -125,6 +125,58 @@ Re-run the same `curl … | sh` line to upgrade: it resolves the newest release 
 re-runs the whole checksum-verified install, and `uv tool install --force` makes
 that idempotent.
 
+The extensions you installed with `aelix extension install` stay (#926,
+[ADR-0321](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0321-an-aelix-reinstall-keeps-the-installed-extensions.md)).
+`uv tool install --force` rebuilds aelix's environment from uv's receipt, which
+does not list them, so until this fix a re-run deleted every one of them. The
+installer now reads them from the current environment first (a git install at its
+commit, a directory or file that is still there, a package at its version) and
+installs them with the new release, which also writes them into the receipt (a
+plain `uv tool upgrade aelix` over an install-line install still exits 1 and
+changes nothing, because that receipt names the installer's deleted
+`--find-links` directory, #464; re-run the line instead). It prints each one it
+carries, with the extras uv's receipt asked for it with, then the new aelix's
+`aelix extension verify` verdict. One whose files, entry points or dependencies
+(`Requires-Dist`, `Provides-Extra`) come out different from before is taken out
+again. When the reinstall fails with them (one that does not install with the new
+release, or an index install from an index the installer's uv does not see), aelix
+is installed alone and they are added back one at a time, so only that one is left
+out. Each one left out is named. One taken out, or whose directory or file is gone,
+or that came from a checkout that is not git, is named with the command that
+reinstalls it or with why there is none; an index install's command takes
+`--index-url` for an index you named that way, and a command keeps the extras uv's
+receipt asked for. One that uv could not install with the new release is named on a
+line of its own after uv's message, as `uv could not install it with aelix
+<version>`, with a command only for an index install, since the same git commit,
+directory or file fails the same way again. If the current environment's
+Python no longer runs, the installer names its extensions from their files instead.
+The update goes ahead either way.
+
+`uv tool upgrade aelix` and a hand-typed `uv tool install --force aelix` keep only
+what the receipt names. From 0.1.1, `aelix extension list` names a recorded
+extension that is not installed (`aelix extension verify` and `aelix status` say
+so in one line), `aelix extension restore` puts it back at its pinned commit or
+file hash, and an interactive start does that by itself before extensions load
+(Ctrl+C stops it and the start goes on; `-p` and `--mode json|rpc` print one line
+naming the command instead; `--offline` skips it). What comes back by itself is
+the last `aelix extension install` aelix recorded of each extension, and only when
+it is at its pin. Not
+restored: a source you only registered with `aelix extension source add`; an
+install followed by a `source add` of another commit of its repository (aelix
+takes the registered commit for a later install); an older
+install of an extension you later installed again from another commit or file (its
+line gives the command for the one aelix reads as the latest, which is wrong in a
+few flows, for example after an install with `--no-verify` (ADR-0321 Known
+limits): then reinstall the commit you want with `--repin`); and every
+extension recorded before a
+git or path record that names no extension and is not of the same repository or
+distribution as one recorded (aelix 0.1.0 wrote one for a git install of an
+extension a wheel had installed; a source registered later is one too), since it
+could be a newer install of any of them: each is listed with `aelix extension
+restore <name>`, which restores it. Details:
+[ADR-0321](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0321-an-aelix-reinstall-keeps-the-installed-extensions.md)
+D3.
+
 When aelix notices a newer release at launch, it prints that line with the
 release it named pinned on the `sh` side of the pipe, so what installs is what
 it told you about:

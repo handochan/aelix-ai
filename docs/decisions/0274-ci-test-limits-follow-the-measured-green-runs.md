@@ -6,7 +6,9 @@ limit" below, so Decisions 1 and 2 give 35/40 on Ubuntu and Decision 5's
 re-measure trigger counts the projected step; the per-day medians and the pi
 paragraph are corrected); narrowed finish (2026-10-21: the range of slowest
 steps that gives 35 and the slow-runner figure are corrected, and Windows'
-smaller room for a slow runner is recorded under "Known limits")
+smaller room for a slow runner is recorded under "Known limits"); measured
+again (2026-11-26, #926: the same rule over newer runs gives 50/55 on Ubuntu
+and 75/80 on Windows, "Re-measurement" below)
 Date: 2026-10-20
 Issue: #482 (this change), #429 (the limits it replaces)
 Amends: `docs/development/ci-hang-diagnostics.md`, #429's record of the limits.
@@ -227,6 +229,58 @@ killed one, that commit and leg would take about 22.8 minutes (16.4 × 1.39).
 - The limits will need to move again unless the suite gets faster. The
   re-measure threshold in Decision 5 and the speed-up follow-up are how that is
   caught before a green run fails again.
+
+## Re-measurement (2026-11-26, #926)
+
+Decision 5's trigger had fired on both runners, and #926's PR run 45803495364
+lost a green Ubuntu py3.12 leg on the 35-minute step limit. Its lane measured
+again with the method above (`gh api` reads of the last 150 completed
+`ci.yml` runs and `actions/runs/{id}/jobs?filter=all`; a step's
+`completed_at - started_at`, green steps only, a job carried into a later
+attempt counted once). The runs were created from 2026-11-19 23:39 to
+2026-11-26 10:40 UTC; 145 of them reached the test jobs.
+
+| leg | n | median | p90 | max |
+|---|---|---|---|---|
+| ubuntu, all | 541 | 28.5 | 31.5 | **34.1** |
+| ubuntu py3.11 / 3.12 / 3.13 / 3.14 | 136 / 135 / 134 / 136 | 28.8 / 28.5 / 27.9 / 28.9 | 32.1 / 31.3 / 30.5 / 31.8 | 34.1 / 33.2 / 33.0 / 33.5 |
+| windows, all | 503 | 44.4 | 49.3 | **54.0** |
+| windows py3.11 / 3.12 / 3.13 / 3.14 | 123 / 126 / 130 / 124 | 47.0 / 46.9 / 43.3 / 43.3 | 50.2 / 49.8 / 46.1 / 46.6 | 53.1 / 51.5 / 48.2 / 54.0 |
+
+- **The slowest green steps.** Ubuntu 34.1 minutes is #926's own commit
+  (`d34fb6e0`, push run 45803495364, py3.11); without #926's two runs it is
+  33.5 (run 45614299122, py3.11). Windows 54.0 is main `a86e34a9` (run
+  44966637518, py3.14), 1.0 minute under its 55-minute limit. Main's own push
+  runs: Ubuntu median 28.9, max 32.8 (102 steps); Windows median 44.7, max 54.0
+  (96 steps).
+- **The one step that ended on its limit.** Run 45803495364 attempt 1, Ubuntu
+  py3.12, 35.22 minutes: its last progress line was 445 of 450, none of them
+  holds an `F` or `E`, and the longest gap between them was 84 s, under the
+  240 s watchdog. Aligned line by line with the same commit's pass on the same
+  leg (run 45803505236, 33.18 minutes), it projects to 35.60 minutes
+  (multiplicative, the figure the rule uses), 35.57 (additive) and 36.22 (the
+  highest ratio from 40% on, 1.075 to 1.100, carried to the end). Every other
+  Ubuntu step that did not pass took at most 30.8 minutes; the longest Windows
+  one, 52.5, is #926's own red leg. No Windows step ended on its limit.
+- **The rule, unchanged.** Ubuntu: the larger of 34.1 and 35.6 is 35.6, and
+  35.6 × 1.3 = 46.3 → **50**; the projection band gives 50 throughout (50 holds
+  from 34.62 to 38.46), and 34.1 alone would give 45. Windows: 54.0 × 1.3 =
+  70.2 → **75**; 75 holds from 53.85, so this basis is 0.15 minutes above the
+  edge where the rule gives 70. The rest of a green job took at most 1.7
+  minutes on Ubuntu and 1.8 on Windows (medians 0.7 and 1.1), so the job limit
+  stays the step's + 5: **55 and 80**. The Python versions differ by at most
+  1.1 minutes on Ubuntu and 5.8 on Windows at the maximum (3% and 11%), inside
+  the 30% margin, so each OS keeps one limit.
+- **What moved with it.** `tests/test_ci_hang_guard_429.py`'s constants
+  (34.1 / 54.0, the projected 35.6, the rest-of-job 1.8) and its pinned
+  CHANGELOG entry, which is now #926's (`LIMITS_CHANGELOG_ISSUES = (926,)`;
+  #429's and #482's are released and keep the limits of their day); `ci.yml`'s
+  comment and both limits; `docs/development/ci-hang-diagnostics.md`. Decision
+  5's thresholds are now 42.5 minutes on Ubuntu and 63.75 on Windows.
+- **Not this change.** Making the suite faster is still #527. The 35-minute
+  step lost a leg because #926 added about 2.5 minutes of tests (its three new
+  test files, 154 s serially on macOS); the Windows leg's 54.0 on main shows
+  the limits would have had to move without it.
 
 ## Evidence
 
