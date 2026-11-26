@@ -7710,6 +7710,28 @@
         "xhigh": null,
         "max": "max"
       }
+    },
+    "@cf/daily-co/phonellm-mini-alpha-2": {
+      "id": "@cf/daily-co/phonellm-mini-alpha-2",
+      "name": "PhoneLLM Mini Alpha 2",
+      "api": "openai-completions",
+      "provider": "cloudflare-workers-ai",
+      "baseUrl": "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0.06,
+        "output": 0.24,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 262140,
+      "maxTokens": 262140,
+      "compat": {
+        "sendSessionAffinityHeaders": true
+      }
     }
   },
   "deepseek": {
@@ -20938,6 +20960,122 @@
         "output": 40,
         "cacheRead": 0.4,
         "cacheWrite": 10
+      },
+      "contextWindow": 1050000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "gpt-6.2-astra-healthcare": {
+      "id": "gpt-6.2-astra-healthcare",
+      "name": "GPT-6.2 Astra Healthcare",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 8,
+        "output": 40,
+        "cacheRead": 0.4,
+        "cacheWrite": 10
+      },
+      "contextWindow": 1050000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "gpt-6.1-sol-healthcare": {
+      "id": "gpt-6.1-sol-healthcare",
+      "name": "GPT-6.1 Sol Healthcare",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1050000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "gpt-6.2-sol-healthcare": {
+      "id": "gpt-6.2-sol-healthcare",
+      "name": "GPT-6.2 Sol Healthcare",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 2.5
+      },
+      "contextWindow": 1050000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "gpt-6-astra-healthcare": {
+      "id": "gpt-6-astra-healthcare",
+      "name": "GPT-6 Astra Healthcare",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 0
       },
       "contextWindow": 1050000,
       "maxTokens": 128000,
@@ -46134,6 +46272,32 @@
       },
       "contextWindow": 1000000,
       "maxTokens": 131072,
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true,
+        "supportsStore": false,
+        "thinkingFormat": "zai",
+        "zaiToolStream": true
+      }
+    },
+    "glm-4-32b-0414-128k": {
+      "id": "glm-4-32b-0414-128k",
+      "name": "GLM-4-32B-0414-128K",
+      "api": "openai-completions",
+      "provider": "zai",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0.1,
+        "output": 0.1,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384,
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": true,
