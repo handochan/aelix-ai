@@ -94,7 +94,7 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 3.14를 테스트합니다. 그래도 권장 경로는 설치 스크립트입니다 — `SHA256SUMS`를 검사하는
 것은 그것뿐입니다.
 
-> [PyPI에 정식 릴리즈 `0.1.0`](https://pypi.org/project/aelix/0.1.0/#files)이 게시되므로
+> [PyPI에 정식 릴리즈 `0.1.1`](https://pypi.org/project/aelix/0.1.1/#files)이 게시되므로
 > `uv tool install 'aelix[tui]'`와 `pipx install aelix`가 pre-release 플래그 없이 그것을 설치합니다
 > ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
 > `0.1.0b2` 전에는 네 PyPI 이름에 메타데이터만 담은 `0.0.0a0` 선점본이 올라가 있었습니다.
@@ -113,10 +113,10 @@ Ubuntu와 Windows에서 돕니다. Windows는 `v0.1.0-beta.2`에서 쓸 수 있�
 바르게 보고하며 `&&` 대신 PowerShell 문법을 썼고, TUI는 Windows 콘솔에서 제대로
 그려졌습니다. beta.2의 Windows 근거는 그게 전부입니다 — 사람 하나, 머신 하나, 로케일 하나, 그리고 초록 레그
 하나. 오래 돌려 본 적도, 두 번째 머신도, 세 번째 로케일도 없고, beta.2의 Windows
-수정 중 셋은 소스와 CI만으로 논증한 것입니다. 0.1.0에서는
+수정 중 셋은 소스와 CI만으로 논증한 것입니다. 0.1.1에서는
 [`release.yml`](.github/workflows/release.yml)의 `candidate-smoke` 잡이 후보 wheel을
 Windows·macOS·Linux에 설치하고, 게시 전에 설치된 명령으로 로컬 stub을 상대로 한 one-shot
-print 턴을 요구합니다. 이 게이트는 워크플로가 정의할 뿐이고, 그 자체가 0.1.0 후보가
+print 턴을 요구합니다. 이 게이트는 워크플로가 정의할 뿐이고, 그 자체가 0.1.1 후보가
 통과했다는 기록은 아닙니다.
 
 Windows 콘솔을 직접 여는 프로그램 — git 자격 증명 프롬프트,
@@ -339,11 +339,12 @@ MCP·확장 툴도 차단하고 대화형 실행은 그런 툴마다 먼저 묻�
 [정리 대상에서 벗어나는 프로세스](docs/guides/agent-profiles.md#resuming-an-agent)도 참고하세요
 ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
-### 0.1.0에서 열려 있는 것들
+### 0.1.1에서 열려 있는 것들
 
-아래 이슈들도 0.1.0에서 열려 있습니다. 각 줄은 언제 해당하는지 적고 이슈를 링크합니다.
-[CHANGELOG](CHANGELOG.md)의 `[0.1.0]` 절도 같은 이슈들로 시작합니다. Windows는
-실험적입니다([플랫폼 지원](#플랫폼-지원)).
+아래 이슈들도 0.1.1에서 열려 있습니다. 각 줄은 언제 해당하는지 적고 이슈를 링크합니다.
+[CHANGELOG](CHANGELOG.md)의 `[0.1.1]` 절도 같은 이슈들로 시작하고, 이어서 설치 줄을 다시
+돌리거나 `aelix extension restore`를 해도 아직 빠지는 것들을 적습니다(#926, ADR-0321의
+Known limits). Windows는 실험적입니다([플랫폼 지원](#플랫폼-지원)).
 
 #### 평소 사용에서
 

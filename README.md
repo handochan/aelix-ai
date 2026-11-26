@@ -97,7 +97,7 @@ install line stays the recommended path, since it is the one that checks
 `SHA256SUMS`.
 `uv tool uninstall aelix` removes it.
 
-> [PyPI publishes `0.1.0`](https://pypi.org/project/aelix/0.1.0/#files), a final release,
+> [PyPI publishes `0.1.1`](https://pypi.org/project/aelix/0.1.1/#files), a final release,
 > so `uv tool install 'aelix[tui]'` and `pipx install aelix` resolve it with no pre-release
 > flag ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
 > Before `0.1.0b2`, the four PyPI names carried metadata-only `0.0.0a0` reservations.
@@ -117,11 +117,11 @@ as Korean, the model reported it was on PowerShell and used PowerShell syntax
 instead of `&&`, and the TUI drew correctly on a Windows console. That is the
 whole of beta.2's Windows evidence: one person, one machine, one locale, plus a green leg. No
 long-running use, no second machine, no third locale, and three of beta.2's
-Windows fixes are argued from source and CI alone. For 0.1.0, the `candidate-smoke`
+Windows fixes are argued from source and CI alone. For 0.1.1, the `candidate-smoke`
 jobs in [`release.yml`](.github/workflows/release.yml) install the candidate wheels on
 Windows, macOS and Linux and require an installed one-shot print turn against a local
 stub before publication. The workflow defines that gate; it is not by itself a record
-of a passing 0.1.0 candidate.
+of a passing 0.1.1 candidate.
 
 A program that opens the Windows console directly — a git credential prompt,
 `Read-Host -AsSecureString`, `Get-Credential` — can still prompt there and burn a
@@ -351,12 +351,13 @@ cover the tested delegation cases and the separate top-level background
 for processes outside the cleanup mechanism
 ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
-### Also open in 0.1.0
+### Also open in 0.1.1
 
-These issues are open in 0.1.0 as well. Each line says when it applies and
-links the issue. The `[0.1.0]` section of the [CHANGELOG](CHANGELOG.md) opens
-with the same issues. Windows is experimental
-([Platform support](#platform-support)).
+These issues are open in 0.1.1 as well. Each line says when it applies and
+links the issue. The `[0.1.1]` section of the [CHANGELOG](CHANGELOG.md) opens
+with the same issues, then with what re-running the install line and
+`aelix extension restore` still leave out (#926, ADR-0321's Known limits).
+Windows is experimental ([Platform support](#platform-support)).
 
 #### In everyday use
 

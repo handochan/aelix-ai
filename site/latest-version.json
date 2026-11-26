@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "_comment": "Read by aelix's launch-time update check. Published to GitHub Pages from site/. Update this in the same commit that bumps the package versions -- tests/test_latest_version_feed.py enforces it.",
   "latest": {
-    "version": "0.1.0",
-    "tag": "v0.1.0",
+    "version": "0.1.1",
+    "tag": "v0.1.1",
     "prerelease": false,
-    "url": "https://github.com/handochan/aelix-ai/releases/tag/v0.1.0"
+    "url": "https://github.com/handochan/aelix-ai/releases/tag/v0.1.1"
   },
   "latestStable": {
-    "version": "0.1.0",
-    "tag": "v0.1.0",
+    "version": "0.1.1",
+    "tag": "v0.1.1",
     "prerelease": false,
-    "url": "https://github.com/handochan/aelix-ai/releases/tag/v0.1.0"
+    "url": "https://github.com/handochan/aelix-ai/releases/tag/v0.1.1"
   }
 }
