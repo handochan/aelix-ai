@@ -77,7 +77,14 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 `powershell -c "$env:VAR=…"`는 자식이 보기 전에 바깥 셸이 전개해 버립니다(pwsh 7.6에서
 측정). 각 플랫폼에서 실제로 되는 형태는 [시작하기
 가이드](docs/guides/getting-started.md#windows)에 있습니다. 업그레이드는 같은 줄을 다시
-실행하면 되고, `PATH`에 잡히지 않을 때는 두 설치 스크립트 모두 안내만 하는 대신
+실행하면 되고, `aelix extension install`로 설치한 확장은 새 환경으로 옮겨 담습니다.
+옮기지 못한 확장은 이름과 함께 알려 줍니다. 파일·엔트리 포인트·의존성이 전과 달라진
+확장에는 다시 설치하는 명령을, 출처가 사라진 확장에는 명령이 없는 이유를 붙이고, 새
+릴리스와 함께 uv가 설치하지 못한 확장은 uv 자체 메시지 바로 뒤에
+`uv could not install it with aelix <version>`으로 알리면서, 설치기가 쓰지 않는 인덱스에서
+왔을 수 있는 인덱스 설치에만 명령을 붙입니다(#926,
+[ADR-0321](docs/decisions/0321-an-aelix-reinstall-keeps-the-installed-extensions.md)).
+`PATH`에 잡히지 않을 때는 두 설치 스크립트 모두 안내만 하는 대신
 `uv tool update-shell`을 직접 실행합니다. 제거는 `uv tool uninstall aelix`입니다.
 **`v0.1.0-beta.2`까지는 업그레이드를 그 줄로 하세요. `uv tool install aelix@latest`로
 하지 마세요** — uv가 직접 그 명령을 안내하지만, 그건 그 머신에서 가장 새 Python으로

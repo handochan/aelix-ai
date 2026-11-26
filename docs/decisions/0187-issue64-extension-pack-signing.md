@@ -2,6 +2,13 @@
 
 - **Status:** Accepted (2026-07-05; amended 2026-10-09, #402 revision boundary) — scheme owner-confirmed. Lands with the #64
   implementation (Phase 1); this record precedes the code and seeds it.
+  Amended 2026-11-26 (#926, ADR-0321): a restore goes through this gate at the pinned
+  identity (a changed file or download is refused without `--repin`), and a pin with no
+  install record is never restored. The install line's carry over an update does not
+  run this gate; it keeps an extension only when its installed files hash, and its
+  entry points, `Requires-Dist` and `Provides-Extra` read, as before. A git record
+  whose pin holds another commit is not restored, and the command printed is the one for
+  the record aelix reads as the latest, which can be wrong (ADR-0321 Known limits).
 - **Date:** 2026-07-05
 - **Sprint:** Marketplace — resolving ADR-0005 Open Question Q2 ("구체 신뢰 모델은
   후속 ADR에서 결정합니다"). A from-scratch aelix-original trust-model decision;

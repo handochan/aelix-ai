@@ -304,6 +304,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: '& ./.github/scripts/assert-install-ps1.ps1'
 
+      # #926 (ADR-0321): install.sh's twin step - the starter extension that
+      # ships inside aelix, committed to a local git repository and installed at
+      # that commit, so pass 2 has an extension to carry over.
+      - name: "Add a test extension the way a user does (#926)"
+        run: |
+          $envDir = Join-Path (& uv tool dir | Out-String).Trim() 'aelix'
+          $starter = Join-Path $envDir 'Lib\site-packages\aelix_coding_agent\examples\starter'
+          $src = Join-Path $env:RUNNER_TEMP 'aelix-e2e-extension'
+          if (Test-Path -LiteralPath $src) { Remove-Item -LiteralPath $src -Recurse -Force }
+          Copy-Item -LiteralPath $starter -Destination $src -Recurse
+          & git -C $src init -q
+          & git -C $src add -A
+          & git -C $src -c user.name=e2e -c user.email=e2e@invalid commit -qm starter
+          $sha = (& git -C $src rev-parse HEAD | Out-String).Trim()
+          & aelix extension install ('git+file:///' + ($src -replace '\\', '/') + '@' + $sha) --yes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $listed = (& aelix extension list | Out-String)
+          Write-Host $listed
+          if ($listed -notmatch '\[aelix-starter-ext ') {
+            Write-Host "::error::aelix extension list does not show aelix-starter-ext after its install."
+            exit 1
+          }
+
       # Step 2's OTHER arm. uv is on PATH now, so this pass takes
       # `if (Test-Have 'uv')` — dead code in every other run of this job — and
       # it is also the "re-run to upgrade" path getting-started.md documents,
@@ -316,6 +339,10 @@ jobs:
       - name: Assert what the script promised (pass 2)
         env:
           GH_TOKEN: ${{ github.token }}
+          # #926: the re-run carried the extension added above, and `uv tool
+          # upgrade aelix` keeps it.
+          E2E_EXPECT_EXTENSION: aelix-starter-ext
+          E2E_EXPECT_UPGRADE_KEEPS: "1"
         run: '& ./.github/scripts/assert-install-ps1.ps1'
 
       # #278: the installer's default interpreter range comes from the release
@@ -453,6 +480,25 @@ jobs:
           E2E_ARM: pass 1 - uv bootstrap arm
         run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
 
+      # #926 (ADR-0321): an extension installed the way a user installs one, so
+      # the re-run below has one to carry over (it used to delete it). The starter
+      # extension ships inside aelix (aelix_coding_agent/examples/starter), so no
+      # third-party repository is involved: it is committed to a local git
+      # repository and installed at that commit, which also records its pin.
+      - name: "Add a test extension the way a user does (#926)"
+        working-directory: ${{ runner.temp }}
+        run: |
+          env_dir="$(uv tool dir)/aelix"
+          starter="$(ls -d "$env_dir"/lib/python3.*/site-packages/aelix_coding_agent/examples/starter)"
+          src="$RUNNER_TEMP/aelix-e2e-extension"
+          rm -rf "$src"
+          cp -R "$starter" "$src"
+          git -C "$src" init -q
+          git -C "$src" add -A
+          git -C "$src" -c user.name=e2e -c user.email=e2e@invalid commit -qm starter
+          aelix extension install "git+file://$src@$(git -C "$src" rev-parse HEAD)" --yes
+          aelix extension list | grep '\[aelix-starter-ext '
+
       # Step 2's OTHER arm: uv is on PATH now (the Astral installer appended its
       # dir to GITHUB_PATH, or the runner already had it there), so this pass
       # takes `if have uv` - and it is the "re-run the same line to upgrade"
@@ -468,6 +514,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           E2E_ARM: pass 2 - uv-already-present arm
+          # #926: the re-run carried the extension added above, and `uv tool
+          # upgrade aelix` keeps it.
+          E2E_EXPECT_EXTENSION: aelix-starter-ext
+          E2E_EXPECT_UPGRADE_KEEPS: "1"
         run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
 
       # Arm the #262 trap before the AELIX_PYTHON passes. Left to itself `uv

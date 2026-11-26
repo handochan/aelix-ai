@@ -3152,6 +3152,9 @@ async def _async_main(argv: list[str], startup: contextlib.AsyncExitStack) -> in
         )
         return 1
 
+    from aelix_coding_agent.cli.extension_restore import restore_at_start
+
+    restore_at_start(app_mode, offline=parsed.offline, no_extensions=parsed.no_extensions)  # #926
     # === Interactive mode is dispatched post-construction (Sprint 6h₁₀a) ======
     # The Phase 5b NotImplementedError carry-forward (ADR-0088) is replaced by
     # run_tui; see the dispatch branch below. Interactive needs the harness +

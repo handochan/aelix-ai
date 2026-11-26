@@ -366,6 +366,14 @@ def _render_text(report: dict[str, Any], stream: TextIO) -> None:
         for e in off:
             print(f"  {e['name']}  {e['scope']}", file=stream)
 
+    missing = report.get("recorded_not_installed")
+    if missing:
+        print(
+            f"Recorded but not installed ({len(missing)}): {', '.join(missing)} — "
+            "`aelix extension restore` puts back the ones pinned.",
+            file=stream,
+        )
+
     if exts is not None:
         print(
             "  (aelix's own always-on extensions — "
@@ -478,6 +486,11 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         report["discovered_extensions"] = None
         return report
 
+    # #926 (ADR-0321): install records whose extension an aelix reinstall removed,
+    # from the records and the installed metadata (nothing imported); ``None`` when
+    # they cannot be read.
+    report["recorded_not_installed"] = _recorded_not_installed()
+
     from aelix_coding_agent.core.extension_selection import describe_record, extension_filter
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
@@ -518,6 +531,21 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     # 4138-character ``plugin.version`` reaching a report unbounded.
     report["extension_errors"] = [bounded_emitted_value(str(e)) for e in loaded.errors]
     return report
+
+
+def _recorded_not_installed() -> list[str] | None:
+    from aelix_status.snapshot import bounded_emitted_value
+
+    from aelix_coding_agent.cli.extension_restore import (
+        missing_recorded_extensions,
+        read_only_settings,
+    )
+
+    try:
+        records = missing_recorded_extensions(read_only_settings().get_extension_sources())
+        return [bounded_emitted_value(r.label) for r in records]
+    except Exception:  # noqa: BLE001 — a status report never fails on one block
+        return None
 
 
 def _extension_lists(cwd: Path, agent_dir: str | None, project_trusted: bool) -> Any:

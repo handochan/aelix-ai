@@ -37,6 +37,14 @@ from tests.extensions.test_ep_manifest import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``extension list`` reads the install records and pins since #926 (ADR-0321)."""
+
+    monkeypatch.setenv("AELIX_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "agent"))
+
+
 @pytest.fixture
 def trusted_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A throwaway site-packages on ``sys.path``, DECLARED TRUSTED.

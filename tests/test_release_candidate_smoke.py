@@ -452,11 +452,27 @@ def test_the_candidate_is_this_runs_artifact_never_a_release_or_an_index_file() 
 def test_the_install_is_install_sh_step_5_with_the_candidate_in_place_of_the_release() -> None:
     """Byte for byte install.sh's command, with the artifact where install.sh puts the
     verified Release wheels, the tag's version where it puts the manifest's, and the
-    default extra. A flag the installers gain or lose must reach the smoke too."""
+    default extra. A flag the installers gain or lose must reach the smoke too.
+
+    Since #926 (ADR-0321) the command is the body of Step 5's ``install_aelix()``,
+    whose ``"$@"`` takes the ``--with-requirements`` of the extensions an existing
+    environment holds. A machine with no aelix yet - the candidate's runner - has
+    nothing to carry, and Step 5 then calls it with no argument, so the command it
+    runs there is the body with ``"$@"`` empty: what the smoke runs."""
 
     installer = _installer_text("install.sh")
-    m = re.search(r'^(uv tool install [^\n]*"\$target")', installer, re.MULTILINE)
-    assert m, 'install.sh Step 5 no longer runs `uv tool install ... "$target"`'
+    m = re.search(
+        r'^install_aelix\(\) \{\n  (uv tool install [^\n]*"\$target") "\$@"\n\}$',
+        installer,
+        re.MULTILINE,
+    )
+    assert m, 'install.sh Step 5 no longer runs `uv tool install ... "$target" "$@"`'
+    # Nothing to carry: the one call, with no argument.
+    assert re.search(
+        r'^if \[ -z "\$carried" \]; then\n  install_aelix \|\| die "\$install_failed"$',
+        installer,
+        re.MULTILINE,
+    ), "install.sh Step 5 no longer installs with no carried requirement when there are none"
     assert 'target="aelix[$AELIX_EXTRAS]==$version"' in installer
     assert re.search(r'^AELIX_EXTRAS="\$\{AELIX_EXTRAS-tui\}"\s*$', installer, re.MULTILINE)
     want = (

@@ -1,6 +1,11 @@
 # ADR-0186 — #32-A: extension marketplace core (sources + list/update/remove, pip-based)
 
-- **Status:** Accepted — **LIVE**.
+- **Status:** Accepted — **LIVE**. Amended 2026-11-26 (#926, ADR-0321): an installable
+  record (`git` / `path` / `pypi`) whose distribution is not installed is listed by
+  `extension list` and put back by `extension restore` and an interactive start, at
+  its pin only and never older than the latest install; the records, not the pin
+  store, say what is restored. An install over an installed distribution names it in
+  its record, and a named install drops the other records of its name (ADR-0321 D3).
 - **Date:** 2026-07-05
 - **Sprint:** Marketplace — the pi-parity core (Option A, owner-approved 2026-07-05). Signing/hash + a discover-catalog are split to separate follow-up ADRs.
 - **Pi pin:** `earendil-works/pi@734e08e`. Ecosystem-swap of pi's package model: `extension_sources` mirrors pi's `settings.packages` `PackageSource[]`; pip replaces npm.
