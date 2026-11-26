@@ -15,6 +15,7 @@ an install the ledger, the attribution and the binding verdict all saw.
 from __future__ import annotations
 
 import hashlib
+import shlex
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -76,6 +77,14 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _agent(tmp_path: Path) -> Path:
     return tmp_path / "agent"
+
+
+def _uv(tmp_path: Path) -> EI.InstallBackend:
+    """A uv backend at a path absolute on every platform. ``/abs/uv`` has no drive,
+    so on Windows the backend refused it (``requires an ABSOLUTE uv_path``) and four
+    tests failed on every windows-latest leg (CI run 45803495364)."""
+
+    return EI.InstallBackend(name="uv", uv_path=str(tmp_path / "uv"))
 
 
 def _pin(tmp_path: Path, *pins: extension_pins.Pin) -> None:
@@ -308,8 +317,12 @@ def test_path_and_package_records(trusted_site: Path, tmp_path: Path) -> None:
     assert nopip["pkgext-926"].problem == (
         "its pin is a version and a sha256, which only pip can check, and this environment has no pip"
     )
+    # Printed commands are quoted for a POSIX shell on every platform (shlex.quote, as
+    # `source remove`'s advice is): a Windows interpreter path has backslashes, so it is
+    # quoted there and bare here (CI run 45803495364, every windows-latest leg).
     assert nopip["pkgext-926"].command == (
-        f"uv pip install --python {sys.executable} pip, then aelix extension restore pkgext-926"
+        f"uv pip install --python {shlex.quote(sys.executable)} pip, then aelix extension "
+        "restore pkgext-926"
     )
 
 
@@ -702,9 +715,7 @@ def test_a_package_pin_without_pip_is_named_at_start_with_its_fix(
     """Verify r1 F7: it was offered as restorable, failed every start, and the line was
     cut before the fix it suggested."""
 
-    monkeypatch.setattr(
-        EI, "detect_install_backend", lambda: EI.InstallBackend(name="uv", uv_path="/abs/uv")
-    )
+    monkeypatch.setattr(EI, "detect_install_backend", lambda: _uv(tmp_path))
     _pin(
         tmp_path,
         extension_pins.Pin(
@@ -722,8 +733,8 @@ def test_a_package_pin_without_pip_is_named_at_start_with_its_fix(
     assert capsys.readouterr().out == (
         "aelix: pkgext-926 is recorded but not installed, and cannot be restored at a pin (its pin "
         "is a version and a sha256, which only pip can check, and this environment has no pip); "
-        f"reinstall it with: uv pip install --python {sys.executable} pip, then aelix extension "
-        "restore pkgext-926\n"
+        f"reinstall it with: uv pip install --python {shlex.quote(sys.executable)} pip, then "
+        "aelix extension restore pkgext-926\n"
     )
     assert run_extension_command(["list"], settings=_mem(record)) == 0
     out = capsys.readouterr().out
@@ -906,12 +917,10 @@ def test_the_start_installs_with_the_environments_own_installer(
 ) -> None:
     """A uv tool environment has no pip: the child is `uv pip install`, not `python -m pip`."""
 
-    monkeypatch.setattr(
-        EI, "detect_install_backend", lambda: EI.InstallBackend(name="uv", uv_path="/abs/uv")
-    )
+    monkeypatch.setattr(EI, "detect_install_backend", lambda: _uv(tmp_path))
     _pin(tmp_path, _git_pin())
     child = _start("interactive", trusted_site)
-    assert child.calls and child.calls[0][:3] == ["/abs/uv", "pip", "install"]
+    assert child.calls and child.calls[0][:3] == [str(tmp_path / "uv"), "pip", "install"]
 
 
 def test_a_restore_that_does_not_bind_says_so(
@@ -1087,11 +1096,11 @@ async def test_status_says_when_recorded_extensions_are_not_installed(
     assert json.loads(capsys.readouterr().out)["recorded_not_installed"] == ["restore-ext-926"]
 
 
-def test_the_no_pip_advice_says_what_a_rebuild_removes() -> None:
+def test_the_no_pip_advice_says_what_a_rebuild_removes(tmp_path: Path) -> None:
     """Verify r1 F10: both messages advised `uv tool install --force --with pip aelix`,
     which removes every extension not in the receipt, without saying so."""
 
-    backend = EI.InstallBackend(name="uv", uv_path="/abs/uv")
+    backend = _uv(tmp_path)
     refusal = EI._uv_verify_refusal_message("x==1", backend)
     assert f"`uv pip install --python {EI.display_argv([sys.executable])} pip`" in refusal
     assert "It keeps the installed extensions, and an aelix update removes pip again" in refusal
@@ -1107,9 +1116,7 @@ def test_restore_without_pip_does_not_offer_a_package_pin(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        EI, "detect_install_backend", lambda: EI.InstallBackend(name="uv", uv_path="/abs/uv")
-    )
+    monkeypatch.setattr(EI, "detect_install_backend", lambda: _uv(tmp_path))
     _pin(
         tmp_path,
         extension_pins.Pin(
@@ -1708,11 +1715,11 @@ def test_a_wheel_record_a_later_wheel_of_its_distribution_replaced_is_not_restor
     assert (
         "aelix: restore-ext-926 is recorded but not installed, and that record is not its "
         f"latest install (a later record installed it from {newer}); install the latest with: "
-        f"aelix extension install {newer}\n"
+        f"aelix extension install {shlex.quote(newer)}\n"
     ) == out
     [rec] = missing_recorded_extensions(rows)
     assert rec.stale and rec.target is None
-    assert rec.command == f"aelix extension install {newer}"
+    assert rec.command == f"aelix extension install {shlex.quote(newer)}"
 
 
 def test_a_later_record_tied_to_nothing_keeps_the_automatic_restore_off_earlier_ones(

@@ -93,6 +93,15 @@ def test_the_program_passes_the_repository_lint(tmp_path: Path) -> None:
 # === the program, on fake environments ======================================
 
 
+def _toml_str(path: Path) -> str:
+    """``path`` as a TOML basic string, escaped. A Windows path's backslashes are
+    escapes in TOML (``\\U`` begins a unicode escape), so the bare spelling made the
+    whole fake receipt unreadable on windows-latest and nothing in it was carried
+    (CI run 45803495364)."""
+
+    return json.dumps(str(path))
+
+
 def _record_hash(data: bytes) -> str:
     return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
 
@@ -158,6 +167,14 @@ class _Carry:
         self.site = site
         self.env_dir = tmp / "env"
         self.env_dir.mkdir(exist_ok=True)
+        # Where a venv keeps its interpreter, which a printed `uv pip install --python`
+        # names: Scripts\python.exe on Windows, bin/python elsewhere. The POSIX spelling
+        # alone failed on every windows-latest leg (CI run 45803495364).
+        self.python = (
+            self.env_dir / "Scripts" / "python.exe"
+            if os.name == "nt"
+            else self.env_dir / "bin" / "python"
+        )
         self.state = tmp / "state"
         self.state.mkdir()
         self.agent = tmp / "agent"
@@ -263,7 +280,7 @@ def test_a_directory_is_carried_while_it_exists(
     assert lines == [f"dir-ext @ {src.as_uri()}", f"-e {src.as_uri()}"]
     assert "not carried: gone-ext 1.0.0 - its source directory" in out
     assert "is gone or has a '#' in it, so there is no command to reinstall it from here" in out
-    py = carry.env_dir / "bin" / "python"
+    py = carry.python
     assert carry.restore() == [
         f"aelix-install: not carried: dir-ext 1.0.0 - reinstall it with: "
         f"aelix extension install '{src}'",
@@ -332,7 +349,7 @@ def test_a_file_is_carried_from_where_it_is_or_from_its_pin(
         f"staged @ {original.as_uri()}",
     ]
     assert "not carried: changed 1.0.0 - the file it was installed from is gone" in out
-    py = carry.env_dir / "bin" / "python"
+    py = carry.python
     assert carry.restore()[1] == (
         "aelix-install: not carried: remote 1.0.0 - reinstall it with: "
         f"uv pip install --python '{py}' 'remote @ https://e.invalid/remote-1.0.whl'"
@@ -387,9 +404,9 @@ def test_the_receipt_is_carried_for_what_is_still_installed(
     carry.receipt(
         '{ name = "pip" }',
         '{ name = "lib-git", git = "https://h/r.git?rev=abc&subdirectory=s" }',
-        f'{{ name = "lib-dir", directory = "{tmp_path / "d"}" }}',
-        f'{{ name = "lib-file", path = "{tmp_path / "f.whl"}" }}',
-        f'{{ name = "lib-edit", editable = "{tmp_path / "e"}" }}',
+        f'{{ name = "lib-dir", directory = {_toml_str(tmp_path / "d")} }}',
+        f'{{ name = "lib-file", path = {_toml_str(tmp_path / "f.whl")} }}',
+        f'{{ name = "lib-edit", editable = {_toml_str(tmp_path / "e")} }}',
         '{ name = "lib-url", extras = ["x"], url = "https://h/u.whl" }',
         '{ name = "lib-tag", git = "https://h/t.git?tag=v1" }',
         '{ name = "lib-branch", git = "https://h/b.git?branch=main" }',
@@ -399,10 +416,11 @@ def test_the_receipt_is_carried_for_what_is_still_installed(
         '{ name = "removed-since" }',
         '{ name = "lib-extra", extras = ["a", "b"], specifier = "==2" }',
         '{ name = "lib-lfs", git = "https://h/l.git?rev=abc&lfs=true" }',
-        f'{{ name = "lib-edit-extra", extras = ["a"], editable = "{tmp_path / "e"}" }}',
+        f'{{ name = "lib-edit-extra", extras = ["a"], editable = {_toml_str(tmp_path / "e")} }}',
         '{ name = "moved-ext", git = "https://h/m.git?rev=0000000000000000000000000000000000000000" }',
     )
     lines, out = carry.collect(capsys)
+    assert "could not read the uv receipt" not in out
     assert lines == [
         "pip",
         "lib-git @ git+https://h/r.git@abc#subdirectory=s",
@@ -428,7 +446,7 @@ def test_the_receipt_is_carried_for_what_is_still_installed(
         assert f"not carried: {name} - uv recorded it in a form this installer cannot" in out
     # One line to print per requirement, in the same order: the shell prints line N
     # when requirement N is not carried.
-    py = carry.env_dir / "bin" / "python"
+    py = carry.python
     restore = carry.restore()
     assert len(restore) == len(lines)
     assert restore[0] == (
@@ -947,7 +965,7 @@ def test_the_command_for_one_left_out_keeps_the_receipt_s_extras(
     carry.receipt(*(f'{{ name = "{name}", extras = ["feature"] }}' for name in shapes))
     lines, _ = carry.collect(capsys)
     assert all("[feature]" in line for line in lines), lines
-    py = carry.env_dir / "bin" / "python"
+    py = carry.python
     expected = {
         "dir-ext": f"aelix extension install '{src}[feature]'",
         "file-ext": f"aelix extension install '{wheel}[feature]'",
